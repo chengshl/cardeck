@@ -14,9 +14,9 @@ plugins {
  */
 val appVersionName = "0.1.0"
 val appVersionCode =
-    appVersionName
+    (System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionName
         .split(".")
-        .let { (major, minor, patch) -> major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt() }
+        .let { (major, minor, patch) -> major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt() })
 
 /**
  * 发布签名配置：从仓库外的 `keystore.properties` 读取（已在 .gitignore 排除）。
