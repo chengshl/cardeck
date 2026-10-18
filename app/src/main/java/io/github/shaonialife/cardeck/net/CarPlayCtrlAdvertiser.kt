@@ -3,6 +3,7 @@ package io.github.shaonialife.cardeck.net
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.SystemClock
@@ -76,6 +77,17 @@ class CarPlayCtrlAdvertiser(
     /** 本次注册时进程所处的网络（用于判断「绑定后是否需要重注册」）。 */
     private var registeredNetwork: android.net.Network? = null
 
+    /** T8: network chosen for service-specific NSD advertisement. */
+    private fun wifiNetwork(): android.net.Network? {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        return cm.allNetworks.firstOrNull { network ->
+            val caps = cm.getNetworkCapabilities(network)
+            val props = cm.getLinkProperties(network)
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+                props?.interfaceName == "wlan0"
+        }
+    }
+
     val port: Int get() = serverSocket?.localPort ?: -1
 
     /** 当前广播的 TXT id 是否是占位 MAC（车机据此匹配手机，占位则永不邀请）。 */
@@ -134,7 +146,7 @@ class CarPlayCtrlAdvertiser(
         return ok
     }
 
-    /** T7: record Wi-Fi visibility at the exact time the service is advertised. */
+    /** T8: record Wi-Fi visibility at the exact time the service is advertised. */
     private fun logNetworkSnapshot() {
         try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -166,11 +178,17 @@ class CarPlayCtrlAdvertiser(
                 mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
                 log("$TAG: 蓝牙 MAC 解析为占位值，已强制重试${if (mac == DeviceIdentity.PLACEHOLDER_MAC) "（仍未成功——车机可能不会邀请，请确认 Shizuku 已启动）" else "成功"}")
             }
+            val serviceWifi = wifiNetwork()
             val info =
                 NsdServiceInfo().apply {
                     serviceName = "sender"
                     serviceType = SERVICE_TYPE
                     setPort(socket.localPort)
+                    // Android 13+: restrict this NSD advertisement to the confirmed car Wi-Fi.
+                    // Do not bind the entire process; Bluetooth and other sockets remain unaffected.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null) {
+                        setNetwork(serviceWifi)
+                    }
                     // TXT id = 本机真实蓝牙 MAC（catplay CarPlayInviter 实证：车机按此
                     // 匹配待邀请的手机，占位值会导致车机永远不邀请 → 0x4301 永不到达）。
                     setAttribute("id", mac)
@@ -185,6 +203,7 @@ class CarPlayCtrlAdvertiser(
             registeredAtMillis = SystemClock.uptimeMillis()
             registeredWithMac = mac
             log("$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id=$mac")
+            log("$TAG T8: NSD network=${serviceWifi ?: "(none)"} interface=wlan0 explicit=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null} socketBound=0.0.0.0:${socket.localPort}")
             logNetworkSnapshot()
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
                 // 占位 id 车机不会邀请：后台等 Shizuku/MAC 就绪后立刻重注册，
@@ -348,7 +367,7 @@ class CarPlayCtrlAdvertiser(
     private fun createListener(): NsdManager.RegistrationListener =
         object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-                log("$TAG: mDNS 注册成功 ${serviceInfo.serviceName}")
+                log("$TAG: mDNS 注册成功 ${serviceInfo.serviceName} network=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) serviceInfo.network else "(API<33)"} port=${serviceInfo.port} host=${serviceInfo.host?.hostAddress ?: "?"}")
             }
 
             override fun onRegistrationFailed(
