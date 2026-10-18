@@ -1,6 +1,8 @@
 package io.github.shaonialife.cardeck.net
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.SystemClock
@@ -132,6 +134,25 @@ class CarPlayCtrlAdvertiser(
         return ok
     }
 
+    /** T7: record Wi-Fi visibility at the exact time the service is advertised. */
+    private fun logNetworkSnapshot() {
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val bound = cm.boundNetworkForProcess
+            log("$TAG T7: processBoundNetwork=${bound ?: "(none)"} activeNetwork=${cm.activeNetwork ?: "(none)"}")
+            for (network in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(network) ?: continue
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+                val props = cm.getLinkProperties(network)
+                val ips = props?.linkAddresses?.joinToString(",") { it.address.hostAddress ?: "?" }
+                val gateway = props?.routes?.firstOrNull { it.isDefaultRoute }?.gateway?.hostAddress
+                log("$TAG T7: wifiNetwork=$network interface=${props?.interfaceName} ips=${ips ?: "?"} gateway=${gateway ?: "?"} bound=${network == bound}")
+            }
+        } catch (error: Exception) {
+            log("$TAG T7: network snapshot failed: ${error.javaClass.simpleName}: ${error.message}")
+        }
+    }
+
     @Synchronized
     fun start(): Boolean {
         if (registered) return true
@@ -163,7 +184,8 @@ class CarPlayCtrlAdvertiser(
             registered = true
             registeredAtMillis = SystemClock.uptimeMillis()
             registeredWithMac = mac
-            log("$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE")
+            log("$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id=$mac")
+            logNetworkSnapshot()
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
                 // 占位 id 车机不会邀请：后台等 Shizuku/MAC 就绪后立刻重注册，
                 // 别让「广播提前到启动连接」反而把 TXT id 写错（2026-10-18）。
@@ -207,6 +229,7 @@ class CarPlayCtrlAdvertiser(
                 } catch (_: Exception) {
                     break
                 }
+            log("$TAG T7: TCP accepted from ${client.inetAddress?.hostAddress ?: "?"}:${client.port} to localPort=${client.localPort}")
             Bg.run("ctrl-client") { handleClient(client) }
         }
     }
