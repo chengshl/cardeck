@@ -182,65 +182,52 @@ class Iap2SenderSession(
                 mac.equals("02:00:00:00:00:00", ignoreCase = true) ||
                 mac.equals("00:00:00:00:00:00", ignoreCase = true)
             ) {
-                log("iap2 Buick/GM T4: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 mac=$mac")
-                throw IOException("Buick T4: 无有效蓝牙 MAC，避免占位地址污染配对")
+                log("iap2 Buick/GM T5: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 mac=$mac")
+                throw IOException("Buick T5: 无有效蓝牙 MAC，避免占位地址污染配对")
             }
-            log("iap2 Buick/GM T4: 使用真实蓝牙 MAC=$mac，跳过可选 0x6800 等待")
+            log("iap2 Buick/GM T5: 使用真实蓝牙 MAC=$mac，跳过可选 0x6800 等待")
         } else {
             awaitOptionalHid(deadline)
         }
         if (isBuickE5) {
-            log("iap2 Buick/GM T4: 先发送设备状态问候，再声明 CarPlay 可用")
-            // ---- 设备状态问候（对照真 iPhone 实录：0x4E0D/0x4E0A/0x4E09/0x4E0B → 0x4300）----
-            // Audi MIB3 实测：缺这批消息时，车机对 0x4300 只回链路 ACK、不出 0x4301。
-            send(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
+            // T4: ACK stopped at seq=108; seq=109 (0x4E0C) was retransmitted.
+            // T5 isolation: send only the three messages advertised by this receiver.
+            // Deliberately omit 0x4E0D (not advertised) and 0x4E0C (T4 stall).
+            log("iap2 Buick/GM T5: ACK 隔离实验，跳过 0x4e0d 与 0x4e0c")
             send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
             send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
             val epochSeconds = System.currentTimeMillis() / 1000L
             val timezoneMinutes =
-                java.util.TimeZone
-                    .getDefault()
-                    .getOffset(System.currentTimeMillis()) / 60_000
+                java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000
             send(
                 Iap2MessageIds.DEVICE_TIME_UPDATE,
                 Iap2Csm.param(0, u64Bytes(epochSeconds)) +
                     Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
                     Iap2Csm.u8(2, 0),
             )
-            send(
-                Iap2MessageIds.DEVICE_UUID_UPDATE,
-                Iap2Csm.string(0, deviceUuid()),
-            )
-            log(
-                "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c 设备状态问候" +
-                    "（name=$deviceName mac=$bluetoothMac）",
-            )
-
-        }
-        if (isBuickE5) {
-            log("iap2 Buick/GM T4: 状态问候后发送 0x4300（跳过 0x5702）")
+            log("iap2 Buick/GM T5: 已发送 0x4e0a/0x4e09/0x4e0b；接着发送 0x4300")
             sendFireAndForget(
                 Iap2MessageIds.CARPLAY_AVAILABILITY,
                 Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
             )
         }
 
-        // Buick E5 T3: isolated protocol probe. The receiver advertises 0x4301 but not
+        // Buick E5 T5: isolated protocol probe. The receiver advertises 0x4301 but not
         // 0x5703 in its identification message. Avoid sending 0x5702, which the T2
         // receiver repeatedly failed to acknowledge, and observe 0x4301 directly.
         // This branch is intentionally diagnostic: no synthetic Wi-Fi credentials.
         if (isBuickE5) {
-            log("iap2 Buick/GM T4: 不发送 0x5702；监听 0x4301（20 秒诊断窗口）")
+            log("iap2 Buick/GM T5: 不发送 0x5702；监听 0x4301（20 秒诊断窗口）")
             val start = expectOrNull(
                 Iap2MessageIds.CARPLAY_START_SESSION,
                 minOf(deadline, System.nanoTime() + 20_000_000_000L),
             )
             if (start == null) {
-                log("iap2 Buick/GM T4: 未收到 0x4301；请检查链路 ACK 与非预期消息")
-                throw IOException("Buick T4 诊断结束：0x4301 未到（未请求 0x5703）")
+                log("iap2 Buick/GM T5: 未收到 0x4301；请检查链路 ACK 与非预期消息")
+                throw IOException("Buick T5 诊断结束：0x4301 未到（未请求 0x5703）")
             }
-            log("iap2 Buick/GM T4: 收到 0x4301，bodyBytes=${start.body.size}；已证明车机会话响应")
-            throw IOException("Buick T3 诊断结束：已收到 0x4301，尚无 WiFi 凭据，不进入 Phase 2")
+            log("iap2 Buick/GM T5: 收到 0x4301，bodyBytes=${start.body.size}；已证明车机会话响应")
+            throw IOException("Buick T5 诊断结束：已收到 0x4301，尚无 WiFi 凭据，不进入 Phase 2")
         }
 
         // ---- WiFi 配置交换 ----
