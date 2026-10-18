@@ -1,8 +1,8 @@
-name: Build Buick E5 T7 signed APK
+name: Build Buick E5 T8 signed APK
 on:
   workflow_dispatch:
   push:
-    branches: [buick-e5-t7]
+    branches: [buick-e5-t8]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -42,6 +42,6 @@ jobs:
         run: chmod +x gradlew && ./gradlew :app:assembleRelease --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: CarDeck-Buick-E5-T7
+          name: CarDeck-Buick-E5-T8
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
