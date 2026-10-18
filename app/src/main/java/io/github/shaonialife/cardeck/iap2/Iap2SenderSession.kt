@@ -173,6 +173,19 @@ class Iap2SenderSession(
         // 因此这里只短暂等待：收到 0x6800 就应答 0x6801，2 秒内没等到就直接继续。
         awaitOptionalHid(deadline)
 
+        // ---- Buick E5 T1: 先声明 CarPlay 可用，再请求热点配置 ----
+        // 独立实验分支；避免影响上游 Audi/DiPlay 默认路径。
+        val isBuickE5 = identityText.contains("buick", ignoreCase = true) ||
+            identityText.contains("general motors", ignoreCase = true) ||
+            identityText.contains("cadillac", ignoreCase = true)
+        if (isBuickE5) {
+            log("iap2 Buick/GM T1: 先发送 0x4300，再发送 0x5702")
+            sendFireAndForget(
+                Iap2MessageIds.CARPLAY_AVAILABILITY,
+                Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
+            )
+        }
+
         // ---- WiFi 配置交换 ----
         send(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)
         val wifiConfiguration = expect(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION, deadline)
@@ -219,10 +232,12 @@ class Iap2SenderSession(
         //    超时返回无端点的 CarPlayEndpoint，由主控 mDNS 合成。
         // 0x4300 同样发后不管：2026-10-11 12:52 轮实测车机曾对它停止 ACK
         // （事件通道 SYN 洪水把它打懵的时段），链路看门狗险些再次自杀。
-        sendFireAndForget(
-            Iap2MessageIds.CARPLAY_AVAILABILITY,
-            Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
-        )
+        if (!isBuickE5) {
+            sendFireAndForget(
+                Iap2MessageIds.CARPLAY_AVAILABILITY,
+                Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
+            )
+        }
         // 车机声明里没有 0x4301 就直接跳过等待（Audi 实测每轮白等 10s）：
         // 真 iPhone 对这类车机也不等——AirPlay 端点经 mDNS/网关合成。
         val declaresStartSession = accessoryDeclaresSend(Iap2MessageIds.CARPLAY_START_SESSION)
