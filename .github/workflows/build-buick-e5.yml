@@ -1,8 +1,8 @@
-name: Build Buick E5 T1 test APK
+name: Build Buick E5 T4 signed APK
 on:
   workflow_dispatch:
   push:
-    branches: [buick-e5-t1, buick-e5-t2, buick-e5-t3]
+    branches: [buick-e5-t4]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,10 +16,32 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
+      - name: Restore persistent signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_B64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" ]]; then
+            echo "::error::Configure CARDECK_KEYSTORE_BASE64, CARDECK_KEYSTORE_PASSWORD and CARDECK_KEY_ALIAS in repository Actions secrets."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-upload.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-upload.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-upload.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
       - name: Build release APK
+        env:
+          CARDECK_BUILD_VERSION_CODE: ${{ github.run_number }}
         run: chmod +x gradlew && ./gradlew :app:assembleRelease --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: CarDeck-Buick-E5-T3
+          name: CarDeck-Buick-E5-T4
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
