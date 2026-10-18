@@ -171,15 +171,26 @@ class Iap2SenderSession(
         // ---- 订阅与 HID：0x6800 是可选步骤 ----
         // xcertplay 在订阅后发 StartHID；DiPlay 删掉了这一步（订阅完直接等 0x5702）。
         // 因此这里只短暂等待：收到 0x6800 就应答 0x6801，2 秒内没等到就直接继续。
-        awaitOptionalHid(deadline)
-
         // ---- Buick E5 T1: 先声明 CarPlay 可用，再请求热点配置 ----
         // 独立实验分支；避免影响上游 Audi/DiPlay 默认路径。
         val isBuickE5 = identityText.contains("buick", ignoreCase = true) ||
             identityText.contains("general motors", ignoreCase = true) ||
             identityText.contains("cadillac", ignoreCase = true)
         if (isBuickE5) {
-            log("iap2 Buick/GM T3: 先发送设备状态问候，再声明 CarPlay 可用")
+            val mac = bluetoothMac.trim()
+            if (!Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$").matches(mac) ||
+                mac.equals("02:00:00:00:00:00", ignoreCase = true) ||
+                mac.equals("00:00:00:00:00:00", ignoreCase = true)
+            ) {
+                log("iap2 Buick/GM T4: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 mac=$mac")
+                throw IOException("Buick T4: 无有效蓝牙 MAC，避免占位地址污染配对")
+            }
+            log("iap2 Buick/GM T4: 使用真实蓝牙 MAC=$mac，跳过可选 0x6800 等待")
+        } else {
+            awaitOptionalHid(deadline)
+        }
+        if (isBuickE5) {
+            log("iap2 Buick/GM T4: 先发送设备状态问候，再声明 CarPlay 可用")
             // ---- 设备状态问候（对照真 iPhone 实录：0x4E0D/0x4E0A/0x4E09/0x4E0B → 0x4300）----
             // Audi MIB3 实测：缺这批消息时，车机对 0x4300 只回链路 ACK、不出 0x4301。
             send(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
@@ -207,7 +218,7 @@ class Iap2SenderSession(
 
         }
         if (isBuickE5) {
-            log("iap2 Buick/GM T3: 状态问候后发送 0x4300（跳过 0x5702）")
+            log("iap2 Buick/GM T4: 状态问候后发送 0x4300（跳过 0x5702）")
             sendFireAndForget(
                 Iap2MessageIds.CARPLAY_AVAILABILITY,
                 Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
@@ -219,16 +230,16 @@ class Iap2SenderSession(
         // receiver repeatedly failed to acknowledge, and observe 0x4301 directly.
         // This branch is intentionally diagnostic: no synthetic Wi-Fi credentials.
         if (isBuickE5) {
-            log("iap2 Buick/GM T3: 不发送 0x5702；监听 0x4301（12 秒诊断窗口）")
+            log("iap2 Buick/GM T4: 不发送 0x5702；监听 0x4301（20 秒诊断窗口）")
             val start = expectOrNull(
                 Iap2MessageIds.CARPLAY_START_SESSION,
-                minOf(deadline, System.nanoTime() + 12_000_000_000L),
+                minOf(deadline, System.nanoTime() + 20_000_000_000L),
             )
             if (start == null) {
-                log("iap2 Buick/GM T3: 未收到 0x4301；请检查链路 ACK 与非预期消息")
-                throw IOException("Buick T3 诊断结束：0x4301 未到（未请求 0x5703）")
+                log("iap2 Buick/GM T4: 未收到 0x4301；请检查链路 ACK 与非预期消息")
+                throw IOException("Buick T4 诊断结束：0x4301 未到（未请求 0x5703）")
             }
-            log("iap2 Buick/GM T3: 收到 0x4301，bodyBytes=${start.body.size}；已证明车机会话响应")
+            log("iap2 Buick/GM T4: 收到 0x4301，bodyBytes=${start.body.size}；已证明车机会话响应")
             throw IOException("Buick T3 诊断结束：已收到 0x4301，尚无 WiFi 凭据，不进入 Phase 2")
         }
 
