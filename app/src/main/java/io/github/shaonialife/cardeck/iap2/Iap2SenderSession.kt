@@ -179,7 +179,35 @@ class Iap2SenderSession(
             identityText.contains("general motors", ignoreCase = true) ||
             identityText.contains("cadillac", ignoreCase = true)
         if (isBuickE5) {
-            log("iap2 Buick/GM T1: 先发送 0x4300，再发送 0x5702")
+            log("iap2 Buick/GM T2: 先发送设备状态问候，再声明 CarPlay 可用")
+            // ---- 设备状态问候（对照真 iPhone 实录：0x4E0D/0x4E0A/0x4E09/0x4E0B → 0x4300）----
+            // Audi MIB3 实测：缺这批消息时，车机对 0x4300 只回链路 ACK、不出 0x4301。
+            send(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
+            send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
+            send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
+            val epochSeconds = System.currentTimeMillis() / 1000L
+            val timezoneMinutes =
+                java.util.TimeZone
+                    .getDefault()
+                    .getOffset(System.currentTimeMillis()) / 60_000
+            send(
+                Iap2MessageIds.DEVICE_TIME_UPDATE,
+                Iap2Csm.param(0, u64Bytes(epochSeconds)) +
+                    Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
+                    Iap2Csm.u8(2, 0),
+            )
+            send(
+                Iap2MessageIds.DEVICE_UUID_UPDATE,
+                Iap2Csm.string(0, deviceUuid()),
+            )
+            log(
+                "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c 设备状态问候" +
+                    "（name=$deviceName mac=$bluetoothMac）",
+            )
+
+        }
+        if (isBuickE5) {
+            log("iap2 Buick/GM T2: 状态问候后发送 0x4300，再发送 0x5702")
             sendFireAndForget(
                 Iap2MessageIds.CARPLAY_AVAILABILITY,
                 Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
@@ -199,31 +227,33 @@ class Iap2SenderSession(
         // 因此这里必须立即通知主控绑 WiFi + 广播 ctrl（带真实蓝牙 MAC 作 TXT id）。
         onWifiCredentials?.invoke(wifi)
 
-        // ---- 设备状态问候（对照真 iPhone 实录：0x4E0D/0x4E0A/0x4E09/0x4E0B → 0x4300）----
-        // Audi MIB3 实测：缺这批消息时，车机对 0x4300 只回链路 ACK、不出 0x4301。
-        send(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
-        send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
-        send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
-        val epochSeconds = System.currentTimeMillis() / 1000L
-        val timezoneMinutes =
-            java.util.TimeZone
-                .getDefault()
-                .getOffset(System.currentTimeMillis()) / 60_000
-        send(
-            Iap2MessageIds.DEVICE_TIME_UPDATE,
-            Iap2Csm.param(0, u64Bytes(epochSeconds)) +
-                Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
-                Iap2Csm.u8(2, 0),
-        )
-        send(
-            Iap2MessageIds.DEVICE_UUID_UPDATE,
-            Iap2Csm.string(0, deviceUuid()),
-        )
-        log(
-            "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c 设备状态问候" +
-                "（name=$deviceName mac=$bluetoothMac）",
-        )
+        if (!isBuickE5) {
+            // ---- 设备状态问候（对照真 iPhone 实录：0x4E0D/0x4E0A/0x4E09/0x4E0B → 0x4300）----
+            // Audi MIB3 实测：缺这批消息时，车机对 0x4300 只回链路 ACK、不出 0x4301。
+            send(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
+            send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
+            send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
+            val epochSeconds = System.currentTimeMillis() / 1000L
+            val timezoneMinutes =
+                java.util.TimeZone
+                    .getDefault()
+                    .getOffset(System.currentTimeMillis()) / 60_000
+            send(
+                Iap2MessageIds.DEVICE_TIME_UPDATE,
+                Iap2Csm.param(0, u64Bytes(epochSeconds)) +
+                    Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
+                    Iap2Csm.u8(2, 0),
+            )
+            send(
+                Iap2MessageIds.DEVICE_UUID_UPDATE,
+                Iap2Csm.string(0, deviceUuid()),
+            )
+            log(
+                "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c 设备状态问候" +
+                    "（name=$deviceName mac=$bluetoothMac）",
+            )
 
+        }
         // ---- CarPlay 会话启动 ----
         // 两种对端形态：
         //  - 测试台 DiPlay/部分车厂：收 0x4300 后回 0x4301（含 AirPlay 端口/IP/公钥）
