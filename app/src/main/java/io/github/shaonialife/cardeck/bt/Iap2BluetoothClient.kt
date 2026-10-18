@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
+import io.github.shaonialife.cardeck.util.DeviceIdentity
 import io.github.shaonialife.cardeck.transport.Iap2LinkChannel
 import io.github.shaonialife.cardeck.transport.StreamDuplexStream
 import java.io.IOException
@@ -264,6 +265,15 @@ class Iap2BluetoothClient(
         val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
         activeChannel = channel
         try {
+            // T10: resolve the shared Bluetooth identity before session construction.
+            var mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
+            repeat(3) {
+                if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
+                    Thread.sleep(600)
+                    mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
+                }
+            }
+            log("BT-C T10: pre-session identity=" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) "unavailable" else mac)
             channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials)
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")
