@@ -146,7 +146,7 @@ class CarPlayCtrlAdvertiser(
         return ok
     }
 
-    /** T8: record Wi-Fi visibility at the exact time the service is advertised. */
+    /** T9: record Wi-Fi visibility at the exact time the service is advertised. */
     private fun logNetworkSnapshot() {
         try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -179,6 +179,7 @@ class CarPlayCtrlAdvertiser(
                 log("$TAG: 蓝牙 MAC 解析为占位值，已强制重试${if (mac == DeviceIdentity.PLACEHOLDER_MAC) "（仍未成功——车机可能不会邀请，请确认 Shizuku 已启动）" else "成功"}")
             }
             val serviceWifi = wifiNetwork()
+            registeredNetwork = serviceWifi
             val info =
                 NsdServiceInfo().apply {
                     serviceName = "sender"
@@ -210,6 +211,9 @@ class CarPlayCtrlAdvertiser(
                 // 别让「广播提前到启动连接」反而把 TXT id 写错（2026-10-18）。
                 Bg.run("ctrl-mac-repair") { repairPlaceholderMac() }
             }
+            // T9: if CarDeck starts before Wi-Fi joins the car hotspot, the original
+            // NSD advertisement is not tied to wlan0. Re-register after Wi-Fi arrives.
+            Bg.run("ctrl-wifi-watch") { watchWifiNetwork(socket) }
             Thread(::acceptLoop, "ctrl-accept").apply {
                 isDaemon = true
                 start()
@@ -218,6 +222,30 @@ class CarPlayCtrlAdvertiser(
         } catch (error: Exception) {
             log("$TAG: 启动失败 - ${error.message}")
             false
+        }
+    }
+
+    /** T9: follow wlan0 availability/changes while this specific server socket is alive. */
+    private fun watchWifiNetwork(ownerSocket: ServerSocket) {
+        repeat(90) {
+            try {
+                Thread.sleep(2_000)
+            } catch (_: InterruptedException) {
+                return
+            }
+            if (!registered || serverSocket !== ownerSocket) return
+            val current = try {
+                wifiNetwork()
+            } catch (error: Exception) {
+                log("$TAG T9: Wi-Fi 查询失败: ${error.message}")
+                return@repeat
+            }
+            if (current != null && current != registeredNetwork) {
+                log("$TAG T9: 检测到 wlan0 网络切换 ${registeredNetwork ?: "(none)"} -> $current；重注册 mDNS")
+                ensureForNetwork(registeredSsid ?: "", force = true, network = current)
+                // ensureForNetwork replaces the socket; the new registration owns its watcher.
+                return
+            }
         }
     }
 
@@ -367,7 +395,7 @@ class CarPlayCtrlAdvertiser(
     private fun createListener(): NsdManager.RegistrationListener =
         object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-                log("$TAG: mDNS 注册成功 ${serviceInfo.serviceName} network=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) serviceInfo.network else "(API<33)"} port=${serviceInfo.port} host=${serviceInfo.host?.hostAddress ?: "?"}")
+                log("$TAG: mDNS 注册回调 ${serviceInfo.serviceName} callbackNetwork=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) serviceInfo.network else "(API<33)"} callbackPort=${serviceInfo.port} listenerPort=$port（回调端口可能未填充）")
             }
 
             override fun onRegistrationFailed(
