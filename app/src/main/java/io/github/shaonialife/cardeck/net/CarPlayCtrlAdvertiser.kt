@@ -12,6 +12,8 @@ import io.github.shaonialife.cardeck.util.DeviceIdentity
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.net.Inet4Address
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -39,6 +41,9 @@ class CarPlayCtrlAdvertiser(
     }
 
     private var serverSocket: ServerSocket? = null
+
+    @Volatile private var tcpAcceptCount = 0
+    @Volatile private var httpRequestCount = 0
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
 
     @Volatile
@@ -204,6 +209,7 @@ class CarPlayCtrlAdvertiser(
             registeredAtMillis = SystemClock.uptimeMillis()
             registeredWithMac = mac
             log("$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id=$mac")
+            log("$TAG T11: TXT id=$mac srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}")
             log("$TAG T8: NSD network=${serviceWifi ?: "(none)"} interface=wlan0 explicit=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null} socketBound=0.0.0.0:${socket.localPort}")
             logNetworkSnapshot()
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
@@ -214,6 +220,7 @@ class CarPlayCtrlAdvertiser(
             // T9: if CarDeck starts before Wi-Fi joins the car hotspot, the original
             // NSD advertisement is not tied to wlan0. Re-register after Wi-Fi arrives.
             Bg.run("ctrl-wifi-watch") { watchWifiNetwork(socket) }
+            Bg.run("ctrl-t11-diag") { diagnoseControlService(socket, serviceWifi) }
             Thread(::acceptLoop, "ctrl-accept").apply {
                 isDaemon = true
                 start()
@@ -222,6 +229,47 @@ class CarPlayCtrlAdvertiser(
         } catch (error: Exception) {
             log("$TAG: 启动失败 - ${error.message}")
             false
+        }
+    }
+
+    /**
+     * T11 diagnostics. A local TCP probe only proves that Android can reach
+     * its own listener over the selected Wi-Fi interface; it does NOT prove
+     * that the Buick receiver can discover mDNS or reach this phone.
+     */
+    private fun diagnoseControlService(ownerSocket: ServerSocket, network: android.net.Network?) {
+        try {
+            Thread.sleep(1_500)
+            if (!registered || serverSocket !== ownerSocket) return
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val wifi = network ?: wifiNetwork()
+            val ipv4 = wifi?.let { cm.getLinkProperties(it)?.linkAddresses
+                ?.map { address -> address.address }
+                ?.firstOrNull { address -> address is Inet4Address } }
+            if (wifi == null || ipv4 == null) {
+                log("$TAG T11: SELFTEST unavailable: no wlan0 IPv4 address")
+            } else {
+                try {
+                    wifi.socketFactory.createSocket().use { probe ->
+                        probe.connect(InetSocketAddress(ipv4, ownerSocket.localPort), 2_500)
+                        log("$TAG T11: SELFTEST TCP PASS via wifi=$wifi address=${ipv4.hostAddress} port=${ownerSocket.localPort} (local-only, not car reachability)")
+                    }
+                } catch (error: Exception) {
+                    log("$TAG T11: SELFTEST TCP FAIL via wifi=$wifi address=${ipv4.hostAddress} port=${ownerSocket.localPort}: ${error.javaClass.simpleName}: ${error.message}")
+                }
+            }
+            repeat(9) { index ->
+                Thread.sleep(10_000)
+                if (!registered || serverSocket !== ownerSocket) return
+                log("$TAG T11: WATCH elapsed=${(index + 1) * 10}s tcpAccepts=$tcpAcceptCount httpRequests=$httpRequestCount ctrlInvites=$inviteCount wifi=${wifiNetwork() ?: "(none)"} active=${cm.activeNetwork ?: "(none)"} listener=${ownerSocket.localPort}")
+            }
+            if (registered && serverSocket === ownerSocket) {
+                log("$TAG T11 SUMMARY: 90s tcpAccepts=$tcpAcceptCount httpRequests=$httpRequestCount ctrlInvites=$inviteCount (zero accepts means no inbound TCP observed; does not by itself prove mDNS failure)")
+            }
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (error: Exception) {
+            log("$TAG T11: diagnostic error: ${error.javaClass.simpleName}: ${error.message}")
         }
     }
 
@@ -276,7 +324,8 @@ class CarPlayCtrlAdvertiser(
                 } catch (_: Exception) {
                     break
                 }
-            log("$TAG T7: TCP accepted from ${client.inetAddress?.hostAddress ?: "?"}:${client.port} to localPort=${client.localPort}")
+            tcpAcceptCount++
+            log("$TAG T11: TCP accepted from ${client.inetAddress?.hostAddress ?: "?"}:${client.port} to localPort=${client.localPort}")
             Bg.run("ctrl-client") { handleClient(client) }
         }
     }
@@ -291,6 +340,7 @@ class CarPlayCtrlAdvertiser(
                 log("$TAG: $peer 连入但无请求（EOF）")
                 return
             }
+            httpRequestCount++
             val requestLine = head.lineSequence().firstOrNull() ?: ""
             val headers =
                 head
@@ -383,6 +433,8 @@ class CarPlayCtrlAdvertiser(
         registered = false
         registeredSsid = null
         registeredWithMac = null
+        tcpAcceptCount = 0
+        httpRequestCount = 0
         registeredNetwork = null
         activeListener?.let { runCatching { nsdManager.unregisterService(it) } }
         activeListener = null
