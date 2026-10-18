@@ -324,7 +324,8 @@ class CarPlayCtrlAdvertiser(
                 } catch (_: Exception) {
                     break
                 }
-            tcpAcceptCount++
+            val isLocalProbe = client.inetAddress?.hostAddress == client.localAddress?.hostAddress
+            if (!isLocalProbe) tcpAcceptCount++
             log("$TAG T11: TCP accepted from ${client.inetAddress?.hostAddress ?: "?"}:${client.port} to localPort=${client.localPort}")
             Bg.run("ctrl-client") { handleClient(client) }
         }
@@ -340,7 +341,7 @@ class CarPlayCtrlAdvertiser(
                 log("$TAG: $peer 连入但无请求（EOF）")
                 return
             }
-            httpRequestCount++
+            if (peer != client.localAddress?.hostAddress) httpRequestCount++
             val requestLine = head.lineSequence().firstOrNull() ?: ""
             val headers =
                 head
