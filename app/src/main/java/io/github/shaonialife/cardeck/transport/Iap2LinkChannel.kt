@@ -68,6 +68,9 @@ class Iap2LinkChannel(
             lock.notifyAll()
             log("LINK T20-B ACK: peerAck=$ack pendingBefore=[$before] pendingAfter=[$after]")
         }
+        engine.onLinkAckDiagnostic = { detail ->
+            log("LINK T36 ACK-DIAG: $detail")
+        }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
             rxFramesTotal++
             // 真车调试关键观测：车机在识别阶段是否回帧、回什么（静默分歧全靠它定位）
