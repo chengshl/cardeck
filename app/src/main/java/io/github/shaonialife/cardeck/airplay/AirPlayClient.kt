@@ -479,8 +479,8 @@ class AirPlayClient(
     // Car -> phone commands arrive as RTSP requests on the reverse Events socket.
     // Phone -> car commands MUST travel on the existing encrypted RTSP control
     // connection (:7000), where the receiver handles POST /command. Sending
-    // requests on Events (:5001) instead was silently ignored by the receiver's
-    // response-only EventsClient and left virtual iAP2 stuck in DETECT for 30s.
+    // requests on Events (:5001) instead was silently ignored by CatPlay's
+    // response-only EventsClient; Buick exhibited a 30s DETECT watchdog.
     // The Events socket below is retained for inbound requests and 200 responses.
 
     @Volatile
@@ -1175,7 +1175,7 @@ class AirPlayClient(
                         engine.advanceTime(System.nanoTime() / 1_000_000L)
                         drainLocked()
                     }
-                 }
+                }
             }, "iap-link-pacer").apply {
                 isDaemon = true
                 start()
@@ -1210,8 +1210,8 @@ class AirPlayClient(
                     sendLinkBytes(Iap2LinkEngine.MARKER)
                 }
                 engine.feed(bytes, System.nanoTime() / 1_000_000L)
-                // T38 one-shot SYN was emitted successfully but ignored by Buick B233;
-                // revert to passive mode for T39 and measure /command responses instead.
+                // T38 one-shot SYN was ignored; T40 fixes the outbound command socket.
+                // Keep DETECT handshake passive and wait for real peer SYN.
                 if (detectReplies == 3 && isBuickE5Receiver() && iapTunnel == null) {
                     log("IAPLINK T40: Buick B233 DETECT #3; replies now travel over CONTROL RTSP, awaiting peer SYN")
                 }
@@ -1908,8 +1908,8 @@ class AirPlayClient(
                         var eventOtherLogged = 0
                         for (message in accumulator.offer(plain)) {
                             val firstLine = message.firstLine
-                            // (a) 状态行（"RTSP/1.0 200 OK" 等）= 车机对**我们命令**的应答：
-                            //     静默跳过——不回、不记录（回应答会触发乒乓回声，见 respondEventRequest）
+                            // (a) 反向 Events 通道的正常入向消息是车机请求。
+                            //     意外收到状态行时只诊断、不回包，避免回应答导致回声。
                             if (firstLine.startsWith("RTSP/") || firstLine.startsWith("HTTP/")) {
                                 unexpectedEventResponseCount++
                                 if (unexpectedEventResponseCount <= 3) {
