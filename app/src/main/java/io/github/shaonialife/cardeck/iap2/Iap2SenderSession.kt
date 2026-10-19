@@ -155,7 +155,15 @@ class Iap2SenderSession(
         //    32B→20B 的会话全部卡死，20B→（记忆命中）的会话全部秒通。
         //  - 测试台 DiPlay（Carlinkit AuthV3 EC 身份）：**只接受精确 32B**，长度不符直接断链。
         // 全部无应答也不中止——我们不校验签名（0xAA05 自报），由 0x5702 是否应答判定放行。
-        runMfiChallenge(deadline, prefer20First = legacyCar)
+        // T41: Buick B233 successfully answered a 32B MFi challenge during its
+        // FIRST connection. Once the receiver later refuses the same challenge,
+        // it is an unhealthy/stale car session, not proof that 32B is unsupported.
+        // Do not poison the global rejected-length cache or try 20B/16B fallbacks:
+        // those fallbacks were followed by further RFCOMM resets and pairing churn.
+        val buickB233 = identityText.contains("buick") &&
+            identityText.contains("saic general motors") &&
+            identityText.contains("b233")
+        runMfiChallenge(deadline, prefer20First = legacyCar, buickStrict = buickB233)
         send(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
         log("iap2 tx=0xaa05 authentication-succeeded（自报；未验证车机证书/挑战签名，不能视为密码学认证通过）")
 
@@ -464,14 +472,16 @@ class Iap2SenderSession(
     private fun runMfiChallenge(
         deadline: Long,
         prefer20First: Boolean = false,
+        buickStrict: Boolean = false,
     ) {
         val ordered =
-            if (prefer20First) {
-                listOf(MFI_ATTEMPTS[1], MFI_ATTEMPTS[0], MFI_ATTEMPTS[2])
-            } else {
-                MFI_ATTEMPTS
+            when {
+                buickStrict -> listOf(MFI_ATTEMPTS[0]) // 32B proven on first Buick B233 connection
+                prefer20First -> listOf(MFI_ATTEMPTS[1], MFI_ATTEMPTS[0], MFI_ATTEMPTS[2])
+                else -> MFI_ATTEMPTS
             }
-        var attempts = ordered.filter { it.first !in mfiRejectedLengths }
+        var attempts = if (buickStrict) ordered else ordered.filter { it.first !in mfiRejectedLengths }
+        if (buickStrict) log("iap2 Buick T41: 仅发一次已验证32B MFi challenge；拒绝时中止本轮，禁止20B/16B碰撞")
         if (attempts.isEmpty()) {
             // 所有档位都被拒过：清空重来，避免永久卡死
             mfiRejectedLengths = emptySet()
@@ -496,6 +506,9 @@ class Iap2SenderSession(
                 val frame = recvFrame(remaining)
                 if (frame == null) {
                     if (!channel.isAlive) {
+                        if (buickStrict) {
+                            throw IOException("Buick T41: MFi 32B challenge 后链路断开；不回退长度，不发送虚假0xaa05")
+                        }
                         log("iap2 MFi 挑战期间链路断开（${size}B，对端不接受该长度）——记入本进程被拒档位")
                         mfiRejectedLengths = mfiRejectedLengths + size
                         return
@@ -522,6 +535,9 @@ class Iap2SenderSession(
                 if (gotResponse || gotFailure) break
             }
             if (gotResponse) return
+            if (buickStrict) {
+                throw IOException("Buick T41: MFi 32B challenge 无有效响应；停止此轮，等待车机恢复（不盲发0xaa05）")
+            }
             if (position < attempts.size - 1) {
                 log("iap2 MFi ${size}B 无应答，改用 ${attempts[position + 1].first}B 重试")
             } else {
