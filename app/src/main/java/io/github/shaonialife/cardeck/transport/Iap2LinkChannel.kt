@@ -45,6 +45,9 @@ class Iap2LinkChannel(
         engine.onUnknownSessionData = { sessionId, size ->
             log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
         }
+        engine.onAcknowledgementProgress = { ack, before, after ->
+            log("LINK T20-B ACK: peerAck=$ack pendingBefore=[$before] pendingAfter=[$after]")
+        }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
             // 真车调试关键观测：车机在识别阶段是否回帧、回什么（静默分歧全靠它定位）
             if (rxFrameLogs < FRAME_LOG_LIMIT) {
