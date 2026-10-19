@@ -23,12 +23,18 @@ import io.github.shaonialife.cardeck.launcher.settings.SupersamplePanelFragment
 class SettingsActivity :
     AppCompatActivity(),
     SettingsToastHost {
+    @Volatile private var sessionFinishSignal: java.util.concurrent.CountDownLatch? = null
     private var toastView: TextView? = null
     private val menus = mutableListOf<LinearLayout>()
     private var currentMenu = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeSessionActivity = java.lang.ref.WeakReference(this)
+        if (!VirtualLauncher.sessionAttached) {
+            finish()
+            return
+        }
         if (VirtualLauncher.dockAtBottom) {
             // 竖屏窄屏：双栏挤压——转发手机侧二级菜单（列表 → 内容页）
             startActivity(
@@ -121,6 +127,22 @@ class SettingsActivity :
         finish()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!VirtualLauncher.sessionAttached ||
+            display?.displayId == android.view.Display.DEFAULT_DISPLAY
+        ) {
+            finish()
+        }
+    }
+
+    override fun onDestroy() {
+        if (activeSessionActivity?.get() === this) activeSessionActivity = null
+        sessionFinishSignal?.countDown()
+        sessionFinishSignal = null
+        super.onDestroy()
+    }
+
     override fun onBackPressed() = close()
 
     /** 页内轻提示（不用系统 Toast：虚拟屏上显示位置不可控）。 */
@@ -142,5 +164,21 @@ class SettingsActivity :
                         .start()
                 }, 1_250)
             }.start()
+    }
+
+    companion object {
+        @Volatile
+        private var activeSessionActivity: java.lang.ref.WeakReference<SettingsActivity>? = null
+
+        internal fun finishForSessionEnd(): java.util.concurrent.CountDownLatch? {
+            val activity = activeSessionActivity?.get() ?: return null
+            val signal = java.util.concurrent.CountDownLatch(1)
+            activity.sessionFinishSignal = signal
+            activity.runOnUiThread {
+                if (activity.isDestroyed) signal.countDown()
+                else if (!activity.isFinishing) activity.finish()
+            }
+            return signal
+        }
     }
 }
