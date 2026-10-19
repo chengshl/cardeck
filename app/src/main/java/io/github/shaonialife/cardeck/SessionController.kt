@@ -396,9 +396,16 @@ object SessionController {
     }
 
     /** 会话结束/新周期开始前彻底退役上一代会话（旧管线泄漏会累积编码器/虚拟显示器，最终 dequeueBuffer -19）。 */
+    @Synchronized
     fun retireSession() {
-        videoSender?.stop()
+        // T38: invalidate ownership first. Stopping video can asynchronously call onEnded;
+        // that callback must not mistake a deliberately retired sender for the current one.
+        val retiredVideo = videoSender
         videoSender = null
+        val retiredClient = currentClient
+        currentClient = null
+        retiredClient?.cancelled = true
+        retiredVideo?.stop()
         audioSender?.stop()
         audioSender = null
         currentSharedSecret = null
@@ -407,9 +414,7 @@ object SessionController {
         currentHiddenSource = null
         TouchRouter
             .reset()
-        currentClient?.cancelled = true
-        currentClient?.close()
-        currentClient = null
+        retiredClient?.close()
         // 注意：这里绝不能 detach BT 控制会话。本方法在每轮配对起步时也会执行，
         // 而 DiPlay 在 WiFi 隧道就绪前看到 RFCOMM 断开即判 bring-up failed、
         // closeWirelessStack 拆掉整轮无线栈（Bonjour/热点/AirPlay 服务），把已建立
