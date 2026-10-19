@@ -207,10 +207,12 @@ class Iap2SenderSession(
                     Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
                     Iap2Csm.u8(2, 0),
             )
-            // T21 diagnostic experiment: omit optional device UUID update before 0x4300.
-            // Keep other device updates and the 0x4300 payload unchanged.
-            log("iap2 Buick/GM T21: optional device UUID update omitted for ACK isolation test")
-            log("iap2 Buick/GM T10: 已发送 0x4e0a/0x4e09/0x4e0b；接着发送 0x4300")
+            // T22 controlled comparison: restore only the receiver-advertised
+            // 0x4E0C device UUID update. T21 omitted this and reached ACK 108;
+            // an earlier variant stalled at ACK 107, so log the regression clearly.
+            send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
+            log("iap2 Buick/GM T22: restored 0x4e0c device UUID update; compare peer ACK and 0x4301 against T21")
+            log("iap2 Buick/GM T22: 已发送 0x4e0a/0x4e09/0x4e0b/0x4e0c；接着发送 0x4300")
             // T17: iPhone HCI 实录 0x4300 包含两个外层 group，总帧长 75B。
             // group(0): u8(0,1) + string(1, 24 位设备标识)
             // group(1): u8(0,1) + string(1, 本机蓝牙 MAC)
