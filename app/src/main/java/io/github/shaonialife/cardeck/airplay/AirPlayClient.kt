@@ -419,6 +419,8 @@ class AirPlayClient(
         runCatching { socket?.close() }
         socket = null
         synchronized(eventCommandLock) {
+            log("EVENT T39: session summary acked=$eventReplies unanswered=$eventReplyTimeouts unmatched=$eventUnmatchedReplies pending=${pendingEventCommands.size}")
+            pendingEventCommands.clear()
             runCatching { eventCommandSocket?.close() }
             eventCommandSocket = null
             eventCommandCipher = null
@@ -488,6 +490,55 @@ class AirPlayClient(
     private val eventCommandLock = Any()
     private var eventCseq = 0
 
+    // T39: socket.write success != accessory acceptance. Track outbound event RTSP
+    // replies by CSeq so repeated DETECT can be distinguished from rejected commands.
+    private data class PendingEventCommand(val type: String, val sentAt: Long)
+    private val pendingEventCommands = LinkedHashMap<Int, PendingEventCommand>()
+    private var eventReplies = 0
+    private var eventUnmatchedReplies = 0
+    private var eventReplyTimeouts = 0
+
+    private fun onEventRtspResponse(firstLine: String, head: String) {
+        val cseq = CSEQ_REGEX.find(head)?.groupValues?.get(1)?.toIntOrNull()
+        val sent = synchronized(eventCommandLock) {
+            cseq?.let { pendingEventCommands.remove(it) }
+        }
+        if (sent == null) {
+            eventUnmatchedReplies++
+            if (eventUnmatchedReplies <= 8) {
+                log("EVENT T39: RTSP response without matching outbound CSeq=${cseq ?: "missing"} status=$firstLine")
+            }
+            return
+        }
+        eventReplies++
+        val elapsed = SystemClock.uptimeMillis() - sent.sentAt
+        val successful = firstLine.startsWith("RTSP/1.0 200") || firstLine.startsWith("HTTP/1.1 200")
+        if (!successful || eventReplies <= 12 || (sent.type == "iAPSendMessage" && eventReplies % 10 == 0)) {
+            log("EVENT T39: outbound response CSeq=$cseq type=${sent.type} status=$firstLine elapsed=${elapsed}ms (HTTP acceptance only)")
+        }
+    }
+
+    private fun auditMissingEventReplies() {
+        val now = SystemClock.uptimeMillis()
+        val overdue = ArrayList<Pair<Int, PendingEventCommand>>()
+        synchronized(eventCommandLock) {
+            val iterator = pendingEventCommands.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (now - entry.value.sentAt >= 3_000L) {
+                    overdue += entry.key to entry.value
+                    iterator.remove()
+                }
+            }
+        }
+        overdue.forEach { (cseq, command) ->
+            eventReplyTimeouts++
+            if (eventReplyTimeouts <= 8 || eventReplyTimeouts % 10 == 0) {
+                log("EVENT T39: NO RTSP RESPONSE CSeq=$cseq type=${command.type} elapsed=${now - command.sentAt}ms")
+            }
+        }
+    }
+
     /** 未知请求（非 /command 的合法请求）累计数：前 10 条留痕后静默。 */
     @Volatile
     private var unknownEventRequests = 0
@@ -501,6 +552,10 @@ class AirPlayClient(
             if (eventCommandSocket !== socket) runCatching { eventCommandSocket?.close() }
             eventCommandSocket = socket
             eventCommandCipher = cipher
+            pendingEventCommands.clear()
+            eventReplies = 0
+            eventUnmatchedReplies = 0
+            eventReplyTimeouts = 0
         }
     }
 
@@ -511,6 +566,8 @@ class AirPlayClient(
         return try {
             synchronized(eventCommandLock) {
                 eventCseq++
+                val type = command["type"]?.toString() ?: "unknown"
+                pendingEventCommands[eventCseq] = PendingEventCommand(type, SystemClock.uptimeMillis())
                 val body = BinaryPlist.encode(command)
                 val head =
                     "POST /command RTSP/1.0\r\n" +
@@ -1018,6 +1075,7 @@ class AirPlayClient(
         val dataPort = ((stream?.get("dataPort") as? Long) ?: 0L).toInt() and 0xFFFF
         if (dataPort == 0) {
             log("TUNNEL: SETUP 应答无 dataPort（streams=$streams）")
+            log("TUNNEL T39: SETUP reply keys=${root.keys}, streamsClass=${root["streams"]?.javaClass?.simpleName ?: "null"}, iAPChannel enabled in initial response=not reported")
             return null
         }
         val key =
@@ -1152,6 +1210,7 @@ class AirPlayClient(
                         engine.advanceTime(System.nanoTime() / 1_000_000L)
                         drainLocked()
                     }
+                    auditMissingEventReplies()
                 }
             }, "iap-link-pacer").apply {
                 isDaemon = true
@@ -1186,13 +1245,10 @@ class AirPlayClient(
                     sendLinkBytes(Iap2LinkEngine.MARKER)
                 }
                 engine.feed(bytes, System.nanoTime() / 1_000_000L)
-                // Buick B233 sends DETECT every second until its ~30s reset. T38 offers
-                // a SINGLE SYN after 3 unanswered detects; no 500ms SYN resend flood.
-                // For Audi and other receivers the existing passive path is unchanged.
-                if (detectReplies == 3 && isBuickE5Receiver() && iapTunnel == null &&
-                    engine.offerSynchronizationOnce()
-                ) {
-                    log("IAPLINK T38: Buick B233 DETECT #3 -> one-shot SYN probe (no retries)")
+                // T38 one-shot SYN was emitted successfully but ignored by Buick B233;
+                // revert to passive mode for T39 and measure /command responses instead.
+                if (detectReplies == 3 && isBuickE5Receiver() && iapTunnel == null) {
+                    log("IAPLINK T39: Buick B233 DETECT repeated; T38 SYN ineffective, observing outbound event ACKs")
                 }
                 drainLocked()
             }
@@ -1889,7 +1945,10 @@ class AirPlayClient(
                             val firstLine = message.firstLine
                             // (a) 状态行（"RTSP/1.0 200 OK" 等）= 车机对**我们命令**的应答：
                             //     静默跳过——不回、不记录（回应答会触发乒乓回声，见 respondEventRequest）
-                            if (firstLine.startsWith("RTSP/") || firstLine.startsWith("HTTP/")) continue
+                            if (firstLine.startsWith("RTSP/") || firstLine.startsWith("HTTP/")) {
+                                onEventRtspResponse(firstLine, message.head)
+                                continue
+                            }
                             // (b) 请求判定：方法 token + "/"-开头路径。畸形行（如 "OK 200 OK"：
                             //     第 2 token 是数字）判为非请求 → 静默丢弃，不回不记
                             val tokens = firstLine.split(" ")
