@@ -30,6 +30,8 @@ class Iap2SenderSession(
      * **邀请被接受后才发 0x4301**；若等到 0x4301 之后才广播则双方互等死锁。
      */
     private val onWifiCredentials: ((WifiConfiguration) -> Unit)? = null,
+    private val onEndpointUpdate: ((CarPlayEndpoint) -> Unit)? = null,
+    private val appContext: android.content.Context? = null,
 ) {
     /** 从 0x5703 + 0x4301 解析出的接收端信息。 */
     data class CarPlayEndpoint(
