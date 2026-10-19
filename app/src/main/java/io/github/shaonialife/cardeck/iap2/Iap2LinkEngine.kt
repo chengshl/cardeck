@@ -153,6 +153,9 @@ class Iap2LinkEngine(
     /** 诊断：每个出向链路帧的摘要（仅链路层帧，用于对照真车协商时序）。 */
     var onFrameSent: ((control: Int, sequence: Int, ack: Int, sessionId: Int, size: Int) -> Unit)? = null
 
+    /** T20-B: ACK 推进与待重传序号快照，不包含控制消息内容。 */
+    var onAcknowledgementProgress: ((ack: Int, pendingBefore: String, pendingAfter: String) -> Unit)? = null
+
     private var unknownSessionDropped = 0
 
     private val unacknowledged = ArrayList<Packet>()
@@ -436,10 +439,15 @@ class Iap2LinkEngine(
         nowMillis: Long,
     ) {
         completeNegotiationIfPending(nowMillis)
+        val before = unacknowledged.joinToString(",") { it.sequence.toString() }
         lastSentAcknowledged = acknowledgement
         val window = (peerSynchronization?.maxOutgoing ?: maxOutgoing) + ACK_SLACK
         unacknowledged.removeAll { sequenceDistance(it.sequence, acknowledgement) !in 1..window }
         retransmitDeadline = unacknowledged.minOfOrNull { it.deadlineMillis }
+        val after = unacknowledged.joinToString(",") { it.sequence.toString() }
+        if (before.isNotEmpty() || after.isNotEmpty()) {
+            onAcknowledgementProgress?.invoke(acknowledgement, before, after)
+        }
         drainSendWindow(nowMillis)
     }
 
