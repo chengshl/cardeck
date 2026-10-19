@@ -33,6 +33,21 @@ class Iap2LinkChannel(
     private var rxFrameLogs = 0
     private var txFrameLogs = 0
 
+    /** T29: counters are never limited by RAW/LINK logging budgets. */
+    private var rxBytesTotal = 0L
+    private var rxReadCalls = 0L
+    private var rxFramesTotal = 0L
+    private var rxControlsDelivered = 0L
+    private var rxUnknownSessions = 0L
+    private var rxFrameLogsSuppressed = 0L
+
+    /** Snapshot only; no raw payload, credentials, or device identifiers. */
+    fun rxDiagnostics(): String = synchronized(lock) {
+        "bytes=$rxBytesTotal reads=$rxReadCalls frames=$rxFramesTotal " +
+            "controls=$rxControlsDelivered unknownSessions=$rxUnknownSessions " +
+            "frameLogsSuppressed=$rxFrameLogsSuppressed rawBudgetRemaining=$rxDumpBudget"
+    }
+
     val isAlive: Boolean get() = !terminated
 
     init {
@@ -43,12 +58,14 @@ class Iap2LinkChannel(
             )
         }
         engine.onUnknownSessionData = { sessionId, size ->
+            rxUnknownSessions++
             log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
         }
         engine.onAcknowledgementProgress = { ack, before, after ->
             log("LINK T20-B ACK: peerAck=$ack pendingBefore=[$before] pendingAfter=[$after]")
         }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
+            rxFramesTotal++
             // 真车调试关键观测：车机在识别阶段是否回帧、回什么（静默分歧全靠它定位）
             if (rxFrameLogs < FRAME_LOG_LIMIT) {
                 rxFrameLogs++
@@ -56,6 +73,8 @@ class Iap2LinkChannel(
                     "LINK rx: ctl=0x${"%02x".format(control)} seq=$sequence ack=$ack " +
                         "session=$sessionId len=$size",
                 )
+            } else {
+                rxFrameLogsSuppressed++
             }
         }
         engine.onFrameSent = { control, sequence, ack, sessionId, size ->
@@ -134,6 +153,8 @@ class Iap2LinkChannel(
                 if (count == 0) continue
                 synchronized(lock) {
                     if (terminated) return
+                    rxBytesTotal += count.toLong()
+                    rxReadCalls++
                     dumpInbound(buffer.copyOf(count))
                     engine.feed(buffer.copyOf(count), nowMillis())
                     processEventsLocked()
@@ -191,6 +212,7 @@ class Iap2LinkChannel(
         while (true) {
             when (val event = engine.pollEvent() ?: return) {
                 is Iap2LinkEngine.Event.Control -> {
+                    rxControlsDelivered++
                     if (!controls.offer(event.bytes)) {
                         engine.feedEof()
                         return
@@ -238,6 +260,7 @@ class Iap2LinkChannel(
 
     private fun finishLocked(failure: IOException?) {
         if (terminated) return
+        log("LINK T29 RX SUMMARY: ${rxDiagnostics()}")
         terminated = true
         controls.offer(POISON) // 哨兵：唤醒阻塞的接收方（LBQ 不接受 null）
         readyLatch.countDown()
