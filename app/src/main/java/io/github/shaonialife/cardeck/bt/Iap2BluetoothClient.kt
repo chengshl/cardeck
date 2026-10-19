@@ -277,6 +277,13 @@ class Iap2BluetoothClient(
             channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")
+            // T25: a Buick diagnostic timeout is not a transient RF failure.
+            // Avoid immediately dropping HFP/A2DP and restarting the car pairing flow.
+            if (error.message?.startsWith("Buick T24 诊断结束") == true ||
+                error.message?.startsWith("Buick T25 诊断结束") == true) {
+                running = false
+                log("BT-C T25: Buick 90s 诊断结束，停止自动重连；请手动点击启动连接进行下一轮测试")
+            }
         } finally {
             activeChannel = null
             currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
