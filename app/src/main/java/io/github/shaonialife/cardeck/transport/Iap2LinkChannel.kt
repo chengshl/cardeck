@@ -20,6 +20,8 @@ class Iap2LinkChannel(
     private val lock = Object()
     private val controls = LinkedBlockingQueue<ByteArray?>()
     private val readyLatch = CountDownLatch(1)
+    /** Latest cumulative peer ACK; updated on reader thread under lock. */
+    private var latestPeerAck: Int? = null
 
     @Volatile
     private var terminated = false
@@ -62,6 +64,8 @@ class Iap2LinkChannel(
             log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
         }
         engine.onAcknowledgementProgress = { ack, before, after ->
+            latestPeerAck = ack
+            lock.notifyAll()
             log("LINK T20-B ACK: peerAck=$ack pendingBefore=[$before] pendingAfter=[$after]")
         }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
@@ -116,6 +120,25 @@ class Iap2LinkChannel(
             drainOutputLocked()
             return accepted
         }
+    }
+
+    /** T34: wait for a specific cumulative ACK, not merely sendControl() enqueue success. */
+    fun awaitPeerAck(sequence: Int, timeoutMillis: Long): Boolean {
+        val deadline = System.nanoTime() + timeoutMillis * 1_000_000L
+        synchronized(lock) {
+            while (!terminated) {
+                if (latestPeerAck == sequence) return true
+                val remaining = (deadline - System.nanoTime()) / 1_000_000L
+                if (remaining <= 0) return false
+                try {
+                    lock.wait(remaining.coerceAtLeast(1L))
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+            }
+        }
+        return false
     }
 
     /** 取下一个控制载荷；超时或链路结束返回 null。 */
