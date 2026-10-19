@@ -30,6 +30,9 @@ import io.github.shaonialife.cardeck.util.Bg
  * 用户可在设置页勾选要显示的应用，返回桌面（onResume）即时刷新。
  */
 class GridActivity : AppCompatActivity() {
+    /** T41: finish the car-only task before its trusted display disappears. */
+    @Volatile private var sessionFinishSignal: java.util.concurrent.CountDownLatch? = null
+
     /** 桌面格子：仪表盘页（第 0 页）/ 固定设置入口 / 普通应用。 */
     private sealed interface Cell {
         object Dashboard : Cell
@@ -312,6 +315,12 @@ class GridActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeSessionActivity = java.lang.ref.WeakReference(this)
+        if (!VirtualLauncher.sessionAttached) {
+            // A stale shell am-start queued before detach must never show on the phone.
+            finish()
+            return
+        }
         setContentView(R.layout.activity_grid)
 
         // 格子尺寸/行数按屏幕动态计算（布局关系在 XML，尺寸测量在代码）
@@ -383,6 +392,7 @@ class GridActivity : AppCompatActivity() {
         pager?.registerOnPageChangeCallback(
             object : ViewPager2.OnPageChangeCallback() {
                 override fun onPageSelected(position: Int) {
+                    if (!VirtualLauncher.sessionAttached || isFinishing || isDestroyed) return
                     updateDots(position)
                     // 用户滑动切换仪表盘/桌面：回写 launcher（含地图任务与 tile 布局）
                     if (position == 0 && !VirtualLauncher.dashboardMode) VirtualLauncher.showDashboard()
@@ -403,6 +413,7 @@ class GridActivity : AppCompatActivity() {
                 }
 
                 override fun onPageScrollStateChanged(state: Int) {
+                    if (!VirtualLauncher.sessionAttached || isFinishing || isDestroyed) return
                     if (state == androidx.viewpager2.widget.ViewPager2.SCROLL_STATE_IDLE) {
                         VirtualLauncher.setTileSlide(0f)
                         // 落定对账：仪表盘模式与所在页一致（含异常中断的对账恢复）
@@ -719,6 +730,9 @@ class GridActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (activeSessionActivity?.get() === this) activeSessionActivity = null
+        sessionFinishSignal?.countDown()
+        sessionFinishSignal = null
         tickHandler.removeCallbacks(mediaTick)
         WallpaperStore
             .removeListener(wallpaperListener)
@@ -734,16 +748,31 @@ class GridActivity : AppCompatActivity() {
 
     override fun onBackPressed() = Unit // 桌面不退出
 
-    private companion object {
-        const val COLUMNS = 4 // CarPlay 规格：强制 4 列
+    companion object {
+        @Volatile
+        private var activeSessionActivity: java.lang.ref.WeakReference<GridActivity>? = null
+
+        /** Only the GridActivity of this CarPlay session is finished; MainActivity stays alive. */
+        internal fun finishForSessionEnd(): java.util.concurrent.CountDownLatch? {
+            val activity = activeSessionActivity?.get() ?: return null
+            val signal = java.util.concurrent.CountDownLatch(1)
+            activity.sessionFinishSignal = signal
+            activity.runOnUiThread {
+                if (activity.isDestroyed) signal.countDown()
+                else if (!activity.isFinishing) activity.finish()
+            }
+            return signal
+        }
+
+        private const val COLUMNS = 4 // CarPlay 规格：强制 4 列
 
         /** 横屏 CarPlay 规格行数（竖屏自适应时用作下限）。 */
-        const val ROWS_MIN = 3
+        private const val ROWS_MIN = 3
 
         /** 竖屏自适应行数上限（对齐 iPhone 竖屏主屏 4×6 的观感）。 */
-        const val ROWS_MAX = 6
+        private const val ROWS_MAX = 6
 
         /** 格子目标高宽比（高/宽）：竖屏加行的收敛目标。 */
-        const val CELL_HEIGHT_RATIO = 1.25f
+        private const val CELL_HEIGHT_RATIO = 1.25f
     }
 }
