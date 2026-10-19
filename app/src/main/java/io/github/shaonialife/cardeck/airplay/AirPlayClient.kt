@@ -1855,11 +1855,11 @@ class AirPlayClient(
                 }
             registerEventCommandChannel(socket, cipher)
             Thread({
-                val input = socket.getInputStream()
                 val accumulator = RtspAccumulator()
                 var pending = ByteArray(0)
                 val buffer = ByteArray(8192)
                 try {
+                    val input = socket.getInputStream()
                     while (true) {
                         val count =
                             try {
