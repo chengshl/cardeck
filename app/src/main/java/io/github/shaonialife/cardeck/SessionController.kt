@@ -982,6 +982,10 @@ object SessionController {
                 "密码=${if (endpoint.passphrase.isEmpty()) "(空)" else "已获取"}",
         )
         phaseHint = "蓝牙已连上车机，解析热点地址…"
+        if (source.contains("主动连车机")) {
+            val currentSsid = shellWifiStatus().second
+            appendLog(">>> [Buick T19] 0x4301 SSID=${endpoint.ssid} 当前WiFi=$currentSsid port=${endpoint.airPlayPort} ips=${endpoint.ipAddresses}；优先复用已连接热点")
+        }
         ssidSink?.invoke(endpoint.ssid)
         // 先绑网络再解析端点：mDNS 组播跟随 bindProcessToNetwork 的网络，解析放前面
         // 只会拿到旧网络的结果（此前靠 resolveEndpointHost 内部重试掩盖，白等数秒）。
@@ -1021,6 +1025,9 @@ object SessionController {
                     // 端点解析放在邀请之后：车机的 `_airplay._tcp` 常在受邀后才上线，
                     // 且这一步最长 3s——必须在后台线程做，不能占住网络回调线程。
                     val effectiveEndpoint = resolveEndpointHost(endpoint, source)
+                    if (source.contains("主动连车机")) {
+                        appendLog(">>> [Buick T19] AirPlay 目标 port=${effectiveEndpoint.airPlayPort} ips=${effectiveEndpoint.ipAddresses}；准备尝试 TCP/RTSP 配对（网络绑定=${wifiConnector?.currentNetwork != null}）")
+                    }
                     if (connectCancelled) {
                         appendLog("AIRPLAY: 用户已取消——中止配对")
                         sessionStarting.set(false)
@@ -1048,7 +1055,7 @@ object SessionController {
                         sessionStarting.set(false)
                         return@run
                     }
-                    if (keys == null && !client.pairSetupRejected && client.attemptedPairing) {
+                    if (keys == null && !client.pairSetupRejected && client.attemptedPairing && !source.contains("主动连车机")) {
                         // 第二阶段（仅测试台 DiPlay）：复现「BT 控制已结束」状态再试一次。
                         // 真车（Audi）绝不能断 BT——真无线 CarPlay 的 BT 控制通道全程保活，
                         // 断开会让车机拆掉整轮 AirPlay 窗口（实车实测）。
