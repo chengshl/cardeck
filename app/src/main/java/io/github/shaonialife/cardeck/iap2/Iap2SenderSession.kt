@@ -185,14 +185,14 @@ class Iap2SenderSession(
                 log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 mac=$mac")
                 throw IOException("Buick T10: 无有效蓝牙 MAC，避免占位地址污染配对")
             }
-            log("iap2 Buick/GM T10: 使用真实蓝牙 MAC=$mac，跳过可选 0x6800 等待")
-        } else {
-            awaitOptionalHid(deadline)
+            log("iap2 Buick/GM T15: 使用真实蓝牙 MAC=$mac；恢复最多 2 秒监听 0x6800 StartHID")
         }
         if (isBuickE5) {
-            // T4: ACK stopped at seq=108; seq=109 (0x4E0C) was retransmitted.
-            // T5 isolation: send only the three messages advertised by this receiver.
-            // Deliberately omit 0x4E0D (not advertised) and 0x4E0C (T4 stall).
+            log("iap2 Buick/GM T15: 开始监听 0x6800（如收到则回应 0x6801；超时继续）")
+        }
+        awaitOptionalHid(deadline)
+        if (isBuickE5) {
+            // T15: preserve T14 device update and availability messages; only restore optional HID wait.
             log("iap2 Buick/GM T14: 单变量实验：不发送 0x4e0d，恢复车机声明支持的 0x4e0c")
             send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
             send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
