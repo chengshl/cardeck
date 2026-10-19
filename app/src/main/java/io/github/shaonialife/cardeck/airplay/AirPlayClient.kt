@@ -50,6 +50,10 @@ class AirPlayClient(
     private var socket: Socket? = null
     private var cSeq = 0
 
+    /** T38: invalidates heartbeat tasks when a client is closed/reconnected. */
+    @Volatile
+    private var backgroundGeneration = 0
+
     /**
      * 最近一次成功连上接收端时使用的地址（字符串形式，IPv6 链路本地地址带 `%<iface>`）。
      *
@@ -313,6 +317,7 @@ class AirPlayClient(
         port: Int,
     ) {
         if (port <= 0) return
+        val generation = backgroundGeneration
         Thread({
             var udp: java.net.DatagramSocket? = null
             try {
@@ -320,7 +325,7 @@ class AirPlayClient(
                 val address = java.net.InetAddress.getByName(host)
                 var sent = 0
                 var lastSentAt = 0L
-                while (isSessionAlive() && udp?.isClosed == false) {
+                while (generation == backgroundGeneration && isSessionAlive() && udp?.isClosed == false) {
                     val now = SystemClock.uptimeMillis()
                     val gap = if (lastSentAt == 0L) 0L else now - lastSentAt
                     lastSentAt = now
@@ -349,9 +354,10 @@ class AirPlayClient(
      * /feedback——接收端的活动看门狗。RTSP 事务由 [rtspLock] 串行化。
      */
     fun startFeedbackLoop() {
+        val generation = backgroundGeneration
         Thread({
             var sent = 0
-            while (isSessionAlive()) {
+            while (generation == backgroundGeneration && isSessionAlive()) {
                 try {
                     val (status, body) = request("POST", "/feedback", ByteArray(0))
                     sent++
@@ -407,8 +413,18 @@ class AirPlayClient(
     private fun isSessionAlive(): Boolean = socket?.isClosed == false
 
     fun close() {
+        // T38: stop all transports of THIS session, not only RTSP. The old version left
+        // event TCP + NTP timing UDP alive after the video stream had already ended.
+        backgroundGeneration++
         runCatching { socket?.close() }
         socket = null
+        synchronized(eventCommandLock) {
+            runCatching { eventCommandSocket?.close() }
+            eventCommandSocket = null
+            eventCommandCipher = null
+        }
+        iapLink = null
+        timingServer.stop()
         activeHost = null
         activeAddress = null
         // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
@@ -481,8 +497,11 @@ class AirPlayClient(
         socket: Socket,
         cipher: ControlCipher?,
     ) {
-        eventCommandSocket = socket
-        eventCommandCipher = cipher
+        synchronized(eventCommandLock) {
+            if (eventCommandSocket !== socket) runCatching { eventCommandSocket?.close() }
+            eventCommandSocket = socket
+            eventCommandCipher = cipher
+        }
     }
 
     /** 在事件通道上发 POST /command（通道加密时加密）。通道未就绪时返回 false。 */
@@ -1082,6 +1101,13 @@ class AirPlayClient(
         link.onCarBytes(data)
     }
 
+    /** T38 is deliberately scoped to the verified Buick E5 receiver, never Audi/DiPlay. */
+    private fun isBuickE5Receiver(): Boolean {
+        val info = negotiatedInfo ?: return false
+        return info["model"]?.toString() == "B233" &&
+            info["manufacturer"]?.toString()?.contains("Saic General Motors", ignoreCase = true) == true
+    }
+
     inner class IapLinkOverEvent {
         private val lock = Any()
         private val engine = Iap2LinkEngine()
@@ -1092,6 +1118,7 @@ class AirPlayClient(
         private var eaCount = 0
         private var started = false
         private var detectReplies = 0
+        private var linkFrameLogs = 0
 
         /** 隧道发送端 CSM 握手进度（仅在隧道存在时推进；Audi 事件通道形态不参与）。 */
         private var tunnelCsmStarted = false
@@ -1104,6 +1131,15 @@ class AirPlayClient(
         init {
             engine.onEaData = { bytes -> handleEaData(bytes) }
             engine.onSynchronizationEchoSent = { pendingEchoFlush = true }
+            engine.onFrameReceived = { control, seq, ack, sessionId, size ->
+                linkFrameLogs++
+                if (linkFrameLogs <= 20) {
+                    log("IAPLINK T38: rx control=0x${control.toString(16)} seq=$seq ack=$ack session=$sessionId payload=$size state=${engine.state}")
+                }
+            }
+            engine.onPeerSynchronizationAdopted = { sync ->
+                log("IAPLINK T38: peer SYN adopted, sessions=${sync.sessions} state=${engine.state}")
+            }
             // 节拍线程：驱动引擎计时器（重传等）
             Thread({
                 while (socket?.isClosed == false) {
@@ -1150,6 +1186,14 @@ class AirPlayClient(
                     sendLinkBytes(Iap2LinkEngine.MARKER)
                 }
                 engine.feed(bytes, System.nanoTime() / 1_000_000L)
+                // Buick B233 sends DETECT every second until its ~30s reset. T38 offers
+                // a SINGLE SYN after 3 unanswered detects; no 500ms SYN resend flood.
+                // For Audi and other receivers the existing passive path is unchanged.
+                if (detectReplies == 3 && isBuickE5Receiver() && iapTunnel == null &&
+                    engine.offerSynchronizationOnce()
+                ) {
+                    log("IAPLINK T38: Buick B233 DETECT #3 -> one-shot SYN probe (no retries)")
+                }
                 drainLocked()
             }
         }
@@ -1880,6 +1924,15 @@ class AirPlayClient(
                     }
                 } catch (error: IOException) {
                     log("EVENT: 读取结束 - ${error.message}")
+                } finally {
+                    // Do not let a retired reader unregister a newer event connection.
+                    synchronized(eventCommandLock) {
+                        if (eventCommandSocket === socket) {
+                            eventCommandSocket = null
+                            eventCommandCipher = null
+                        }
+                    }
+                    runCatching { socket.close() }
                 }
             }, "event-reader").apply {
                 isDaemon = true
