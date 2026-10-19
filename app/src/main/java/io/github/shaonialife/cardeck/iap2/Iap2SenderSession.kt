@@ -249,13 +249,12 @@ class Iap2SenderSession(
             }
             log("iap2 Buick/GM T18: 收到 0x4301，bodyBytes=${start.body.size}；保留链路并解析会话参数")
             val params = Iap2Csm.parseParams(start.body)
+            // T20: 0x4301 的无线参数含热点密码，不再输出原始十六进制。
             for (param in params) {
-                val preview = param.value.take(64).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
-                log("iap2 Buick/GM T18: 0x4301 param=0x${param.id.toString(16).padStart(4, '0')} bytes=${param.value.size} hex=${preview}${if (param.value.size > 64) "…" else ""}")
+                log("iap2 Buick/GM T20: 0x4301 param=0x${param.id.toString(16).padStart(4, '0')} bytes=${param.value.size} (raw redacted)")
                 if (param.id == 1) {
                     for (nested in Iap2Csm.parseParams(param.value)) {
-                        val nestedPreview = nested.value.take(64).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
-                        log("iap2 Buick/GM T18: 0x4301 wireless subparam=0x${nested.id.toString(16).padStart(4, '0')} bytes=${nested.value.size} hex=${nestedPreview}")
+                        log("iap2 Buick/GM T20: wireless subparam=0x${nested.id.toString(16).padStart(4, '0')} bytes=${nested.value.size} (raw redacted)")
                     }
                 }
             }
