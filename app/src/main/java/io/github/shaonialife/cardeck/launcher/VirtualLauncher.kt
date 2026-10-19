@@ -683,6 +683,9 @@ object VirtualLauncher {
         val settingsFinished = SettingsActivity.finishForSessionEnd()
         val gridFinished = GridActivity.finishForSessionEnd()
         val dockFinished = DockActivity.finishForSessionEnd()
+        if (settingsFinished != null || gridFinished != null || dockFinished != null) {
+            logSink?.invoke("LAUNCHER T41: finish virtual tasks before display release settings=${settingsFinished != null} grid=${gridFinished != null} dock=${dockFinished != null}")
+        }
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
             // No main-thread blocking: onDestroy is dispatched by main Looper.
             val doneSettings = settingsFinished?.await(500, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
