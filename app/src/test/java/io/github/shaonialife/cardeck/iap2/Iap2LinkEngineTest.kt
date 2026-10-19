@@ -2,6 +2,7 @@ package io.github.shaonialife.cardeck.iap2
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -85,6 +86,25 @@ class Iap2LinkEngineTest {
             accessory.advanceTime(now)
             assertTrue(!phone.isDead && !accessory.isDead)
         }
+    }
+
+    @Test
+    fun buickOneShotSynProbeNeverResendsWithoutPeerResponse() {
+        val phone = Iap2LinkEngine()
+        assertFalse(phone.offerSynchronizationOnce())
+        phone.enterNegotiating()
+        assertTrue(phone.takeOutput().isEmpty())
+
+        assertTrue(phone.offerSynchronizationOnce())
+        val syn = phone.takeOutput()
+        assertTrue(syn.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(0xFF, syn[0].toInt() and 0xFF)
+        assertEquals(0x5A, syn[1].toInt() and 0xFF)
+        assertEquals(0x80, syn[4].toInt() and 0xFF)
+        assertFalse(phone.offerSynchronizationOnce())
+        phone.advanceTime(10_000L)
+        assertTrue(phone.takeOutput().isEmpty())
+        assertEquals(Iap2LinkEngine.State.NEGOTIATING, phone.state)
     }
 
     // ---- 工具 ----
