@@ -208,11 +208,22 @@ class Iap2SenderSession(
             sendFireAndForget(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
             log("iap2 Buick/GM T14: tx=0x4e0c device-uuid-update（发后不阻塞等待 ACK；观察 ACK 与 0x4301）")
             log("iap2 Buick/GM T10: 已发送 0x4e0a/0x4e09/0x4e0b；接着发送 0x4300")
-            val availabilityBody = Iap2Csm.group(
-                1,
-                Iap2Csm.u8(0, 1),
-                Iap2Csm.string(1, bluetoothMac),
-            )
+            // T17: iPhone HCI 实录 0x4300 包含两个外层 group，总帧长 75B。
+            // group(0): u8(0,1) + string(1, 24 位设备标识)
+            // group(1): u8(0,1) + string(1, 本机蓝牙 MAC)
+            // 不复制 iPhone 唯一标识；本机 MAC 确定性派生，重连保持稳定。
+            val availabilityBody =
+                Iap2Csm.group(
+                    0,
+                    Iap2Csm.u8(0, 1),
+                    Iap2Csm.string(1, carPlayDeviceIdentifier()),
+                ) +
+                    Iap2Csm.group(
+                        1,
+                        Iap2Csm.u8(0, 1),
+                        Iap2Csm.string(1, bluetoothMac),
+                    )
+            log("iap2 Buick/GM T17: 0x4300 双参数结构，deviceId=${carPlayDeviceIdentifier()} bodyBytes=${availabilityBody.size} frameBytes=${availabilityBody.size + 6}")
             val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
             log("iap2 Buick/GM T10: 0x4300 参数字节数=${availabilityBody.size}，编码=${availabilityFrame.joinToString("") { "%02x".format(it) }}")
             log("iap2 Buick/GM T10: 车机收到 0x4300 的链路 ACK 不等于 CarPlay 会话接受")
@@ -729,6 +740,13 @@ class Iap2SenderSession(
         ByteArray(8) { index ->
             (value ushr (8 * (7 - index))).toByte()
         }
+
+    /** T17: 24 位大写十六进制 CarPlay 设备标识，不复用 iPhone 的私有标识。 */
+    private fun carPlayDeviceIdentifier(): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(("CarDeck-CarPlay:" + bluetoothMac.uppercase()).toByteArray())
+        return digest.take(12).joinToString("") { "%02X".format(it.toInt() and 0xFF) }
+    }
 
     /** 设备 UUID：由蓝牙 MAC 确定性派生，跨会话稳定（车机按它标识设备）。 */
     private fun deviceUuid(): String =
