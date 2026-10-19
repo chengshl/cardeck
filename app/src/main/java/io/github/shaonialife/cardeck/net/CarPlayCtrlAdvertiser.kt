@@ -41,6 +41,7 @@ class CarPlayCtrlAdvertiser(
     }
 
     private var serverSocket: ServerSocket? = null
+    private var diagnosticDiscovery: NsdManager.DiscoveryListener? = null
 
     @Volatile private var tcpAcceptCount = 0
     @Volatile private var httpRequestCount = 0
@@ -221,6 +222,7 @@ class CarPlayCtrlAdvertiser(
             // NSD advertisement is not tied to wlan0. Re-register after Wi-Fi arrives.
             Bg.run("ctrl-wifi-watch") { watchWifiNetwork(socket) }
             Bg.run("ctrl-t11-diag") { diagnoseControlService(socket, serviceWifi) }
+            Bg.run("ctrl-t12-nsd") { diagnoseNsdDiscovery(socket, serviceWifi) }
             Thread(::acceptLoop, "ctrl-accept").apply {
                 isDaemon = true
                 start()
@@ -270,6 +272,54 @@ class CarPlayCtrlAdvertiser(
             Thread.currentThread().interrupt()
         } catch (error: Exception) {
             log("$TAG T11: diagnostic error: ${error.javaClass.simpleName}: ${error.message}")
+        }
+    }
+
+    /**
+     * T12: Android NSD discovery cross-check. Seeing our own record is only
+     * local DNS-SD evidence, NOT evidence the Buick received multicast.
+     */
+    private fun diagnoseNsdDiscovery(ownerSocket: ServerSocket, wifi: android.net.Network?) {
+        try {
+            Thread.sleep(2_500)
+            if (!registered || serverSocket !== ownerSocket) return
+            val listener = object : NsdManager.DiscoveryListener {
+                override fun onDiscoveryStarted(serviceType: String) {
+                    log("$TAG T12: NSD discovery started type=$serviceType wifi=$wifi (local observation only)")
+                }
+                override fun onServiceFound(service: NsdServiceInfo) {
+                    log("$TAG T12: NSD FOUND name=${service.serviceName} type=${service.serviceType} port=${service.port} network=${if (Build.VERSION.SDK_INT >= 33) service.network else "(API<33)"} (NOT proof of car discovery)")
+                }
+                override fun onServiceLost(service: NsdServiceInfo) {
+                    log("$TAG T12: NSD LOST name=${service.serviceName}")
+                }
+                override fun onDiscoveryStopped(serviceType: String) {
+                    log("$TAG T12: NSD discovery stopped")
+                }
+                override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                    log("$TAG T12: NSD discovery START FAILED code=$errorCode")
+                }
+                override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                    log("$TAG T12: NSD discovery STOP FAILED code=$errorCode")
+                }
+            }
+            synchronized(this) {
+                if (!registered || serverSocket !== ownerSocket) return
+                diagnosticDiscovery = listener
+            }
+            try {
+                nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+            } catch (error: Exception) {
+                log("$TAG T12: NSD discovery unavailable: ${error.javaClass.simpleName}: ${error.message}")
+                return
+            }
+            Thread.sleep(15_000)
+            runCatching { nsdManager.stopServiceDiscovery(listener) }
+            synchronized(this) { if (diagnosticDiscovery === listener) diagnosticDiscovery = null }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (error: Exception) {
+            log("$TAG T12: NSD diagnostic error: ${error.javaClass.simpleName}: ${error.message}")
         }
     }
 
@@ -437,6 +487,8 @@ class CarPlayCtrlAdvertiser(
         tcpAcceptCount = 0
         httpRequestCount = 0
         registeredNetwork = null
+        diagnosticDiscovery?.let { runCatching { nsdManager.stopServiceDiscovery(it) } }
+        diagnosticDiscovery = null
         activeListener?.let { runCatching { nsdManager.unregisterService(it) } }
         activeListener = null
         runCatching { serverSocket?.close() }
