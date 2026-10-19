@@ -461,6 +461,16 @@ class GridActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // T41 second line of defense: Android may reparent an activity from a
+        // destroyed car virtual display onto display 0. Never leave the car
+        // launcher visible above the phone's CarDeck control interface.
+        if (!VirtualLauncher.sessionAttached ||
+            display?.displayId == android.view.Display.DEFAULT_DISPLAY
+        ) {
+            VirtualLauncher.logSink?.invoke("LAUNCHER T41: GridActivity landed on phone/default display; finishing stale car task")
+            finish()
+            return
+        }
         // 也覆盖从设置页返回：勾选变化即时反映
         reload()
         refreshWallpaperIfChanged()
