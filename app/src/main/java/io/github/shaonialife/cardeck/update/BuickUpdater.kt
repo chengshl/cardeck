@@ -41,7 +41,6 @@ object BuickUpdater {
                 }
                 val release = conn.inputStream.bufferedReader().use { JSONObject(it.readText()) }
                 conn.disconnect()
-                val tag = release.optString("tag_name")
                 val assets = release.getJSONArray("assets")
                 var apkUrl: String? = null
                 var digestUrl: String? = null
@@ -70,7 +69,7 @@ object BuickUpdater {
                     } else {
                         AlertDialog.Builder(activity)
                             .setTitle("发现 Buick E5 更新")
-                            .setMessage("当前版本：$installed\\n新版本：$code\\n频道：$tag\\n是否下载并安装？")
+                            .setMessage("当前构建版本：$installed\n最新构建版本：$code\n更新频道：别克 E5 测试版\n\n是否下载并安装更新？")
                             .setNegativeButton("取消", null)
                             .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl) }
                             .show()
