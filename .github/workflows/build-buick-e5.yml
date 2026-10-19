@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -45,3 +45,21 @@ jobs:
           name: CarDeck-Buick-E5
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
+      - name: Publish Buick E5 in-app update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/release/*.apk CarDeck-Buick-E5.apk
+          sha256sum CarDeck-Buick-E5.apk > CarDeck-Buick-E5.apk.sha256
+          CODE=$((100000 + BUILD_NUMBER))
+          printf 'versionCode=%s\nbranch=Buick-E5\ncommit=%s\n' "$CODE" "$GITHUB_SHA" > release-notes.txt
+          if gh release view buick-e5-latest >/dev/null 2>&1; then
+            gh release upload buick-e5-latest CarDeck-Buick-E5.apk CarDeck-Buick-E5.apk.sha256 --clobber
+            gh release edit buick-e5-latest --notes-file release-notes.txt --prerelease
+          else
+            gh release create buick-e5-latest CarDeck-Buick-E5.apk CarDeck-Buick-E5.apk.sha256 \
+              --target "$GITHUB_SHA" --title "CarDeck Buick E5 testing channel" \
+              --notes-file release-notes.txt --prerelease
+          fi
