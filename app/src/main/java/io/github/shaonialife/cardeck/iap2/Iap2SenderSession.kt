@@ -216,7 +216,9 @@ class Iap2SenderSession(
             val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
             log("iap2 Buick/GM T10: 0x4300 参数字节数=${availabilityBody.size}，编码=${availabilityFrame.joinToString("") { "%02x".format(it) }}")
             log("iap2 Buick/GM T10: 车机收到 0x4300 的链路 ACK 不等于 CarPlay 会话接受")
-            sendFireAndForget(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
+            log("iap2 Buick/GM T16: 0x4300 改为等待链路 ACK，区分发送确认与会话未启动")
+            send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
+            log("iap2 Buick/GM T16: 0x4300 链路 ACK 已确认；仍需等待 0x4301 才算会话启动")
         }
 
         // Buick E5 T6: isolated protocol probe. The receiver advertises 0x4301 but not
