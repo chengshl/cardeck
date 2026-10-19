@@ -228,7 +228,8 @@ class Iap2SenderSession(
                 System.nanoTime() + 90_000_000_000L,
             )
             if (start == null) {
-                log("iap2 Buick/GM T10 SUMMARY: 90s window ended; startSession4301=false; pendingFrames=${pendingFrames.size}; channelAlive=${channel.isAlive}; 0x4300 ACK is link-only")
+                val elapsedStatus = if (!channel.isAlive) "link-closed-or-cancelled" else "timeout-90s" 
+                log("iap2 Buick/GM T12 SUMMARY: result=$elapsedStatus startSession4301=false pendingFrames=${pendingFrames.size} channelAlive=${channel.isAlive}; 0x4300 ACK is link-only")
                 throw IOException("Buick T10 诊断结束：0x4301 未到（未请求 0x5703）")
             }
             log("iap2 Buick/GM T10: 收到 0x4301，bodyBytes=${start.body.size}；已证明车机会话响应")
