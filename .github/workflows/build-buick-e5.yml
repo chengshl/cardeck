@@ -3,6 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [Buick-E5]
+concurrency:
+  group: buick-e5-release
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest
