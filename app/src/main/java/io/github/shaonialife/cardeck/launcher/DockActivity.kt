@@ -158,6 +158,13 @@ class DockActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!VirtualLauncher.sessionAttached ||
+            display?.displayId == android.view.Display.DEFAULT_DISPLAY
+        ) {
+            VirtualLauncher.logSink?.invoke("LAUNCHER T41: DockActivity landed on phone/default display; finishing stale car task")
+            finish()
+            return
+        }
         refresh()
     }
 
