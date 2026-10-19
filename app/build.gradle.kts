@@ -14,7 +14,7 @@ plugins {
  */
 val appVersionName = "0.1.0"
 val appVersionCode =
-    (System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionName
+    (System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull()?.let { 100_000 + it } ?: appVersionName
         .split(".")
         .let { (major, minor, patch) -> major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt() })
 
