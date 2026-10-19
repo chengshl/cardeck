@@ -259,7 +259,7 @@ class Iap2SenderSession(
                         "0x${it.key.toString(16).padStart(4, '0')}:${it.value}"
                     }.ifEmpty { "none" }
                 val seconds = (System.nanoTime() - observationStart) / 1_000_000_000L
-                log("iap2 Buick/GM T26 WATCH: elapsed=${seconds}s tick=$tick linkAlive=${channel.isAlive} start4301=${start != null} pending=${pendingFrames.size} unexpectedIds=$seen")
+                log("iap2 Buick/GM T29 WATCH: elapsed=${seconds}s tick=$tick linkAlive=${channel.isAlive} start4301=${start != null} pending=${pendingFrames.size} unexpectedIds=$seen rx=[${channel.rxDiagnostics()}]")
             }
             if (start == null) {
                 val elapsedStatus = if (!channel.isAlive) "link-closed-or-cancelled" else "timeout-90s"
@@ -267,7 +267,7 @@ class Iap2SenderSession(
                     .toSortedMap().entries.joinToString(",") {
                         "0x${it.key.toString(16).padStart(4, '0')}:${it.value}"
                     }.ifEmpty { "none" }
-                log("iap2 Buick/GM T28 SUMMARY: result=$elapsedStatus startSession4301=false pendingFrames=${pendingFrames.size} unexpectedIds=$seen channelAlive=${channel.isAlive}; ACK is link-only (verify actual peerAck), TCP selftest is local-only")
+                log("iap2 Buick/GM T29 SUMMARY: result=$elapsedStatus startSession4301=false pendingFrames=${pendingFrames.size} unexpectedIds=$seen channelAlive=${channel.isAlive} rx=[${channel.rxDiagnostics()}]; ACK is link-only, TCP selftest is local-only")
                 throw IOException("Buick T28 诊断结束：0x4301 未到（未请求 0x5703）")
             }
             log("iap2 Buick/GM T18: 收到 0x4301，bodyBytes=${start.body.size}；保留链路并解析会话参数")
