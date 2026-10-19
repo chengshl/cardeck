@@ -10,6 +10,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import io.github.shaonialife.cardeck.update.BuickUpdater
 import io.github.shaonialife.cardeck.launcher.settings.SettingsMenus
 import io.github.shaonialife.cardeck.launcher.settings.SettingsToastHost
 
@@ -26,6 +27,7 @@ class PhoneSettingsActivity : AppCompatActivity() {
         val list = findViewById<RecyclerView>(R.id.menuList)
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = MenuAdapter()
+        if (BuickUpdater.autoEnabled(this)) BuickUpdater.check(this, silent = true)
     }
 
     private inner class MenuAdapter : RecyclerView.Adapter<MenuHolder>() {
@@ -37,12 +39,27 @@ class PhoneSettingsActivity : AppCompatActivity() {
             return MenuHolder(view)
         }
 
-        override fun getItemCount() = SettingsMenus.ALL.size
+        override fun getItemCount() = SettingsMenus.ALL.size + 1
 
         override fun onBindViewHolder(
             holder: MenuHolder,
             position: Int,
         ) {
+            if (position == SettingsMenus.ALL.size) {
+                holder.icon.setImageResource(android.R.drawable.stat_sys_download)
+                holder.title.text = "在线更新（Buick E5）"
+                holder.desc.text = "点击检查更新；长按切换自动检查"
+                holder.itemView.setOnClickListener { BuickUpdater.check(this@PhoneSettingsActivity) }
+                holder.itemView.setOnLongClickListener {
+                    val enabled = !BuickUpdater.autoEnabled(this@PhoneSettingsActivity)
+                    BuickUpdater.setAutoEnabled(this@PhoneSettingsActivity, enabled)
+                    android.widget.Toast.makeText(this@PhoneSettingsActivity,
+                        if (enabled) "自动检查更新已开启" else "自动检查更新已关闭",
+                        android.widget.Toast.LENGTH_SHORT).show()
+                    true
+                }
+                return
+            }
             val item = SettingsMenus.ALL[position]
             holder.icon.setImageResource(item.iconRes)
             holder.title.text = item.title
