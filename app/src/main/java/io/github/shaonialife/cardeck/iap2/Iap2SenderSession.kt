@@ -247,8 +247,24 @@ class Iap2SenderSession(
                 log("iap2 Buick/GM T12 SUMMARY: result=$elapsedStatus startSession4301=false pendingFrames=${pendingFrames.size} channelAlive=${channel.isAlive}; 0x4300 ACK is link-only")
                 throw IOException("Buick T10 诊断结束：0x4301 未到（未请求 0x5703）")
             }
-            log("iap2 Buick/GM T10: 收到 0x4301，bodyBytes=${start.body.size}；已证明车机会话响应")
-            throw IOException("Buick T10 诊断结束：已收到 0x4301，尚无 WiFi 凭据，不进入 Phase 2")
+            log("iap2 Buick/GM T18: 收到 0x4301，bodyBytes=${start.body.size}；保留链路并解析会话参数")
+            val params = Iap2Csm.parseParams(start.body)
+            for (param in params) {
+                val preview = param.value.take(64).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+                log("iap2 Buick/GM T18: 0x4301 param=0x${param.id.toString(16).padStart(4, '0')} bytes=${param.value.size} hex=${preview}${if (param.value.size > 64) "…" else ""}")
+                if (param.id == 1) {
+                    for (nested in Iap2Csm.parseParams(param.value)) {
+                        val nestedPreview = nested.value.take(64).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+                        log("iap2 Buick/GM T18: 0x4301 wireless subparam=0x${nested.id.toString(16).padStart(4, '0')} bytes=${nested.value.size} hex=${nestedPreview}")
+                    }
+                }
+            }
+            val endpoint = parseStartSession(start, WifiConfiguration("", "", 0, 0))
+            log("iap2 Buick/GM T18: parsed port=${endpoint.airPlayPort} device=${endpoint.deviceIdentifier} srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()}")
+            // 车机没有声明 0x5703，当前也没有可验证的热点凭据；不伪造 WiFi 配置。
+            // 返回诊断端点交给主控判断，并在上层保持 iAP2 链路。
+            log("iap2 Buick/GM T18: 无 0x5703 凭据，返回诊断端点；不得把空 SSID 当作已连接热点")
+            return endpoint
         }
 
         // ---- WiFi 配置交换 ----
