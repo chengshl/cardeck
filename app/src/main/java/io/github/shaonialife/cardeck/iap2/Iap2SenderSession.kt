@@ -205,8 +205,8 @@ class Iap2SenderSession(
                     Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
                     Iap2Csm.u8(2, 0),
             )
-            sendFireAndForget(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
-            log("iap2 Buick/GM T14: tx=0x4e0c device-uuid-update（发后不阻塞等待 ACK；观察 ACK 与 0x4301）")
+            send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
+            log("iap2 Buick/GM T20-B: tx=0x4e0c device-uuid-update（加入链路 ACK 跟踪及超时重传；send 返回不代表已 ACK）")
             log("iap2 Buick/GM T10: 已发送 0x4e0a/0x4e09/0x4e0b；接着发送 0x4300")
             // T17: iPhone HCI 实录 0x4300 包含两个外层 group，总帧长 75B。
             // group(0): u8(0,1) + string(1, 24 位设备标识)
