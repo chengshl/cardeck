@@ -260,10 +260,11 @@ class Iap2SenderSession(
                 }
             }
             val endpoint = parseStartSession(start, WifiConfiguration("", "", 0, 0))
-            log("iap2 Buick/GM T18: parsed port=${endpoint.airPlayPort} device=${endpoint.deviceIdentifier} srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()}")
-            // 车机没有声明 0x5703，当前也没有可验证的热点凭据；不伪造 WiFi 配置。
-            // 返回诊断端点交给主控判断，并在上层保持 iAP2 链路。
-            log("iap2 Buick/GM T18: 无 0x5703 凭据，返回诊断端点；不得把空 SSID 当作已连接热点")
+            log("iap2 Buick/GM T19: parsed ssid=${endpoint.ssid} passwordPresent=${endpoint.passphrase.isNotEmpty()} port=${endpoint.airPlayPort} device=${endpoint.deviceIdentifier} srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()}")
+            if (endpoint.ssid.isBlank()) {
+                throw IOException("Buick T19: 0x4301 未包含有效 SSID，拒绝空热点进入后续配对")
+            }
+            log("iap2 Buick/GM T19: 使用 0x4301 无线子参数获取热点配置，继续 AirPlay 网络阶段")
             return endpoint
         }
 
@@ -679,14 +680,19 @@ class Iap2SenderSession(
         val params = Iap2Csm.parseParams(frame.body).associateBy { it.id }
         val wirelessGroup = params[1]?.value
         val wireless = wirelessGroup?.let { Iap2Csm.parseParams(it) }
+        val wirelessParams = wireless?.associateBy { it.id }.orEmpty()
+        // Buick E5 T19: 0x4301 group(1) 的子参数 0/1 即热点 SSID/密码。
+        // 不依赖车机未声明支持的 0x5703；其他接收端仍保留原有 0x5703 配置。
+        val sessionSsid = wirelessParams[0]?.value?.asStringOrEmpty()?.takeIf { it.isNotBlank() }
+        val sessionPassphrase = wirelessParams[1]?.value?.asStringOrEmpty()
         val addresses =
             wireless
                 ?.filter { it.id == 3 }
                 ?.mapNotNull { param -> param.value.asStringOrEmpty()?.takeIf { it.isNotEmpty() } }
                 .orEmpty()
         return CarPlayEndpoint(
-            ssid = wifi.ssid,
-            passphrase = wifi.passphrase,
+            ssid = sessionSsid ?: wifi.ssid,
+            passphrase = sessionPassphrase ?: wifi.passphrase,
             channel = wifi.channel,
             securityType = wifi.securityType,
             airPlayPort = params[2]?.value?.asU32() ?: 0,
