@@ -274,7 +274,7 @@ class Iap2BluetoothClient(
                 }
             }
             log("BT-C T10: pre-session identity=" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) "unavailable" else mac)
-            channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials)
+            channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")
         } finally {
