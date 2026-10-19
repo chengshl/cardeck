@@ -22,6 +22,7 @@ object BuickUpdater {
     private const val PREF = "buick_updater"
     private const val KEY_AUTO = "auto_check"
     private val main = Handler(Looper.getMainLooper())
+    private fun downloadedApk(activity: Activity) = File(activity.cacheDir, "updates/CarDeck-Buick-E5.apk")
 
     fun autoEnabled(activity: Activity): Boolean =
         activity.getSharedPreferences(PREF, 0).getBoolean(KEY_AUTO, true)
@@ -71,6 +72,7 @@ object BuickUpdater {
                             .setTitle("发现 Buick E5 更新")
                             .setMessage("当前构建版本：$installed\n最新构建版本：$code\n更新频道：别克 E5 测试版\n\n是否下载并安装更新？")
                             .setNegativeButton("取消", null)
+                            .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity)) }
                             .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl) }
                             .show()
                     }
@@ -90,7 +92,7 @@ object BuickUpdater {
             show()
         }
         thread(name = "buick-update-download") {
-            val target = File(activity.cacheDir, "updates/CarDeck-Buick-E5.apk")
+            val target = downloadedApk(activity)
             try {
                 target.parentFile?.mkdirs()
                 val shaConn = (URL(shaUrl).openConnection() as HttpURLConnection).apply {
@@ -126,20 +128,11 @@ object BuickUpdater {
                 require(actual == expected) { "SHA256 校验失败，已拒绝安装" }
                 main.post {
                     dialog.dismiss()
-                    if (activity.isFinishing || activity.isDestroyed) return@post
-                    if (!activity.packageManager.canRequestPackageInstalls()) {
-                        info(activity, "请先允许 CarDeck 安装未知应用，然后重新点击检查更新。")
-                        activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                            Uri.parse("package:${activity.packageName}")))
-                    } else {
-                        val uri = FileProvider.getUriForFile(activity,
-                            "${activity.packageName}.updatefiles", target)
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(uri, "application/vnd.android.package-archive")
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        activity.startActivity(intent)
+                    if (activity.isFinishing || activity.isDestroyed) {
+                        // Keep verified APK in cache; next manual update check can resume installation.
+                        return@post
                     }
+                    install(activity, target)
                 }
             } catch (e: Exception) {
                 target.delete()
@@ -148,6 +141,44 @@ object BuickUpdater {
                     if (!activity.isFinishing) info(activity, "更新下载失败：${e.message}")
                 }
             }
+        }
+    }
+
+    /** Verified APKs remain in cache so permission/settings interruptions are recoverable. */
+    private fun install(activity: Activity, target: File) {
+        if (activity.isFinishing || activity.isDestroyed) return
+        if (!target.isFile || target.length() == 0L) {
+            info(activity, "安装包不存在，请重新下载。")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
+            AlertDialog.Builder(activity).setTitle("允许安装更新")
+                .setMessage("安装包已下载并通过 SHA-256 校验。请允许 CarDeck 安装未知应用，返回后重新点击检查更新，即可继续安装，无需重新下载。")
+                .setNegativeButton("稍后", null)
+                .setPositiveButton("前往授权") { _, _ ->
+                    try {
+                        activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:${activity.packageName}")))
+                    } catch (e: Exception) {
+                        info(activity, "无法打开安装权限设置：${e.message}")
+                    }
+                }.show()
+            return
+        }
+        try {
+            val uri = FileProvider.getUriForFile(activity,
+                "${activity.packageName}.updatefiles", target)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            activity.startActivity(Intent.createChooser(intent, "选择安装程序"))
+        } catch (e: Exception) {
+            AlertDialog.Builder(activity).setTitle("无法打开安装窗口")
+                .setMessage("安装包已保留，无需重新下载。\n原因：${e.message}")
+                .setNegativeButton("稍后", null)
+                .setPositiveButton("重试安装") { _, _ -> install(activity, target) }
+                .show()
         }
     }
 
