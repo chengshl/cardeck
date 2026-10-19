@@ -96,6 +96,11 @@ object VirtualLauncher {
         iconCacheRef = fresh
     }
 
+    /** T41: only true while a CarPlay virtual desktop is valid. */
+    @Volatile
+    var sessionAttached: Boolean = false
+        private set
+
     @Volatile
     var dockDisplayId: Int = -1
         private set
@@ -641,6 +646,9 @@ object VirtualLauncher {
                 "LAUNCHER: letterbox 宽高比=$LETTERBOX_ASPECT_RATIO " +
                     "appDensity=${appNativeDensity}dpi appHiDensity=${appHiDensity}dpi",
             )
+            // Enable before shell am-start: Grid/Dock onCreate reject stale launches
+            // after detach, but must accept legitimate activity starts in this session.
+            sessionAttached = true
             // 组件名取自运行时包名（不要硬编码）：改 applicationId 后自动跟随
             val selfPkg = context.packageName
             val dockOk = startOn(dockDisplayId, "$selfPkg/.launcher.DockActivity")
@@ -667,6 +675,21 @@ object VirtualLauncher {
     private var displaysViaService = false
 
     fun detach() {
+        // T41: removing virtual displays while launcher activities are alive makes
+        // Android migrate/reparent their tasks to the PHYSICAL phone display.
+        // Kill those car-only activities first, then release the displays.
+        sessionAttached = false
+        watchdogActive = false
+        val gridFinished = GridActivity.finishForSessionEnd()
+        val dockFinished = DockActivity.finishForSessionEnd()
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            // No main-thread blocking: onDestroy is dispatched by main Looper.
+            val doneGrid = gridFinished?.await(800, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
+            val doneDock = dockFinished?.await(800, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
+            if (!doneGrid || !doneDock) {
+                logSink?.invoke("LAUNCHER T41: waiting for virtual-task finish timed out; releasing displays anyway")
+            }
+        }
         ScreenDimmer
             .detach()
         // 还原方向策略（false = 跟随应用请求，系统默认）。
@@ -759,6 +782,7 @@ object VirtualLauncher {
 
     /** 回桌面：GridActivity 任务带回前台（后台应用保留）；合成器切回桌面所在屏。 */
     fun goGrid(): Boolean {
+        if (!sessionAttached || gridDisplayId < 0) return false
         // T39: GridActivity pager callback runs on the UI thread and calls
         // showDashboard/showDesktop -> goGrid -> Shell.exec(am start).
         // Never wait up to 8 seconds for Shizuku on Android's main Looper.
@@ -789,6 +813,7 @@ object VirtualLauncher {
      * 继续送进已隐藏的地图屏（实测：桌面无法点击而日志注入成功的根因）。
      */
     fun onHomePressed() {
+        if (!sessionAttached) return
         when {
             mapFullscreen -> {
                 setMapFullscreen(false)
@@ -802,6 +827,7 @@ object VirtualLauncher {
 
     /** 进入仪表盘：地图屏缩回 tile、默认地图占屏（缺则启动）、桌面切分屏布局。 */
     fun showDashboard() {
+        if (!sessionAttached) return
         syncDashboard(true)
         goGrid()
         composer?.requestActiveApp(appHiDisplayId >= 0 && gridDisplayId == appHiDisplayId)
@@ -814,11 +840,13 @@ object VirtualLauncher {
      * pager 滑动过程只做 tile 位移预览（showMapTile），状态一律在落定（IDLE）时经此对账。
      */
     fun syncDashboard(dashboard: Boolean) {
+        if (!sessionAttached) return
         val changed = dashboardMode != dashboard
         dashboardMode = dashboard
         if (changed) notifyDashboard()
         if (dashboard) {
             Bg.run("dashboard-enter") {
+                if (!sessionAttached) return@run
                 ensureMapTask()
                 if (mapFullscreen) setMapFullscreen(false)
                 // 期间用户可能已点开普通应用（launchApp 会置 HIDDEN 并退出仪表盘）：
@@ -840,6 +868,7 @@ object VirtualLauncher {
 
     /** 回普通桌面：隐藏地图层并退出仪表盘，桌面恢复全宽图标网格（地图任务保留）。 */
     fun showDesktop() {
+        if (!sessionAttached) return
         syncDashboard(false)
         goGrid()
         logSink?.invoke("LAUNCHER: 桌面模式（图标网格）")
@@ -980,6 +1009,7 @@ object VirtualLauncher {
      * 无任务=新启动。后台线程调用。
      */
     private fun ensureMapTask() {
+        if (!sessionAttached) return
         if (mapDisplayId < 0) {
             // 诊断（2026-10-18「重装后地图卡不渲染」）：此前静默 return，无法区分
             // 「没创建地图屏」与「地图屏已创建但没启动 app」
