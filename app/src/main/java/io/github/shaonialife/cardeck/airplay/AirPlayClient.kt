@@ -454,7 +454,7 @@ class AirPlayClient(
         mode: Int = 0,
     ): Boolean {
         val sent =
-            postEventCommand(
+            postControlCommand(
                 linkedMapOf(
                     "type" to "hidSetInputMode",
                     "params" to
@@ -464,7 +464,7 @@ class AirPlayClient(
                         ),
                 ),
             )
-        log("AIRPLAY: hidSetInputMode(事件通道) uuid=$deviceUuidHex mode=$mode ok=$sent")
+        log("AIRPLAY T40: hidSetInputMode(RTSP控制通道) uuid=$deviceUuidHex mode=$mode ok=$sent")
         return sent
     }
 
@@ -475,10 +475,13 @@ class AirPlayClient(
      * 语音 None（-1）；resources：主屏(1)/主音频(2)，entity=permanent=Controller(1)。
      */
 
-    // ---- 事件通道命令发送（对照 DiPlay sendCommandLocked）----
-    // 车机命令双向都走事件通道 socket 上的 POST /command（不是 RTSP 控制连接！）：
-    // iAPSendMessage（虚拟链路字节）、hidSetInputMode、modesChanged 等。
-    // 异步 fire-and-forget：不等应答（DiPlay 同款写法），独立 CSeq 计数。
+    // ---- AirPlay directionality (T40) ----
+    // Car -> phone commands arrive as RTSP requests on the reverse Events socket.
+    // Phone -> car commands MUST travel on the existing encrypted RTSP control
+    // connection (:7000), where the receiver handles POST /command. Sending
+    // requests on Events (:5001) instead was silently ignored by the receiver's
+    // response-only EventsClient and left virtual iAP2 stuck in DETECT for 30s.
+    // The Events socket below is retained for inbound requests and 200 responses.
 
     @Volatile
     private var eventCommandSocket: Socket? = null
@@ -489,6 +492,39 @@ class AirPlayClient(
 
     private val eventCommandLock = Any()
     private var eventCseq = 0
+
+    private var controlIapCommandCount = 0
+
+    /**
+     * T40: phone-originated commands use the encrypted control RTSP socket,
+     * NOT the reverse Events socket. Control POST /command is handled by the
+     * receiver (see catplay carplay_rx::receiver::respond_command).
+     *
+     * Called from the background session starter or the Events reader thread;
+     * 1500ms timeout avoids pinning the reader for 10s when a car drops requests.
+     */
+    private fun postControlCommand(command: Map<String, Any?>): Boolean {
+        val type = command["type"]?.toString() ?: "unknown"
+        return try {
+            val (status, _) =
+                request(
+                    "POST",
+                    "/command",
+                    BinaryPlist.encode(command),
+                    timeoutMillis = 1_500,
+                    contentType = "application/x-apple-binary-plist",
+                )
+            if (type == "iAPSendMessage") controlIapCommandCount++
+            val ok = status.contains("200")
+            if (type != "iAPSendMessage" || controlIapCommandCount <= 12 || controlIapCommandCount % 10 == 0 || !ok) {
+                log("AIRPLAY T40: CONTROL POST /command type=$type status=$status ok=$ok iapTx=$controlIapCommandCount")
+            }
+            ok
+        } catch (error: IOException) {
+            log("AIRPLAY T40: CONTROL POST /command type=$type failed - ${error.message}")
+            false
+        }
+    }
 
     // T39: socket.write success != accessory acceptance. Track outbound event RTSP
     // replies by CSeq so repeated DETECT can be distinguished from rejected commands.
@@ -1108,7 +1144,7 @@ class AirPlayClient(
     /**
      * 隧道客户端引用（DiPlay 形态）：事件通道虚拟链路（[IapLinkOverEvent]）的**出站方向**
      * 必须写进 type-130 TCP（DiPlay 的隧道链路引擎只从 TCP 读；其出站走事件通道，
-     * 与我们被动接收一致）。无隧道（Audi 事件通道形态）时出站继续走事件通道 [sendIap]。
+     * 与我们被动接收一致）。无隧道时出站改由主控制 RTSP [sendIap] 发送。
      */
     @Volatile
     private var iapTunnel: IapTunnelClient? = null
@@ -1116,12 +1152,12 @@ class AirPlayClient(
     private var sendIapCount = 0
 
     /**
-     * 手机→车机 iAP2 消息：事件通道 iAPSendMessage 命令（对照 DiPlay sendIapMessage，
-     * params 信封 + data 字节，catplay CommandIApSendMessage 同款）。
+     * 手机→车机 iAP2: POST /command on encrypted CONTROL RTSP (:7000).
+     * Car→phone iAP2 stays on the separate Events channel (:5001).
      */
     fun sendIap(data: ByteArray): Boolean {
         val sent =
-            postEventCommand(
+            postControlCommand(
                 linkedMapOf(
                     "type" to "iAPSendMessage",
                     "params" to linkedMapOf<String, Any?>("data" to data),
@@ -1130,7 +1166,7 @@ class AirPlayClient(
         sendIapCount++
         if (sendIapCount <= 10) {
             log(
-                "IAPLINK: tx(事件通道) ${data.size}B ok=$sent hex=" +
+                "IAPLINK T40: tx(控制RTSP) ${data.size}B ok=$sent hex=" +
                     data.joinToString(" ") { "%02x".format(it) }.take(120),
             )
         }
@@ -1254,7 +1290,7 @@ class AirPlayClient(
             }
         }
 
-        /** 链路字节出站：有隧道走隧道 TCP（DiPlay），否则走事件通道（Audi）。 */
+        /** 链路字节出站：有隧道走隧道 TCP（DiPlay），否则走控制 RTSP（T40）。 */
         private fun sendLinkBytes(bytes: ByteArray) {
             if (bytes.isEmpty()) return
             val tunnel = iapTunnel
@@ -1267,7 +1303,7 @@ class AirPlayClient(
 
         /**
          * 引擎出站字节落盘：有隧道写隧道 TCP（成功且内容含同步回显时标记回显已送达），
-         * 否则走事件通道（回显发往错误通道时作废投递标记，等对端 SYN 重发重新回显）。
+         * 否则走主 RTSP 控制通道（手机→车机 POST /command），不再误走反向 Events。
          */
         private fun flushOutputLocked() {
             val out = engine.takeOutput()
