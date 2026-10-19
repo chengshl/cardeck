@@ -1281,7 +1281,10 @@ object SessionController {
                                         (420f * minOf(streamW, streamH) / 540f)
                                             .toInt()
                                             .coerceIn(120, 1680)
-                                    videoSender =
+                                    // The onEnded callback may arrive after a newer pairing has
+                                    // already replaced this sender. Never retire another session.
+                                    var owningSender: VideoSender? = null
+                                    val createdSender =
                                         VideoSender(
                                             host = host,
                                             dataPort = screen.dataPort,
@@ -1292,17 +1295,24 @@ object SessionController {
                                             targetFps = fps,
                                             log = { line -> appendLog(line) },
                                             onEnded = {
-                                                // 会话真实结束：解除静默降噪（客户端恢复探测/重连）
-                                                appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
-                                                BtSessionGate.sessionActive = false
-                                                // 车机掉线类结束（无用户断开操作）：同样复原横屏覆盖。
-                                                // 这里跑在推流收尾线程，不是连接关键路径，但统一走
-                                                // 异步口以保持「串行、不重入」的语义。
-                                                appContext?.let { ctx ->
-                                                    AppOrientationCompat.resetAllAsync(ctx, ::appendLog)
+                                                if (videoSender === owningSender && currentClient === client) {
+                                                    appendLog("SESSION T38: 当前视频流已结束——退役 RTSP/事件 TCP、timing UDP、心跳及虚拟屏")
+                                                    try {
+                                                        retireSession()
+                                                    } finally {
+                                                        // Preserve Bluetooth RFCOMM during pairing;
+                                                        // only lift the outgoing-probe gate here.
+                                                        BtSessionGate.sessionActive = false
+                                                        phaseHint = "CarPlay 已断开，等待车机重新握手…"
+                                                    }
+                                                    appendLog(">>> CarPlay 会话结束——旧会话已清理，蓝牙探测恢复")
+                                                } else {
+                                                    appendLog("SESSION T38: 忽略已退役视频流的迟到 onEnded（保护新会话）")
                                                 }
                                             },
                                         )
+                                    owningSender = createdSender
+                                    videoSender = createdSender
                                     // 先连端口（车机看门狗），编码器等 RECORD 后再启动
                                     videoSender?.openDataPort()
                                 }
