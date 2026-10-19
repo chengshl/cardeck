@@ -220,7 +220,13 @@ class Iap2SenderSession(
                 log("iap2 Buick/GM T34: ACK108 not observed; 0x4300 deliberately NOT sent")
                 throw IOException("Buick T34: ACK108 timeout before 0x4300")
             }
-            log("iap2 Buick/GM T34: ACK108 confirmed; sending unchanged 75B 0x4300")
+            // T37: ACK108 confirms link receipt, not completion of receiver-side UUID handling.
+            // Isolate the next 0x4300 by allowing 1500ms of processing time after ACK108.
+            // Keep the identity, 0x4300 bytes, and all other message ordering unchanged.
+            log("iap2 Buick/GM T37: ACK108 confirmed; waiting 1500ms after ACK before unchanged 0x4300")
+            Thread.sleep(1500L)
+            if (!channel.isAlive) throw IOException("Buick T37: link closed after ACK108 before 0x4300")
+            log("iap2 Buick/GM T37: post-ACK processing window complete; sending unchanged 75B 0x4300")
             // T17: iPhone HCI 实录 0x4300 包含两个外层 group，总帧长 75B。
             // group(0): u8(0,1) + string(1, 24 位设备标识)
             // group(1): u8(0,1) + string(1, 本机蓝牙 MAC)
