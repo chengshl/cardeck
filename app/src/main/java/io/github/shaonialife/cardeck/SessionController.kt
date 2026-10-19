@@ -1285,7 +1285,8 @@ object SessionController {
                                         VideoSender(
                                             host = host,
                                             dataPort = screen.dataPort,
-                                            streamKey = screen.streamKey,
+                                            frameCipher = screen.cipher,
+                                            keepAliveWithStats = setup.keepAliveSendStatsAsBody,
                                             width = streamW,
                                             height = streamH,
                                             targetFps = fps,
