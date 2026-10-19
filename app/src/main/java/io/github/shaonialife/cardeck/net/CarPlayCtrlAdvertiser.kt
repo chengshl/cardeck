@@ -3,6 +3,7 @@ package io.github.shaonialife.cardeck.net
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -41,6 +42,7 @@ class CarPlayCtrlAdvertiser(
     }
 
     private var serverSocket: ServerSocket? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var diagnosticDiscovery: NsdManager.DiscoveryListener? = null
     @Volatile private var diagnosticResolveStarted = false
 
@@ -178,6 +180,18 @@ class CarPlayCtrlAdvertiser(
         return try {
             val socket = ServerSocket(0)
             serverSocket = socket
+            // T30: enable local Wi-Fi multicast reception during NSD diagnosis.
+            // This does not prove outbound mDNS delivery or car discovery.
+            try {
+                val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                val lock = wifiManager.createMulticastLock("cardeck-carplay-ctrl-t30")
+                lock.setReferenceCounted(false)
+                lock.acquire()
+                multicastLock = lock
+                log("$TAG T30: Wi-Fi multicast lock acquired=${lock.isHeld} (local-only)")
+            } catch (error: Exception) {
+                log("$TAG T30: Wi-Fi multicast lock unavailable: ${error.javaClass.simpleName}: ${error.message}")
+            }
             // 占位 MAC 时强制重试一次（启动连接即发布广播时，Shizuku 可能还没就绪；
             // 广播内容错了车机就永远不会邀请我们）
             var mac = DeviceIdentity.bluetoothMac(context)
@@ -230,6 +244,10 @@ class CarPlayCtrlAdvertiser(
             }
             true
         } catch (error: Exception) {
+            runCatching { multicastLock?.release() }
+            multicastLock = null
+            runCatching { serverSocket?.close() }
+            serverSocket = null
             log("$TAG: 启动失败 - ${error.message}")
             false
         }
@@ -514,6 +532,12 @@ class CarPlayCtrlAdvertiser(
         activeListener = null
         runCatching { serverSocket?.close() }
         serverSocket = null
+        multicastLock?.let { lock ->
+            runCatching { if (lock.isHeld) lock.release() }
+                .onFailure { log("$TAG T30: multicast lock release error: ${it.javaClass.simpleName}") }
+            log("$TAG T30: Wi-Fi multicast lock released")
+        }
+        multicastLock = null
         log("$TAG: 已停止")
     }
 
