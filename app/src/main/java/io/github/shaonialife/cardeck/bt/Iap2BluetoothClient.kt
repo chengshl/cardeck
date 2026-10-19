@@ -194,9 +194,10 @@ class Iap2BluetoothClient(
                 }
             }
             if (connected == null) {
-                // The Buick iAP2 SDP window may remain shut for a while after its
-                // 30s session watchdog. Avoid a tight active-connect storm.
-                sleepQuietly(if (t35Buick) RETRY_DELAY_MILLIS * 2 else RETRY_DELAY_MILLIS)
+                // Buick may temporarily withhold its accessory SDP service after
+                // tearing down an incomplete CarPlay session.
+                val quiet = if (t35Buick && t35Attempts >= 3) 30_000L else if (t35Buick) 9_000L else RETRY_DELAY_MILLIS
+                sleepQuietly(quiet)
                 continue
             }
             if (generation.get() != myGeneration) {
@@ -213,7 +214,15 @@ class Iap2BluetoothClient(
                 log("BT-C T39: Buick RFCOMM session #$t35Attempts ended; outbound reconnect remains enabled")
             }
             val retryDelay =
-                if (t35Buick) RETRY_DELAY_MILLIS * minOf(t35Attempts + 1, 5) else RETRY_DELAY_MILLIS
+                if (!t35Buick) RETRY_DELAY_MILLIS else when {
+                    t35Attempts <= 1 -> 6_000L
+                    t35Attempts == 2 -> 15_000L
+                    t35Attempts == 3 -> 30_000L
+                    else -> 120_000L // preserve receiver pairing; no aggressive MFi loop
+                }
+            if (t35Buick) {
+                log("BT-C T41: Buick RFCOMM session #$t35Attempts finished; cooldown=${retryDelay / 1000}s (stop button interrupts)")
+            }
             sleepQuietly(retryDelay)
         }
         log("BT-C: 客户端已停止")
