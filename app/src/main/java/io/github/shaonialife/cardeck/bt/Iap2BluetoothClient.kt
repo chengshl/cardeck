@@ -189,7 +189,7 @@ class Iap2BluetoothClient(
                     val now = android.os.SystemClock.uptimeMillis()
                     if (now - lastFailureLogAt > FAILURE_LOG_THROTTLE_MILLIS) {
                         lastFailureLogAt = now
-                        log("BT-C: 连接 $name 失败（车机未就绪或不在无线配对窗口），3 秒后重试…")
+                        log("BT-C: 连接 $name 失败（车机未就绪或不在无线配对窗口），${if (t35Buick) "6" else "3"} 秒后重试…")
                     }
                 }
             }
@@ -208,7 +208,7 @@ class Iap2BluetoothClient(
                 t35Attempts += 1
                 log("BT-C T39: Buick RFCOMM session #$t35Attempts start (no fixed retry cap; no HFP/A2DP disconnect)")
             }
-            runSession(connected, t35Buick && t35Attempts == 1)
+            runSession(connected)
             if (t35Buick) {
                 log("BT-C T39: Buick RFCOMM session #$t35Attempts ended; outbound reconnect remains enabled")
             }
@@ -277,7 +277,7 @@ class Iap2BluetoothClient(
         }
     }
 
-    private fun runSession(socket: BluetoothSocket, t35AllowFirstDiagnosticRetry: Boolean = false) {
+    private fun runSession(socket: BluetoothSocket) {
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
