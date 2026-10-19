@@ -680,13 +680,15 @@ object VirtualLauncher {
         // Kill those car-only activities first, then release the displays.
         sessionAttached = false
         watchdogActive = false
+        val settingsFinished = SettingsActivity.finishForSessionEnd()
         val gridFinished = GridActivity.finishForSessionEnd()
         val dockFinished = DockActivity.finishForSessionEnd()
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
             // No main-thread blocking: onDestroy is dispatched by main Looper.
+            val doneSettings = settingsFinished?.await(500, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
             val doneGrid = gridFinished?.await(800, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
             val doneDock = dockFinished?.await(800, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
-            if (!doneGrid || !doneDock) {
+            if (!doneSettings || !doneGrid || !doneDock) {
                 logSink?.invoke("LAUNCHER T41: waiting for virtual-task finish timed out; releasing displays anyway")
             }
         }
