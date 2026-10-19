@@ -211,8 +211,8 @@ class Iap2SenderSession(
             // availability. T18 captured an actual 0x4301 after this ordering.
             // T27 also stalled with 0x4e0c, so this is a controlled retest,
             // NOT proof that 0x4e0c alone fixes Buick CarPlay.
-            sendFireAndForget(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
-            log("iap2 Buick/GM T31: restored T18 0x4e0c fire-and-forget before 0x4300; observe ACK109 and 0x4301")
+            send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
+            log("iap2 Buick/GM T32: 0x4e0c now ACK-tracked/retransmitted as normal iAP2 control; observe ACK108, ACK109 and 0x4301")
             // T17: iPhone HCI 实录 0x4300 包含两个外层 group，总帧长 75B。
             // group(0): u8(0,1) + string(1, 24 位设备标识)
             // group(1): u8(0,1) + string(1, 本机蓝牙 MAC)
