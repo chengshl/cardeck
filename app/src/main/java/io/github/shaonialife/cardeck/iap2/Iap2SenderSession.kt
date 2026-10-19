@@ -212,12 +212,15 @@ class Iap2SenderSession(
             // T27 also stalled with 0x4e0c, so this is a controlled retest,
             // NOT proof that 0x4e0c alone fixes Buick CarPlay.
             send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
-            // T33: isolate the receiver's ACK for 0x4e0c before 0x4300 is sent.
-            // This is a diagnostic delay, not an iAP2 requirement or an ACK wait.
-            log("iap2 Buick/GM T33: 0x4e0c sent as seq108; isolate ACK for 1500ms BEFORE 0x4300")
-            Thread.sleep(1500L)
-            if (!channel.isAlive) throw IOException("Buick T33: link closed during isolated 0x4e0c observation")
-            log("iap2 Buick/GM T33: isolated 0x4e0c observation ended; now send 0x4300")
+            // T34: the current Buick diagnostic handshake consistently assigns seq108
+            // to 0x4e0c. Require the peer's cumulative ACK before advertising CarPlay.
+            // Fail closed if the sequence layout changes rather than sending 0x4300 blindly.
+            log("iap2 Buick/GM T34: waiting up to 3000ms for peer cumulative ACK108 before 0x4300")
+            if (!channel.awaitPeerAck(108, 3000L)) {
+                log("iap2 Buick/GM T34: ACK108 not observed; 0x4300 deliberately NOT sent")
+                throw IOException("Buick T34: ACK108 timeout before 0x4300")
+            }
+            log("iap2 Buick/GM T34: ACK108 confirmed; sending unchanged 75B 0x4300")
             // T17: iPhone HCI 实录 0x4300 包含两个外层 group，总帧长 75B。
             // group(0): u8(0,1) + string(1, 24 位设备标识)
             // group(1): u8(0,1) + string(1, 本机蓝牙 MAC)
