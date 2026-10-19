@@ -126,18 +126,16 @@ class Iap2BluetoothClient(
                 null
             } ?: return
         var lastFailureLogAt = 0L
-        // T35: bounded two-session diagnostic for the explicitly selected Buick only.
+        // T39: retain Buick-specific Bluetooth profile safety, but remove T35's bounded retry cap.
         val t35Buick = targetProvider()?.let {
             it.name.contains("BUICK", ignoreCase = true) &&
                 it.address.equals("30:DF:17:9F:AE:4C", ignoreCase = true)
         } == true
         var t35Attempts = 0
         while (running && generation.get() == myGeneration) {
-            if (t35Buick && t35Attempts >= 2) {
-                running = false
-                log("BT-C T35: 两轮顺序 RFCOMM 诊断结束；停止自动重连")
-                break
-            }
+            // T35's two successful RFCOMM sessions used to stop this entire client.
+            // A Buick that only restarts CarPlay after head-unit reboot would then
+            // never see a new phone-initiated attempt. Keep retrying with backoff.
             // 静默降噪（2026-10-10 用户实测后启用）——会话期间完全静默，不产生任何连接尝试/日志：
             //  - inboundActive：接收端正在连我们（两条 RFCOMM 会互相踩；Audi 实测双会话混乱）
             //  - sessionActive：CarPlay 会话已建立（已拿到端点）——与其它接收端的连接尝试全部暂停
@@ -196,7 +194,9 @@ class Iap2BluetoothClient(
                 }
             }
             if (connected == null) {
-                sleepQuietly(RETRY_DELAY_MILLIS)
+                // The Buick iAP2 SDP window may remain shut for a while after its
+                // 30s session watchdog. Avoid a tight active-connect storm.
+                sleepQuietly(if (t35Buick) RETRY_DELAY_MILLIS * 2 else RETRY_DELAY_MILLIS)
                 continue
             }
             if (generation.get() != myGeneration) {
@@ -206,11 +206,15 @@ class Iap2BluetoothClient(
             }
             if (t35Buick) {
                 t35Attempts += 1
-                log("BT-C T35: RFCOMM session=$t35Attempts/2 start; identity and iAP2 payloads unchanged; no HFP/A2DP disconnect")
+                log("BT-C T39: Buick RFCOMM session #$t35Attempts start (no fixed retry cap; no HFP/A2DP disconnect)")
             }
             runSession(connected, t35Buick && t35Attempts == 1)
-            if (t35Buick) log("BT-C T35: RFCOMM session=$t35Attempts/2 ended")
-            sleepQuietly(RETRY_DELAY_MILLIS)
+            if (t35Buick) {
+                log("BT-C T39: Buick RFCOMM session #$t35Attempts ended; outbound reconnect remains enabled")
+            }
+            val retryDelay =
+                if (t35Buick) RETRY_DELAY_MILLIS * minOf(t35Attempts + 1, 5) else RETRY_DELAY_MILLIS
+            sleepQuietly(retryDelay)
         }
         log("BT-C: 客户端已停止")
     }
@@ -293,15 +297,11 @@ class Iap2BluetoothClient(
             channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")
-            // T25: a Buick diagnostic timeout is not a transient RF failure.
-            // Avoid immediately dropping HFP/A2DP and restarting the car pairing flow.
-            if (!t35AllowFirstDiagnosticRetry &&
-                (error.message?.startsWith("Buick T24 诊断结束") == true ||
-                error.message?.startsWith("Buick T25 诊断结束") == true ||
-                error.message?.startsWith("Buick T26 诊断结束") == true ||
-                error.message?.startsWith("Buick T28 诊断结束") == true)) {
-                running = false
-                log("BT-C T25: Buick 90s 诊断结束，停止自动重连；请手动点击启动连接进行下一轮测试")
+            // T39: an old T24/T25/T26/T28 diagnostic timeout must not
+            // permanently disable the Buick connector. The caller's backoff and
+            // BtSessionGate prevent overlap with a live incoming RFCOMM session.
+            if (error.message?.contains("Buick T") == true) {
+                log("BT-C T39: Buick 诊断结束；保留受控的主动重连（不重启车机）")
             }
         } finally {
             activeChannel = null
