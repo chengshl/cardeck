@@ -193,9 +193,7 @@ class Iap2SenderSession(
             // T4: ACK stopped at seq=108; seq=109 (0x4E0C) was retransmitted.
             // T5 isolation: send only the three messages advertised by this receiver.
             // Deliberately omit 0x4E0D (not advertised) and 0x4E0C (T4 stall).
-            log("iap2 Buick/GM T13: 单变量实验：恢复 0x4e0d，继续跳过 0x4e0c")
-            sendFireAndForget(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
-            log("iap2 Buick/GM T13: tx=0x4e0d wireless-carplay-update（发后不等待 ACK）")
+            log("iap2 Buick/GM T14: 单变量实验：不发送 0x4e0d，恢复车机声明支持的 0x4e0c")
             send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
             send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
             val epochSeconds = System.currentTimeMillis() / 1000L
@@ -207,6 +205,8 @@ class Iap2SenderSession(
                     Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
                     Iap2Csm.u8(2, 0),
             )
+            sendFireAndForget(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
+            log("iap2 Buick/GM T14: tx=0x4e0c device-uuid-update（发后不阻塞等待 ACK；观察 ACK 与 0x4301）")
             log("iap2 Buick/GM T10: 已发送 0x4e0a/0x4e09/0x4e0b；接着发送 0x4300")
             val availabilityBody = Iap2Csm.group(
                 1,
