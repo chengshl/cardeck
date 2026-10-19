@@ -42,6 +42,7 @@ class CarPlayCtrlAdvertiser(
 
     private var serverSocket: ServerSocket? = null
     private var diagnosticDiscovery: NsdManager.DiscoveryListener? = null
+    @Volatile private var diagnosticResolveStarted = false
 
     @Volatile private var tcpAcceptCount = 0
     @Volatile private var httpRequestCount = 0
@@ -289,6 +290,25 @@ class CarPlayCtrlAdvertiser(
                 }
                 override fun onServiceFound(service: NsdServiceInfo) {
                     log("$TAG T12: NSD FOUND name=${service.serviceName} type=${service.serviceType} port=${service.port} network=${if (Build.VERSION.SDK_INT >= 33) service.network else "(API<33)"} (NOT proof of car discovery)")
+                    // Discovery port=0 is often unresolved; check the local SRV/TXT record.
+                    if (service.serviceName == "sender" && !diagnosticResolveStarted) {
+                        diagnosticResolveStarted = true
+                        try {
+                            nsdManager.resolveService(service, object : NsdManager.ResolveListener {
+                                override fun onServiceResolved(resolved: NsdServiceInfo) {
+                                    val txtId = resolved.attributes["id"]?.toString(Charsets.UTF_8) ?: "(missing)"
+                                    val txtVersion = resolved.attributes["srcvers"]?.toString(Charsets.UTF_8) ?: "(missing)"
+                                    log("$TAG T13: NSD RESOLVED host=${resolved.host?.hostAddress ?: "(none)"} port=${resolved.port} id=$txtId srcvers=$txtVersion network=${if (Build.VERSION.SDK_INT >= 33) resolved.network else "(API<33)"} (local-only)")
+                                    if (resolved.port != ownerSocket.localPort) log("$TAG T13: WARNING port mismatch resolved=${resolved.port} listener=${ownerSocket.localPort}")
+                                }
+                                override fun onResolveFailed(failed: NsdServiceInfo, errorCode: Int) {
+                                    log("$TAG T13: NSD RESOLVE FAILED code=$errorCode (local-only)")
+                                }
+                            })
+                        } catch (error: Exception) {
+                            log("$TAG T13: NSD RESOLVE exception ${error.javaClass.simpleName}: ${error.message}")
+                        }
+                    }
                 }
                 override fun onServiceLost(service: NsdServiceInfo) {
                     log("$TAG T12: NSD LOST name=${service.serviceName}")
@@ -305,6 +325,7 @@ class CarPlayCtrlAdvertiser(
             }
             synchronized(this) {
                 if (!registered || serverSocket !== ownerSocket) return
+                diagnosticResolveStarted = false
                 diagnosticDiscovery = listener
             }
             try {
