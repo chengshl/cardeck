@@ -195,7 +195,7 @@ class Iap2SenderSession(
         awaitOptionalHid(deadline)
         if (isBuickE5) {
             // T15: preserve T14 device update and availability messages; only restore optional HID wait.
-            log("iap2 Buick/GM T14: 单变量实验：不发送 0x4e0d，恢复车机声明支持的 0x4e0c")
+            log("iap2 Buick/GM T25: 按 T23 顺序发送 0x4e0a/0x4e09/0x4e0b，跳过 0x4e0c 和 0x4e0d")
             send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
             send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
             val epochSeconds = System.currentTimeMillis() / 1000L
@@ -241,7 +241,7 @@ class Iap2SenderSession(
         // receiver repeatedly failed to acknowledge, and observe 0x4301 directly.
         // This branch is intentionally diagnostic: no synthetic Wi-Fi credentials.
         if (isBuickE5) {
-            log("iap2 Buick/GM T10: 不发送 0x5702；监听 0x4301（90 秒诊断窗口）；请在车机上点击 CarPlay 连接")
+            log("iap2 Buick/GM T25: 不发送 0x5702；监听 0x4301（90 秒诊断窗口）；请记录车机从正在连接到失败的时间")
             // T24: passive 90-second observation in 10-second slices. No extra
             // iAP2 transmissions and no change to T23's ACK-clean ordering.
             val observationStart = System.nanoTime()
@@ -267,7 +267,7 @@ class Iap2SenderSession(
                         "0x${it.key.toString(16).padStart(4, '0')}:${it.value}"
                     }.ifEmpty { "none" }
                 log("iap2 Buick/GM T24 SUMMARY: result=$elapsedStatus startSession4301=false pendingFrames=${pendingFrames.size} unexpectedIds=$seen channelAlive=${channel.isAlive}; ACK108 is link-only, TCP selftest is local-only")
-                throw IOException("Buick T24 诊断结束：0x4301 未到（未请求 0x5703）")
+                throw IOException("Buick T25 诊断结束：0x4301 未到（未请求 0x5703）")
             }
             log("iap2 Buick/GM T18: 收到 0x4301，bodyBytes=${start.body.size}；保留链路并解析会话参数")
             val params = Iap2Csm.parseParams(start.body)
