@@ -550,7 +550,7 @@ class AirPlayClient(
      * 此前对一切入向消息都回 200——对"应答"回应答与 DiPlay 形成乒乓：DiPlay 把我们的
      * 多余应答解析成请求（"RTSP/1.0" 当 method 剥掉后 protocol 取到第三 token），
      * 回出畸形行 "OK 200 OK"；我们再回 → 无限回声，日志雪崩且空耗加密通道。
-     * 通道写与 postEventCommand 共用一把锁，避免两线程加密帧交叉。
+     * 通道上的应答与事件写共用锁，避免两线程加密帧交叉。
      */
     private fun respondEventRequest(cseq: String?) {
         val socket = eventCommandSocket ?: return
@@ -1157,11 +1157,11 @@ class AirPlayClient(
             engine.onFrameReceived = { control, seq, ack, sessionId, size ->
                 linkFrameLogs++
                 if (linkFrameLogs <= 20) {
-                    log("IAPLINK T38: rx control=0x${control.toString(16)} seq=$seq ack=$ack session=$sessionId payload=$size state=${engine.state}")
+                    log("IAPLINK T40: rx control=0x${control.toString(16)} seq=$seq ack=$ack session=$sessionId payload=$size state=${engine.state}")
                 }
             }
             engine.onPeerSynchronizationAdopted = { sync ->
-                log("IAPLINK T38: peer SYN adopted, sessions=${sync.sessions} state=${engine.state}")
+                log("IAPLINK T40: peer SYN adopted, sessions=${sync.sessions} state=${engine.state}")
             }
             // 节拍线程：驱动引擎计时器（重传等）
             Thread({
@@ -1213,7 +1213,7 @@ class AirPlayClient(
                 // T38 one-shot SYN was emitted successfully but ignored by Buick B233;
                 // revert to passive mode for T39 and measure /command responses instead.
                 if (detectReplies == 3 && isBuickE5Receiver() && iapTunnel == null) {
-                    log("IAPLINK T39: Buick B233 DETECT repeated; T38 SYN ineffective, observing outbound event ACKs")
+                    log("IAPLINK T40: Buick B233 DETECT #3; replies now travel over CONTROL RTSP, awaiting peer SYN")
                 }
                 drainLocked()
             }
