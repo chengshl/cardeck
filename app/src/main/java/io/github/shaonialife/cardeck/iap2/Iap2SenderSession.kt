@@ -241,7 +241,7 @@ class Iap2SenderSession(
         // receiver repeatedly failed to acknowledge, and observe 0x4301 directly.
         // This branch is intentionally diagnostic: no synthetic Wi-Fi credentials.
         if (isBuickE5) {
-            log("iap2 Buick/GM T25: 不发送 0x5702；监听 0x4301（90 秒诊断窗口）；请记录车机从正在连接到失败的时间")
+            log("iap2 Buick/GM T26: 前10秒每秒采样，后续每10秒采样；请在车机上点击连接/重试")
             // T24: passive 90-second observation in 10-second slices. No extra
             // iAP2 transmissions and no change to T23's ACK-clean ordering.
             val observationStart = System.nanoTime()
@@ -249,7 +249,9 @@ class Iap2SenderSession(
             var start: Iap2Csm.Frame? = null
             var tick = 0
             while (channel.isAlive && System.nanoTime() < observationEnd && start == null) {
-                val sliceEnd = minOf(observationEnd, System.nanoTime() + 10_000_000_000L)
+                // T26: observe first 10 seconds at 1s resolution, then every 10s.
+                val sliceNanos = if (tick < 10) 1_000_000_000L else 10_000_000_000L
+                val sliceEnd = minOf(observationEnd, System.nanoTime() + sliceNanos)
                 start = expectOrNull(Iap2MessageIds.CARPLAY_START_SESSION, sliceEnd)
                 tick++
                 val seen = pendingFrames.groupingBy { it.messageId }
@@ -258,7 +260,7 @@ class Iap2SenderSession(
                         "0x${it.key.toString(16).padStart(4, '0')}:${it.value}"
                     }.ifEmpty { "none" }
                 val seconds = (System.nanoTime() - observationStart) / 1_000_000_000L
-                log("iap2 Buick/GM T24 WATCH: elapsed=${seconds}s tick=$tick linkAlive=${channel.isAlive} start4301=${start != null} pending=${pendingFrames.size} unexpectedIds=$seen")
+                log("iap2 Buick/GM T26 WATCH: elapsed=${seconds}s tick=$tick linkAlive=${channel.isAlive} start4301=${start != null} pending=${pendingFrames.size} unexpectedIds=$seen")
             }
             if (start == null) {
                 val elapsedStatus = if (!channel.isAlive) "link-closed-or-cancelled" else "timeout-90s"
@@ -266,8 +268,8 @@ class Iap2SenderSession(
                     .toSortedMap().entries.joinToString(",") {
                         "0x${it.key.toString(16).padStart(4, '0')}:${it.value}"
                     }.ifEmpty { "none" }
-                log("iap2 Buick/GM T24 SUMMARY: result=$elapsedStatus startSession4301=false pendingFrames=${pendingFrames.size} unexpectedIds=$seen channelAlive=${channel.isAlive}; ACK108 is link-only, TCP selftest is local-only")
-                throw IOException("Buick T25 诊断结束：0x4301 未到（未请求 0x5703）")
+                log("iap2 Buick/GM T26 SUMMARY: result=$elapsedStatus startSession4301=false pendingFrames=${pendingFrames.size} unexpectedIds=$seen channelAlive=${channel.isAlive}; ACK108 is link-only, TCP selftest is local-only")
+                throw IOException("Buick T26 诊断结束：0x4301 未到（未请求 0x5703）")
             }
             log("iap2 Buick/GM T18: 收到 0x4301，bodyBytes=${start.body.size}；保留链路并解析会话参数")
             val params = Iap2Csm.parseParams(start.body)
