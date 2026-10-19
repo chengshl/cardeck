@@ -156,6 +156,9 @@ class Iap2LinkEngine(
     /** T20-B: ACK 推进与待重传序号快照，不包含控制消息内容。 */
     var onAcknowledgementProgress: ((ack: Int, pendingBefore: String, pendingAfter: String) -> Unit)? = null
 
+    /** T36: 链路层 ACK 诊断；不包含业务载荷或热点凭据。 */
+    var onLinkAckDiagnostic: ((String) -> Unit)? = null
+
     private var unknownSessionDropped = 0
 
     private val unacknowledged = ArrayList<Packet>()
@@ -440,9 +443,28 @@ class Iap2LinkEngine(
     ) {
         completeNegotiationIfPending(nowMillis)
         val before = unacknowledged.joinToString(",") { it.sequence.toString() }
-        lastSentAcknowledged = acknowledgement
+        val previousAck = lastSentAcknowledged
+        val forward = previousAck?.let { sequenceDistance(acknowledgement, it) }
+        val ackClass = when {
+            previousAck == null -> "first"
+            forward == 0 -> "duplicate"
+            forward != null && forward in 1..127 -> "forward"
+            else -> "stale-or-backward"
+        }
         val window = (peerSynchronization?.maxOutgoing ?: maxOutgoing) + ACK_SLACK
+        val confirmed = unacknowledged.filter { sequenceDistance(it.sequence, acknowledgement) !in 1..window }
+            .joinToString(",") { it.sequence.toString() }
+        if (previousAck == null || (forward != null && forward in 1..127)) {
+            lastSentAcknowledged = acknowledgement
+        }
         unacknowledged.removeAll { sequenceDistance(it.sequence, acknowledgement) !in 1..window }
+        if (before.isNotEmpty() || ackClass != "duplicate") {
+            onLinkAckDiagnostic?.invoke(
+                "ack=$acknowledgement class=$ackClass previous=${previousAck ?: "none"} " +
+                    "confirmed=[$confirmed] outstanding=[${unacknowledged.joinToString(",") { it.sequence.toString() }}] " +
+                    "backlog=${sendBacklog.size}"
+            )
+        }
         retransmitDeadline = unacknowledged.minOfOrNull { it.deadlineMillis }
         val after = unacknowledged.joinToString(",") { it.sequence.toString() }
         if (before.isNotEmpty() || after.isNotEmpty()) {
@@ -507,6 +529,11 @@ class Iap2LinkEngine(
         val next = unacknowledged.minByOrNull { it.deadlineMillis } ?: return
         next.deadlineMillis = nowMillis + retransmissionTimeoutMillis
         next.retransmissions += 1
+        onLinkAckDiagnostic?.invoke(
+            "retransmit seq=${next.sequence} attempt=${next.retransmissions} " +
+                "lastPeerAck=${lastSentAcknowledged ?: "none"} " +
+                "outstanding=[${unacknowledged.joinToString(",") { it.sequence.toString() }}]"
+        )
         if (next.retransmissions > maxRetransmissions) {
             die("packet ${next.sequence} not acknowledged")
             return
