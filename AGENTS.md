@@ -21,6 +21,14 @@ adb -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
 若仍被拒，先 `input keyevent KEYCODE_WAKEUP` 亮屏再装——**熄屏时确认弹窗无人应答会被
 系统自动拒绝**（2026-10-15 实测三次 INSTALL_FAILED_ABORTED，亮屏后即成）。
 
+**装过 release 包之后 debug 包装不上**（2026-10-18）：`app-debug.apk` 用 debug 证书、
+release 包用正式 keystore，`adb install -r` 会报
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match`。同一台机器上要换类型只能
+先 `adb uninstall`（会丢应用数据/Shizuku 授权），或直接改用
+`./gradlew :app:assembleRelease` 的产物验证——**推荐后者**，签名一致、可覆盖安装。
+注意 release 包不可 debuggable，`run-as ... tail files/main_debug.log` 会报
+`package not debuggable`；日志验证要另走 debug 包或临时开 debuggable。
+
 **卸载应用不会释放虚拟屏**（2026-10-18 实测，比上面更隐蔽）：虚拟屏由 Shizuku 的
 UserService 子进程持有，**父应用卸载后该进程仍存活**，4 块屏（CarPlayDock/App/AppHi/Map）
 继续占位。此时再 `adb install`，确认弹窗仍会落到这些屏上，表现为「安装卡死」，
@@ -336,15 +344,31 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   挪进 Shizuku UserService（曾试过，不可行）：UserService 里
   `BluetoothManager.getAdapter()` 返回 null（无主 Looper 的应用上下文），查询恒为
   「未连接」，反而掩盖真实状态。诊断日志：`BT-PROFILE: 连接前…的蓝牙配置文件状态=`。
-- **Shell 命令**：参数用 `shellQuote`（单引号转义）；WiFi 连接走
-  `cmd wifi connect-network`，查开关/当前 SSID 用一次 `cmd wifi status`
-  （勿用「任意 WiFi 即成功」的盲绑判定——手机连着别的 WiFi 时会误判）。
-  **无互联网热点的自动切回（已知限制，放弃侵入式抑制）**：shell 连接的配置没有
-  「用户选择」标记，系统 watchdog 会自动切回有网的原 WiFi 导致断连（手动连接不受
-  影响）。曾实现「会话期间 add-network -d 禁用原网/全部其它网络的自动加入」——放弃：
-  多已保存网络环境禁不完整、移动场景误伤、侵入用户配置。现行方案：connect-network
-  自动加入（best effort）+ 阶段提示告知「若被切回请到 WLAN 手动连接热点」+ WiFi 未
-  开启时等待提示（30s）+ 加入超时的手动兜底指引。
+- **Shell 命令**：参数用 `shellQuote`（单引号转义）；查 WiFi 开关/当前 SSID 用一次
+  `cmd wifi status`（勿用「任意 WiFi 即成功」的盲绑判定——手机连着别的 WiFi 时会误判）。
+  **无互联网热点：默认走应用专属网络，不再系统级入网**（2026-10-18 定谳）：
+  `WifiNetworkSpecifier`（`WifiCarPlayConnector.joinCarPlayNetwork`）加入车机热点——
+  网络只对本进程可见（系统侧 `Ephemeral: true` + `OwnerUid=本应用`），**不进系统已保存
+  网络、不成为默认网络**，其它应用继续走 4G/5G。实测（荣耀 + Redmi K40 + DiPlay）：
+  `cmd wifi list-networks` 无该 SSID（返回 0）、`Active default network` 仍是蜂窝、
+  推流期间 `ping baidu.com` 0 丢包。顺带解决三个老问题：系统 watchdog 不再切回原
+  WiFi；不需要 Shizuku 也能自动加入；不会因「已连接无互联网」被 ROM 连带关掉移动数据。
+  **迁移坑**：旧版本用 `cmd wifi connect-network` 存过热点，只要还在系统配置里系统就
+  会自动全局连接——加入前先 `cmd wifi list-networks` 查同 SSID，**命中则弹窗询问用户
+  是否清除，绝不擅自删除**（保留是正当需求：用户可能就想用系统自动连、或车机热点
+  本身带流量；删除只影响「会不会全局自动连」，与本轮连接无关）。选择保留 → 照常
+  以应用专属网络连接。每个 SSID 每进程只问一次（`forgetPromptHandled`），否则配对
+  重试/端点重入会反复弹窗挡住流程；无人应答按「保留」处理（不做破坏性动作）。
+  解析用 `WifiSavedNetworks.idsOf`（纯函数，有单测：SSID 含空格/非 ASCII/同网多行
+  同 netId/畸形行都覆盖；宁可漏判不误删）。手动兜底（`manualJoinCarWifi`）会把热点
+  存回系统网络，日志与弹窗都明确写出这个代价。
+  **WEP 无法用 specifier 表达**（无对应 Builder API）→ `JoinResult.Unsupported`，
+  走旧的 `connect-network` 兜底路径（`legacyJoinCarWifi`）。
+  specifier 在 **Android 12/12L 仍需位置权限 + 位置服务**（13+ 由 NEARBY_WIFI_DEVICES
+  接管）：缺权限时 `requestNetwork` 直接失败、现象只是「未能加入车机热点」，很难自查，
+  故在连接前置检查拦截（`ensureWifiLocationReady`）；manifest 里 FINE/COARSE 必须成对
+  声明，否则 lint `CoarseFineLocation` 直接失败。`onLost` 必须处理（热点消失/熄火），
+  否则英雄卡会在「已连接」与失败间静默摇摆（`WifiCarPlayConnector.onNetworkLost`）。
 - **目标车机选择（多台车机场景，2026-10-16）**：用户可能配对多台 CarPlay 车机
   （真车 Audi + 测试台 DiPlay）。未指定目标时出站客户端逐个尝试全部候选、入站
   服务端来者不拒——连到哪台取决于谁先应答；选定目标后**出站只连该设备、入站
@@ -364,6 +388,37 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   `onWifiCredentials`：`videoSender.isRunning` 时直接忽略/只刷新密码缓存；真断连时
   推流自行终止，下一个端点自然接续。会话中的冗余 0x5703 还会连带触发 WiFi 重绑 +
   ctrl mDNS force 重注册，都会扰动推流，一并拦下。
+- **0x4301 是活事件，不是「该车机不发」**（2026-10-18，Audi MMI 9310 用户日志定谳）：
+  这台车识别帧明确声明 `车机发送清单=0x4301 0xea03`，但 0x4301 在 Phase 1 结束后
+  **2 分 35 秒**（配对 120s 窗口都已耗尽、mDNS 也始终没发现 `_airplay._tcp`）才到达；
+  车机等到 15 秒无人连入 AirPlay 就自己拆掉 RFCOMM——用户看到的是「连上后自动断开」。
+  旧实现有两处会吞掉它：`pumpIncomingForever` 把所有消息当 keep-alive 只记长度，
+  且同 ID 连续到达会被限流 `continue`。现行三层修复：
+  ① `Iap2SenderSession` 在保活泵里先于限流识别 0x4301 → `parseStartSession`（用缓存的
+  0x5703）→ `onEndpointUpdate` 回调，并由 BT client/server 透传到
+  `SessionController.onLateEndpoint`；② `onLateEndpoint` 按状态分流：推流中忽略（防上面
+  的拆会话循环）/ 配对进行中 → `AirPlayClient.updateEndpoint` 热更新（关旧 socket，下一轮
+  重连新地址）/ 交接尚未建 client → 暂存进 `pendingEndpointUpdate`，建 client 时 `drain`
+  / 上一轮已失败 → 用新端点重走一轮 `onCarPlayEndpoint`；③ `AirPlayClient` 配对循环每轮
+  重试前调用 `endpointRefresher` 再读一次 mDNS 缓存，网关兜底地址连不通时能及时切换。
+  **新增生命周期消息（0x5702/0x6800/0x4301 等）时，先判断「它晚到会怎样」**——保活泵里
+  必须按消息 ID 分流，不能只当日志。另：`resolveEndpointHost` 的等待窗口只有 3s，
+  不能在超时日志里断言车机「不发」（MMI 9310 就是声明会发但晚到）。
+- **0x4301 的地址字段是「定长 + NUL 填充」，解析必须去掉全部尾部 NUL**（2026-10-18，
+  Audi MMI 3315 日志定谳）：车机把 IPv6 填充到 47 字节（`fe80::…` 后跟 **22 个 NUL**）、
+  IPv4 填充到 17 字节（`10.174.189.1` 后跟 **5 个 NUL**）。`asStringOrEmpty()` 原先只
+  `copyOf(size - 1)` 去掉一个，得到 `"10.174.189.1\0\0\0\0\0"`——这个字符串
+  `contains('.')=true`、`contains(':')=false`，能通过所有「是不是 IPv4」的判断，
+  但 Android 的 getaddrinfo 解不了（iOS/桌面 Java 反而容忍，极易误判为「不是这个原因」），
+  日志表现为 `Unable to resolve host "10.174.189.1": No address associated with hostname`。
+  典型症状链：SRP 配对靠 mDNS 刷新后的干净地址**侥幸成功** → 视频数据端口与 keepAlive
+  仍用带 NUL 的旧地址 → 双双失败 → 车机 ~10s 后拆会话（用户看到「连上就断」）。
+  教训：**协议字段里的 NUL 填充一律 `rstrip(0)`**，不要假设只有一个终止符。
+  另外两处配套收口：① `SessionController.appendLog` 把 `\u0000` 换成可见的 `␀` 再写
+  文件——否则导出的日志是二进制文件，用户反馈时打不开（本次日志 216 个 NUL，直接
+  无法读取）；② 视频/音频/keepAlive 的 host 一律取 `client.currentEndpoint`（配对期间
+  mDNS 刷新过的真实连接地址），不要用解析阶段的 `effectiveEndpoint` 旧值。
+  单测 `nulPaddedAddressesAreStrippedCompletely` 用真实填充宽度锁住这一行为。
 - **UserService 虚拟屏跨版本残留：三层收口**（2026-10-16 定谳，「重启后检测到残留屏、
   点清理却释放 0/N」根因）：Shizuku 按「组件+进程名+版本(APK lastUpdateTime)」复用常驻
   shell 进程——重装 APK 起新进程，旧进程 `am force-stop` 杀不掉（实测）、Shizuku 也不
@@ -456,6 +511,23 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   `setCanceledOnTouchOutside(false)`；底部菜单入口只读（无倒计时/无滚动要求）。
 - **媒体卡片**：元数据切歌是分阶段的（歌名先到、封面/时长滞后），空结果需短退避重试
   而非固化缓存；播放位置用「锚点 + 速度」外推，UI 每秒自刷新。
+- **日志导出落 `下载/CarDeck/`，不能落应用私有目录**（2026-10-18）：用户要能自己找到
+  并转发给开发者。实现走 `MediaStore.Downloads`（无需存储权限、文件管理器可见、
+  微信/分享面板能直接选到）；`filesDir` 与 `Android/data/<pkg>` 在 Android 11+ 的
+  系统文件管理器里直接被屏蔽，导出等于没导。导出弹窗必须用 `DarkMessageDialog`
+  列出**绝对路径 + 大小**，snack 两秒就消失、用户看不到（本次需求即为此）。
+  **默认只导本次进程启动后的日志**（历史轮次动辄几百 KB、淹没关键行）：
+  `SenderApp.onCreate` 用 `DebugFileLog.markSessionStart` 写一条
+  `SESSION_MARKER` 进文件，导出时 `lastIndexOf` 截取最后一条之后的内容；
+  长按导出按钮走 `Scope.ALL` 取全量。标记**必须写在文件里**而不是只记内存偏移
+  ——2MB 截断会让偏移失效；截断后也要立刻补写一条标记，否则导出退化为全量。
+  无标记（旧版本文件）时回退全文——全量比空好。
+- **荣耀 ROM 打开目录要用显式组件**（2026-10-18 实测）：`ACTION_VIEW` +
+  `vnd.android.document/directory` 走隐式 intent 会被 resolver 乱匹配（实测弹出
+  「网易云音乐」当默认项）；而 `am start` 同样的 intent 却正确落到 DocumentsUI。
+  解法：优先显式 `ComponentName("com.android.documentsui",
+  "com.android.documentsui.files.FilesActivity")` + `document/primary%3ADownload%2FCarDeck`，
+  失败再退隐式/存储根/文字指引。**凡是「唤起系统 UI」的功能都不要只写隐式 intent**。
 - **「音乐在播但卡片显示媒体信息未连接」= 没拿到通知使用权**（2026-10-18 定谳）：
   `MediaSessionManager.getActiveSessions()` 在**未授权时仍返回会话**——`PlaybackState`
   正常（`playing=true` 照常翻转），但 `metadata` 恒为 null，于是歌名/歌手全空。
@@ -478,6 +550,56 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
 - **协议差异以日志为准**：测试台（DiPlay）与真车（奥迪 MIB3）行为多处相反（MFi 挑战
   32B/20B、0x4301 有无、ctrl 邀请死锁等），细节见 `docs/PROTOCOL-NOTES.md` §9，
   改协议代码前先对照。
+- **老车机（CarPlay 210.81 / 奥迪 4xxx 固件）必须按 catplay 的「三时代」分类处理**
+  （2026-10-19 定谳，`docs/PROTOCOL-NOTES.md` §9f）：该代是 **pre-HomeKit** 接收端
+  （`_airplay._tcp` features 无 bit38 `HK_PAIRING_AND_ENCRYPT`），只接受
+  `et=NONE` 明文控制会话 + **AES-128-CTR 零密钥**屏幕流，`pair-setup` 必然失败。
+  六处硬约束：① bplist **根对象必须在字节 8**（210.81 不读 trailer 的 topObject，
+  我们的编码器默认根在末尾——已统一 `makeRootFirst`）；② 初始 SETUP 用相对 URI
+  `/setup`；③ 未配对会话显式带 `et=1`，事件通道明文；④ 屏幕帧未配对走 AES-128-CTR
+  （密钥流**跨帧连续**，每帧新建实例 = 第二帧起全乱码）；⑤ 控制密文帧 MTU 1440 →
+  单帧明文上限 **1422**（旧 0x4000 会被判 PayloadTooBig）；⑥ **不要用
+  `contains('.')` 判「有没有地址」**——奥迪 4xxx 常只发 IPv6 link-local，判成无地址
+  就会退到「网关:7000」兜底并永远连不上（统一走 `net/EndpointHosts`，IPv4 → 全局
+  IPv6 → 链路本地 IPv6，且视频/音频/事件通道复用配对真正连通的 `activeHost`）。
+  TXT features 缺失一律按「未知」保持旧路径，不能误判成「不支持配对」。
+- **屏幕流 VideoConfig 帧头必须带「加密标志 + 画布宽高」**（2026-10-19 奥迪 4851
+  实车定谳，`docs/PROTOCOL-NOTES.md` §9g）：车友反馈「app 显示已连接、车机没反应」，
+  日志里会话/触摸/心跳全健康、零错误。根因是我们只写了 `body_size`+`opcode`，而
+  catplay `ScreenFrame::config` 还写：`small_param[1] |= ScreenFlag::Encrypted(0x04)`
+  （**偏移 6**，声明后续帧是密文）、`params[1]`（**偏移 16**）= 宽高两个 **f32 LE**、
+  `params[0]`（偏移 8..16）留 0。Audi/DELPHI 按这些头字段建解码器，缺了就**整屏黑但
+  会话照旧、触摸照常**；DiPlay/WinPlay 只读 body 与 avcC，**测试台永远发现不了**。
+  因此凡是「车机屏黑但 app 显示已连接」都先核 `VIDEO: ✓ VideoConfig … flags=` 这行
+  日志（会同时打印头部前 24 字节 hex）。新增屏幕流头字段时同理：先用 catplay
+  `screen_frame_ext.rs` 对照，别只对着测试台验证。
+- **AirPlay 会话级 SETUP 的 `deviceID` 必须是本机真实蓝牙 MAC**（2026-10-19
+  WinPlay 实测）：接收端可以按「用户选中的 iPhone 蓝牙地址」过滤会话，对不上即回
+  **403**，状态行是它特有的 `403 OK`（WinPlay 的 STATUS_TEXT 表没有 403，回退成
+  OK——看到这个组合优先怀疑设备过滤）。此前用 catplay 的写死假值
+  `ff:ee:dd:cc:bb:aa`——Audi/DiPlay 不校验，WinPlay 必拒；表象是「连上后约 45s
+  自动断开」（接收端等视频超时后自己拆链）。现统一走 `DeviceIdentity`（与
+  0x4300/0x4E0E 同源），占位值 `02:00:00:00:00:00` 只作 Shizuku 未就绪兜底，
+  403 日志会打印该值供用户到接收端对照。**SETUP 非 200 要主动 close 控制通道**，
+  别静默等接收端拆链——否则用户只看到「自动断开」，排查从零开始。
+- **会话存活靠三条相互独立的心跳，缺一整轮 10 秒后被车机拆**（2026-10-19 奥迪
+  MMI 3315 两轮实测，时序逐毫秒重合）：
+  ① UDP keepAlive 4B ping → keepAlivePort；**间隔必须远小于车机看门狗**——catplay
+  取的 10s 与看门狗等长，`Thread.sleep` 抖动让心跳晚到 1ms 即超时（现取 5s）；
+  ② RTSP `POST /feedback` 空体，1s；
+  ③ **屏幕数据口内的 keepAlive 帧**（128B 明文头，opcode=2；`/info` 的
+  `keepAliveSendStatsAsBody=true` 时 opcode=5 带 bplist 统计体），1s，**视频持续
+  推流时也照发**——它不是视频流量的备份。只有 ①② 时现象是「推流正常、RECORD 后
+  10.2s 整轮 reset」，日志里视频/feedback/事件通道全都健康，极易误判为网络问题。
+  keepAlive 帧不加密（catplay 只加密 opcode=VideoFrame），不消耗 ChaCha 帧 nonce。
+- **MFi 挑战长度按车机持久化，不要全局写死某一档**（2026-10-19 奥迪 MMI 3315 实测）：
+  20B 挑战在该车静默 **6.0 秒**无应答，32B 才在 0.64 秒回签名——只靠「真车都 20B
+  优先」的基线，每次连接都白等 6 秒。而各接收端偏好相反：DiPlay 只认 32B（长度不符
+  直接断链）、MMI 6318 认 20B（32B 曾 0.4s 拆链）、MMI 3315 认 32B。
+  `MfiLengthMemory` 按 0x1D01 的 name+model+manufacturer 生成稳定 key，持久化
+  成功/静默/被拒三种结局；`orderAttempts`（纯函数）把**上次成功的长度排第一**，静默
+  与被拒只降级、不丢弃（固件可能变，全被拒时照常全试，防永久卡死）；已知静默过的
+  档位重试窗口压到 1.5s。**记忆是跨进程的**——旧实现只在进程内记，App 重启即丢。
 - **音频通道（车机侧声音）三条硬约束**（2026-10-17 奥迪联网实测打通，此前从无声音）：
   ① **会话建立顺序必须是 屏幕SETUP → 连数据端口 → RECORD → 视频起流 → 音频SETUP →
   补发RECORD**：车机对「屏幕流 SETUP 后约 2s 内未激活」有看门狗，而音频 SETUP 本身
@@ -499,6 +621,21 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   诊断三件套（无声时按序看）：`AUDIO: 采集样本 非零X% 峰值=N`（0%=没采到：应用禁止
   捕获或音频走了蓝牙）、`音频协商 → audioType=?`（选错通路）、车机 `/feedback` 里该
   connId 的 sampleTime 是否推进。
+- **音乐卡「无法读取播放信息」= 通知监听器「有授权、无绑定」**（2026-10-19 实测）：
+  `settings get secure enabled_notification_listeners` 里能看到本组件、
+  `MediaListenerService.onListenerConnected` 却从未被调用——此时 `dumpsys notification`
+  的 **Live notification listeners** 段里没有本组件，`getActiveSessions()` 仍返回会话
+  （播放状态可见）但 `metadata` 恒为 null，卡片就显示「无法读取播放信息」。
+  **授权列表 ≠ 已绑定**：重装 APK 后列表项还在，绑定可能丢失。实测对照——App 进程
+  不运行时静置 10s 不会自愈；启动 App 后 1s 内恢复，说明必须由我们主动重绑。
+  自愈实现见 `NotificationAccess.rebindIfNotConnected`：仅当本进程尚未确认连上
+  （`serviceConnected` 为 false，由 onListenerConnected 置位）时读一次
+  `dumpsys notification --noredact`，**只认 Live 段**，缺失则 `disallow_listener`
+  + `allow_listener` 触发系统重新绑定并短轮询确认。别用「在 enabled 列表里」当已授权
+  判据——那正是这个 bug 的误判来源。
+  另：监听器断开/销毁时必须 `MediaSessionsState.publish(null)`，否则卡片会保留旧歌名，
+  出现「正在播放 + 未在播放」这类自相矛盾的残留状态（布局静态小标题也不能写死
+  「正在播放」，已改为中性的「媒体」）。
 - **RTSP 控制通道必须异步读**（2026-10-17）：一条连接一把锁 + 同步读响应的实现，
   会让任何慢请求（奥迪音频 SETUP 2s+）期间 feedback 心跳停摆；车机对 feedback 有
   ~3s 看门狗，断供即拆会话。现为独立读线程收包解密 + 按 CSeq 投递，写侧只串行化
