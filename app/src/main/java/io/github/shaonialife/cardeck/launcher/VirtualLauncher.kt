@@ -759,6 +759,13 @@ object VirtualLauncher {
 
     /** 回桌面：GridActivity 任务带回前台（后台应用保留）；合成器切回桌面所在屏。 */
     fun goGrid(): Boolean {
+        // T39: GridActivity pager callback runs on the UI thread and calls
+        // showDashboard/showDesktop -> goGrid -> Shell.exec(am start).
+        // Never wait up to 8 seconds for Shizuku on Android's main Looper.
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            Bg.run("grid-return-t39") { goGrid() }
+            return true // queued; not a synchronous shell execution result
+        }
         val grid = if (gridDisplayId >= 0) gridDisplayId else appDisplayId
         val pkg = appContextRef?.packageName ?: return false
         val ok = startOn(grid, "$pkg/.launcher.GridActivity")
