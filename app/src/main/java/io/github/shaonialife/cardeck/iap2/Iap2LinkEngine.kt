@@ -169,6 +169,8 @@ class Iap2LinkEngine(
 
     private var markerDeadline: Long? = null
     private var syncDeadline: Long? = null
+    /** T38: one-shot SYN probe on receiver-specific event links, never retransmitted. */
+    private var synchronizationProbeSent = false
     private var retransmitDeadline: Long? = null
 
     val isDead: Boolean get() = state == State.DEAD
@@ -206,6 +208,18 @@ class Iap2LinkEngine(
     fun enterNegotiating() {
         if (state != State.IDLE) return
         state = State.NEGOTIATING
+    }
+
+    /**
+     * T38 Buick experiment: after repeated DETECT with no peer SYN, offer one SYN without
+     * starting the 500ms resend timer. The Audi responder path remains passive.
+     * This is deliberately one-shot so a receiver rejecting initiator SYN cannot be flooded.
+     */
+    fun offerSynchronizationOnce(): Boolean {
+        if (state != State.NEGOTIATING || peerSynchronization != null || synchronizationProbeSent) return false
+        synchronizationProbeSent = true
+        sendSynchronization()
+        return true
     }
 
     fun feed(
