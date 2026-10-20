@@ -40,8 +40,10 @@ android {
         applicationId = "io.github.shaonialife.cardeck"
         minSdk = 31
         targetSdk = 34
-        versionCode = appVersionCode
-        versionName = appVersionName
+        // Buick-main is a dedicated installable upstream baseline. CI increments
+        // the code beyond the Buick-E5 testing builds without changing main.
+        versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
+        versionName = if (System.getenv("CARDECK_BUILD_VERSION_CODE") != null) "$appVersionName-buick-main" else appVersionName
     }
 
     signingConfigs {
