@@ -1173,6 +1173,8 @@ class AirPlayClient(
         private var started = false
         private var detectReplies = 0
         private var linkFrameLogs = 0
+        private var linkSentLogs = 0
+        private var linkAckLogs = 0
         private var firstDetectAt = 0L
 
         /** Diagnostic boundary: whether the car ever advanced past DETECT. */
@@ -1208,7 +1210,19 @@ class AirPlayClient(
                 }
             }
             engine.onPeerSynchronizationAdopted = { sync ->
-                log("IAPLINK T40: peer SYN adopted, sessions=${sync.sessions} state=${engine.state}")
+                log("IAPLINK T43: peer SYN adopted, sessions=${sync.sessions} state=${engine.state}")
+            }
+            // T43: if Buick accepts POST /command but never processes 0x1D00,
+            // the virtual ACK and CSM sequence numbers will identify the exact stall.
+            engine.onFrameSent = { ctl, seq, ack, sid, size ->
+                if (isBuickE5Receiver() && linkSentLogs++ < 16) {
+                    log("IAPLINK T43: tx frame ctl=0x${ctl.toString(16)} seq=$seq ack=$ack session=$sid payload=$size")
+                }
+            }
+            engine.onLinkAckDiagnostic = { detail ->
+                if (isBuickE5Receiver() && linkAckLogs++ < 16) {
+                    log("IAPLINK T43: peer ACK $detail")
+                }
             }
             // 节拍线程：驱动引擎计时器（重传等）
             Thread({
