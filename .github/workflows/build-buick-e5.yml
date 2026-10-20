@@ -5,6 +5,8 @@ on:
   push:
     branches: [Buick-E5]
 
+# E5's two legacy iAP2 mock tests remain visible as warnings in the shared
+# builder; this wrapper intentionally leaves real-car protocol code unchanged.
 concurrency:
   group: cardeck-all-branches-latest
   cancel-in-progress: false
