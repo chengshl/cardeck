@@ -1188,12 +1188,16 @@ class AirPlayClient(
         private var virtualMfiSequence: Int? = null
         private var virtualMfiAckNotified = false
 
+        /** T45 Buick-only diagnostic: idle iAP2 ACK frame every 5s after Wi-Fi MFi ACK. */
+        private var lastVirtualIdleAckAt = 0L
+        private var virtualIdleAckCount = 0
+
         /** Diagnostic boundary: whether the car ever advanced past DETECT. */
         fun logDiagnosticSummary() {
             synchronized(lock) {
                 val age = if (firstDetectAt == 0L) -1L else SystemClock.uptimeMillis() - firstDetectAt
                 val csmAge = if (virtualCsmStartedAt == 0L) -1L else SystemClock.uptimeMillis() - virtualCsmStartedAt
-                log("IAPLINK T43: summary DETECT=$detectReplies linkState=${engine.state} elapsedSinceFirstDetect=${age}ms csmStarted=$virtualCsmStarted csmIdentified=$virtualIdentified csmElapsed=${csmAge}ms echoDelivered=$virtualEchoDelivered")
+                log("IAPLINK T43: summary DETECT=$detectReplies linkState=${engine.state} elapsedSinceFirstDetect=${age}ms csmStarted=$virtualCsmStarted csmIdentified=$virtualIdentified csmElapsed=${csmAge}ms echoDelivered=$virtualEchoDelivered idleAckCount=$virtualIdleAckCount")
             }
         }
 
@@ -1245,7 +1249,9 @@ class AirPlayClient(
                     iapTunnel == null && isBuickE5Receiver()
                 ) {
                     virtualMfiAckNotified = true
+                    lastVirtualIdleAckAt = SystemClock.uptimeMillis()
                     log("IAPLINK T44: Buick Wi-Fi virtual MFi 0xAA05 ACK=$ack confirmed; requesting controlled RFCOMM handover")
+                    log("IAPLINK T45: B233 idle-link ACK probe armed; interval=5000ms, active until AirPlay closes")
                     onVirtualIapAuthenticated?.invoke()
                 }
             }
@@ -1264,6 +1270,27 @@ class AirPlayClient(
                     }
                     synchronized(lock) {
                         engine.advanceTime(System.nanoTime() / 1_000_000L)
+                        // T45 isolated idle test. Do not send business CSM messages,
+                        // increment the data sequence or enable the probe for Audi.
+                        // The virtual-link pacer stops when the RTSP socket closes.
+                        val now = SystemClock.uptimeMillis()
+                        if (virtualMfiAckNotified &&
+                            lastVirtualIdleAckAt > 0L &&
+                            now - lastVirtualIdleAckAt >= 5_000L &&
+                            iapTunnel == null &&
+                            isBuickE5Receiver() &&
+                            engine.state == Iap2LinkEngine.State.NORMAL
+                        ) {
+                            lastVirtualIdleAckAt = now
+                            if (engine.offerIdleAcknowledgement()) {
+                                virtualIdleAckCount++
+                                log(
+                                    "IAPLINK T45: Buick virtual idle ACK #$virtualIdleAckCount " +
+                                        "detectAgeMs=${now - firstDetectAt} " +
+                                        "state=${engine.state} (no CSM data)",
+                                )
+                            }
+                        }
                         drainLocked()
                     }
                 }
