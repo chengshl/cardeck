@@ -347,7 +347,8 @@ object BinaryPlist {
         val intMarker = u8(bytes[offset + 1])
         require(intMarker ushr 4 == 0x1) { "期望长度 int 对象，得到 0x${intMarker.toString(16)}" }
         val intSize = 1 shl (intMarker and 0xF)
-        val count = readSigned(bytes, offset + 2, intSize).toInt()
+        // Extended bplist lengths are unsigned (e.g. 0xB6 means 182, not -74).
+        val count = readUint(bytes, offset + 2, intSize).toInt()
         return count to offset + 2 + intSize
     }
 
