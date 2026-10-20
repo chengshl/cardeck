@@ -67,6 +67,8 @@ class AudioSender(
     private val onSyncPortRefused: ((String) -> Unit)? = null,
     /** B233 T12 diagnosis: keep phone media volume unchanged while verifying playback capture. */
     private val mutePhoneOutput: Boolean = true,
+    /** T13 B233: 1 Hz RTP/capture diagnostics for first 45s; other cars unchanged. */
+    private val verboseStartupDiagnostics: Boolean = false,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -176,6 +178,8 @@ class AudioSender(
     private var packetsSent = 0L
     private var bytesSent = 0L
     private var lastLogAt = 0L
+    private var diagnosticStartedAt = 0L
+    private var lastCaptureDiagnosticAt = 0L
     private var readFailures = 0
 
     val isRunning: Boolean get() = running.get()
@@ -303,6 +307,12 @@ class AudioSender(
             }
             record = recorder
             running.set(true)
+            if (verboseStartupDiagnostics) {
+                diagnosticStartedAt = android.os.SystemClock.uptimeMillis()
+                lastLogAt = diagnosticStartedAt - 1_000L
+                lastCaptureDiagnosticAt = diagnosticStartedAt - 1_000L
+                log("AUDIO T13: B233 前45秒开启每秒 RTP/采集诊断（静音数据也会持续发送）")
+            }
             if (mutePhoneOutput) {
                 mutePhoneMedia()
             } else {
@@ -489,7 +499,13 @@ class AudioSender(
                 // 内容诊断（2026-10-17）：播放捕获可能拿到全零（app 禁止捕获 / 音频路由
                 // 到蓝牙 / 无音频播放）。全零时车机静音但手机仍在响，用户会报「声音在
                 // 手机上」——必须能区分「没采到」与「采到了但车机没播」。
-                if (sequence < 3 || sequence % diagnosticStride == 0) {
+                val diagNow = android.os.SystemClock.uptimeMillis()
+                val earlyB233Diagnostic = verboseStartupDiagnostics &&
+                    diagnosticStartedAt > 0L &&
+                    diagNow - diagnosticStartedAt <= 45_000L &&
+                    diagNow - lastCaptureDiagnosticAt >= 1_000L
+                if (sequence < 3 || sequence % diagnosticStride == 0 || earlyB233Diagnostic) {
+                    if (verboseStartupDiagnostics) lastCaptureDiagnosticAt = diagNow
                     var nonZero = 0
                     var peak = 0
                     var index = 0
@@ -541,11 +557,19 @@ class AudioSender(
                 }
                 if (sendFailed) break
                 val now = android.os.SystemClock.uptimeMillis()
-                if (now - lastLogAt >= 30_000L) {
+                val inTrialWindow = verboseStartupDiagnostics &&
+                    diagnosticStartedAt > 0L &&
+                    now - diagnosticStartedAt <= 45_000L
+                val logInterval = if (inTrialWindow) 1_000L else 30_000L
+                if (now - lastLogAt >= logInterval) {
+                    val elapsedMs = if (diagnosticStartedAt > 0L) now - diagnosticStartedAt else -1L
+                    val label = if (inTrialWindow) "AUDIO T13: B233 RTP" else "AUDIO: 推流中"
+                    val recordState = if (inTrialWindow) " RECORD确认=$syncRecordAccepted" else ""
                     lastLogAt = now
                     log(
-                        "AUDIO: 推流中（累计 $packetsSent 包，${bytesSent / 1024}KB，" +
-                            "seq=$sequence ts=$timestamp）",
+                        "$label（elapsed=${elapsedMs}ms，codec=${codec.name} type=$streamType，" +
+                            "累计 $packetsSent 包，${bytesSent / 1024}KB，" +
+                            "seq=$sequence ts=$timestamp$recordState）",
                     )
                 }
             }

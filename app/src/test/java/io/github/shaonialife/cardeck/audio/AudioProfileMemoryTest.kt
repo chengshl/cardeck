@@ -103,6 +103,43 @@ class AudioProfileMemoryTest {
     }
 
     @Test
+    fun b233RestoresAdvertisedAac48MediaFirstAndPcmFallback() {
+        val pcm48 = AudioProfile("media", 1L shl 15, 48_000, 250)
+        val aac48 = AudioProfile(
+            "media", 1L shl 23, 48_000, 250,
+            streamType = 102L, codec = AudioCodec.AAC_LC,
+        )
+        val aac44 = AudioProfile(
+            "media", 1L shl 22, 44_100, 250,
+            streamType = 102L, codec = AudioCodec.AAC_LC,
+        )
+        val input = listOf(pcm48, aac44, aac48) // T10's old PCM-first result
+        val ordered = AudioProfileMemory.orderForBuickB233(input, AudioProfileMemory.Entry())
+        assertEquals(listOf(aac48, aac44, pcm48), ordered)
+        // Default non-B233 policy remains entirely untouched.
+        assertEquals(input, AudioProfileMemory.order(input, AudioProfileMemory.Entry()))
+    }
+
+    @Test
+    fun b233TrulyRejectedAacRemainsFallbackWithoutDisablingPcm() {
+        val pcm48 = AudioProfile("media", 1L shl 15, 48_000, 250)
+        val aac48 = AudioProfile(
+            "media", 1L shl 23, 48_000, 250,
+            streamType = 102L, codec = AudioCodec.AAC_LC,
+        )
+        val candidates = listOf(pcm48, aac48)
+        val rejected = AudioProfileMemory.Entry(rejected = setOf(aac48.key))
+        assertEquals(
+            listOf(pcm48, aac48),
+            AudioProfileMemory.orderForBuickB233(candidates, rejected),
+        )
+        assertEquals(
+            listOf(pcm48),
+            AudioProfileMemory.orderForBuickB233(listOf(pcm48), AudioProfileMemory.Entry()),
+        )
+    }
+
+    @Test
     fun b233ExplicitTransportFailureInvalidatesRememberedAacSuccess() {
         val id = "BUICK B233 audio-transport-unit-test"
         val aac = AudioProfile(

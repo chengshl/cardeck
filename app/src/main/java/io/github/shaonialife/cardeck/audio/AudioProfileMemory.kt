@@ -190,6 +190,37 @@ object AudioProfileMemory {
         return (listOfNotNull(working) + safe + risky).distinctBy { it.key }
     }
 
+    /**
+     * T13 Buick B233 controlled retrial, modeled on upstream Honda PR #9.
+     * B233 /info explicitly advertises 102/media AAC-LC 48kHz (0x800000)
+     * as well as 100/media PCM 48kHz; successful PCM SETUP alone does NOT
+     * prove that the receiver will retain the full CarPlay session.
+     *
+     * Preserve profile memory semantics: genuinely rejected profiles remain
+     * fallback, while a proven stable working profile still takes precedence.
+     * This policy is only invoked for B233; do not alter upstream ranking.
+     */
+    fun orderForBuickB233(
+        candidates: List<AudioProfile>,
+        entry: Entry,
+    ): List<AudioProfile> {
+        val preferred =
+            candidates.sortedBy { profile ->
+                when {
+                    profile.streamType == 102L &&
+                        profile.codec == AudioCodec.AAC_LC &&
+                        profile.sampleRate == 48_000 &&
+                        profile.audioType.equals("media", ignoreCase = true) -> 0
+                    profile.streamType == 102L &&
+                        profile.codec == AudioCodec.AAC_LC -> 1
+                    profile.codec == AudioCodec.AAC_LC -> 2
+                    profile.codec == AudioCodec.PCM -> 3
+                    else -> 4
+                }
+            }
+        return order(preferred, entry)
+    }
+
     // ---- 内部 ----
 
     private val memory = HashMap<String, Entry>()

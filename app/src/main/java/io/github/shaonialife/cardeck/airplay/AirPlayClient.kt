@@ -373,14 +373,18 @@ class AirPlayClient(
                 try {
                     val (status, body) = request("POST", "/feedback", ByteArray(0))
                     sent++
-                    if (sent <= 6 || sent % 30 == 0) {
-                        log("AIRPLAY: feedback #$sent [$status]${if (body.isNotEmpty()) " body=${body.size}B" else ""}")
+                    // T13 B233: T12 mistakenly treated 8s of logged feedback
+                    // as feedback stopping at 8s. Dump every reply across the
+                    // entire 20s teardown window and a full 40s comparison.
+                    val b233AudioTrace = endpoint.isBuickB233 && sent <= 45
+                    if (b233AudioTrace || sent <= 6 || sent % 30 == 0) {
+                        log(
+                            (if (b233AudioTrace) "AIRPLAY T13: B233" else "AIRPLAY:") +
+                                " feedback #$sent [$status]" +
+                                if (body.isNotEmpty()) " body=${body.size}B" else " body=empty",
+                        )
                     }
-                    // 车机反馈里带各流状态（收没收到、是否欠载）：音频无声时这是最直接的
-                    // 判据——能区分「车机没收到包」与「收到但不播」（2026-10-17）。
-                    // 前 8 次全打（约覆盖起流后的 8s，正好是 6.5s 拆链看门狗窗口）：
-                    // 音频流的 sampleTime 会不会从 0 往前走，是判断「包有没有被消费」的硬证据。
-                    if (body.isNotEmpty() && (sent <= 8 || sent % 30 == 0)) {
+                    if (body.isNotEmpty() && (b233AudioTrace || sent <= 8 || sent % 30 == 0)) {
                         logFeedbackBody(body)
                     }
                 } catch (_: IOException) {

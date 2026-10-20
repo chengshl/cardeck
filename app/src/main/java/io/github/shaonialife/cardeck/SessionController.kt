@@ -4,7 +4,6 @@ import android.content.Context
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
 import io.github.shaonialife.cardeck.airplay.PairVerifyClient
-import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
@@ -1166,6 +1165,20 @@ object SessionController {
                     appendLog("AUDIO T11: 已清除 B233 旧版的错误档位归因；其他车机记忆不变")
                 }
             }
+            // T13: T9 AAC was tested before RECORD/sync and iAP2 fixes.
+            // T10 later forced PCM and polluted B233's profile memory.
+            // Clear only this receiver's stale conclusions once so that
+            // 102/media AAC-LC 48kHz gets a fair trial with the fixed stack.
+            if (client.currentEndpoint.isBuickB233) {
+                val trialPrefs = context.applicationContext.getSharedPreferences(
+                    "b233_audio_t13_migration", Context.MODE_PRIVATE,
+                )
+                if (!trialPrefs.getBoolean("aac48_first_trial", false)) {
+                    AudioProfileMemory.reset(context.applicationContext, identity)
+                    trialPrefs.edit().putBoolean("aac48_first_trial", true).apply()
+                    appendLog("AUDIO T13: 仅重置 B233 旧音频档位判断，准备重新验证 AAC-LC 48kHz")
+                }
+            }
             // 音频封装参数已定案（见 AudioTuning），不再提供切换
             val tuning = AudioTuning.RAW_SPF
             var entry = AudioProfileMemory.load(context.applicationContext, identity)
@@ -1182,21 +1195,21 @@ object SessionController {
                 appendLog("AUDIO: 本车机（$identity）有「全部档位拆链」的旧记忆，已重置并重试")
             }
             val candidates = client.audioCandidates(preferCompat = audioPreferCompat)
-            // T10: B233 AAC 102/media received UDP ECONNREFUSED and a 20s
-            // full-session teardown. Try advertised 48k PCM first while keeping
-            // the AAC option as fallback; other vehicles retain upstream order.
+            // T13 follows upstream Honda PR #9: PCM SETUP success does not
+            // prove that the car will consume/accept that media stream.
+            // On B233, retry its advertised 102/media AAC-LC 48k before PCM.
+            // Other receivers retain upstream unchanged ordering.
             val ordered =
                 if (client.currentEndpoint.isBuickB233) {
-                    val pcmFirst = candidates.sortedBy { if (it.codec == AudioCodec.PCM) 0 else 1 }
-                    val workingPcmOnly = entry.working?.takeIf { key ->
-                        candidates.any { it.key == key && it.codec == AudioCodec.PCM }
-                    }
-                    AudioProfileMemory.order(pcmFirst, entry.copy(working = workingPcmOnly))
+                    AudioProfileMemory.orderForBuickB233(candidates, entry)
                 } else {
                     AudioProfileMemory.order(candidates, entry)
                 }
             if (client.currentEndpoint.isBuickB233) {
-                appendLog("AUDIO T10: B233 48k PCM优先，旧AAC可用记录不作为稳定依据")
+                appendLog(
+                    "AUDIO T13: B233 AAC-LC 48kHz(type=102/media) 优先，PCM(type=100) 后备；" +
+                        "候选=${ordered.map { it.label }}",
+                )
             }
             if (ordered.isEmpty()) {
                 appendLog("AUDIO: 没有可用音频档位（候选=${candidates.map { it.label }}）——仅推视频")
@@ -1257,6 +1270,7 @@ object SessionController {
                     // T12: keep Sony media volume intact while isolating B233 zero capture.
                     // Other cars retain existing no-local-speaker policy.
                     mutePhoneOutput = !client.currentEndpoint.isBuickB233,
+                    verboseStartupDiagnostics = client.currentEndpoint.isBuickB233,
                     onSyncPortRefused =
                         if (client.currentEndpoint.isBuickB233) {
                             { error ->
