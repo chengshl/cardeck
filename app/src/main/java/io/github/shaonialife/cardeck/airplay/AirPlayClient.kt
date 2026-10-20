@@ -412,6 +412,46 @@ class AirPlayClient(
     /** 心跳线程的存活判据：RTSP socket 仍连着。 */
     private fun isSessionAlive(): Boolean = socket?.isClosed == false
 
+    /**
+     * T42 diagnostic / recovery: on Buick B233 only, try to release the active
+     * screen stream before disposing the RTSP control socket. CatPlay's sender
+     * uses TEARDOWN "/" with plist streams=[{type:110,uuid:<display>}].
+     *
+     * Best effort only. A receiver that already reset its Events channel may
+     * also have shut down RTSP; never delay local cleanup beyond 900 ms.
+     * Must be called on a worker thread (VideoSender.onEnded), not the UI thread.
+     */
+    fun tryTeardownBuickScreen(displayUuid: String?): Boolean {
+        if (!isBuickE5Receiver()) return false
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            log("AIRPLAY T42: TEARDOWN skipped on main thread")
+            return false
+        }
+        val active = socket
+        if (active?.isConnected != true || active.isClosed) {
+            log("AIRPLAY T42: TEARDOWN skipped; RTSP control socket already closed")
+            return false
+        }
+        val stream = linkedMapOf<String, Any?>("type" to SCREEN_STREAM_TYPE)
+        if (!displayUuid.isNullOrBlank()) stream["uuid"] = displayUuid
+        val body = BinaryPlist.encode(linkedMapOf("streams" to listOf(stream)))
+        return try {
+            val (status, _) = request(
+                "TEARDOWN",
+                "/",
+                body,
+                timeoutMillis = 900,
+                contentType = "application/x-apple-binary-plist",
+            )
+            val ok = status.startsWith("RTSP/1.0 200") || status.startsWith("HTTP/1.1 200")
+            log("AIRPLAY T42: screen TEARDOWN status=$status ok=$ok uuidPresent=${displayUuid != null}")
+            ok
+        } catch (error: IOException) {
+            log("AIRPLAY T42: screen TEARDOWN failed/timeout (<=900ms) - ${error.message}")
+            false
+        }
+    }
+
     fun close() {
         // T38: stop all transports of THIS session, not only RTSP. The old version left
         // event TCP + NTP timing UDP alive after the video stream had already ended.
