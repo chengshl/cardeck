@@ -38,6 +38,18 @@ object EndpointHosts {
      */
     fun hasUsable(addresses: List<String>): Boolean = candidates(addresses).isNotEmpty()
 
+    /**
+     * B233 sometimes gives only link-local IPv6 in 0x4301. Prefer the IPv4
+     * gateway obtained from the actual car Wi-Fi when no other IPv4 exists,
+     * preserving IPv6 fallback. Other receivers do not call this method.
+     */
+    fun withPreferredIpv4Gateway(addresses: List<String>, gateway: String?): List<String> {
+        val ordered = candidates(addresses)
+        if (ordered.any(::isIpv4)) return ordered
+        val ipv4 = gateway?.takeIf(::isIpv4) ?: return ordered
+        return candidates(listOf(ipv4) + ordered)
+    }
+
     /** 排序 + 去重。空串/纯 scope 一律剔除。 */
     fun candidates(addresses: List<String>): List<String> {
         val seen = HashSet<String>()

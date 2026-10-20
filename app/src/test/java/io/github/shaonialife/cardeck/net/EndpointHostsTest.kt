@@ -36,6 +36,24 @@ class EndpointHostsTest {
     }
 
     @Test
+    fun buickB233PrefersHotspotGatewayAndRetainsIpv6Fallback() {
+        val ipv6Only = listOf("fe80::3c79:cdff:fe63:aec0")
+        assertEquals(
+            listOf("10.120.52.112", "fe80::3c79:cdff:fe63:aec0"),
+            EndpointHosts.withPreferredIpv4Gateway(ipv6Only, "10.120.52.112"),
+        )
+        assertEquals(ipv6Only, EndpointHosts.withPreferredIpv4Gateway(ipv6Only, null))
+        assertEquals(ipv6Only, EndpointHosts.withPreferredIpv4Gateway(ipv6Only, "fe80::1"))
+        assertEquals(
+            listOf("10.120.52.101", "fe80::3c79:cdff:fe63:aec0"),
+            EndpointHosts.withPreferredIpv4Gateway(
+                listOf("fe80::3c79:cdff:fe63:aec0", "10.120.52.101"),
+                "10.120.52.112",
+            ),
+        )
+    }
+
+    @Test
     fun duplicateScopedAndUnscopedAddressesCollapse() {
         val ordered = EndpointHosts.candidates(listOf("fe80::1", "fe80::1%wlan0", "FE80::1%3"))
         assertEquals(1, ordered.size)

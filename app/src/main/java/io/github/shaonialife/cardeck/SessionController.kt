@@ -1303,6 +1303,19 @@ object SessionController {
         if (cached != null) {
             effective = mergeBrowserEndpoint(effective, cached, source, needPort = effective.airPlayPort <= 0)
         }
+        // Prefer the real IPv4 gateway on B233 when 0x4301 only carries fe80::.
+        // Earlier Buick-E5 runs completed SETUP through IPv4 gateway; retain
+        // the original IPv6 as a fallback, never hard-code a gateway address.
+        if (effective.isBuickB233 && effective.ipAddresses.none(EndpointHosts::isIpv4)) {
+            val gateway = wifiConnector?.ipv4GatewayAddress()
+            val preferred = EndpointHosts.withPreferredIpv4Gateway(effective.ipAddresses, gateway)
+            if (preferred != EndpointHosts.candidates(effective.ipAddresses)) {
+                appendLog("AIRPLAY B233: 优先热点 IPv4 网关=$gateway:${effective.airPlayPort}，保留 IPv6 后备")
+                effective = effective.copy(ipAddresses = preferred)
+            } else {
+                appendLog("AIRPLAY B233: 未取得车机 IPv4 网关，继续尝试 0x4301 IPv6")
+            }
+        }
         val needHost = !EndpointHosts.hasUsable(effective.ipAddresses)
         val needPort = effective.airPlayPort <= 0
         if (!needHost && !needPort) return effective
@@ -1567,6 +1580,9 @@ object SessionController {
         )
         phaseHint = "蓝牙已连上车机，解析热点地址…"
         ssidSink?.invoke(endpoint.ssid)
+        // B233 carries hotspot credentials in 0x4301, not 0x5703; reuse them
+        // for fallback rather than later falsely claiming the password is absent.
+        if (endpoint.passphrase.isNotEmpty()) lastWifiPsk = endpoint.passphrase
         // 诊断（老车机排查必看）：地址是 IPv4 还是只有 IPv6、TXT features 是否声明配对能力。
         // 奥迪 4xxx 两种「连不上」都源于这里——旧版日志里完全没有这两项。
         val addresses = endpoint.ipAddresses

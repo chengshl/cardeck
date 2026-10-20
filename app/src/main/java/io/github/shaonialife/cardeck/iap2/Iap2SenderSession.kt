@@ -66,6 +66,8 @@ class Iap2SenderSession(
          * 强制配对（现代）。2026-10-19 奥迪 4xxx（4851）连不上与这条分类直接相关。
          */
         val advertisedFeatures: Long? = null,
+        /** Routing hint exclusively for Buick B233, independent of SSID. */
+        val isBuickB233: Boolean = false,
     )
 
     private val parser = Iap2Csm.Parser()
@@ -404,12 +406,13 @@ class Iap2SenderSession(
         if (endpoint.ssid.isBlank()) {
             throw IOException("Buick B233: 0x4301 missing Wi-Fi SSID")
         }
-        wifi = WifiConfiguration(endpoint.ssid, endpoint.passphrase, endpoint.channel, endpoint.securityType)
+        val buickEndpoint = endpoint.copy(isBuickB233 = true)
+        wifi = WifiConfiguration(buickEndpoint.ssid, buickEndpoint.passphrase, buickEndpoint.channel, buickEndpoint.securityType)
         log("iap2 Buick B233: 0x4301 accepted; ssidPresent=true passphrasePresent=" +
             endpoint.passphrase.isNotEmpty() + " port=" + endpoint.airPlayPort +
             " ipCount=" + endpoint.ipAddresses.size + " publicKeyPresent=" +
             !endpoint.publicKey.isNullOrEmpty())
-        return endpoint
+        return buickEndpoint
     }
 
     /** 24-hex stable device identifier from the phone's MAC, never an iPhone ID. */

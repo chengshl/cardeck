@@ -640,6 +640,17 @@ class AirPlayClient(
             }
         if (!statusLine.contains("200")) {
             log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")
+            // Safe non-200 diagnostics: no raw plist/password/pairing keys.
+            val errorKeys = runCatching {
+                (BinaryPlist.parse(responseBody) as? Map<*, *>)?.keys
+                    ?.joinToString(",") { it.toString().take(48) }
+            }.getOrNull()
+            log(
+                "AIRPLAY: SETUP non-200 responseBytes=${responseBody.size} " +
+                    "plistKeys=${errorKeys ?: "(none)"} " +
+                    "connectedHost=${activeHost ?: "(none)"} " +
+                    "candidateCount=${EndpointHosts.candidates(endpoint.ipAddresses).size}"
+            )
             if (statusLine.contains("403")) {
                 // 403 的两类成因按可能性排序：设备过滤（WinPlay 等「只接受指定
                 // iPhone」）最常见，其次是接收端不接受的配对/信任状态。把本机
