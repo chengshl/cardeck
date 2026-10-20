@@ -55,14 +55,24 @@ jobs:
           # Global time-based versionCode, identical formula across all three
           # branches. Workflows share one concurrency group, so the next build
           # starts after the prior one publishes. 2024-01-01 UTC = code epoch.
-          CODE=$(( $(date -u +%s) - 1704067200 ))
+          BUILD_EPOCH="$(date -u +%s)"
+          CODE=$(( BUILD_EPOCH - 1704067200 ))
+          # Human-facing APK versionName: Beijing time YYYYMMDDHHMMSS.
+          # Android versionCode remains a monotonic 32-bit integer and must
+          # never be set to this 14-digit timestamp.
+          RELEASE_VERSION_NAME="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
+          if [[ ! "$RELEASE_VERSION_NAME" =~ ^[0-9]{14}$ ]]; then
+            echo "::error::Invalid datetime versionName: $RELEASE_VERSION_NAME"
+            exit 1
+          fi
           if (( CODE < 300000 || CODE > 2100000000 )); then
             echo "::error::Computed Android versionCode out of range: $CODE"
             exit 1
           fi
           echo "CARDECK_BUILD_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$RELEASE_VERSION_NAME" >> "$GITHUB_ENV"
           echo "CARDECK_RELEASE_BRANCH=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
-          echo "Unified versionCode=$CODE branch=$GITHUB_REF_NAME"
+          echo "Unified versionName=$RELEASE_VERSION_NAME versionCode=$CODE branch=$GITHUB_REF_NAME"
       - name: Build signed release APK
         run: ./gradlew :app:assembleRelease --stacktrace
       - uses: actions/upload-artifact@v4
@@ -77,8 +87,8 @@ jobs:
         run: |
           set -euo pipefail
           cp app/build/outputs/apk/release/*.apk CarDeck-latest.apk
-          printf 'versionCode=%s\nbranch=%s\ncommit=%s\nbuiltAt=%s\n\nLatest successfully built CarDeck APK across main, Buick-main and Buick-E5.\n' \
-            "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > release-notes.txt
+          printf 'versionName=%s\nversionCode=%s\nbranch=%s\ncommit=%s\nbuiltAt=%s\ntimezone=Asia/Shanghai\n\nLatest successfully built CarDeck APK across main, Buick-main and Buick-E5.\n' \
+            "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > release-notes.txt
 
           # Never let an older code replace a newer shared APK.
           PREVIOUS_CODE="$(gh release view cardeck-latest --json body --jq '.body' 2>/dev/null \
@@ -100,12 +110,12 @@ jobs:
             sha256sum "$APK" > "$APK.sha256"
             if gh release view "$TAG" >/dev/null 2>&1; then
               gh release upload "$TAG" "$APK" "$APK.sha256" --clobber
-              gh release edit "$TAG" --title "CarDeck shared latest - $GITHUB_REF_NAME" \
+              gh release edit "$TAG" --title "CarDeck $CARDECK_RELEASE_VERSION_NAME - $GITHUB_REF_NAME" \
                 --notes-file release-notes.txt --prerelease
             else
               gh release create "$TAG" "$APK" "$APK.sha256" \
-                --target "$GITHUB_SHA" --title "CarDeck shared latest - $GITHUB_REF_NAME" \
+                --target "$GITHUB_SHA" --title "CarDeck $CARDECK_RELEASE_VERSION_NAME - $GITHUB_REF_NAME" \
                 --notes-file release-notes.txt --prerelease
             fi
-            echo "Updated $TAG with branch=$GITHUB_REF_NAME versionCode=$CARDECK_BUILD_VERSION_CODE"
+            echo "Updated $TAG with branch=$GITHUB_REF_NAME versionName=$CARDECK_RELEASE_VERSION_NAME versionCode=$CARDECK_BUILD_VERSION_CODE"
           done

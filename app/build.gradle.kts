@@ -41,7 +41,9 @@ android {
         minSdk = 31
         targetSdk = 34
         versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
-        versionName = System.getenv("CARDECK_RELEASE_BRANCH")?.let { "$appVersionName-$it" } ?: appVersionName
+        // CI releases use Beijing build time (yyyyMMddHHmmss); local builds retain
+        // their semantic project version. Android versionCode is separate (32-bit).
+        versionName = System.getenv("CARDECK_RELEASE_VERSION_NAME") ?: appVersionName
     }
 
     signingConfigs {
