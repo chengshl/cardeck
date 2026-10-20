@@ -54,6 +54,37 @@ class WifiCarPlayConnector(
 
     val currentNetwork: Network? get() = boundNetwork.get()
     private val boundNetwork = AtomicReference<Network?>(null)
+    /** Only undo a process-level binding if CarDeck itself successfully made it. */
+    private val processBoundByUs = AtomicBoolean(false)
+
+    /**
+     * An active VPN must keep its own default route. CarPlay can instead select
+     * the physical hotspot Network for individual TCP sockets and scoped NSD.
+     */
+    private fun selectCarWifi(network: Network, label: String): Boolean {
+        if (!CarPlayNetworkSockets.isPhysicalWifi(connectivityManager, network)) {
+            log("WiFi T47: ignored non-physical Wi-Fi network=$network ($label)")
+            return false
+        }
+        val vpnActive = CarPlayNetworkSockets.isVpnActive(connectivityManager)
+        val bound = if (!vpnActive) {
+            try {
+                connectivityManager.bindProcessToNetwork(network)
+            } catch (error: Exception) {
+                log("WiFi T47: process binding unavailable: ${error.message}")
+                false
+            }
+        } else false
+        processBoundByUs.set(bound)
+        boundNetwork.set(network)
+        val iface = connectivityManager.getLinkProperties(network)?.interfaceName ?: "?"
+        log(
+            "WiFi T47: car hotspot selected network=$network interface=$iface " +
+                "vpnActive=$vpnActive processBound=$bound " +
+                "(CarPlay uses physical Wi-Fi per socket; VPN remains enabled)",
+        )
+        return true
+    }
 
     /**
      * 应用专属网络被系统断开（热点关闭/离开范围）时回调。会话层据此提示用户；
@@ -153,10 +184,9 @@ class WifiCarPlayConnector(
         val newCallback =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    val bound = connectivityManager.bindProcessToNetwork(network)
-                    boundNetwork.set(network)
+                    if (!selectCarWifi(network, "dedicated hotspot")) return
                     result.set(network)
-                    log("WiFi: 已加入应用专属网络 \"$ssid\"（$network bindProcessToNetwork=$bound）——不影响其它应用联网")
+                    log("WiFi: 已加入应用专属网络 \"$ssid\"（$network）——不影响其它应用联网")
                     latch.countDown()
                 }
 
@@ -168,7 +198,9 @@ class WifiCarPlayConnector(
 
                 override fun onLost(network: Network) {
                     if (boundNetwork.compareAndSet(network, null)) {
-                        connectivityManager.bindProcessToNetwork(null)
+                        if (processBoundByUs.getAndSet(false)) {
+                            connectivityManager.bindProcessToNetwork(null)
+                        }
                         log("WiFi: 应用专属网络 \"$ssid\" 已断开（$network）")
                         onNetworkLost?.invoke(ssid)
                     }
@@ -261,6 +293,7 @@ class WifiCarPlayConnector(
             NetworkRequest
                 .Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
         // 网络回调线程与 Bg 看门狗线程并发读写——原子标志保证可见性与单次投递
@@ -270,9 +303,8 @@ class WifiCarPlayConnector(
         val newCallback =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    boundNetwork.set(network)
-                    val bound = connectivityManager.bindProcessToNetwork(network)
-                    log("WiFi: 已绑定当前WiFi网络 $network bindProcessToNetwork=$bound")
+                    if (!selectCarWifi(network, "current Wi-Fi")) return
+                    log("WiFi: 已选定当前车机WiFi网络 $network（VPN 存在时不全局改路由）")
                     if (reported.compareAndSet(false, true)) onResult(true)
                 }
 
@@ -309,7 +341,8 @@ class WifiCarPlayConnector(
         callback.getAndSet(null)?.let {
             runCatching { connectivityManager.unregisterNetworkCallback(it) }
         }
-        if (boundNetwork.getAndSet(null) != null) {
+        boundNetwork.getAndSet(null)
+        if (processBoundByUs.getAndSet(false)) {
             connectivityManager.bindProcessToNetwork(null)
         }
     }
