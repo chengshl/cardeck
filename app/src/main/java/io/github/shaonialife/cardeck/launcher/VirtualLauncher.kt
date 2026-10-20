@@ -96,6 +96,11 @@ object VirtualLauncher {
         iconCacheRef = fresh
     }
 
+    /** T9/T41: car-only launcher tasks must not remain on phone after display removal. */
+    @Volatile
+    var sessionAttached: Boolean = false
+        private set
+
     @Volatile
     var dockDisplayId: Int = -1
         private set
@@ -681,6 +686,9 @@ object VirtualLauncher {
                 "LAUNCHER: letterbox 宽高比=$LETTERBOX_ASPECT_RATIO " +
                     "appDensity=${appNativeDensity}dpi appHiDensity=${appHiDensity}dpi",
             )
+            // Arm before launching the two car-only activities. A delayed am start
+            // must reject itself when detach has invalidated this session.
+            sessionAttached = true
             // 组件名取自运行时包名（不要硬编码）：改 applicationId 后自动跟随
             val selfPkg = context.packageName
             val dockOk = startOn(dockDisplayId, "$selfPkg/.launcher.DockActivity")
@@ -707,6 +715,29 @@ object VirtualLauncher {
     private var displaysViaService = false
 
     fun detach() {
+        // E5 T41: Activity tasks still alive while displays are released can be
+        // reparented by Android onto physical display 0. Finish tasks first.
+        sessionAttached = false
+        watchdogActive = false
+        val settingsFinished = SettingsActivity.finishForSessionEnd()
+        val gridFinished = GridActivity.finishForSessionEnd()
+        val dockFinished = DockActivity.finishForSessionEnd()
+        if (settingsFinished != null || gridFinished != null || dockFinished != null) {
+            logSink?.invoke(
+                "LAUNCHER T9: finish car-only activities BEFORE release: " +
+                    "settings=${settingsFinished != null} grid=${gridFinished != null} dock=${dockFinished != null}",
+            )
+        }
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            // onDestroy runs on main: never block that same thread. Bounded wait
+            // here prevents release/reparent while the task is being finished.
+            val doneSettings = settingsFinished?.await(500, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
+            val doneGrid = gridFinished?.await(800, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
+            val doneDock = dockFinished?.await(800, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
+            if (!doneSettings || !doneGrid || !doneDock) {
+                logSink?.invoke("LAUNCHER T9: wait for car-only tasks timed out; proceeding to release")
+            }
+        }
         ScreenDimmer
             .detach()
         // 还原方向策略（false = 跟随应用请求，系统默认）。
@@ -801,6 +832,7 @@ object VirtualLauncher {
 
     /** 回桌面：GridActivity 任务带回前台（后台应用保留）；合成器切回桌面所在屏。 */
     fun goGrid(): Boolean {
+        if (!sessionAttached) return false
         val grid = if (gridDisplayId >= 0) gridDisplayId else appDisplayId
         val pkg = appContextRef?.packageName ?: return false
         val ok = startOn(grid, "$pkg/.launcher.GridActivity")
@@ -824,6 +856,7 @@ object VirtualLauncher {
      * 继续送进已隐藏的地图屏（实测：桌面无法点击而日志注入成功的根因）。
      */
     fun onHomePressed() {
+        if (!sessionAttached) return
         when {
             mapFullscreen -> {
                 setMapFullscreen(false)
@@ -837,6 +870,7 @@ object VirtualLauncher {
 
     /** 进入仪表盘：地图屏缩回 tile、默认地图占屏（缺则启动）、桌面切分屏布局。 */
     fun showDashboard() {
+        if (!sessionAttached) return
         syncDashboard(true)
         goGrid()
         composer?.requestActiveApp(appHiDisplayId >= 0 && gridDisplayId == appHiDisplayId)
@@ -849,6 +883,7 @@ object VirtualLauncher {
      * pager 滑动过程只做 tile 位移预览（showMapTile），状态一律在落定（IDLE）时经此对账。
      */
     fun syncDashboard(dashboard: Boolean) {
+        if (!sessionAttached) return
         val changed = dashboardMode != dashboard
         dashboardMode = dashboard
         if (changed) notifyDashboard()
@@ -875,6 +910,7 @@ object VirtualLauncher {
 
     /** 回普通桌面：隐藏地图层并退出仪表盘，桌面恢复全宽图标网格（地图任务保留）。 */
     fun showDesktop() {
+        if (!sessionAttached) return
         syncDashboard(false)
         goGrid()
         logSink?.invoke("LAUNCHER: 桌面模式（图标网格）")

@@ -27,6 +27,7 @@ import io.github.shaonialife.cardeck.util.Bg
  * 形态由 dock 虚拟屏自身宽高决定（竖条 height>width；横条 width>height），与车机方向自动对齐。
  */
 class DockActivity : AppCompatActivity() {
+    @Volatile private var sessionFinishSignal: java.util.concurrent.CountDownLatch? = null
     private var appsContainer: LinearLayout? = null
     private var clockView: TextView? = null
     private var batteryText: TextView? = null
@@ -88,6 +89,11 @@ class DockActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeSessionActivity = java.lang.ref.WeakReference(this)
+        if (!VirtualLauncher.sessionAttached) {
+            finish()
+            return
+        }
         val dm = resources.displayMetrics
         barForm = dm.widthPixels > dm.heightPixels
         setContentView(if (barForm) R.layout.activity_dock_bar else R.layout.activity_dock_sidebar)
@@ -135,6 +141,9 @@ class DockActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (activeSessionActivity?.get() === this) activeSessionActivity = null
+        sessionFinishSignal?.countDown()
+        sessionFinishSignal = null
         VirtualLauncher.removeRunningAppsListener(refreshListener)
         pollHandler.removeCallbacksAndMessages(null)
         clockHandler.removeCallbacks(clockTicker)
@@ -147,6 +156,13 @@ class DockActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!VirtualLauncher.sessionAttached ||
+            display?.displayId == android.view.Display.DEFAULT_DISPLAY
+        ) {
+            VirtualLauncher.logSink?.invoke("LAUNCHER T9: stale DockActivity on physical phone; finishing")
+            finish()
+            return
+        }
         refresh()
     }
 
@@ -314,4 +330,19 @@ class DockActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() = Unit // dock 常驻，不响应返回
+
+    companion object {
+        @Volatile private var activeSessionActivity: java.lang.ref.WeakReference<DockActivity>? = null
+
+        internal fun finishForSessionEnd(): java.util.concurrent.CountDownLatch? {
+            val activity = activeSessionActivity?.get() ?: return null
+            val signal = java.util.concurrent.CountDownLatch(1)
+            activity.sessionFinishSignal = signal
+            activity.runOnUiThread {
+                if (activity.isDestroyed) signal.countDown()
+                else if (!activity.isFinishing) activity.finish()
+            }
+            return signal
+        }
+    }
 }

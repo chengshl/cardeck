@@ -41,6 +41,8 @@ class GridActivity : AppCompatActivity() {
         ) : Cell
     }
 
+    @Volatile private var sessionFinishSignal: java.util.concurrent.CountDownLatch? = null
+
     private var pages: List<List<Cell>> = emptyList()
     private var pager: ViewPager2? = null
     private var dotsRow: LinearLayout? = null
@@ -312,6 +314,11 @@ class GridActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeSessionActivity = java.lang.ref.WeakReference(this)
+        if (!VirtualLauncher.sessionAttached) {
+            finish()
+            return
+        }
         setContentView(R.layout.activity_grid)
 
         // 格子尺寸/行数按屏幕动态计算（布局关系在 XML，尺寸测量在代码）
@@ -450,6 +457,13 @@ class GridActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!VirtualLauncher.sessionAttached ||
+            display?.displayId == android.view.Display.DEFAULT_DISPLAY
+        ) {
+            VirtualLauncher.logSink?.invoke("LAUNCHER T9: stale GridActivity on physical phone; finishing")
+            finish()
+            return
+        }
         // 也覆盖从设置页返回：勾选变化即时反映
         reload()
         refreshWallpaperIfChanged()
@@ -719,6 +733,9 @@ class GridActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (activeSessionActivity?.get() === this) activeSessionActivity = null
+        sessionFinishSignal?.countDown()
+        sessionFinishSignal = null
         tickHandler.removeCallbacks(mediaTick)
         WallpaperStore
             .removeListener(wallpaperListener)
@@ -734,8 +751,21 @@ class GridActivity : AppCompatActivity() {
 
     override fun onBackPressed() = Unit // 桌面不退出
 
-    private companion object {
-        const val COLUMNS = 4 // CarPlay 规格：强制 4 列
+    companion object {
+        @Volatile private var activeSessionActivity: java.lang.ref.WeakReference<GridActivity>? = null
+
+        internal fun finishForSessionEnd(): java.util.concurrent.CountDownLatch? {
+            val activity = activeSessionActivity?.get() ?: return null
+            val signal = java.util.concurrent.CountDownLatch(1)
+            activity.sessionFinishSignal = signal
+            activity.runOnUiThread {
+                if (activity.isDestroyed) signal.countDown()
+                else if (!activity.isFinishing) activity.finish()
+            }
+            return signal
+        }
+
+        private const val COLUMNS = 4 // CarPlay 规格：强制 4 列
 
         /** 横屏 CarPlay 规格行数（竖屏自适应时用作下限）。 */
         const val ROWS_MIN = 3
