@@ -1,14 +1,16 @@
 package io.github.shaonialife.cardeck.video
 
 import android.media.MediaCodec
+import android.net.Network
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.view.Surface
 import io.github.shaonialife.cardeck.airplay.AirPlayCrypto
 import io.github.shaonialife.cardeck.airplay.BinaryPlist
 import io.github.shaonialife.cardeck.airplay.StreamFrameCipher
+import io.github.shaonialife.cardeck.net.CarPlayNetworkSockets
 import java.io.ByteArrayOutputStream
-import java.net.InetSocketAddress
+import java.net.InetAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -50,6 +52,8 @@ class VideoSender(
      * RECORD 后 10.2s 整轮被 reset，视频/feedback/事件通道全都健康）。
      */
     private val keepAliveWithStats: Boolean = false,
+    /** Physical car Wi-Fi, independent of the VPN default route. */
+    private val carWifiNetwork: Network? = null,
 ) {
     private val width: Int = (width / 2) * 2
     private val height: Int = (height / 2) * 2
@@ -93,8 +97,13 @@ class VideoSender(
         val existing = socket
         if (existing != null && !existing.isClosed) return true
         return try {
-            val client = Socket()
-            client.connect(InetSocketAddress(host, dataPort), 5_000)
+            val client = CarPlayNetworkSockets.connectTcp(
+                carWifiNetwork,
+                InetAddress.getByName(host),
+                dataPort,
+                5_000,
+                log,
+            )
             client.tcpNoDelay = true
             socket = client
             log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
