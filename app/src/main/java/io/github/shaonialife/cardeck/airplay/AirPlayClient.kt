@@ -1,11 +1,13 @@
 package io.github.shaonialife.cardeck.airplay
 
 import android.content.Context
+import android.net.Network
 import android.os.SystemClock
 import io.github.shaonialife.cardeck.iap2.Iap2Csm
 import io.github.shaonialife.cardeck.iap2.Iap2LinkEngine
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
+import io.github.shaonialife.cardeck.net.CarPlayNetworkSockets
 import io.github.shaonialife.cardeck.net.EndpointHosts
 import io.github.shaonialife.cardeck.util.DeviceIdentity
 import java.io.IOException
@@ -35,7 +37,12 @@ class AirPlayClient(
      * 早期实现只在配对前查一次，失败后只能对着网关兜底地址空转到 120s 窗口耗尽。
      */
     private val endpointRefresher: ((Iap2SenderSession.CarPlayEndpoint) -> Iap2SenderSession.CarPlayEndpoint?)? = null,
+    /** CarPlay's physical Wi-Fi; does not change the VPN/system default route. */
+    private val carWifiNetwork: Network? = null,
 ) {
+    private fun openCarTcp(address: InetAddress, port: Int, timeoutMillis: Int): Socket =
+        CarPlayNetworkSockets.connectTcp(carWifiNetwork, address, port, timeoutMillis, log)
+
     /**
      * 当前使用的接收端端点。0x4301 晚到 / mDNS 后上线时由主控热更新；
      * 配对循环每轮重试都重新读取，改动在下一轮即生效。
@@ -322,6 +329,13 @@ class AirPlayClient(
             var udp: java.net.DatagramSocket? = null
             try {
                 udp = java.net.DatagramSocket()
+                if (carWifiNetwork != null) {
+                    runCatching { carWifiNetwork.bindSocket(udp) }
+                        .onSuccess { log("CAR-NET T47: UDP keepAlive on car Wi-Fi $carWifiNetwork") }
+                        .onFailure {
+                            log("CAR-NET T47: UDP explicit Wi-Fi unavailable (${it.message}); system LAN route remains in use")
+                        }
+                }
                 val address = java.net.InetAddress.getByName(host)
                 var sent = 0
                 var lastSentAt = 0L
@@ -1082,13 +1096,13 @@ class AirPlayClient(
             )
         val tcp =
             try {
-                Socket()
+                openCarTcp(resolveAddress(host), dataPort, 5_000)
             } catch (error: IOException) {
+                log("TUNNEL: TCP 连接失败 - ${error.message}")
                 return null
             }
         return try {
             tcp.tcpNoDelay = true
-            tcp.connect(java.net.InetSocketAddress(host, dataPort), 5_000)
             log("TUNNEL: ✓ iAP 隧道已建立 $host:$dataPort（seed=$seed）")
             val client = IapTunnelClient(tcp, key)
             client.startReading()
@@ -1982,8 +1996,7 @@ class AirPlayClient(
         }
         val host = receiverHost() ?: return
         try {
-            val socket = Socket()
-            socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)
+            val socket = openCarTcp(resolveAddress(host), setup.eventPort, 5_000)
             socket.tcpNoDelay = true
             socket.soTimeout = 30_000
             log("EVENT: ✓ 已连接事件通道 $host:${setup.eventPort}（${if (sessionKey != null) "加密" else "明文"}）")
@@ -2175,8 +2188,7 @@ class AirPlayClient(
                     continue
                 }
             try {
-                val newSocket = Socket()
-                newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
+                val newSocket = openCarTcp(address, target.airPlayPort, timeoutMillis)
                 if (generation != endpointGeneration) {
                     // 连接途中端点已更新：丢弃这条旧连接，下一轮按新地址重连
                     runCatching { newSocket.close() }
