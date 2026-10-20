@@ -877,6 +877,7 @@ object SessionController {
                     log = { line -> appendLog(line) },
                     context = context.applicationContext,
                     sampleRate = audio.sampleRate,
+                    carWifiNetwork = wifiConnector?.currentNetwork,
                 )
             audioSender = sender
             if (!sender.start(projection)) {
@@ -1044,6 +1045,7 @@ object SessionController {
                             effectiveEndpoint,
                             log = { line -> appendLog(line) },
                             context = context.applicationContext,
+                            carWifiNetwork = wifiConnector?.currentNetwork,
                         )
                     retireSession()
                     // 会话静默降噪（2026-10-10）：从交接点起暂停其它接收端的出站连接探测
@@ -1319,6 +1321,7 @@ object SessionController {
                                             dataPort = screen.dataPort,
                                             frameCipher = screen.cipher,
                                             keepAliveWithStats = setup.keepAliveSendStatsAsBody,
+                                            carWifiNetwork = wifiConnector?.currentNetwork,
                                             width = streamW,
                                             height = streamH,
                                             targetFps = fps,
