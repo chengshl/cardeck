@@ -47,7 +47,7 @@ class PhoneSettingsActivity : AppCompatActivity() {
         ) {
             if (position == SettingsMenus.ALL.size) {
                 holder.icon.setImageResource(android.R.drawable.stat_sys_download)
-                holder.title.text = "在线更新（Buick E5）"
+                holder.title.text = "在线更新（所有分支）"
                 holder.desc.text = "点击检查更新；长按切换自动检查"
                 holder.itemView.setOnClickListener { BuickUpdater.check(this@PhoneSettingsActivity) }
                 holder.itemView.setOnLongClickListener {

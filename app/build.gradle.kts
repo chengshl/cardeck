@@ -14,9 +14,9 @@ plugins {
  */
 val appVersionName = "0.1.0"
 val appVersionCode =
-    (System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull()?.let { 100_000 + it } ?: appVersionName
+    appVersionName
         .split(".")
-        .let { (major, minor, patch) -> major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt() })
+        .let { (major, minor, patch) -> major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt() }
 
 /**
  * 发布签名配置：从仓库外的 `keystore.properties` 读取（已在 .gitignore 排除）。
@@ -40,8 +40,8 @@ android {
         applicationId = "io.github.shaonialife.cardeck"
         minSdk = 31
         targetSdk = 34
-        versionCode = appVersionCode
-        versionName = appVersionName
+        versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
+        versionName = System.getenv("CARDECK_RELEASE_BRANCH")?.let { "$appVersionName-$it" } ?: appVersionName
     }
 
     signingConfigs {
