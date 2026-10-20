@@ -1308,7 +1308,8 @@ object SessionController {
                                                         // the socket with no TEARDOWN, potentially leaving
                                                         // Buick B233 in a stale streaming state. The call
                                                         // is capped at 900ms and scoped to Buick by client.
-                                                        client.tryTeardownBuickScreen(setup.displayUuid)
+                                                        runCatching { client.tryTeardownBuickScreen(setup.displayUuid) }
+                                                            .onFailure { appendLog("AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.message}") }
                                                         retireSession()
                                                     } finally {
                                                         // Preserve Bluetooth RFCOMM during pairing;
