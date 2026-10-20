@@ -24,6 +24,36 @@ class B233ReconnectPolicyTest {
         assertEquals(15_000L, p.onStartSessionTimeout(400_000L))
     }
 
+    @Test fun inboundFallbackIsOneShotAndRequiresTwoFailures() {
+        val p = B233ReconnectPolicy()
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionTimeout(1_000L)
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionTimeout(20_000L)
+        assertEquals(true, p.claimInboundRecoveryAttempt())
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionTimeout(60_000L)
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionAccepted()
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionTimeout(90_000L)
+        p.onStartSessionTimeout(110_000L)
+        assertEquals(true, p.claimInboundRecoveryAttempt())
+    }
+
+    @Test fun manualRestartRearmsFallbackFromScratch() {
+        val p = B233ReconnectPolicy()
+        p.onStartSessionTimeout(0L)
+        p.onStartSessionTimeout(25_000L)
+        assertEquals(true, p.claimInboundRecoveryAttempt())
+        p.reset()
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionTimeout(80_000L)
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionTimeout(110_000L)
+        assertEquals(true, p.claimInboundRecoveryAttempt())
+    }
+
     @Test fun userControlledRestartClearsCooldownAndFailures() {
         val p = B233ReconnectPolicy()
         p.onStartSessionTimeout(2_000L)

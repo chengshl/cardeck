@@ -19,11 +19,15 @@ internal class B233ReconnectPolicy {
 
     private var until = 0L
     private var consecutiveStartTimeouts = 0
+    private var inboundFallbackUsed = false
+    private var inboundFallbackArmed = false
 
     @Synchronized
     fun reset() {
         until = 0L
         consecutiveStartTimeouts = 0
+        inboundFallbackUsed = false
+        inboundFallbackArmed = false
     }
 
     @Synchronized
@@ -41,10 +45,26 @@ internal class B233ReconnectPolicy {
     @Synchronized
     fun onStartSessionTimeout(nowMs: Long): Long {
         consecutiveStartTimeouts = (consecutiveStartTimeouts + 1).coerceAtMost(4)
+        // T18: only after repeated outbound 0x4300 failures, allow ONE
+        // receiver-initiated (...cafe) iAP2 session. The B233 did initiate
+        // this direction in a T17 log, yet the server always discarded it.
+        // One-shot and B233-only prevent a persistent dual-session race.
+        if (consecutiveStartTimeouts >= 2 && !inboundFallbackUsed) {
+            inboundFallbackArmed = true
+        }
         val backoff = (15_000L shl (consecutiveStartTimeouts - 1))
             .coerceAtMost(MAX_START_TIMEOUT_BACKOFF_MS)
         until = maxOf(until, nowMs + backoff)
         return until - nowMs
+    }
+
+    /** Atomic one-shot gate used only after the inbound peer is verified B233. */
+    @Synchronized
+    fun claimInboundRecoveryAttempt(): Boolean {
+        if (!inboundFallbackArmed || inboundFallbackUsed) return false
+        inboundFallbackArmed = false
+        inboundFallbackUsed = true
+        return true
     }
 
     @Synchronized

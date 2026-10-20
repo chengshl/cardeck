@@ -33,6 +33,8 @@ class Iap2BluetoothServer(
     private val onEndpointUpdate: (Iap2SenderSession.CarPlayEndpoint) -> Unit = {},
     /** 目标车机（动态读取：拒绝非目标设备的连入；null=来者不拒）。 */
     private val targetProvider: () -> TargetDevicePrefs.Target? = { null },
+    /** T18 B233: allow one inbound session after repeated outbound 0x4300 timeouts. */
+    private val claimB233InboundRecovery: () -> Boolean = { false },
 ) {
     companion object {
         /**
@@ -124,18 +126,23 @@ class Iap2BluetoothServer(
                 runCatching { socket.close() }
                 continue
             }
-            // On Buick B233, our verified successful path is PHONE -> CAR
-            // (accessory UUID ...caff). The unsolicited CAR -> PHONE inbound
-            // path repeatedly stopped ACKing 0x4300 (13:35/13:37 T2 log) and
-            // blocks outbound discovery via BtSessionGate.inboundActive.
-            // Reject only the observed receiver name, not generic CarPlay or
-            // DiPlay inbound clients.
-            if (BuickB233Route.isKnownReceiver(peerName)) {
-                log("BT: BUICK_2427 入站 iAP2 连接不作为主会话（此前 0x4300 不获 ACK）；关闭入站并优先手机主动连车机")
+            // T18 B233 only: in T17 the receiver spontaneously opened an
+            // inbound link, but the app discarded it despite persistent
+            // outbound 0x4300 non-ACK. Probe one reverse session after >=2
+            // consecutive outbound failures; no default protocol change.
+            val isB233 = BuickB233Route.isKnownReceiver(peerName)
+            if (isB233 && !claimB233InboundRecovery()) {
+                log("BT: BUICK_2427 入站 iAP2 暂不启用（须连续两次 0x4300 失败）")
                 runCatching { socket.close() }
                 continue
             }
-            log("BT: 接收端已连入 name=$peerName，开始 iAP2 发送端会话")
+            if (isB233) {
+                // Set the gate before worker launch to suspend outbound retries.
+                BtSessionGate.inboundActive = true
+                log("BT T18: B233 反向 iAP2 恢复实验：车机主动连入（仅一次），暂停手机主动连接")
+            } else {
+                log("BT: 接收端已连入 name=$peerName，开始 iAP2 发送端会话")
+            }
             Thread({ runSession(socket) }, "iap2-bt-session").apply {
                 isDaemon = true
                 start()
@@ -156,7 +163,7 @@ class Iap2BluetoothServer(
         } catch (error: IOException) {
             log("SESSION 失败: ${error.message}")
         } finally {
-            activeChannel = null
+            if (activeChannel === channel) activeChannel = null
             BtSessionGate.inboundActive = false
             channel.close()
             log("SESSION 结束，等待接收端重连（BT 监听仍在运行）")

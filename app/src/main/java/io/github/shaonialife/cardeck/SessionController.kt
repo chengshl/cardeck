@@ -364,6 +364,9 @@ object SessionController {
                     onWifiCredentials = wifiCredentialHook,
                     onEndpointUpdate = { endpoint -> onLateEndpoint(endpoint, "车机回连") },
                     targetProvider = targetProvider,
+                    claimB233InboundRecovery = {
+                        bluetoothClient?.claimB233InboundRecovery() == true
+                    },
                 )
             bluetoothClient =
                 Iap2BluetoothClient(

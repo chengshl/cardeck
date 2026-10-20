@@ -282,6 +282,10 @@ class Iap2BluetoothClient(
                         }
                     }
                 }
+                if (BtSessionGate.inboundActive || BtSessionGate.sessionActive) {
+                    log("BT-C T18: 接收端反向 iAP2 会话占用中，取消本次主动连入")
+                    break
+                }
                 val socket = tryConnect(device)
                 if (socket != null) {
                     log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
@@ -408,6 +412,10 @@ class Iap2BluetoothClient(
                 )
                 log("BT-C T17: B233 0x4300 无回应，下一轮等待 ${backoff / 1000}s " +
                     "（连续超时阶梯退避，最长60s）")
+                if (backoff == 30_000L) {
+                    log("BT-C T18: B233 连续两次 0x4300 无 ACK；" +
+                        "已允许一次车机主动发起的 iAP2 反向握手（仍保留原有主动连接后备）")
+                }
             }
         } finally {
             if (activeChannel === channel) activeChannel = null
@@ -419,6 +427,14 @@ class Iap2BluetoothClient(
             log("BT-C: 本轮会话结束（客户端仍在运行，将自动重连）")
         }
     }
+
+    /**
+     * T18: called by the inbound iAP2 listener only for the verified B233
+     * receiver after target-device filtering. One shot per client start.
+     * Gate is atomic so two concurrent inbound accepts cannot both proceed.
+     */
+    fun claimB233InboundRecovery(): Boolean =
+        b233ReconnectPolicy.claimInboundRecoveryAttempt()
 
     /**
      * T17 only called after an established B233 audio+video stream has
