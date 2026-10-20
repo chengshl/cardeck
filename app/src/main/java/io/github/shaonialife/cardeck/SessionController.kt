@@ -2143,6 +2143,32 @@ object SessionController {
         if (boundCarSsid == endpoint.ssid && wifiConnector?.currentNetwork != null) {
             appendLog(">>> [$source] 已绑定车机热点 ${endpoint.ssid}，跳过重复绑定")
             continueWithNetwork(true)
+        } else if (endpoint.isBuickB233) {
+            // Buick E5 T48: this phone is normally *already* associated with the
+            // saved head-unit hotspot. WifiNetworkSpecifier requests an app-owned
+            // replacement Wi-Fi, which can detach the existing system connection
+            // and Android then labels it "connected via CarDeck / poor quality".
+            // Reuse the user's existing association. Never forget their SSID,
+            // disconnect Wi-Fi, or issue a competing NetworkSpecifier request.
+            // Keep Audi/BMW/DiPlay's upstream Wi-Fi joining logic unchanged.
+            Bg.run("wifi-b233-preserve-existing") {
+                val currentSsid = shellWifiStatus().second
+                if (connectCancelled) {
+                    sessionStarting.set(false)
+                    return@run
+                }
+                if (currentSsid == wifiConfig.ssid) {
+                    appendLog("WIFI B233: 已在系统 Wi-Fi \"${wifiConfig.ssid}\" 上，" +
+                        "只绑定现有网络；不调用 Specifier、不清除保存热点")
+                    continueWithNetwork(bindCarWifiAndRegister(wifiConfig.ssid))
+                } else {
+                    appendLog("WIFI B233: 当前 Wi-Fi=${currentSsid ?: "无法识别"}，" +
+                        "目标=${wifiConfig.ssid}；为避免强制切换网络，等待手动连接")
+                    waitForManualWifiThenContinue(wifiConfig) { bound ->
+                        continueWithNetwork(bound)
+                    }
+                }
+            }
         } else {
             // 端点先于 0x5703 到达（或上一轮换网失败）：同样走应用专属网络。
             // 不能再用「按 TRANSPORT_WIFI 盲绑当前任意 WiFi」——切网途中会绑到旧网络，
