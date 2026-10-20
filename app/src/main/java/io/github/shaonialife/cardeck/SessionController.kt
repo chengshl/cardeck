@@ -1580,8 +1580,7 @@ object SessionController {
         )
         phaseHint = "蓝牙已连上车机，解析热点地址…"
         ssidSink?.invoke(endpoint.ssid)
-        // B233 carries hotspot credentials in 0x4301, not 0x5703; reuse them
-        // for fallback rather than later falsely claiming the password is absent.
+        // B233 exposes the hotspot password in 0x4301 rather than 0x5703.
         if (endpoint.passphrase.isNotEmpty()) lastWifiPsk = endpoint.passphrase
         // 诊断（老车机排查必看）：地址是 IPv4 还是只有 IPv6、TXT features 是否声明配对能力。
         // 奥迪 4xxx 两种「连不上」都源于这里——旧版日志里完全没有这两项。
@@ -1888,6 +1887,16 @@ object SessionController {
                                         }
                                     }
 
+                                    "forceKeyFrame" -> {
+                                        // 车机解不出画面时会要 I 帧。必须立即响应：
+                                        // 拖到下一个周期 I 帧（1s）车机可能一直卡在等帧状态。
+                                        val forced = videoSender?.requestKeyFrame() == true
+                                        appendLog(
+                                            "EVENT: 车机请求关键帧（forceKeyFrame）→ " +
+                                                if (forced) "已强制编码 I 帧" else "编码器未就绪，等周期 I 帧",
+                                        )
+                                    }
+
                                     "changeModes" -> {
                                         // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
                                         // 回 modesChanged 声明手机持有主屏/主音频
@@ -1895,7 +1904,21 @@ object SessionController {
                                         client.assertModes()
                                     }
 
-                                    else -> appendLog("EVENT: 命令 type=${command["type"]}")
+                                    else ->
+                                        appendLog(
+                                            // 未识别的命令必须带参数：车机的私有命令（如 requestUI）
+                                            // 到底要什么，全在 params 里——只打 type 等于没打。
+                                            "EVENT: 命令 type=${command["type"]} " +
+                                                command.entries
+                                                    .filter { it.key?.toString() != "type" }
+                                                    .joinToString(" ") { (key, value) ->
+                                                        "$key=" +
+                                                            when (value) {
+                                                                is ByteArray -> value.joinToString("") { "%02x".format(it) }
+                                                                else -> value.toString().take(240)
+                                                            }
+                                                    }.take(600),
+                                        )
                                 }
                             }
                             // 资源声明（must）：真车对未声明资源的屏幕流 SETUP 直接 400

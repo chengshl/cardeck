@@ -12,7 +12,7 @@ plugins {
  * 经典原因（系统只看 versionCode，填小了用户装不上新包，且不会有任何提示）。
  * 0.x 表示实验性阶段；发布前只需改这一行。
  */
-val appVersionName = "0.1.10"
+val appVersionName = "0.1.12"
 val appVersionCode =
     appVersionName
         .split(".")
@@ -40,11 +40,9 @@ android {
         applicationId = "io.github.shaonialife.cardeck"
         minSdk = 31
         targetSdk = 34
-        // Buick-main is a dedicated installable upstream baseline. CI increments
-        // the code beyond the Buick-E5 testing builds without changing main.
         versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
-        // Human-readable release version is Beijing time yyyyMMddHHmmss.
-        // The integer versionCode stays separate for Android upgrade ordering.
+        // CI releases use Beijing build time (yyyyMMddHHmmss); local builds retain
+        // their semantic project version. Android versionCode is separate (32-bit).
         versionName = System.getenv("CARDECK_RELEASE_VERSION_NAME") ?: appVersionName
     }
 
