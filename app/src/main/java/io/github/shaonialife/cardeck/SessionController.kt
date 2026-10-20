@@ -1254,6 +1254,9 @@ object SessionController {
                     // 接收端只能「按到达时刻猜」，严格的实现干脆不排播（2026-10-20 实测）。
                     controlPort = audio.controlPort,
                     deferSyncUntilRecord = client.currentEndpoint.isBuickB233,
+                    // T12: keep Sony media volume intact while isolating B233 zero capture.
+                    // Other cars retain existing no-local-speaker policy.
+                    mutePhoneOutput = !client.currentEndpoint.isBuickB233,
                     onSyncPortRefused =
                         if (client.currentEndpoint.isBuickB233) {
                             { error ->

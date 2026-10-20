@@ -21,6 +21,15 @@ class AudioSenderTest {
         )
 
     @Test
+    fun pcmSelfCheckUsesLittleEndianAndDoesNotNeedAacDecoder() {
+        assertEquals(0, AudioSender.peakPcm16Le(ByteArray(16)))
+        // 0x1234 = 4660, signed s16 -2, and saturated -32768.
+        assertEquals(4660, AudioSender.peakPcm16Le(byteArrayOf(0x34, 0x12, 0xfe.toByte(), 0xff.toByte())))
+        assertEquals(32768, AudioSender.peakPcm16Le(byteArrayOf(0, 0x80.toByte())))
+        assertEquals(1, AudioSender.peakPcm16Le(byteArrayOf(1, 0, 127))) // partial sample ignored
+    }
+
+    @Test
     fun headerFieldsMatchCarPlayRtpConvention() {
         val pcm = ByteArray(AudioSender.PACKET_BYTES) { it.toByte() }
         val wire = sender().sealPacket(pcm, sequence = 0x1234, timestamp = 512, nonceCounter = 0)

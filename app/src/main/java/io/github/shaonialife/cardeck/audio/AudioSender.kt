@@ -65,6 +65,8 @@ class AudioSender(
     private val deferSyncUntilRecord: Boolean = false,
     /** B233 only: detect rejected audio control endpoint and leave the video session alive. */
     private val onSyncPortRefused: ((String) -> Unit)? = null,
+    /** B233 T12 diagnosis: keep phone media volume unchanged while verifying playback capture. */
+    private val mutePhoneOutput: Boolean = true,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -91,6 +93,21 @@ class AudioSender(
 
         /** 静音前媒体音量的持久化键（进程被杀也不丢恢复目标）。 */
         private const val KEY_SAVED_VOLUME = "audio_saved_media_volume"
+
+        /** PCM capture sample peak, independent of AAC codecs (Android AudioRecord is little endian). */
+        internal fun peakPcm16Le(samples: ByteArray): Int {
+            var peak = 0
+            var offset = 0
+            while (offset + 1 < samples.size) {
+                val word = (samples[offset].toInt() and 0xFF) or
+                    ((samples[offset + 1].toInt() and 0xFF) shl 8)
+                val signed = if (word >= 0x8000) word - 0x10000 else word
+                val magnitude = if (signed == Short.MIN_VALUE.toInt()) 32768 else kotlin.math.abs(signed)
+                if (magnitude > peak) peak = magnitude
+                offset += 2
+            }
+            return peak
+        }
 
         /** 小端 s16 → 大端 s16（每两字节换序）。CarPlay 线格式要求大端样本。 */
         fun bigEndianS16(source: ByteArray): ByteArray {
@@ -286,7 +303,16 @@ class AudioSender(
             }
             record = recorder
             running.set(true)
-            mutePhoneMedia()
+            if (mutePhoneOutput) {
+                mutePhoneMedia()
+            } else {
+                // T12 isolates B233's all-zero capture from Sony's STREAM_MUSIC mute.
+                // This is diagnostic: phone speaker may be audible as well as the car.
+                val am = context?.getSystemService(android.content.Context.AUDIO_SERVICE)
+                    as? android.media.AudioManager
+                log("AUDIO T12: B233 原媒体音量保留；volume=${am?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)}" +
+                    " musicActive=${am?.isMusicActive}（手机可能同时外放）")
+            }
             log(
                 "AUDIO: 已启动（播放捕获 ${sampleRate}Hz 立体声 → $host:$dataPort，" +
                     "通路=t$streamType/${codec.name}，" +
@@ -347,7 +373,7 @@ class AudioSender(
         syncSocket = null
         syncThread = null
         thread = null
-        restorePhoneMedia()
+        if (mutePhoneOutput) restorePhoneMedia()
         log("AUDIO: 已停止（共发 $packetsSent 包 / ${bytesSent / 1024}KB）")
     }
 
@@ -475,9 +501,16 @@ class AudioSender(
                         index += 2
                     }
                     val percent = nonZero * 100 / (read / 2).coerceAtLeast(1)
+                    val activity =
+                        if (!mutePhoneOutput && peak == 0) {
+                            val am = context?.getSystemService(android.content.Context.AUDIO_SERVICE)
+                                as? android.media.AudioManager
+                            " musicActive=${am?.isMusicActive}" +
+                                " mediaVolume=${am?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)}"
+                        } else ""
                     log(
-                        "AUDIO: 采集样本 seq=$sequence 非零$percent% 峰值=$peak" +
-                            if (peak == 0) "（⚠ 全零：捕获不到音频——app 可能禁止播放捕获或音频走了蓝牙）" else "",
+                        "AUDIO: 采集样本 seq=$sequence 非零$percent% 峰值=$peak$activity" +
+                            if (peak == 0) "（⚠ 全零：音乐可能未播放、来源禁止捕获或走了其他音频路由）" else "",
                     )
                 }
 
@@ -543,8 +576,13 @@ class AudioSender(
         }
     }
 
-    /** 用平台解码器把首帧解回 PCM，记录峰值（后台线程，不阻塞推流）。 */
+    /** PCM directly checks capture; only AAC requires platform decoder self-test. */
     private fun verifyEncodedFrame(frame: ByteArray) {
+        if (codec == AudioCodec.PCM) {
+            log("AUDIO T12: PCM 首帧自检 ${frame.size}B peak=${peakPcm16Le(frame)}" +
+                "（原版误把 PCM 交给 AAC 解码器）")
+            return
+        }
         val payload = frame.copyOf()
         Thread(
             {
