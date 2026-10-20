@@ -161,6 +161,7 @@ object BuickUpdater {
                 val branch = release.optString("body").lineSequence()
                     .firstOrNull { it.startsWith("branch=") }
                     ?.substringAfter("=")?.trim().orEmpty()
+                val changeNotes = UpdateNotes.extract(release.optString("body"))
                 require(branch in setOf("main", "Buick-main", "Buick-E5")) {
                     "更新来源分支无效：$branch"
                 }
@@ -177,11 +178,23 @@ object BuickUpdater {
                 main.post {
                     if (activity.isFinishing || activity.isDestroyed) return@post
                     if (code <= installed) {
-                        if (!silent) info(activity, "已是最新版本（$installedVersionName）")
+                        if (!silent) {
+                            info(
+                                activity,
+                                "已是最新版本（$installedVersionName）\n" +
+                                    "发布分支：$branch\n\n更新说明：\n$changeNotes",
+                            )
+                        }
                     } else {
                         AlertDialog.Builder(activity)
                             .setTitle("发现 CarDeck 最新构建")
-                            .setMessage("当前版本：$installedVersionName\n最新版本：$versionName\n来源分支：$branch\n\n安装后将切换到该分支的功能，是否继续？")
+                            .setMessage(
+                                "当前版本：$installedVersionName\n" +
+                                    "最新版本：$versionName\n" +
+                                    "来源分支：$branch\n\n" +
+                                    "更新说明：\n$changeNotes\n\n" +
+                                    "安装后将切换到该分支的功能，是否继续？",
+                            )
                             .setNegativeButton("取消", null)
                             .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity)) }
                             .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl) }
