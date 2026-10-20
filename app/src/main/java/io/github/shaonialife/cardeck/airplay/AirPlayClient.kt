@@ -2078,11 +2078,13 @@ class AirPlayClient(
                             val command =
                                 try {
                                     BinaryPlist.parse(message.body) as? Map<*, *>
-                                } catch (_: IllegalArgumentException) {
+                                } catch (error: Exception) {
+                                    // Malformed event payload must never kill the event reader.
+                                    log("EVENT: 命令解析异常 - ${error.javaClass.simpleName}: ${error.message}")
                                     null
                                 }
                             if (command == null) {
-                                log("EVENT: 命令 plist 解析失败 [$firstLine] body=${message.body.size}B")
+                                log("EVENT: 命令 plist 解析失败 [$firstLine] body=${message.body.size}B prefix=" + message.body.take(32).joinToString(" ") { "%02x".format(it) })
                                 continue
                             }
                             try {
