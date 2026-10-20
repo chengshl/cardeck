@@ -1008,7 +1008,7 @@ object SessionController {
             // 两者都发生在等邀请期间，不额外占用时间。
             ctrlAdvertiser?.ensureForNetwork(endpoint.ssid, force = true, network = wifiConnector?.currentNetwork)
             endpointBrowser?.resetCache()
-            endpointBrowser?.start()
+            endpointBrowser?.start(carWifiNetwork = wifiConnector?.currentNetwork)
             // 0x4301 自带完整 IPv4+端口 = 接收端已明确告知「连这里」，无需等邀请
             // （DiPlay 测试台路径：本轮直接配对，省掉固定等待）。
             val endpointSelfContained =
