@@ -220,11 +220,21 @@ class Iap2BluetoothClient(
                         null
                     } ?: device.address
                 runCatching { adapter.cancelDiscovery() }
+                // BUICK_2427 (B233) was verified with an outbound RFCOMM link
+                // in T1, but Android sometimes reports no accessory iAP2 UUID
+                // in its SDP cache. Bypass only this known receiver, never all
+                // paired devices (headphones/watch still require SDP).
+                val knownBuick = BuickB233Route.isKnownReceiver(name)
+                if (targetProvider() == null && knownBuick &&
+                    skippedNoService.add("B233:" + device.address)
+                ) {
+                    log("BT-C: 自动识别 BUICK_2427（B233）：SDP 可能缺少 iAP2 UUID，仍尝试主动连入")
+                }
                 // 自动模式（未选目标）先过 SDP 闸门：候选=全部已配对设备，耳机/手表
                 // 没有 iAP2 服务，连不上还白白被断 HFP/A2DP（设备级断开兜底更会波及
                 // 其它在线设备）——确认提供 …caff 才进入「断开+连接」流程。选定目标
                 // 的设备不过闸（用户显式指定，保持原路径与时序）。
-                if (targetProvider() == null && !awaitIap2Service(device)) {
+                if (targetProvider() == null && !knownBuick && !awaitIap2Service(device)) {
                     if (skippedNoService.add(device.address)) {
                         log("BT-C: 跳过「$name」（未发现 iAP2 服务——非 CarPlay 设备，保持其音频连接）")
                     }
@@ -311,7 +321,18 @@ class Iap2BluetoothClient(
             bonded.filter { device ->
                 device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true
             }
-        return if (withService.isNotEmpty()) withService else bonded
+        // Known B233 first: otherwise another paired device with a visible
+        // UUID can make the candidates list omit Buick entirely.
+        val knownBuick = bonded.filter { device ->
+            BuickB233Route.isKnownReceiver(
+                runCatching { device.name }.getOrNull()
+            )
+        }
+        return if (withService.isNotEmpty() || knownBuick.isNotEmpty()) {
+            (knownBuick + withService).distinctBy { it.address }
+        } else {
+            bonded
+        }
     }
 
     @SuppressLint("MissingPermission")

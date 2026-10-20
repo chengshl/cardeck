@@ -124,6 +124,17 @@ class Iap2BluetoothServer(
                 runCatching { socket.close() }
                 continue
             }
+            // On Buick B233, our verified successful path is PHONE -> CAR
+            // (accessory UUID ...caff). The unsolicited CAR -> PHONE inbound
+            // path repeatedly stopped ACKing 0x4300 (13:35/13:37 T2 log) and
+            // blocks outbound discovery via BtSessionGate.inboundActive.
+            // Reject only the observed receiver name, not generic CarPlay or
+            // DiPlay inbound clients.
+            if (BuickB233Route.isKnownReceiver(peerName)) {
+                log("BT: BUICK_2427 入站 iAP2 连接不作为主会话（此前 0x4300 不获 ACK）；关闭入站并优先手机主动连车机")
+                runCatching { socket.close() }
+                continue
+            }
             log("BT: 接收端已连入 name=$peerName，开始 iAP2 发送端会话")
             Thread({ runSession(socket) }, "iap2-bt-session").apply {
                 isDaemon = true
