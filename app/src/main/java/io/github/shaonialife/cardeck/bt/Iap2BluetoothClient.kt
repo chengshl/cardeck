@@ -57,6 +57,9 @@ class Iap2BluetoothClient(
 
     private var thread: Thread? = null
     private val currentSocket = AtomicReference<BluetoothSocket?>(null)
+    // T17: B233 only. Avoid hammering a head unit that has just torn down an
+    // audio CarPlay session or silently ignored the 0x4300 request.
+    private val b233ReconnectPolicy = B233ReconnectPolicy()
 
     /**
      * 客户端线程世代号：start()/stop() 都会递增。卡在阻塞 connect() 里的线程被
@@ -166,6 +169,7 @@ class Iap2BluetoothClient(
         // 每轮启动重置 SDP 结论与跳过日志（新配对/换固件后重新探测）
         iap2ServiceCache.clear()
         skippedNoService.clear()
+        b233ReconnectPolicy.reset()
         running = true
         val myGeneration = generation.incrementAndGet()
         val target = targetProvider()
@@ -194,6 +198,7 @@ class Iap2BluetoothClient(
                 null
             } ?: return
         var lastFailureLogAt = 0L
+        var lastCooldownLogUntil = 0L
         while (running && generation.get() == myGeneration) {
             // 静默降噪（2026-10-10 用户实测后启用）——会话期间完全静默，不产生任何连接尝试/日志：
             //  - inboundActive：接收端正在连我们（两条 RFCOMM 会互相踩；Audi 实测双会话混乱）
@@ -204,6 +209,23 @@ class Iap2BluetoothClient(
                 sleepQuietly(2_000)
                 continue
             }
+            // T17: B233 does not reliably clear its 0x4300/iAP2 state after a
+            // short audio teardown. Give the receiver time to release the
+            // previous CarPlay slot instead of immediately forcing RFCOMM
+            // reconnect + HFP/A2DP disconnect every three seconds.
+            val remainingB233 = b233ReconnectPolicy.remainingMs(
+                android.os.SystemClock.uptimeMillis(),
+            )
+            if (remainingB233 > 0L) {
+                val until = b233ReconnectPolicy.untilMs()
+                if (until != lastCooldownLogUntil) {
+                    lastCooldownLogUntil = until
+                    log("BT-C T17: B233 会话冷却剩余 ${(remainingB233 + 999) / 1000}s；" +
+                        "等待车机释放旧 CarPlay 会话（仅暂停自动重连）")
+                }
+                sleepQuietly(minOf(1_000L, remainingB233))
+                continue
+            }
             val candidates = candidateDevices(adapter)
             if (candidates.isEmpty()) {
                 log("BT-C: 没有已配对的蓝牙设备——请先在系统设置里与车机完成蓝牙配对")
@@ -211,6 +233,7 @@ class Iap2BluetoothClient(
                 continue
             }
             var connected: BluetoothSocket? = null
+            var connectedKnownBuick = false
             for (device in candidates) {
                 if (!running || generation.get() != myGeneration) return
                 val name =
@@ -263,6 +286,7 @@ class Iap2BluetoothClient(
                 if (socket != null) {
                     log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
                     connected = socket
+                    connectedKnownBuick = knownBuick
                     break
                 } else {
                     val now = android.os.SystemClock.uptimeMillis()
@@ -278,10 +302,11 @@ class Iap2BluetoothClient(
             }
             if (generation.get() != myGeneration) {
                 // stop() 与 connect() 成功竞争：本线程已过期，不建会话
-                currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+                currentSocket.compareAndSet(connected, null)
+                runCatching { connected.close() }
                 return
             }
-            runSession(connected)
+            runSession(connected, connectedKnownBuick)
             sleepQuietly(RETRY_DELAY_MILLIS)
         }
         log("BT-C: 客户端已停止")
@@ -356,7 +381,7 @@ class Iap2BluetoothClient(
         }
     }
 
-    private fun runSession(socket: BluetoothSocket) {
+    private fun runSession(socket: BluetoothSocket, knownBuick: Boolean) {
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
@@ -364,16 +389,50 @@ class Iap2BluetoothClient(
         val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
         activeChannel = channel
         try {
-            channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpointUpdate)
+            channel.runSenderSession(
+                context, SESSION_TIMEOUT_MILLIS, log,
+                { endpoint ->
+                    if (knownBuick) b233ReconnectPolicy.onStartSessionAccepted()
+                    onEndpoint(endpoint)
+                },
+                onWifiCredentials,
+                onEndpointUpdate,
+            )
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")
+            if (knownBuick &&
+                error.message.orEmpty().contains("0x4301 not received", ignoreCase = true)
+            ) {
+                val backoff = b233ReconnectPolicy.onStartSessionTimeout(
+                    android.os.SystemClock.uptimeMillis(),
+                )
+                log("BT-C T17: B233 0x4300 无回应，下一轮等待 ${backoff / 1000}s " +
+                    "（连续超时阶梯退避，最长60s）")
+            }
         } finally {
-            activeChannel = null
-            currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+            if (activeChannel === channel) activeChannel = null
+            // T17: an old session ending after stop/start MUST NOT close the
+            // socket already owned by a newer generation of the BT client.
+            currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
             channel.close()
             log("BT-C: 本轮会话结束（客户端仍在运行，将自动重连）")
         }
+    }
+
+    /**
+     * T17 only called after an established B233 audio+video stream has
+     * unexpectedly ended. Keep the client's service alive, but close its
+     * retired RFCOMM session and defer new discovery while B233 resets.
+     * Explicit stop/start clears this cooldown immediately.
+     */
+    fun recoverAfterB233AudioTeardown() {
+        val cooldown = b233ReconnectPolicy.onAudioSessionEnded(
+            android.os.SystemClock.uptimeMillis(),
+        )
+        log("BT-C T17: B233 音频异常拆链，退役旧 iAP2 控制连接；" +
+            "自动重试冷却 ${cooldown / 1000}s（不重启 App、不删除配对）")
+        detachCurrentSession()
     }
 
     /** 主动结束当前 BT 控制会话（不影响重连循环）。供 AirPlay 配对前复现控制通道退役状态。 */

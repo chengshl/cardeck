@@ -2231,11 +2231,27 @@ object SessionController {
                                                     appContext?.let { ctx ->
                                                         AppOrientationCompat.resetAllAsync(ctx, ::appendLog)
                                                     }
+                                                    // T17: signal the B233 receiver's recovery
+                                                    // policy BEFORE retiring the audio sender.
+                                                    // Video-only sessions are not penalized.
+                                                    val b233AudioEnded =
+                                                        client.currentEndpoint.isBuickB233 &&
+                                                            audioSender?.isRunning == true
                                                     attributeAudioTeardown()
                                                     // B233: release naturally ended streams as well.
                                                     if (client.currentEndpoint.isBuickB233) {
                                                         retireSession()
-                                                        phaseHint = "CarPlay 已断开，等待车机重新握手…"
+                                                        if (b233AudioEnded) {
+                                                            // Old iAP2 may remain alive after the
+                                                            // AirPlay receiver has killed video and
+                                                            // audio. Retire it and give the car time
+                                                            // to reopen its 0x4300/0x4301 slot;
+                                                            // preserve Wi-Fi and all other cars.
+                                                            bluetoothClient?.recoverAfterB233AudioTeardown()
+                                                            phaseHint = "音频异常断开；车机握手冷却后自动重试…"
+                                                        } else {
+                                                            phaseHint = "CarPlay 已断开，等待车机重新握手…"
+                                                        }
                                                     }
                                                 }
                                             },
