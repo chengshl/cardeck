@@ -98,8 +98,7 @@ class CarPlayCtrlAdvertiser(
             if (network == null) return false
             val caps = cm.getNetworkCapabilities(network)
             val props = cm.getLinkProperties(network)
-            return caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
-                !props?.interfaceName.isNullOrBlank() &&
+            return CarPlayNetworkSockets.isPhysicalWifi(cm, network) &&
                 props?.linkAddresses?.any { it.address is Inet4Address } == true
         }
         val bound = cm.boundNetworkForProcess
@@ -177,7 +176,7 @@ class CarPlayCtrlAdvertiser(
             log("$TAG T7: processBoundNetwork=${bound ?: "(none)"} activeNetwork=${cm.activeNetwork ?: "(none)"}")
             for (network in cm.allNetworks) {
                 val caps = cm.getNetworkCapabilities(network) ?: continue
-                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+                if (!CarPlayNetworkSockets.isPhysicalWifi(cm, network)) continue
                 val props = cm.getLinkProperties(network)
                 val ips = props?.linkAddresses?.joinToString(",") { it.address.hostAddress ?: "?" }
                 val gateway = props?.routes?.firstOrNull { it.isDefaultRoute }?.gateway?.hostAddress
@@ -215,6 +214,10 @@ class CarPlayCtrlAdvertiser(
             }
             val serviceWifi = wifiNetwork()
             registeredNetwork = serviceWifi
+            val cmForRoute = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            log("$TAG T47: NSD physicalHotspot=${serviceWifi ?: "(none)"} " +
+                "vpnActive=${CarPlayNetworkSockets.isVpnActive(cmForRoute)} " +
+                "defaultNetwork=${cmForRoute.activeNetwork ?: "(none)"}")
             val info =
                 NsdServiceInfo().apply {
                     serviceName = "sender"
@@ -281,7 +284,13 @@ class CarPlayCtrlAdvertiser(
             Thread.sleep(1_500)
             if (!registered || serverSocket !== ownerSocket) return
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val wifi = network ?: wifiNetwork()
+            val wifi = network?.takeIf { CarPlayNetworkSockets.isPhysicalWifi(cm, it) } ?: wifiNetwork()
+            if (CarPlayNetworkSockets.isVpnActive(cm)) {
+                log("$TAG T47: VPN active; skipping explicit Wi-Fi loopback selftest " +
+                    "(Android may reject physical-network socket with EPERM; " +
+                    "this does not imply CarPlay TCP is unreachable)")
+                return
+            }
             val ipv4 = wifi?.let { cm.getLinkProperties(it)?.linkAddresses
                 ?.map { address -> address.address }
                 ?.firstOrNull { address -> address is Inet4Address } }
