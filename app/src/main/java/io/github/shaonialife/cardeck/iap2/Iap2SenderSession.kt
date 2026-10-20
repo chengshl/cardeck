@@ -129,6 +129,9 @@ class Iap2SenderSession(
          */
         const val MFI_SILENT_RETRY_WINDOW_MS = 1_500L
 
+        /** B233 can send 0x4301 without any 0x5703; never wait for that Wi-Fi command. */
+        const val BUICK_START_SESSION_WAIT_NANOS = 30_000_000_000L
+
         /** 挑战档位（长度, 首次试探窗口）：顺序与窗口由 DiPlay/Audi 双端实测决定。 */
         private val MFI_ATTEMPTS = listOf(32 to 3_000L, 20 to 6_000L, 16 to 3_000L)
 
@@ -167,6 +170,14 @@ class Iap2SenderSession(
         // ---- MFi（跳过校验：0xAA05 自报成功）----
         val identityText = identityText(identification)
         val legacyCar = LEGACY_RECEIVER_MARKERS.any { identityText.contains(it) }
+        // Use a narrow B233 signature; do not change other GM, Audi, or test accessories.
+        val buickB233 =
+            identityText.contains("buick") &&
+                identityText.contains("b233") &&
+                identityText.contains("saic general motors")
+        if (buickB233) {
+            log("iap2 Buick B233: recognized receiver; 32B-only MFi, 0x4300/0x4301 (no 0x5702)")
+        }
         if (legacyCar) {
             log("iap2 识别为真车系（$identityText）——MFi 首选 20B（真 iPhone 实录长度；32B 对真车处置不稳定）")
         }
@@ -180,7 +191,7 @@ class Iap2SenderSession(
         //    32B→20B 的会话全部卡死，20B→（记忆命中）的会话全部秒通。
         //  - 测试台 DiPlay（Carlinkit AuthV3 EC 身份）：**只接受精确 32B**，长度不符直接断链。
         // 全部无应答也不中止——我们不校验签名（0xAA05 自报），由 0x5702 是否应答判定放行。
-        runMfiChallenge(deadline, prefer20First = legacyCar, receiverKey = identityText)
+        runMfiChallenge(deadline, prefer20First = legacyCar, receiverKey = identityText, buickStrict = buickB233)
         send(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
         log("iap2 tx=0xaa05 authentication-succeeded（自报）")
 
@@ -199,6 +210,8 @@ class Iap2SenderSession(
         // xcertplay 在订阅后发 StartHID；DiPlay 删掉了这一步（订阅完直接等 0x5702）。
         // 因此这里只短暂等待：收到 0x6800 就应答 0x6801，2 秒内没等到就直接继续。
         awaitOptionalHid(deadline)
+
+        if (buickB233) return bringUpBuickB233(deadline)
 
         // ---- WiFi 配置交换 ----
         send(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)
@@ -314,6 +327,98 @@ class Iap2SenderSession(
         return endpoint
     }
 
+
+    /**
+     * Buick E5 B233-specific bring-up, adapted from the tested Buick-E5 T17/T19/T37
+     * path. B233 advertises receive(0x4300) and send(0x4301), but does not advertise
+     * 0x5703: requesting 0x5702 stalls the generic upstream handshake.
+     * Keep its traffic on the BT control session; do not touch upstream virtual iAP2.
+     */
+    private fun bringUpBuickB233(deadline: Long): CarPlayEndpoint {
+        val mac = bluetoothMac.trim()
+        if (!Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$").matches(mac) ||
+            mac.equals("02:00:00:00:00:00", ignoreCase = true) ||
+            mac.equals("00:00:00:00:00:00", ignoreCase = true)
+        ) {
+            throw IOException("Buick B233: invalid local Bluetooth MAC, refusing 0x4300")
+        }
+
+        // Buick-E5 observed this order before successful 0x4301. Do not send 0x4e0d
+        // (B233 has not declared it), nor the unsupported 0x5702 request.
+        send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
+        send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
+        val now = System.currentTimeMillis()
+        send(
+            Iap2MessageIds.DEVICE_TIME_UPDATE,
+            Iap2Csm.param(0, u64Bytes(now / 1000L)) +
+                Iap2Csm.u16(1, (java.util.TimeZone.getDefault().getOffset(now) / 60_000) and 0xFFFF) +
+                Iap2Csm.u8(2, 0),
+        )
+        send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
+
+        // The latest outbound control frame here is 0x4e0c. Gate 0x4300 on its
+        // real peer ACK (not sendControl enqueue success, and not a fixed seq=108:
+        // StartHID/EA traffic may shift the sequence number).
+        log("iap2 Buick B233: waiting for peer ACK of 0x4e0c before 0x4300")
+        if (!channel.awaitLastControlAck(3_000L)) {
+            throw IOException("Buick B233: 0x4e0c peer ACK missing; 0x4300 not sent")
+        }
+        // T37 B233 observation: allow head unit a brief post-ACK processing window.
+        try {
+            Thread.sleep(1_500L)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("Buick B233: interrupted before 0x4300")
+        }
+        if (!channel.isAlive) throw IOException("Buick B233: iAP2 link closed before 0x4300")
+
+        // Captured iPhone-style shape: group(0) deviceId, group(1) real BT MAC.
+        // Derive a stable 24-character ID from this phone's MAC, never copy a real
+        // iPhone's private ID. Expected CSM frame size is 75 bytes.
+        val body =
+            Iap2Csm.group(
+                0,
+                Iap2Csm.u8(0, 1),
+                Iap2Csm.string(1, carPlayDeviceIdentifier()),
+            ) +
+                Iap2Csm.group(
+                    1,
+                    Iap2Csm.u8(0, 1),
+                    Iap2Csm.string(1, mac),
+                )
+        log("iap2 Buick B233: sending 0x4300 two-group availability; frameBytes=" +
+            Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, body).size)
+        send(Iap2MessageIds.CARPLAY_AVAILABILITY, body)
+
+        // Never synthesize Wi-Fi credentials when B233 is silent. A missing 0x4301
+        // is an explicit bring-up failure, unlike generic mDNS-only Audi devices.
+        val waitUntil = minOf(deadline, System.nanoTime() + BUICK_START_SESSION_WAIT_NANOS)
+        val start = expectOrNull(Iap2MessageIds.CARPLAY_START_SESSION, waitUntil)
+            ?: throw IOException("Buick B233: 0x4301 not received within 30s after 0x4300")
+        // Do not dump the raw body: wireless group contains the hotspot password.
+        for (param in Iap2Csm.parseParams(start.body)) {
+            log("iap2 Buick B233: rx 0x4301 param=0x" +
+                param.id.toString(16).padStart(4, '0') + " bytes=" + param.value.size + " (redacted)")
+        }
+        val endpoint = parseStartSession(start, WifiConfiguration("", "", 0, 0))
+        if (endpoint.ssid.isBlank()) {
+            throw IOException("Buick B233: 0x4301 missing Wi-Fi SSID")
+        }
+        wifi = WifiConfiguration(endpoint.ssid, endpoint.passphrase, endpoint.channel, endpoint.securityType)
+        log("iap2 Buick B233: 0x4301 accepted; ssidPresent=true passphrasePresent=" +
+            endpoint.passphrase.isNotEmpty() + " port=" + endpoint.airPlayPort +
+            " ipCount=" + endpoint.ipAddresses.size + " publicKeyPresent=" +
+            !endpoint.publicKey.isNullOrEmpty())
+        return endpoint
+    }
+
+    /** 24-hex stable device identifier from the phone's MAC, never an iPhone ID. */
+    private fun carPlayDeviceIdentifier(): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(("CarDeck-CarPlay:" + bluetoothMac.uppercase()).toByteArray())
+        return digest.take(12).joinToString("") { "%02X".format(it.toInt() and 0xFF) }
+    }
+
     /**
      * Phase 2 过渡：bring-up 完成后保持链路打开，持续记录配件发来的控制消息
      * （如 0x4E0E 后重发的 0x5703、位置请求 0xFFFA 等），直到链路断开。
@@ -413,6 +518,7 @@ class Iap2SenderSession(
         deadline: Long,
         prefer20First: Boolean = false,
         receiverKey: String,
+        buickStrict: Boolean = false,
     ) {
         val baselineLengths =
             if (prefer20First) {
@@ -422,7 +528,9 @@ class Iap2SenderSession(
             }
         val windowOf = MFI_ATTEMPTS.associate { it.first to it.second }
         val memory = MfiLengthMemory.load(context, receiverKey)
-        val order = MfiLengthMemory.orderAttempts(baselineLengths, memory)
+        // B233's first successful handshake uses 32B. Never retry 20B/16B
+        // on a stale receiver session, even if historic cache favors them.
+        val order = if (buickStrict) listOf(32) else MfiLengthMemory.orderAttempts(baselineLengths, memory)
         if (!memory.isEmpty) {
             log(
                 "iap2 MFi 按车机记忆（$receiverKey）：${MfiLengthMemory.describe(memory)}" +
@@ -450,6 +558,9 @@ class Iap2SenderSession(
                 val frame = recvFrame(remaining)
                 if (frame == null) {
                     if (!channel.isAlive) {
+                        if (buickStrict) {
+                            throw IOException("Buick B233: MFi 32B link closed; no fallback or 0xaa05")
+                        }
                         log("iap2 MFi 挑战期间链路断开（${size}B，对端不接受该长度）——记入该车机被拒档位")
                         MfiLengthMemory.recordRejected(context, receiverKey, size)
                         return
@@ -478,6 +589,9 @@ class Iap2SenderSession(
             if (gotResponse) {
                 MfiLengthMemory.recordSuccess(context, receiverKey, size)
                 return
+            }
+            if (buickStrict) {
+                throw IOException("Buick B233: MFi 32B not accepted; no 20B/16B retry or 0xaa05")
             }
             if (gotFailure) {
                 MfiLengthMemory.recordRejected(context, receiverKey, size)
@@ -680,16 +794,23 @@ class Iap2SenderSession(
         val params = Iap2Csm.parseParams(frame.body).associateBy { it.id }
         val wirelessGroup = params[1]?.value
         val wireless = wirelessGroup?.let { Iap2Csm.parseParams(it) }
+        val wirelessParams = wireless?.associateBy { it.id }.orEmpty()
+        // B233 carries SSID/password/channel/security inside 0x4301 group(1).
+        // Other accessories still use the earlier 0x5703 values when present.
+        val sessionSsid = wirelessParams[0]?.value?.asStringOrEmpty()?.takeIf { it.isNotBlank() }
+        val sessionPassphrase = wirelessParams[1]?.value?.asStringOrEmpty()
+        val sessionChannel = wirelessParams[2]?.value?.firstOrNull()?.toInt()?.and(0xFF)
+        val sessionSecurity = wirelessParams[4]?.value?.firstOrNull()?.toInt()?.and(0xFF)
         val addresses =
             wireless
                 ?.filter { it.id == 3 }
                 ?.mapNotNull { param -> param.value.asStringOrEmpty()?.takeIf { it.isNotEmpty() } }
                 .orEmpty()
         return CarPlayEndpoint(
-            ssid = wifi.ssid,
-            passphrase = wifi.passphrase,
-            channel = wifi.channel,
-            securityType = wifi.securityType,
+            ssid = sessionSsid ?: wifi.ssid,
+            passphrase = sessionPassphrase ?: wifi.passphrase,
+            channel = if (wifi.channel != 0) wifi.channel else sessionChannel ?: 0,
+            securityType = if (wifi.securityType != 0) wifi.securityType else sessionSecurity ?: 0,
             airPlayPort = params[2]?.value?.asU32() ?: 0,
             deviceIdentifier = params[3]?.value?.asStringOrEmpty(),
             publicKey = params[4]?.value?.asStringOrEmpty(),

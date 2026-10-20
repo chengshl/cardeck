@@ -20,6 +20,9 @@ class Iap2LinkChannel(
     private val lock = Object()
     private val controls = LinkedBlockingQueue<ByteArray?>()
     private val readyLatch = CountDownLatch(1)
+    /** Track the last outbound control sequence and inbound cumulative peer ACK. */
+    private var lastOutboundControlSeq: Int? = null
+    private var lastPeerAck: Int? = null
 
     @Volatile
     private var terminated = false
@@ -46,6 +49,10 @@ class Iap2LinkChannel(
             log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
         }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
+            if ((control and 0x40) != 0) {
+                lastPeerAck = ack
+                lock.notifyAll()
+            }
             // 真车调试关键观测：车机在识别阶段是否回帧、回什么（静默分歧全靠它定位）
             if (rxFrameLogs < FRAME_LOG_LIMIT) {
                 rxFrameLogs++
@@ -56,6 +63,9 @@ class Iap2LinkChannel(
             }
         }
         engine.onFrameSent = { control, sequence, ack, sessionId, size ->
+            if ((control and 0x40) != 0 && sessionId != 0 && size > 0) {
+                lastOutboundControlSeq = sequence
+            }
             if (txFrameLogs < FRAME_LOG_LIMIT) {
                 txFrameLogs++
                 log(
@@ -94,6 +104,32 @@ class Iap2LinkChannel(
             drainOutputLocked()
             return accepted
         }
+    }
+
+    /**
+     * Buick B233 needs a real peer ACK of the most recently transmitted
+     * iAP2 control frame before 0x4300. Unlike a hard-coded sequence (108),
+     * this also works when optional HID/EA traffic shifts outbound numbering.
+     * Call immediately after sending the target frame, with no other sender
+     * using this channel concurrently.
+     */
+    fun awaitLastControlAck(timeoutMillis: Long): Boolean {
+        val deadline = System.nanoTime() + timeoutMillis * 1_000_000L
+        synchronized(lock) {
+            while (!terminated) {
+                val sent = lastOutboundControlSeq
+                if (sent != null && lastPeerAck == sent) return true
+                val millis = (deadline - System.nanoTime()) / 1_000_000L
+                if (millis <= 0) return false
+                try {
+                    lock.wait(millis.coerceAtLeast(1L))
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+            }
+        }
+        return false
     }
 
     /** 取下一个控制载荷；超时或链路结束返回 null。 */
