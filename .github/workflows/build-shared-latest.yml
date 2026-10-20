@@ -87,8 +87,28 @@ jobs:
         run: |
           set -euo pipefail
           cp app/build/outputs/apk/release/*.apk CarDeck-latest.apk
-          printf 'versionName=%s\nversionCode=%s\nbranch=%s\ncommit=%s\nbuiltAt=%s\ntimezone=Asia/Shanghai\n\nLatest successfully built CarDeck APK across main, Buick-main and Buick-E5.\n' \
-            "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > release-notes.txt
+
+          # T15: Embed an actual per-build changelog in the SAME GitHub Release
+          # body already consumed by all three app branches. Keep metadata
+          # keys at the top so old installed updaters remain compatible.
+          #
+          # Future release commits may include a "CarDeck-Notes:" section:
+          #   CarDeck-Notes:
+          #   - 修复……
+          #   - 优化……
+          # When absent, publish the commit subject rather than a blank page.
+          COMMIT_NOTES="$(git log -1 --pretty=%B | awk '
+            /^CarDeck-Notes:$/ { in_notes=1; next }
+            in_notes && NF > 0 { print }
+          ')"
+          if [[ -z "$COMMIT_NOTES" ]]; then
+            COMMIT_NOTES="- $(git log -1 --pretty=%s)"
+          fi
+          {
+            printf 'versionName=%s\nversionCode=%s\nbranch=%s\ncommit=%s\nbuiltAt=%s\ntimezone=Asia/Shanghai\n' \
+              "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$(date -u +%FT%TZ)"
+            printf '\n## 更新说明\n%s\n' "$COMMIT_NOTES"
+          } > release-notes.txt
 
           # Never let an older code replace a newer shared APK.
           PREVIOUS_CODE="$(gh release view cardeck-latest --json body --jq '.body' 2>/dev/null \
