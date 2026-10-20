@@ -283,7 +283,12 @@ object BinaryPlist {
                     else -> null
                 }
 
-            0x1 -> readSigned(bytes, offset + 1, 1 shl info)
+            // 整数一律按**无符号**解读：接收端（车机）会把位图/微秒/采样率写进
+            // 2 字节 int，值超过 32767 时按有符号读会变成负数（实测 44100 → -21436、
+            // 35000us → -30536、0x8854 → -30636）。位图字段一旦被符号扩展，高 16 位
+            // 全部变成 1，任何 >bit15 的格式位都会「看起来被声明」——协商就会挑到
+            // 车机根本不支持的格式。
+            0x1 -> readUint(bytes, offset + 1, 1 shl info)
 
             0x2 ->
                 when (info) {
@@ -347,7 +352,10 @@ object BinaryPlist {
         val intMarker = u8(bytes[offset + 1])
         require(intMarker ushr 4 == 0x1) { "期望长度 int 对象，得到 0x${intMarker.toString(16)}" }
         val intSize = 1 shl (intMarker and 0xF)
-        val count = readSigned(bytes, offset + 2, intSize).toInt()
+        // 扩展长度必须按**无符号**读：DiPlay 发 182B 的 data 时写 0xB6，按有符号读成
+        // -74，copyOfRange(51, -23) 直接抛 IAE——整条 iAPSendMessage 命令被当
+        // 「无法识别」丢弃（2026-10-20 实测定位，与整数负号扩展是同一族 bug）
+        val count = readUint(bytes, offset + 2, intSize).toInt()
         return count to offset + 2 + intSize
     }
 
