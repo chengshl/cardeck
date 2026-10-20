@@ -86,15 +86,29 @@ class CarPlayCtrlAdvertiser(
     /** 本次注册时进程所处的网络（用于判断「绑定后是否需要重注册」）。 */
     private var registeredNetwork: android.net.Network? = null
 
-    /** T8: network chosen for service-specific NSD advertisement. */
+    /**
+     * T43: prefer the Wi-Fi Network explicitly bound for this car session.
+     * Modern multi-interface Android phones may use wlan1, not wlan0.
+     * T42 real Buick log: boundNetwork=144, interface=wlan1, while NSD
+     * selection returned null and advertised without setNetwork().
+     */
     private fun wifiNetwork(): android.net.Network? {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        return cm.allNetworks.firstOrNull { network ->
+        fun usable(network: android.net.Network?): Boolean {
+            if (network == null) return false
             val caps = cm.getNetworkCapabilities(network)
             val props = cm.getLinkProperties(network)
-            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
-                props?.interfaceName == "wlan0"
+            return caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+                !props?.interfaceName.isNullOrBlank() &&
+                props?.linkAddresses?.any { it.address is Inet4Address } == true
         }
+        val bound = cm.boundNetworkForProcess
+        if (usable(bound)) return bound
+        val prior = registeredNetwork
+        if (usable(prior)) return prior
+        val active = cm.activeNetwork
+        if (usable(active)) return active
+        return cm.allNetworks.firstOrNull { usable(it) }
     }
 
     val port: Int get() = serverSocket?.localPort ?: -1
@@ -226,7 +240,11 @@ class CarPlayCtrlAdvertiser(
             registeredWithMac = mac
             log("$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id=$mac")
             log("$TAG T11: TXT id=$mac srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}")
-            log("$TAG T8: NSD network=${serviceWifi ?: "(none)"} interface=wlan0 explicit=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null} socketBound=0.0.0.0:${socket.localPort}")
+            val nsdInterface = serviceWifi?.let {
+                (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
+                    .getLinkProperties(it)?.interfaceName
+            } ?: "(none)"
+            log("$TAG T43: NSD network=${serviceWifi ?: "(none)"} interface=$nsdInterface explicit=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null} socketBound=0.0.0.0:${socket.localPort}")
             logNetworkSnapshot()
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
                 // 占位 id 车机不会邀请：后台等 Shizuku/MAC 就绪后立刻重注册，
@@ -234,7 +252,7 @@ class CarPlayCtrlAdvertiser(
                 Bg.run("ctrl-mac-repair") { repairPlaceholderMac() }
             }
             // T9: if CarDeck starts before Wi-Fi joins the car hotspot, the original
-            // NSD advertisement is not tied to wlan0. Re-register after Wi-Fi arrives.
+            // NSD advertisement may not be tied to a car Wi-Fi network yet. Re-register when one arrives.
             Bg.run("ctrl-wifi-watch") { watchWifiNetwork(socket) }
             Bg.run("ctrl-t11-diag") { diagnoseControlService(socket, serviceWifi) }
             Bg.run("ctrl-t12-nsd") { diagnoseNsdDiscovery(socket, serviceWifi) }
@@ -268,7 +286,7 @@ class CarPlayCtrlAdvertiser(
                 ?.map { address -> address.address }
                 ?.firstOrNull { address -> address is Inet4Address } }
             if (wifi == null || ipv4 == null) {
-                log("$TAG T11: SELFTEST unavailable: no wlan0 IPv4 address")
+                log("$TAG T43: SELFTEST unavailable: no active car Wi-Fi IPv4 (wlan0/wlan1)")
             } else {
                 try {
                     wifi.socketFactory.createSocket().use { probe ->
@@ -362,7 +380,7 @@ class CarPlayCtrlAdvertiser(
         }
     }
 
-    /** T9: follow wlan0 availability/changes while this specific server socket is alive. */
+    /** T43: follow the active bound Wi-Fi interface, whether wlan0 or wlan1. */
     private fun watchWifiNetwork(ownerSocket: ServerSocket) {
         repeat(90) {
             try {
@@ -378,7 +396,7 @@ class CarPlayCtrlAdvertiser(
                 return@repeat
             }
             if (current != null && current != registeredNetwork) {
-                log("$TAG T9: 检测到 wlan0 网络切换 ${registeredNetwork ?: "(none)"} -> $current；重注册 mDNS")
+                log("$TAG T43: 检测到绑定 Wi-Fi 网络切换 ${registeredNetwork ?: "(none)"} -> $current；重注册 mDNS")
                 ensureForNetwork(registeredSsid ?: "", force = true, network = current)
                 // ensureForNetwork replaces the socket; the new registration owns its watcher.
                 return
