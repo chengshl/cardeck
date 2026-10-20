@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.audio
 
+import android.net.Network
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
@@ -41,6 +42,8 @@ class AudioSender(
      * 44.1k 时由 AirPlayClient 协商下发）。默认 48k。
      */
     private val sampleRate: Int = 48_000,
+    /** Physical car Wi-Fi; does not change the VPN/system default route. */
+    private val carWifiNetwork: Network? = null,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -184,6 +187,13 @@ class AudioSender(
         if (running.get()) return true
         return try {
             val client = DatagramSocket()
+            if (carWifiNetwork != null) {
+                runCatching { carWifiNetwork.bindSocket(client) }
+                    .onSuccess { log("CAR-NET T47: audio UDP bound to car Wi-Fi $carWifiNetwork") }
+                    .onFailure {
+                        log("CAR-NET T47: audio UDP explicit Wi-Fi unavailable (${it.message}); using system LAN route")
+                    }
+            }
             client.connect(InetAddress.getByName(host), dataPort)
             socket = client
 
