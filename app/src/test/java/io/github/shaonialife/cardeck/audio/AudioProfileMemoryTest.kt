@@ -103,6 +103,29 @@ class AudioProfileMemoryTest {
     }
 
     @Test
+    fun b233ExplicitTransportFailureInvalidatesRememberedAacSuccess() {
+        val id = "BUICK B233 audio-transport-unit-test"
+        val aac = AudioProfile(
+            "media", 1L shl 23, 48_000, 250,
+            streamType = 102L, codec = AudioCodec.AAC_LC,
+        )
+        val pcm = AudioProfile("media", 1L shl 15, 48_000, 250)
+        AudioProfileMemory.reset(null, id)
+        AudioProfileMemory.recordWorking(null, id, aac.key)
+        assertEquals(aac.key, AudioProfileMemory.load(null, id).working)
+
+        AudioProfileMemory.recordTransportFailure(null, id, aac.key)
+        val entry = AudioProfileMemory.load(null, id)
+        assertEquals(null, entry.working)
+        assertTrue(entry.rejected.contains(aac.key))
+        assertFalse("one refused port must not disable all audio", entry.disabled)
+        val preferred = AudioProfileMemory.order(listOf(pcm, aac), entry)
+        assertEquals(pcm.key, preferred.first().key)
+        assertEquals(aac.key, preferred.last().key)
+        AudioProfileMemory.reset(null, id)
+    }
+
+    @Test
     fun teardownOfEveryProfileDisablesAudio() {
         // 只有「起流后整链被拆」这种确定性证据才允许把车机音频判死
         val id = "test receive teardown-all"

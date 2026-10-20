@@ -61,6 +61,10 @@ class AudioSender(
      * 发一个 [AudioSyncPacket] 建立 RTP↔NTP 锚点；0 = 车机没给（旧车机），只发音频。
      */
     private val controlPort: Int = 0,
+    /** B233 only: do not send RTCP before the late-joined audio RECORD succeeds. */
+    private val deferSyncUntilRecord: Boolean = false,
+    /** B233 only: detect rejected audio control endpoint and leave the video session alive. */
+    private val onSyncPortRefused: ((String) -> Unit)? = null,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -122,6 +126,13 @@ class AudioSender(
     @Volatile private var sequence = 0
 
     @Volatile private var timestamp = 0L
+    @Volatile private var syncRecordAccepted = !deferSyncUntilRecord
+
+    fun activateSyncAfterRecord() {
+        if (!deferSyncUntilRecord) return
+        syncRecordAccepted = true
+        log("AUDIO T10: B233 RECORD confirmed; RTCP will start after first RTP samples")
+    }
 
     @Volatile private var nonceCounter = 0L
 
@@ -378,6 +389,13 @@ class AudioSender(
                     var first = true
                     try {
                         while (running.get() && !client.isClosed) {
+                            // B233 often opens its control UDP port only after the
+                            // audio stream is activated via the *second* RECORD.
+                            // Do not send the old zero->zero RTCP probe before RECORD.
+                            if (deferSyncUntilRecord && (!syncRecordAccepted || timestamp == 0L)) {
+                                Thread.sleep(25L)
+                                continue
+                            }
                             val next = timestamp
                             val current = (next - samplesPerPacket).coerceAtLeast(0L)
                             val ntp = TimingServer.ntpFromNanos(System.nanoTime())
@@ -394,7 +412,16 @@ class AudioSender(
                             Thread.sleep(SYNC_INTERVAL_MILLIS)
                         }
                     } catch (error: Exception) {
-                        if (running.get()) log("AUDIO: 同步包发送停止 - ${error.message}")
+                        if (running.get()) {
+                            log("AUDIO: 同步包发送停止 - ${error.message}")
+                            val message = error.message.orEmpty()
+                            if (deferSyncUntilRecord &&
+                                (error is java.net.PortUnreachableException ||
+                                 message.contains("ECONNREFUSED", ignoreCase = true))
+                            ) {
+                                onSyncPortRefused?.invoke(message)
+                            }
+                        }
                     }
                 },
                 "audio-sync",

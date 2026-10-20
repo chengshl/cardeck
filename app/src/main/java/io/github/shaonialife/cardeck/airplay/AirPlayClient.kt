@@ -1701,7 +1701,14 @@ class AirPlayClient(
         // 音频通路已建好，但「车机在收数据、喇叭没声」还剩一种很常见的原因：
         // 接收端的 AirPlay 音量处于静音位（-144dB）——真 iPhone 会主动 SET_PARAMETER
         // volume。这里先查一次（顺带把值记进日志），查到静音位就抬到 -25dB。
-        probeAndFixVolume(host)
+        // B233 responds to volume GET with 501 and SET_PARAMETER with 456.
+        // Avoid sending unsupported volume commands on this receiver. The user
+        // can adjust output volume on the head unit. Other vehicles unchanged.
+        if (!endpoint.isBuickB233) {
+            probeAndFixVolume(host)
+        } else {
+            log("AUDIO T10: B233 skips unsupported AirPlay volume GET/SET (observed 501/456)")
+        }
         return AudioStreamInfo(
             streamConnectionId = connectionId,
             dataPort = dataPort,

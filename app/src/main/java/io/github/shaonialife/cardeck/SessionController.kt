@@ -4,6 +4,7 @@ import android.content.Context
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
 import io.github.shaonialife.cardeck.airplay.PairVerifyClient
+import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
@@ -269,6 +270,8 @@ object SessionController {
      * 与首个欠载周期的余量。
      */
     private const val AUDIO_PROFILE_PROBE_MS = 20_000L
+    /** Avoid B233's observed false-positive AAC success at ~20 seconds. */
+    private const val BUICK_AUDIO_PROFILE_PROBE_MS = 90_000L
 
     /** 会话建立互斥（端点交接 → 配对 → 推流全程只允许一条）。 */
     val sessionStarting = AtomicBoolean(false)
@@ -1151,16 +1154,36 @@ object SessionController {
             val identity = client.receiverIdentity()
             // 音频封装参数已定案（见 AudioTuning），不再提供切换
             val tuning = AudioTuning.RAW_SPF
-            val entry = AudioProfileMemory.load(context.applicationContext, identity)
+            var entry = AudioProfileMemory.load(context.applicationContext, identity)
             if (entry.disabled) {
                 // 以前「全部档位都导致拆链」会自动退成只推视频，并要用户去弹窗里手点
                 // 「清除记忆」。现在音频通路已换成 AAC-LC 且实测能稳定跑满 147s，
                 // 旧结论不再可信：用户既然主动选了「开启声音」，就直接清记忆重试。
-                AudioProfileMemory.clearAll(context.applicationContext)
-                appendLog("AUDIO: 本车机（$identity）有「全部档位拆链」的旧记忆，已自动清除并重试")
+                if (client.currentEndpoint.isBuickB233) {
+                    AudioProfileMemory.reset(context.applicationContext, identity)
+                } else {
+                    AudioProfileMemory.clearAll(context.applicationContext)
+                }
+                entry = AudioProfileMemory.load(context.applicationContext, identity)
+                appendLog("AUDIO: 本车机（$identity）有「全部档位拆链」的旧记忆，已重置并重试")
             }
             val candidates = client.audioCandidates(preferCompat = audioPreferCompat)
-            val ordered = AudioProfileMemory.order(candidates, entry)
+            // T10: B233 AAC 102/media received UDP ECONNREFUSED and a 20s
+            // full-session teardown. Try advertised 48k PCM first while keeping
+            // the AAC option as fallback; other vehicles retain upstream order.
+            val ordered =
+                if (client.currentEndpoint.isBuickB233) {
+                    val pcmFirst = candidates.sortedBy { if (it.codec == AudioCodec.PCM) 0 else 1 }
+                    val workingPcmOnly = entry.working?.takeIf { key ->
+                        candidates.any { it.key == key && it.codec == AudioCodec.PCM }
+                    }
+                    AudioProfileMemory.order(pcmFirst, entry.copy(working = workingPcmOnly))
+                } else {
+                    AudioProfileMemory.order(candidates, entry)
+                }
+            if (client.currentEndpoint.isBuickB233) {
+                appendLog("AUDIO T10: B233 48k PCM优先，旧AAC可用记录不作为稳定依据")
+            }
             if (ordered.isEmpty()) {
                 appendLog("AUDIO: 没有可用音频档位（候选=${candidates.map { it.label }}）——仅推视频")
                 return false
@@ -1216,6 +1239,33 @@ object SessionController {
                     // 同步包目标端口：车机在 SETUP 应答里下发。缺了它就没有 RTP↔NTP 锚点，
                     // 接收端只能「按到达时刻猜」，严格的实现干脆不排播（2026-10-20 实测）。
                     controlPort = audio.controlPort,
+                    deferSyncUntilRecord = client.currentEndpoint.isBuickB233,
+                    onSyncPortRefused =
+                        if (client.currentEndpoint.isBuickB233) {
+                            { error ->
+                                Bg.run("b233-audio-refused") {
+                                    val active = audioSender
+                                    if (active != null && currentClient === client &&
+                                        activeAudioProfile?.key == profile.key
+                                    ) {
+                                        appendLog(
+                                            "AUDIO T10: B233 sync端口拒绝（$error）；" +
+                                                "停止本次音频，保留视频会话",
+                                        )
+                                        audioSender = null
+                                        activeAudioProfile = null
+                                        activeAudioStartedAt = 0L
+                                        AudioProfileMemory.recordTransportFailure(
+                                            context.applicationContext, identity, profile.key,
+                                        )
+                                        active.stop()
+                                        uiHintSink?.invoke("B233 音频同步端口拒绝，已退回纯视频；下次尝试其他档位")
+                                    }
+                                }
+                            }
+                        } else {
+                            null
+                        },
                 )
             audioSender = sender
             if (!sender.start(projection)) {
@@ -1257,13 +1307,23 @@ object SessionController {
         activeAudioStartedAt = 0L
         if (startedAt == 0L || identity.isBlank()) return
         val ctx = appContext?.applicationContext
-        if (lived >= AUDIO_PROFILE_PROBE_MS) {
+        val minimumStable =
+            if (currentClient?.currentEndpoint?.isBuickB233 == true) {
+                BUICK_AUDIO_PROFILE_PROBE_MS
+            } else {
+                AUDIO_PROFILE_PROBE_MS
+            }
+        if (lived >= minimumStable) {
             AudioProfileMemory.recordWorking(ctx, identity, profile.key)
             appendLog("AUDIO: 档位 ${profile.label} 存活 ${lived / 1000}s——记为本车机可用档位")
             return
         }
         val allKeys = audioCandidateKeys(identity)
-        AudioProfileMemory.recordRejected(ctx, identity, profile.key, allKeys)
+        if (currentClient?.currentEndpoint?.isBuickB233 == true) {
+            AudioProfileMemory.recordTransportFailure(ctx, identity, profile.key)
+        } else {
+            AudioProfileMemory.recordRejected(ctx, identity, profile.key, allKeys)
+        }
         val after = AudioProfileMemory.load(ctx, identity)
         appendLog(
             "AUDIO: ⚠ 档位 ${profile.label} 起流 ${lived / 1000}s 后整条会话被车机拆掉——" +
@@ -1995,12 +2055,21 @@ object SessionController {
                                         ((setup.displayWidth * scale).toInt().coerceAtLeast(320) / 2) * 2
                                     val streamH =
                                         ((setup.displayHeight * scale).toInt().coerceAtLeast(180) / 2) * 2
-                                    val fps =
+                                    val selectedFps =
                                         appContext
                                             ?.let {
                                                 DisplayPrefs
                                                     .fps(it)
                                             } ?: 30
+                                    val fps =
+                                        if (client.currentEndpoint.isBuickB233) {
+                                            minOf(selectedFps, setup.maxFps.coerceAtLeast(1))
+                                        } else {
+                                            selectedFps
+                                        }
+                                    if (fps != selectedFps) {
+                                        appendLog("DISPLAY T10: B233 fps=$selectedFps → $fps (车机 maxFPS=${setup.maxFps})")
+                                    }
                                     activeScalePercent = scalePct
                                     activeTargetFps = fps
                                     // 车机触摸在通告视图坐标系（如 1160×540），流已按比例
@@ -2130,7 +2199,19 @@ object SessionController {
                                     // 并给 dataPort，但不会真正播放（2026-10-17 奥迪实测：
                                     // 音频包持续发送、采集内容非零，车机无声）。
                                     appendLog("AUDIO: 音频流已加入——补发 RECORD 激活（流后加入会话）")
-                                    client.record()
+                                    val recorded = client.record()
+                                    if (client.currentEndpoint.isBuickB233) {
+                                        if (recorded) {
+                                            audioSender?.activateSyncAfterRecord()
+                                        } else {
+                                            appendLog("AUDIO T10: B233 音频 RECORD 未确认，停止音频并保留视频")
+                                            val failed = audioSender
+                                            audioSender = null
+                                            activeAudioProfile = null
+                                            activeAudioStartedAt = 0L
+                                            failed?.stop()
+                                        }
+                                    }
                                 }
                             }
                         } else {

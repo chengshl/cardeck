@@ -103,6 +103,27 @@ object AudioProfileMemory {
         }
     }
 
+    /**
+     * Receiver-specific transport failure: an audio UDP/RTCP port was explicitly
+     * refused. Invalidate *even a previously working* profile so future sessions
+     * do not get trapped by its old remembered success. This intentionally does
+     * NOT set receiver-wide disabled: PCM/AAC alternatives remain testable.
+     * Call only from an observed B233 transport refusal, not SETUP failure.
+     */
+    fun recordTransportFailure(
+        context: Context?,
+        identityText: String,
+        profileKey: String,
+    ) {
+        update(context, identityText) { entry ->
+            Entry(
+                working = entry.working?.takeIf { it != profileKey },
+                rejected = entry.rejected + profileKey,
+                disabled = false,
+            )
+        }
+    }
+
     /** 手动恢复（换车机后复位，或车机固件升级后重新试探）。 */
     fun reset(
         context: Context?,
