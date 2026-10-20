@@ -1511,6 +1511,17 @@ class AirPlayClient(
                         log("IAPLINK T43: virtual MFi response received; 0xAA05 sent (receipt is NOT signature verification)")
                     }
                 }
+
+                else -> {
+                    // T48c: only respond to subscriptions actually requested by B233.
+                    // Audi/DiPlay virtual iAP2 paths are intentionally unchanged.
+                    if (iapTunnel == null && isBuickE5Receiver()) {
+                        BuickB233VirtualPostAuth.replyToSubscription(frame.messageId)?.let { (replyId, body) ->
+                            log("IAPLINK T48: B233 subscription 0x%04x -> 0x%04x (empty state)".format(frame.messageId, replyId))
+                            sendCsmLocked(replyId, body)
+                        }
+                    }
+                }
             }
         }
 
