@@ -1087,29 +1087,19 @@ object SessionController {
                         )
                         val setup = client.runSetup()
                         if (setup != null) {
-                            // T44 controlled Buick B233 experiment: the real-iPhone Wi-Fi
-                            // handover retires the initial RFCOMM iAP2 transport after the
-                            // new wireless control link is ready. Audi keeps its existing
-                            // behavior; only the Buick-specific virtual MFi ACK invokes
-                            // this callback. Keep AirPlay/video and the virtual link alive.
+                            // T45 Buick A/B test: keep the original RFCOMM iAP2 session
+                            // after Wi-Fi virtual 0xAA05 ACK. In T44, detaching RFCOMM
+                            // coincided with the video sender stopping after frame #61
+                            // despite successful RTSP feedback. Keep both transports alive
+                            // and measure video socket write progress independently.
+                            // This only affects the Buick virtual iAP2 ACK callback;
+                            // successful T43 Wi-Fi handshake remains unchanged.
                             client.onVirtualIapAuthenticated = {
-                                Bg.run("buick-t44-rfcomm-handover") {
-                                    try {
-                                        Thread.sleep(1_800L)
-                                        val active = currentClient === client &&
-                                            videoSender?.isRunning == true &&
-                                            BtSessionGate.sessionActive &&
-                                            !connectCancelled
-                                        if (active) {
-                                            appendLog("BT-C T44: Buick Wi-Fi virtual iAP2 authenticated and video active; retiring original RFCOMM (AirPlay remains open)")
-                                            detachActiveBtSessions()
-                                        } else {
-                                            appendLog("BT-C T44: handover skipped (session retired/not streaming)")
-                                        }
-                                    } catch (_: InterruptedException) {
-                                        Thread.currentThread().interrupt()
-                                    }
-                                }
+                                appendLog(
+                                    "BT-C T45: Buick virtual iAP2 0xAA05 ACK confirmed; " +
+                                        "A/B control: KEEP RFCOMM connected (T44 handover disabled), " +
+                                        "continue AirPlay video/write watchdog",
+                                )
                             }
                             // 记录会话凭据：投影授权晚于连接时用于动态补启音频
                             currentSharedSecret = keys.sharedSecret
