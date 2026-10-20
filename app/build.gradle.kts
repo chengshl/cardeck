@@ -40,8 +40,8 @@ android {
         applicationId = "io.github.shaonialife.cardeck"
         minSdk = 31
         targetSdk = 34
-        versionCode = appVersionCode
-        versionName = appVersionName
+        versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
+        versionName = System.getenv("CARDECK_RELEASE_BRANCH")?.let { "$appVersionName-$it" } ?: appVersionName
     }
 
     signingConfigs {
