@@ -1,6 +1,7 @@
 package io.github.shaonialife.cardeck.airplay
 
 import android.content.Context
+import io.github.shaonialife.cardeck.iap2.BuickB233VirtualPostAuth
 import io.github.shaonialife.cardeck.iap2.Iap2Csm
 import io.github.shaonialife.cardeck.iap2.Iap2LinkEngine
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
@@ -43,6 +44,7 @@ class VirtualIap2Link(
     private val mfiContext: Context? = null,
     /** 时钟（单测可注入）。 */
     private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val isBuickB233: Boolean = false,
 ) {
     private val lock = Any()
     private val engine = Iap2LinkEngine()
@@ -58,6 +60,17 @@ class VirtualIap2Link(
     /** 同步回显待投递（隧道门闸：回显真正写进隧道 TCP 后才允许发 0x1D00）。 */
     private var pendingEchoFlush = false
     private var tunnelEchoDelivered = false
+
+    // ---- Buick B233 T48 receiver-initiated, separate from MIB3 / DiPlay ----
+    private var buickArmed = false
+    private var buickCsmStarted = false
+    private var buickMarkerAnswered = false
+    private var buickBurstDelivered = false
+    private var buickAcceptedReceiveIds: Set<Int> = emptySet()
+    private var buickWaitingForMfiSequence = false
+    private var buickMfiSequence: Int? = null
+    private var buickMfiAckObserved = false
+    private var buickIdleAckAt = 0L
 
     // ---- MIB3 路径状态 ----
     private var mib3Armed = false
@@ -131,6 +144,22 @@ class VirtualIap2Link(
 
     init {
         engine.onEaData = { bytes -> handleEaData(bytes) }
+        if (isBuickB233) {
+            engine.onFrameSent = { control, sequence, _, sessionId, size ->
+                if (buickWaitingForMfiSequence && control and 0x40 != 0 &&
+                    sessionId != 0 && size == 6
+                ) {
+                    buickMfiSequence = sequence
+                    buickWaitingForMfiSequence = false
+                    log("IAPLINK T48: B233 0xaa05 transmitted seq=$sequence")
+                }
+            }
+            engine.onFrameReceived = { control, _, acknowledgement, _, _ ->
+                if (control and 0x40 != 0 && buickMfiSequence == acknowledgement) {
+                    buickMfiAckObserved = true
+                }
+            }
+        }
         engine.onSynchronizationEchoSent = { pendingEchoFlush = true }
         Thread(
             {
@@ -142,6 +171,11 @@ class VirtualIap2Link(
                     }
                     synchronized(lock) {
                         engine.advanceTime(System.nanoTime() / 1_000_000L)
+                        if (buickArmed && buickBurstDelivered &&
+                            nowMillis() - buickIdleAckAt >= 5_000L
+                        ) {
+                            if (engine.offerIdleAcknowledgement()) buickIdleAckAt = nowMillis()
+                        }
                         drainLocked()
                     }
                 }
@@ -159,6 +193,16 @@ class VirtualIap2Link(
             if (started) return
             started = true
             engine.enterNegotiating()
+        }
+    }
+
+    /** B233 only: the head unit initiates DETECT after RECORD; no proactive MIB3 marker. */
+    fun armBuickB233() {
+        synchronized(lock) {
+            begin()
+            if (buickArmed) return
+            buickArmed = true
+            log("IAPLINK T48: B233 waiting for receiver-initiated DETECT")
         }
     }
 
@@ -207,6 +251,14 @@ class VirtualIap2Link(
                     bytes[0] == 0xFF.toByte() &&
                     bytes[1] == 0x55.toByte()
             if (isMarker && tunnelWriter() == null) {
+                if (buickArmed) {
+                    if (!buickMarkerAnswered) {
+                        buickMarkerAnswered = true
+                        log("IAPLINK T48: B233 DETECT -> echo on CONTROL RTSP")
+                        sendControlIap(Iap2LinkEngine.MARKER)
+                    }
+                    return
+                }
                 if (mib3Armed) {
                     mib3MarkerIgnores++
                     val now = nowMillis()
@@ -261,6 +313,14 @@ class VirtualIap2Link(
                 }
             }
             engine.feed(bytes, System.nanoTime() / 1_000_000L)
+            if (buickArmed && buickMfiAckObserved && !buickBurstDelivered) {
+                buickBurstDelivered = true
+                buickIdleAckAt = nowMillis()
+                val messages = BuickB233VirtualPostAuth.burst(buickAcceptedReceiveIds)
+                log("IAPLINK T48: B233 0xaa05 ACK; post-auth=" +
+                    messages.joinToString(" ") { "0x%04x".format(it.first) })
+                for ((messageId, body) in messages) sendCsmLocked(messageId, body)
+            }
             drainLocked()
         }
     }
@@ -278,6 +338,7 @@ class VirtualIap2Link(
         val tunnel = tunnelWriter()
         when {
             tunnel != null -> tunnel.writeIapBytes(bytes)
+            buickArmed -> sendControlIap(bytes)
             eventLinkArmed -> sendControlIap(bytes)
             mib3Armed -> sendControlIap(bytes)
             else -> sendEventIap(bytes)
@@ -301,6 +362,14 @@ class VirtualIap2Link(
                         tunnelEchoDelivered = true
                         log("IAPLINK: ✓ 同步回显已写入隧道（链路协商完成，发送端 CSM 就绪）")
                     }
+                }
+            }
+
+            buickArmed -> {
+                sendControlIap(out)
+                if (pendingEchoFlush) {
+                    pendingEchoFlush = false
+                    log("IAPLINK T48: B233 SYN echo sent on CONTROL RTSP")
                 }
             }
 
@@ -363,6 +432,11 @@ class VirtualIap2Link(
         val identity = mfiIdentity ?: return
         if (mfiFinished || mfiCurrentLength == 0) return
         if (nowMillis() - mfiChallengeSentAtMs < mfiWindowMillis) return
+        if (buickArmed) {
+            mfiFinished = true
+            log("IAPLINK T48: B233 32B challenge timed out; preserving link without false 0xaa05")
+            return
+        }
         val failed = mfiCurrentLength
         MfiLengthMemory.recordSilent(mfiContext, identity, failed)
         log("IAPLINK: 隧道 MFi ${failed}B 静默 ${mfiWindowMillis}ms——记入记忆，换下一档重试")
@@ -421,6 +495,9 @@ class VirtualIap2Link(
         if (onTunnel) {
             if (tunnelCsmStarted || !tunnelEchoDelivered) return
             tunnelCsmStarted = true
+        } else if (buickArmed) {
+            if (buickCsmStarted || engine.peerSynchronization == null) return
+            buickCsmStarted = true
         } else if (eventLinkArmed) {
             // 车机发起方形态：出站走控制通道，只要已采纳对端会话表即可开工
             if (eventCsmStarted || engine.peerSynchronization == null) return
@@ -466,7 +543,7 @@ class VirtualIap2Link(
     private fun maybeRespondControlCsmLocked(frame: Iap2Csm.Frame) {
         val onTunnel = tunnelWriter() != null
         // 车机发起方形态复用 MIB3 那套识别/MFi 骨架（出站同样走控制通道）
-        val mib3 = (mib3Armed || eventLinkArmed) && !onTunnel
+        val mib3 = (mib3Armed || eventLinkArmed || buickArmed) && !onTunnel
         if (!onTunnel && !mib3) return
         val ids = Iap2MessageIds
         when (frame.messageId) {
@@ -495,6 +572,11 @@ class VirtualIap2Link(
                             " 含0x6802=${sends.contains(Iap2MessageIds.ACCESSORY_HID_REPORT)}",
                     )
                 }
+                if (buickArmed) {
+                    buickAcceptedReceiveIds = BuickB233VirtualPostAuth.receiveIds(params[7]?.value)
+                    log("IAPLINK T48: B233 canReceive=" +
+                        buickAcceptedReceiveIds.sorted().joinToString(" ") { "0x%04x".format(it) })
+                }
                 params[7]?.value?.let { raw ->
                     val receives = u16List(raw)
                     log(
@@ -512,7 +594,7 @@ class VirtualIap2Link(
             }
 
             MFI_AUTH_SERIAL -> {
-                if (!mib3 || mib3AuthStage != 1) return
+                if (!mib3 || mib3AuthStage != 1 || buickArmed) return
                 sendCsmLocked(ids.MFI_REQUEST_CERTIFICATE)
                 mib3AuthStage = 2
                 log("IAPLINK: MIB3 0xaa06（auth serial）→ 再发 0xaa00")
@@ -520,6 +602,11 @@ class VirtualIap2Link(
 
             ids.MFI_AUTHENTICATION_FAILED -> {
                 if (!mib3 || mfiFinished) return
+                if (buickArmed) {
+                    mfiFinished = true
+                    log("IAPLINK T48: B233 rejects 32B MFi; no 20B/16B fallback")
+                    return
+                }
                 mfiIdentity?.let { MfiLengthMemory.recordRejected(mfiContext, it, mfiCurrentLength) }
                 log("IAPLINK: 隧道 MFi ${mfiCurrentLength}B 被拒（0xaa04）——记入记忆，换下一档")
                 mfiCurrentLength = 0
@@ -527,7 +614,13 @@ class VirtualIap2Link(
             }
 
             ids.MFI_CERTIFICATE -> {
-                if (mib3) {
+                if (buickArmed) {
+                    val challenge = ByteArray(32).also { SecureRandom().nextBytes(it) }
+                    sendCsmLocked(ids.MFI_REQUEST_CHALLENGE, Iap2Csm.param(0, challenge))
+                    mfiCurrentLength = 32
+                    mib3AuthStage = 3
+                    log("IAPLINK T48: B233 Wi-Fi MFi 32B only")
+                } else if (mib3) {
                     // 长度按车机记忆（冷启动 20B 优先，Frida 真机值；详见 startNextMfiChallengeLocked）
                     startNextMfiChallengeLocked()
                 } else {
@@ -540,6 +633,14 @@ class VirtualIap2Link(
             }
 
             ids.MFI_RESPONSE -> {
+                if (buickArmed) {
+                    mfiFinished = true
+                    mib3AuthStage = 4
+                    buickWaitingForMfiSequence = true
+                    sendCsmLocked(ids.MFI_AUTHENTICATION_SUCCEEDED)
+                    log("IAPLINK T48: B233 Wi-Fi 0xaa05 sent, awaiting ACK (signature unverified)")
+                    return
+                }
                 if (mib3) {
                     mfiIdentity?.let { MfiLengthMemory.recordSuccess(mfiContext, it, mfiCurrentLength) }
                     log("IAPLINK: 隧道 rx=0xaa03 签名 ${frame.body.size}B（${mfiCurrentLength}B 挑战成功，已记忆）")
@@ -557,12 +658,25 @@ class VirtualIap2Link(
 
             START_COMMUNICATIONS_UPDATES -> {
                 if (!mib3) return
+                if (buickArmed) {
+                    BuickB233VirtualPostAuth.replyToSubscription(frame.messageId)?.let { (id, body) ->
+                        sendCsmLocked(id, body)
+                        log("IAPLINK T48: B233 subscription 0x4157 -> 0x4158")
+                    }
+                    return
+                }
                 sendRawCsmLocked(MIB3_COMMUNICATIONS_UPDATE_IDLE)
                 log("IAPLINK: MIB3 0x4157 → 0x4158（空态）")
             }
 
             START_CALL_STATE_UPDATES -> {
                 if (!mib3) return
+                if (buickArmed) {
+                    BuickB233VirtualPostAuth.replyToSubscription(frame.messageId)?.let { (id, body) ->
+                        sendCsmLocked(id, body)
+                    }
+                    return
+                }
                 sendCsmLocked(
                     CALL_STATE_UPDATE,
                     Iap2Csm.param(0x0002, byteArrayOf(0)),
@@ -572,6 +686,12 @@ class VirtualIap2Link(
 
             START_LIST_UPDATES -> {
                 if (!mib3) return
+                if (buickArmed) {
+                    BuickB233VirtualPostAuth.replyToSubscription(frame.messageId)?.let { (id, body) ->
+                        sendCsmLocked(id, body)
+                    }
+                    return
+                }
                 sendCsmLocked(
                     LIST_UPDATE,
                     Iap2Csm.param(0x0000, byteArrayOf(0)) +
@@ -584,6 +704,13 @@ class VirtualIap2Link(
 
             Iap2MessageIds.START_NOW_PLAYING_UPDATES -> {
                 if (!mib3) return
+                if (buickArmed) {
+                    BuickB233VirtualPostAuth.replyToSubscription(frame.messageId)?.let { (id, body) ->
+                        sendCsmLocked(id, body)
+                        log("IAPLINK T48: B233 subscription 0x5000 -> 0x5001")
+                    }
+                    return
+                }
                 sendRawCsmLocked(MIB3_NOW_PLAYING_UPDATE_IDLE)
                 // 仪表盘歌词/媒体卡的数据通路（0x5001 + file-transfer 封面）后续接
                 // MediaSessionsState——空态应答是 MIB3 存活的前置，先落这版。

@@ -320,6 +320,13 @@ class Iap2LinkEngine(
      * 而死亡**。用于 Audi 实测中「接受但从不 ACK」的消息（0x4E0E 传输标识：车机对
      * 其他包毫秒级 ACK、唯独不认它，重传看门狗曾据此在 +20s 杀掉整条蓝牙链路）。
      */
+    /** B233-only idle ACK probe; no effect unless explicitly called by the receiver adapter. */
+    fun offerIdleAcknowledgement(): Boolean {
+        if (state != State.NORMAL) return false
+        sendAcknowledgement()
+        return true
+    }
+
     fun sendControl(
         bytes: ByteArray,
         nowMillis: Long,

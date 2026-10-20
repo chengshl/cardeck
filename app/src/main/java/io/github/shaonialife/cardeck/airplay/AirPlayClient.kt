@@ -1306,6 +1306,7 @@ class AirPlayClient(
                     sendControlIap = ::postControlIap,
                     tunnelWriter = { iapTunnel },
                     alive = { socket?.isClosed == false },
+                    isBuickB233 = endpoint.isBuickB233,
                 ).also {
                     it.onMediaKey = { keyCode -> onMediaKey?.invoke(keyCode) }
                     it.begin()
@@ -1326,7 +1327,7 @@ class AirPlayClient(
     private fun armMib3VirtualLink() {
         if (cipher == null) return
         if (iapTunnel != null) return // DiPlay 隧道形态：不需要（也不该）布防
-        obtainIapLink().armMib3()
+        if (endpoint.isBuickB233) obtainIapLink().armBuickB233() else obtainIapLink().armMib3()
     }
 
     /**
