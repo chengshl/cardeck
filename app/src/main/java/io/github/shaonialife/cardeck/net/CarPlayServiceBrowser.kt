@@ -1,6 +1,8 @@
 package io.github.shaonialife.cardeck.net
 
 import android.content.Context
+import android.net.Network
+import android.os.Build
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 
@@ -11,7 +13,7 @@ import android.net.nsd.NsdServiceInfo
  * 真实时序中这一步发生在加入车机热点之后、发起 AirPlay 主会话之前。
  */
 class CarPlayServiceBrowser(
-    context: Context,
+    private val context: Context,
     private val log: (String) -> Unit,
     /** 结果验收：只缓存/上报真正的车机端点（手机双归属时 mDNS 会混入其它 AirPlay 设备）。 */
     private val accept: (NsdServiceInfo) -> Boolean = { true },
@@ -56,14 +58,37 @@ class CarPlayServiceBrowser(
         return resolved
     }
 
-    fun start(serviceType: String = AIRPLAY_TYPE) {
+    fun start(serviceType: String = AIRPLAY_TYPE, carWifiNetwork: Network? = null) {
         if (discovering) {
             log("$TAG: 已在扫描中")
             return
         }
-        log("$TAG: 开始发现 $serviceType")
-        nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
-        discovering = true
+        // T47: NSD must browse the physical E5 hotspot, not tun0/VPN.
+        // API 33+ supports a per-network discovery without process rebinding.
+        val scoped = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && carWifiNetwork != null
+        if (scoped) {
+            try {
+                nsdManager.discoverServices(
+                    serviceType,
+                    NsdManager.PROTOCOL_DNS_SD,
+                    carWifiNetwork,
+                    context.mainExecutor,
+                    discoveryListener,
+                )
+                discovering = true
+                log("$TAG T47: scoped discovery $serviceType physicalWifi=$carWifiNetwork")
+                return
+            } catch (error: Exception) {
+                log("$TAG T47: scoped discovery unavailable (${error.message}); trying legacy discovery")
+            }
+        }
+        try {
+            log("$TAG: 开始发现 $serviceType")
+            nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            discovering = true
+        } catch (error: Exception) {
+            log("$TAG: 服务发现启动异常 - ${error.message}")
+        }
     }
 
     fun stop() {
