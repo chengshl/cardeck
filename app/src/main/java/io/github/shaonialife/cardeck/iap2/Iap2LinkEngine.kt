@@ -283,14 +283,6 @@ class Iap2LinkEngine(
     }
 
     /**
-     * 排入一个完整的控制会话载荷。窗口满时进入积压队列，由 ACK 或 pump 驱动重试。
-     * 返回 false 仅代表链路已死。
-     *
-     * [awaitAck]=false：发后不管——不计入未确认清单、不重传，**链路不会因它未被 ACK
-     * 而死亡**。用于 Audi 实测中「接受但从不 ACK」的消息（0x4E0E 传输标识：车机对
-     * 其他包毫秒级 ACK、唯独不认它，重传看门狗曾据此在 +20s 杀掉整条蓝牙链路）。
-     */
-    /**
      * T45 Buick B233 controlled experiment: transmit an ACK-only iAP2 link
      * frame while NORMAL, without incrementing the data sequence, adding an
      * unacknowledged packet or altering CSM application messages.
@@ -304,6 +296,14 @@ class Iap2LinkEngine(
         return true
     }
 
+    /**
+     * 排入一个完整的控制会话载荷。窗口满时进入积压队列，由 ACK 或 pump 驱动重试。
+     * 返回 false 仅代表链路已死。
+     *
+     * [awaitAck]=false：发后不管——不计入未确认清单、不重传，**链路不会因它未被 ACK
+     * 而死亡**。用于 Audi 实测中「接受但从不 ACK」的消息（0x4E0E 传输标识：车机对
+     * 其他包毫秒级 ACK、唯独不认它，重传看门狗曾据此在 +20s 杀掉整条蓝牙链路）。
+     */
     fun sendControl(
         bytes: ByteArray,
         nowMillis: Long,
