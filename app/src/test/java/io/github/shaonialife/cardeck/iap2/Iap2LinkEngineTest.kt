@@ -79,6 +79,26 @@ class Iap2LinkEngineTest {
     }
 
     @Test
+    fun nonCriticalCsmDoesNotKillLinkWithoutReceiverAck() {
+        val phone = Iap2LinkEngine()
+        val peer = Iap2LinkEngine()
+        phone.start(0)
+        peer.start(0)
+        exchangeUntilNormal(phone, peer)
+        val sent = mutableListOf<Pair<Int, Int>>()
+        phone.onCsmFrameSent = { seq, id, _ -> sent += seq to id }
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x5001), 1_000, awaitAck = false))
+        assertTrue(sent.any { it.second == 0x5001 })
+        // Receiver ignores optional CSM: there is no ACK whatsoever.
+        phone.takeOutput()
+        for (ms in 2_000L..30_000L step 1_000L) {
+            phone.advanceTime(ms)
+        }
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+        assertTrue("no fatal retransmission for best-effort frame", phone.takeOutput().isEmpty())
+    }
+
+    @Test
     fun controlPayloadRoundTripBothDirections() {
         val phone = Iap2LinkEngine()
         val accessory = Iap2LinkEngine()

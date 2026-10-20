@@ -1152,6 +1152,20 @@ object SessionController {
         return try {
             // 车机身份 → 只用于「本车机哪些音频档位踩过雷」的持久化记忆。
             val identity = client.receiverIdentity()
+            // T11 migration: T10 falsely rejected PCM based on a B233 virtual
+            // iAP2 0x5001 ACK watchdog timeout. Those profile conclusions are
+            // not evidence of bad audio. Clear only this receiver's stale
+            // memory once; never touch other car identities or user settings.
+            if (client.currentEndpoint.isBuickB233) {
+                val migration = context.applicationContext.getSharedPreferences(
+                    "b233_audio_t11_migration", Context.MODE_PRIVATE,
+                )
+                if (!migration.getBoolean("old_link_timeout_reclassified", false)) {
+                    AudioProfileMemory.reset(context.applicationContext, identity)
+                    migration.edit().putBoolean("old_link_timeout_reclassified", true).apply()
+                    appendLog("AUDIO T11: 已清除 B233 旧版的错误档位归因；其他车机记忆不变")
+                }
+            }
             // 音频封装参数已定案（见 AudioTuning），不再提供切换
             val tuning = AudioTuning.RAW_SPF
             var entry = AudioProfileMemory.load(context.applicationContext, identity)
@@ -1318,12 +1332,20 @@ object SessionController {
             appendLog("AUDIO: 档位 ${profile.label} 存活 ${lived / 1000}s——记为本车机可用档位")
             return
         }
-        val allKeys = audioCandidateKeys(identity)
         if (currentClient?.currentEndpoint?.isBuickB233 == true) {
-            AudioProfileMemory.recordTransportFailure(ctx, identity, profile.key)
-        } else {
-            AudioProfileMemory.recordRejected(ctx, identity, profile.key, allKeys)
+            // This specific failure was a non-ACKed 0x5001 CSM whose LOCAL
+            // 4s x 5 retransmit watchdog died at +20s; AUDIO ECONNREFUSED
+            // occurred afterwards. Don't label PCM/AAC incompatible based
+            // on this session-level failure. Explicit sync-port refusal is
+            // still handled and remembered by the onSyncPortRefused callback.
+            appendLog(
+                "AUDIO T11: B233 会话仅存活 ${lived / 1000}s；" +
+                    "未证明音频格式不兼容，不写入音频档位黑名单",
+            )
+            return
         }
+        val allKeys = audioCandidateKeys(identity)
+        AudioProfileMemory.recordRejected(ctx, identity, profile.key, allKeys)
         val after = AudioProfileMemory.load(ctx, identity)
         appendLog(
             "AUDIO: ⚠ 档位 ${profile.label} 起流 ${lived / 1000}s 后整条会话被车机拆掉——" +

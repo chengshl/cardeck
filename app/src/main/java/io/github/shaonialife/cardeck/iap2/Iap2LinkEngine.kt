@@ -156,6 +156,9 @@ class Iap2LinkEngine(
     /** 诊断：每个出向链路帧的摘要（仅链路层帧，用于对照真车协商时序）。 */
     var onFrameSent: ((control: Int, sequence: Int, ack: Int, sessionId: Int, size: Int) -> Unit)? = null
 
+    /** Optional outgoing CSM sequence/retry diagnostics (no protocol behavior change). */
+    var onCsmFrameSent: ((sequence: Int, messageId: Int, payloadSize: Int) -> Unit)? = null
+
     private var unknownSessionDropped = 0
 
     private val unacknowledged = ArrayList<Packet>()
@@ -650,6 +653,13 @@ class Iap2LinkEngine(
     ) {
         if (state == State.DEAD) return
         onFrameSent?.invoke(control, sequence, lastReceivedInOrder, sessionId, payload?.size ?: 0)
+        if (payload != null && payload.size >= 6 &&
+            payload[0] == 0x40.toByte() && payload[1] == 0x40.toByte()
+        ) {
+            val messageId = ((payload[4].toInt() and 0xFF) shl 8) or
+                (payload[5].toInt() and 0xFF)
+            onCsmFrameSent?.invoke(sequence, messageId, payload.size)
+        }
         val length = payload?.size?.plus(HEADER_BYTES + 1) ?: HEADER_BYTES
         val frame = ByteArray(length)
         frame[0] = 0xFF.toByte()

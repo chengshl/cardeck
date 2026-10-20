@@ -71,6 +71,7 @@ class VirtualIap2Link(
     private var buickMfiSequence: Int? = null
     private var buickMfiAckObserved = false
     private var buickIdleAckAt = 0L
+    private val buickCsmFrameAttempts = HashMap<Int, Int>()
 
     // ---- MIB3 路径状态 ----
     private var mib3Armed = false
@@ -145,6 +146,18 @@ class VirtualIap2Link(
     init {
         engine.onEaData = { bytes -> handleEaData(bytes) }
         if (isBuickB233) {
+            // T11: correlate the 20-second local ACK watchdog with the CSM
+            // message and real wire sequence, including 4-second retries.
+            engine.onCsmFrameSent = { sequence, messageId, _ ->
+                val previous = buickCsmFrameAttempts[sequence] ?: 0
+                buickCsmFrameAttempts[sequence] = previous + 1
+                if (messageId == 0x5001 || previous > 0) {
+                    log(
+                        "IAPLINK T11: B233 outbound seq=$sequence " +
+                            "CSM=0x%04x attempt=%d".format(messageId, previous + 1),
+                    )
+                }
+            }
             engine.onFrameSent = { control, sequence, _, sessionId, size ->
                 if (buickWaitingForMfiSequence && control and 0x40 != 0 &&
                     sessionId != 0 && size == 6
@@ -515,7 +528,18 @@ class VirtualIap2Link(
         body: ByteArray = ByteArray(0),
     ) {
         val frame = Iap2Csm.encode(messageId, body)
-        val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L)
+        // T11: on B233 the NowPlaying *empty state* reply can be rejected
+        // with no link-layer ACK while the audio stream is being initialized.
+        // The 4s x 5 watchdog killed the entire virtual iAP2 link 20.1s
+        // later (packet 114), followed by VIDEO Broken pipe. Transmit once,
+        // without treating this optional media-metadata response as a fatal
+        // transport requirement. Keep ACK semantics unchanged for all other
+        // CSM and all other receiver models.
+        val awaitAck = shouldAwaitCsmAck(isBuickB233 && buickArmed, messageId)
+        val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L, awaitAck = awaitAck)
+        if (!awaitAck) {
+            log("IAPLINK T11: B233 0x5001 NowPlaying best-effort; no fatal retransmit watchdog")
+        }
         log(
             "IAPLINK: 隧道 tx 0x${messageId.toString(16)} " +
                 "(${Iap2MessageIds.nameOf(messageId)}) ${frame.size}B ok=$ok",
@@ -923,6 +947,10 @@ class VirtualIap2Link(
     }
 
     companion object {
+        /** Only B233 0x5001 is noncritical; all other handshake/CSM must be ACKed. */
+        internal fun shouldAwaitCsmAck(buickB233: Boolean, messageId: Int): Boolean =
+            !buickB233 || messageId != 0x5001
+
         /** 隧道 MFi 冷启动基线（Frida 真机 20B 优先；顺序会被按车机记忆重排）。 */
         val TUNNEL_MFI_BASELINE = listOf(20, 32, 16)
         val TUNNEL_MFI_WINDOWS = mapOf(20 to 6_000L, 32 to 3_000L, 16 to 3_000L)
