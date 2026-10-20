@@ -2,12 +2,17 @@ package io.github.shaonialife.cardeck.update
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.FileProvider
 import org.json.JSONObject
 import java.io.File
@@ -24,6 +29,88 @@ object BuickUpdater {
     private val main = Handler(Looper.getMainLooper())
     private fun downloadedApk(activity: Activity) = File(activity.cacheDir, "updates/CarDeck-Buick-E5.apk")
 
+    /**
+     * Keep CarPlay process-bound to E5 Wi-Fi; route updater requests independently.
+     * Binding the *whole* process to the head-unit hotspot otherwise causes
+     * normal URL.openConnection() requests to bypass an active Android VPN.
+     * Network.openConnection() binds only this HTTPS transaction, without
+     * changing CarPlay RTSP, event, multicast or Bluetooth transport.
+     */
+    private data class UpdateRoute(val network: Network?, val label: String)
+
+    private fun updateRoutes(activity: Activity): List<UpdateRoute> {
+        val cm = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val candidates = runCatching {
+            cm.allNetworks.mapNotNull { network ->
+                val capabilities = cm.getNetworkCapabilities(network) ?: return@mapNotNull null
+                val vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                val wifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                val cellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                val internet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                val validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                // Some head-unit hotspots actually provide working Internet, even
+                // when Android has not finished / cannot complete validation.
+                val processBound = network == cm.boundNetworkForProcess
+                if (!internet && !vpn && !processBound) return@mapNotNull null
+                val rank = when {
+                    vpn -> 0
+                    processBound && wifi -> 1
+                    wifi -> 2
+                    cellular -> 3
+                    else -> 4
+                }
+                val label = when {
+                    vpn -> "VPN"
+                    processBound && wifi -> "车机 Wi-Fi"
+                    wifi -> "Wi-Fi"
+                    cellular -> "移动数据"
+                    else -> "系统网络"
+                } + if (validated) "（已验证）" else "（未验证）"
+                Triple(rank, network, label)
+            }.sortedBy { it.first }
+                .map { UpdateRoute(it.second, it.third) }
+        }.getOrElse {
+            Log.w("BuickUpdater", "Enumerating networks failed", it)
+            emptyList()
+        }
+        // Last resort: retain the existing process-bound route rather than
+        // unbinding it and risking disruption of an active CarPlay session.
+        return candidates + UpdateRoute(null, "当前进程默认网络")
+    }
+
+    private fun openHttp(
+        url: String,
+        route: UpdateRoute,
+        connectMs: Int,
+        readMs: Int,
+    ): HttpURLConnection {
+        val remote = URL(url)
+        return ((route.network?.openConnection(remote) ?: remote.openConnection()) as HttpURLConnection).apply {
+            connectTimeout = connectMs
+            readTimeout = readMs
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "CarDeck-Buick-E5")
+        }
+    }
+
+    private fun <T> tryRoutes(
+        activity: Activity,
+        task: String,
+        operation: (UpdateRoute) -> T,
+    ): T {
+        var lastError: Exception? = null
+        for (route in updateRoutes(activity)) {
+            try {
+                Log.i("BuickUpdater", "$task: trying ${route.label}")
+                return operation(route)
+            } catch (error: Exception) {
+                lastError = error
+                Log.w("BuickUpdater", "$task via ${route.label} failed: ${error.message}")
+            }
+        }
+        throw IllegalStateException("$task 所有网络线路均失败：${lastError?.message ?: "无可用网络"}", lastError)
+    }
+
     fun autoEnabled(activity: Activity): Boolean =
         activity.getSharedPreferences(PREF, 0).getBoolean(KEY_AUTO, true)
 
@@ -34,14 +121,16 @@ object BuickUpdater {
     fun check(activity: Activity, silent: Boolean = false) {
         thread(name = "buick-update-check") {
             try {
-                val conn = (URL(RELEASES).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 12000
-                    readTimeout = 12000
-                    setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("User-Agent", "CarDeck-Buick-E5")
+                val release = tryRoutes(activity, "检查 GitHub 更新") { route ->
+                    val conn = openHttp(RELEASES, route, 15_000, 20_000)
+                    try {
+                        conn.setRequestProperty("Accept", "application/vnd.github+json")
+                        require(conn.responseCode == 200) { "GitHub HTTP ${conn.responseCode}" }
+                        JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                    } finally {
+                        conn.disconnect()
+                    }
                 }
-                val release = conn.inputStream.bufferedReader().use { JSONObject(it.readText()) }
-                conn.disconnect()
                 val assets = release.getJSONArray("assets")
                 var apkUrl: String? = null
                 var digestUrl: String? = null
@@ -95,37 +184,52 @@ object BuickUpdater {
             val target = downloadedApk(activity)
             try {
                 target.parentFile?.mkdirs()
-                val shaConn = (URL(shaUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 12000; readTimeout = 12000
-                }
-                val expected = shaConn.inputStream.bufferedReader().use { it.readText().trim().split(" ")[0].lowercase() }
-                shaConn.disconnect()
-                require(expected.matches(Regex("[0-9a-f]{64}"))) { "SHA256 格式无效" }
-                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15000; readTimeout = 30000
-                }
-                val total = conn.contentLengthLong
-                val digest = MessageDigest.getInstance("SHA-256")
-                conn.inputStream.use { input ->
-                    target.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        var count = 0L
-                        while (true) {
-                            val n = input.read(buffer)
-                            if (n < 0) break
-                            output.write(buffer, 0, n)
-                            digest.update(buffer, 0, n)
-                            count += n
-                            if (total > 0) {
-                                val progress = (count * 100 / total).toInt()
-                                main.post { dialog.progress = progress }
+                tryRoutes(activity, "下载并校验 APK") { route ->
+                    // A route failure restarts this attempt from byte zero; never
+                    // mistake an incomplete APK from another route for success.
+                    target.delete()
+                    main.post {
+                        dialog.progress = 0
+                        dialog.setMessage("正在通过${route.label}下载…")
+                    }
+                    val shaConn = openHttp(shaUrl, route, 15_000, 20_000)
+                    val expected = try {
+                        require(shaConn.responseCode == 200) { "SHA256 HTTP ${shaConn.responseCode}" }
+                        shaConn.inputStream.bufferedReader().use {
+                            it.readText().trim().split(Regex("\\s+"))[0].lowercase()
+                        }
+                    } finally {
+                        shaConn.disconnect()
+                    }
+                    require(expected.matches(Regex("[0-9a-f]{64}"))) { "SHA256 格式无效" }
+                    val conn = openHttp(url, route, 20_000, 45_000)
+                    val actual = try {
+                        require(conn.responseCode == 200) { "APK HTTP ${conn.responseCode}" }
+                        val total = conn.contentLengthLong
+                        val digest = MessageDigest.getInstance("SHA-256")
+                        conn.inputStream.use { input ->
+                            target.outputStream().use { output ->
+                                val buffer = ByteArray(64 * 1024)
+                                var count = 0L
+                                while (true) {
+                                    val n = input.read(buffer)
+                                    if (n < 0) break
+                                    output.write(buffer, 0, n)
+                                    digest.update(buffer, 0, n)
+                                    count += n
+                                    if (total > 0) {
+                                        val progress = (count * 100 / total).toInt()
+                                        main.post { dialog.progress = progress }
+                                    }
+                                }
                             }
                         }
+                        digest.digest().joinToString("") { "%02x".format(it) }
+                    } finally {
+                        conn.disconnect()
                     }
+                    require(actual == expected) { "SHA256 校验失败，拒绝安装" }
                 }
-                conn.disconnect()
-                val actual = digest.digest().joinToString("") { "%02x".format(it) }
-                require(actual == expected) { "SHA256 校验失败，已拒绝安装" }
                 main.post {
                     dialog.dismiss()
                     if (activity.isFinishing || activity.isDestroyed) {
