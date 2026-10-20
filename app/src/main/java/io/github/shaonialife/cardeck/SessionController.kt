@@ -1301,8 +1301,14 @@ object SessionController {
                                             log = { line -> appendLog(line) },
                                             onEnded = {
                                                 if (videoSender === owningSender && currentClient === client) {
-                                                    appendLog("SESSION T38: 当前视频流已结束——退役 RTSP/事件 TCP、timing UDP、心跳及虚拟屏")
+                                                    appendLog("SESSION T42: 当前视频流已结束——尝试标准 TEARDOWN 后清理会话")
                                                     try {
+                                                        // One last best-effort request over the encrypted
+                                                        // RTSP CONTROL channel. Close() previously dropped
+                                                        // the socket with no TEARDOWN, potentially leaving
+                                                        // Buick B233 in a stale streaming state. The call
+                                                        // is capped at 900ms and scoped to Buick by client.
+                                                        client.tryTeardownBuickScreen(setup.displayUuid)
                                                         retireSession()
                                                     } finally {
                                                         // Preserve Bluetooth RFCOMM during pairing;
