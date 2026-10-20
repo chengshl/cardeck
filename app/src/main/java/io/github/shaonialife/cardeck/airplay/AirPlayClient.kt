@@ -3,6 +3,7 @@ package io.github.shaonialife.cardeck.airplay
 import android.content.Context
 import android.net.Network
 import android.os.SystemClock
+import io.github.shaonialife.cardeck.iap2.BuickB233VirtualPostAuth
 import io.github.shaonialife.cardeck.iap2.Iap2Csm
 import io.github.shaonialife.cardeck.iap2.Iap2LinkEngine
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
@@ -1202,6 +1203,8 @@ class AirPlayClient(
         private var awaitingVirtualMfiFrame = false
         private var virtualMfiSequence: Int? = null
         private var virtualMfiAckNotified = false
+        private var virtualAdvertisedReceives: Set<Int> = emptySet()
+        private var t48AckTraces = 0
 
         /** T45 Buick-only diagnostic: idle iAP2 ACK frame every 5s after Wi-Fi MFi ACK. */
         private var lastVirtualIdleAckAt = 0L
@@ -1259,6 +1262,9 @@ class AirPlayClient(
                 }
             }
             engine.onAcknowledgementProgress = { ack, _, _ ->
+                if (virtualMfiAckNotified && t48AckTraces++ < 12) {
+                    log("IAPLINK T48: virtual post-auth peer ACK=${ack} state=${engine.state}")
+                }
                 if (!virtualMfiAckNotified && virtualMfiSequence == ack &&
                     engine.state == Iap2LinkEngine.State.NORMAL &&
                     iapTunnel == null && isBuickE5Receiver()
@@ -1267,6 +1273,15 @@ class AirPlayClient(
                     lastVirtualIdleAckAt = SystemClock.uptimeMillis()
                     log("IAPLINK T44: Buick Wi-Fi virtual MFi 0xAA05 ACK=$ack confirmed; requesting controlled RFCOMM handover")
                     log("IAPLINK T45: B233 idle-link ACK probe armed; interval=5000ms, active until AirPlay closes")
+                    // T48: ACK-only probes did not prevent the repeatable 30s teardown.
+                    // Only send post-MFi messages the receiver explicitly advertises.
+                    val postAuth = BuickB233VirtualPostAuth.burst(virtualAdvertisedReceives)
+                    log("IAPLINK T48: B233 post-auth capability-gated burst ids=" +
+                        postAuth.joinToString(" ") { "0x%04x".format(it.first) } +
+                        " accepted=${virtualAdvertisedReceives.size} (no Audi-specific raw messages)")
+                    for ((messageId, body) in postAuth) {
+                        sendCsmLocked(messageId, body)
+                    }
                     onVirtualIapAuthenticated?.invoke()
                 }
             }
@@ -1463,6 +1478,14 @@ class AirPlayClient(
                         Iap2Csm
                             .parseParams(frame.body)
                             .associateBy { it.id }
+                    if (isBuickE5Receiver() && iapTunnel == null) {
+                        virtualAdvertisedReceives = BuickB233VirtualPostAuth.receiveIds(params[7]?.value)
+                        log("IAPLINK T48: B233 virtual 0x1D01 canReceive(${virtualAdvertisedReceives.size})=" +
+                            virtualAdvertisedReceives.sorted().joinToString(" ") { "0x%04x".format(it) })
+                        if (virtualAdvertisedReceives.isEmpty()) {
+                            log("IAPLINK T48: no advertised receivable IDs; skip B233 post-auth burst")
+                        }
+                    }
                     log(
                         "IAPLINK T43: virtual rx 0x1d01 identity " +
                             "name=${params[0]?.value?.decodeToString()?.trimEnd('\u0000')} " +
