@@ -107,6 +107,39 @@ class Iap2LinkEngineTest {
         assertEquals(Iap2LinkEngine.State.NEGOTIATING, phone.state)
     }
 
+    @Test
+    fun buickIdleAcknowledgementIsNormalOnlyAndDoesNotConsumeDataSequence() {
+        val phone = Iap2LinkEngine()
+        val car = Iap2LinkEngine()
+        assertFalse(phone.offerIdleAcknowledgement())
+        phone.start(0)
+        car.start(0)
+        exchangeUntilNormal(phone, car)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+
+        assertTrue(phone.offerIdleAcknowledgement())
+        val first = phone.takeOutput()
+        assertEquals(Iap2LinkEngine.HEADER_BYTES, first.size)
+        assertEquals(0x40, first[4].toInt() and 0xFF)
+        assertEquals(0, first[7].toInt() and 0xFF)
+
+        assertTrue(phone.offerIdleAcknowledgement())
+        val second = phone.takeOutput()
+        assertEquals(Iap2LinkEngine.HEADER_BYTES, second.size)
+        // An idle ACK cannot advance the outgoing CSM data sequence.
+        assertEquals(first[5], second[5])
+        car.feed(first, tick())
+        car.feed(second, tick())
+        assertEquals(Iap2LinkEngine.State.NORMAL, car.state)
+        assertTrue(pollControls(car).isEmpty())
+
+        val data = Iap2Csm.encode(0x1D00)
+        assertTrue(phone.sendControl(data, tick()))
+        car.feed(phone.takeOutput(), tick())
+        assertEquals(1, pollControls(car).size)
+        assertEquals(Iap2LinkEngine.State.NORMAL, car.state)
+    }
+
     // ---- 工具 ----
 
     private fun exchange(
