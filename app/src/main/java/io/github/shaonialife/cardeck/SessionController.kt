@@ -459,6 +459,9 @@ object SessionController {
 
     /** 「断开连接」（可在任意 Activity 实例上调用——操作的是真管线对象）。 */
     fun disconnect(context: Context) {
+        // The user's explicit disconnect cancels all in-flight pairing and auto-join work.
+        connectCancelled = true
+        sessionStarting.set(false)
         val hadProjection = CarPlayService.mediaProjection != null
         pendingEndpointUpdate = null
         retireSession()
@@ -486,9 +489,15 @@ object SessionController {
     }
 
     /** 会话结束/新周期开始前彻底退役上一代会话（旧管线泄漏会累积编码器/虚拟显示器，最终 dequeueBuffer -19）。 */
+    @Synchronized
     fun retireSession() {
-        videoSender?.stop()
+        // E5 T38 fix: revoke ownership BEFORE stop/close triggers onEnded.
+        val retiredVideo = videoSender
         videoSender = null
+        val retiredClient = currentClient
+        currentClient = null
+        retiredClient?.cancelled = true
+        retiredVideo?.stop()
         // 暗幕/常亮随会话收掉（本方法在每轮配对起步也会执行，新一轮推流起来后会重新置位）
         ScreenDimmer.setSessionActive(false)
         audioSender?.stop()
@@ -499,9 +508,7 @@ object SessionController {
         currentHiddenSource = null
         TouchRouter
             .reset()
-        currentClient?.cancelled = true
-        currentClient?.close()
-        currentClient = null
+        retiredClient?.close()
         // 注意：这里绝不能 detach BT 控制会话。本方法在每轮配对起步时也会执行，
         // 而 DiPlay 在 WiFi 隧道就绪前看到 RFCOMM 断开即判 bring-up failed、
         // closeWirelessStack 拆掉整轮无线栈（Bonjour/热点/AirPlay 服务），把已建立
@@ -1692,6 +1699,11 @@ object SessionController {
                             }
                         }
                     retireSession()
+                    if (connectCancelled) {
+                        appendLog("SESSION T7: 手动断开已生效，旧配对线程不能重新创建会话")
+                        sessionStarting.set(false)
+                        return@run
+                    }
                     // 会话静默降噪（2026-10-10）：从交接点起暂停其它接收端的出站连接探测
                     // （典型：连着 DiPlay 测试台时不再噪音式探测 Audi）。会话结束/断开时解除。
                     BtSessionGate.sessionActive = true
@@ -2015,7 +2027,9 @@ object SessionController {
                                         (420f * minOf(streamW, streamH) / 540f)
                                             .toInt()
                                             .coerceIn(120, 1680)
-                                    videoSender =
+                                    // T7: bind VideoSender.onEnded to the owning session.
+                                    var owningSender: VideoSender? = null
+                                    val createdSender =
                                         VideoSender(
                                             host = host,
                                             dataPort = screen.dataPort,
@@ -2026,24 +2040,28 @@ object SessionController {
                                             log = { line -> appendLog(line) },
                                             keepAliveWithStats = setup.keepAliveSendStatsAsBody,
                                             onEnded = {
-                                                // 会话真实结束：解除静默降噪（客户端恢复探测/重连）
-                                                appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
-                                                BtSessionGate.sessionActive = false
-                                                // 车机掉线类结束（无用户断开操作）：暗幕/常亮必须一起收掉。
-                                                // 这条路径不经过 retireSession（VirtualLauncher 仍挂着），
-                                                // 漏掉它就会出现「会话早就断了、45s 后手机屏突然变黑」
-                                                // （2026-10-19 用户实测）。
-                                                ScreenDimmer.setSessionActive(false)
-                                                // 同样复原横屏覆盖。这里跑在推流收尾线程，不是连接
-                                                // 关键路径，但统一走异步口以保持「串行、不重入」的语义。
-                                                appContext?.let { ctx ->
-                                                    AppOrientationCompat.resetAllAsync(ctx, ::appendLog)
+                                                // A deliberately retired or superseded stream cannot
+                                                // change the current session (E5 T38 race fix).
+                                                if (videoSender !== owningSender || currentClient !== client) {
+                                                    appendLog("SESSION T7: 忽略已退役视频流的迟到 onEnded")
+                                                } else {
+                                                    appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
+                                                    BtSessionGate.sessionActive = false
+                                                    ScreenDimmer.setSessionActive(false)
+                                                    appContext?.let { ctx ->
+                                                        AppOrientationCompat.resetAllAsync(ctx, ::appendLog)
+                                                    }
+                                                    attributeAudioTeardown()
+                                                    // B233: release naturally ended streams as well.
+                                                    if (client.currentEndpoint.isBuickB233) {
+                                                        retireSession()
+                                                        phaseHint = "CarPlay 已断开，等待车机重新握手…"
+                                                    }
                                                 }
-                                                // 音频拆链归因：起过音频却很快被拆 → 记下该档位
-                                                // 不兼容，下次连接自动换档（见 attributeAudioTeardown）。
-                                                attributeAudioTeardown()
                                             },
                                         )
+                                    owningSender = createdSender
+                                    videoSender = createdSender
                                     // 先连端口（车机看门狗），编码器等 RECORD 后再启动
                                     videoSender?.openDataPort()
                                 }
