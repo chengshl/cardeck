@@ -43,7 +43,9 @@ android {
         // Buick-main is a dedicated installable upstream baseline. CI increments
         // the code beyond the Buick-E5 testing builds without changing main.
         versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
-        versionName = System.getenv("CARDECK_RELEASE_BRANCH")?.let { "$appVersionName-$it" } ?: appVersionName
+        // Human-readable release version is Beijing time yyyyMMddHHmmss.
+        // The integer versionCode stays separate for Android upgrade ordering.
+        versionName = System.getenv("CARDECK_RELEASE_VERSION_NAME") ?: appVersionName
     }
 
     signingConfigs {

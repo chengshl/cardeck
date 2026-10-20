@@ -153,28 +153,35 @@ object BuickUpdater {
                     .firstOrNull { it.startsWith("versionCode=") }
                     ?.substringAfter("=")?.trim()?.toLongOrNull()
                     ?: throw IllegalStateException("Release 缺少 versionCode")
+                val versionName = release.optString("body").lineSequence()
+                    .firstOrNull { it.startsWith("versionName=") }
+                    ?.substringAfter("=")?.trim()
+                    ?.takeIf { it.matches(Regex("[0-9]{14}")) }
+                    ?: code.toString()
                 val branch = release.optString("body").lineSequence()
                     .firstOrNull { it.startsWith("branch=") }
                     ?.substringAfter("=")?.trim().orEmpty()
                 require(branch in setOf("main", "Buick-main", "Buick-E5")) {
                     "更新来源分支无效：$branch"
                 }
+                val packageInfo = activity.packageManager.getPackageInfo(activity.packageName, 0)
                 val installed = if (Build.VERSION.SDK_INT >= 33) {
-                    activity.packageManager.getPackageInfo(activity.packageName, 0).longVersionCode
+                    packageInfo.longVersionCode
                 } else {
                     @Suppress("DEPRECATION")
-                    activity.packageManager.getPackageInfo(activity.packageName, 0).versionCode.toLong()
+                    packageInfo.versionCode.toLong()
                 }
+                val installedVersionName = packageInfo.versionName ?: installed.toString()
                 val url = apkUrl ?: throw IllegalStateException("Release 未提供 APK")
                 val shaUrl = digestUrl ?: throw IllegalStateException("Release 未提供 SHA256")
                 main.post {
                     if (activity.isFinishing || activity.isDestroyed) return@post
                     if (code <= installed) {
-                        if (!silent) info(activity, "已是最新版本（$installed）")
+                        if (!silent) info(activity, "已是最新版本（$installedVersionName）")
                     } else {
                         AlertDialog.Builder(activity)
                             .setTitle("发现 CarDeck 最新构建")
-                            .setMessage("当前构建版本：$installed\n最新构建版本：$code\n来源分支：$branch\n\n安装后将切换到该分支的功能，是否继续？")
+                            .setMessage("当前版本：$installedVersionName\n最新版本：$versionName\n来源分支：$branch\n\n安装后将切换到该分支的功能，是否继续？")
                             .setNegativeButton("取消", null)
                             .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity)) }
                             .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl) }
