@@ -1279,18 +1279,38 @@ object SessionController {
                                     if (active != null && currentClient === client &&
                                         activeAudioProfile?.key == profile.key
                                     ) {
-                                        appendLog(
-                                            "AUDIO T10: B233 sync端口拒绝（$error）；" +
-                                                "停止本次音频，保留视频会话",
-                                        )
-                                        audioSender = null
-                                        activeAudioProfile = null
-                                        activeAudioStartedAt = 0L
-                                        AudioProfileMemory.recordTransportFailure(
-                                            context.applicationContext, identity, profile.key,
-                                        )
-                                        active.stop()
-                                        uiHintSink?.invoke("B233 音频同步端口拒绝，已退回纯视频；下次尝试其他档位")
+                                        if (
+                                            AudioSender.keepRtpAfterSyncPortRefused(
+                                                client.currentEndpoint.isBuickB233,
+                                                profile.codec,
+                                            )
+                                        ) {
+                                            // RTCP controlPort=6011 is explicitly refused, but
+                                            // AAC dataPort=6000 did accept 49 packets and the
+                                            // /feedback stream clock advanced. The sync thread
+                                            // already exits on this IOException: keep RTP alive
+                                            // to test whether the B233 audio watchdog requires
+                                            // uninterrupted packets after SETUP + RECORD.
+                                            appendLog(
+                                                "AUDIO T14: B233 AAC RTCP端口拒绝（$error）；" +
+                                                    "仅停止同步包，继续 AAC RTP 推流以验证20秒拆链",
+                                            )
+                                        } else {
+                                            appendLog(
+                                                "AUDIO T10: B233 sync端口拒绝（$error）；" +
+                                                    "停止本次音频，保留视频会话",
+                                            )
+                                            audioSender = null
+                                            activeAudioProfile = null
+                                            activeAudioStartedAt = 0L
+                                            AudioProfileMemory.recordTransportFailure(
+                                                context.applicationContext, identity, profile.key,
+                                            )
+                                            active.stop()
+                                            uiHintSink?.invoke(
+                                                "B233 音频同步端口拒绝，已退回纯视频；下次尝试其他档位",
+                                            )
+                                        }
                                     }
                                 }
                             }

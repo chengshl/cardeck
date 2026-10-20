@@ -87,6 +87,19 @@ class AudioSender(
         /** 同步包发送间隔（规范：每秒一个）。 */
         const val SYNC_INTERVAL_MILLIS = 1_000L
 
+        /**
+         * T14 B233 trial: this receiver advertises AAC RTCP controlPort=6011
+         * yet returns ICMP Port Unreachable on the second sync send. Stopping
+         * the healthy RTP stream after that error leaves a still-advertised
+         * audio session with no packets; the car tears down CarPlay ~19s later.
+         * Sync sender exits on IOException regardless; only AAC/B233 keeps RTP.
+         * Do NOT apply to PCM or other vehicles without real-car evidence.
+         */
+        internal fun keepRtpAfterSyncPortRefused(
+            isBuickB233: Boolean,
+            codec: AudioCodec,
+        ): Boolean = isBuickB233 && codec == AudioCodec.AAC_LC
+
         private const val RTP_HEADER_LEN = 12
         private const val TAG_SIZE = 16
         private const val NONCE_SIZE = 8
