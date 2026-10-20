@@ -1179,17 +1179,24 @@ class AirPlayClient(
         fun logDiagnosticSummary() {
             synchronized(lock) {
                 val age = if (firstDetectAt == 0L) -1L else SystemClock.uptimeMillis() - firstDetectAt
-                log("IAPLINK T40: summary DETECT=$detectReplies linkState=${engine.state} elapsedSinceFirstDetect=${age}ms")
+                val csmAge = if (virtualCsmStartedAt == 0L) -1L else SystemClock.uptimeMillis() - virtualCsmStartedAt
+                log("IAPLINK T43: summary DETECT=$detectReplies linkState=${engine.state} elapsedSinceFirstDetect=${age}ms csmStarted=$virtualCsmStarted csmIdentified=$virtualIdentified csmElapsed=${csmAge}ms echoDelivered=$virtualEchoDelivered")
             }
         }
 
-        /** 隧道发送端 CSM 握手进度（仅在隧道存在时推进；Audi 事件通道形态不参与）。 */
-        private var tunnelCsmStarted = false
-        private var tunnelIdentified = false
+        /**
+         * T43: the receiver-side virtual iAP2 over AirPlay Events is another
+         * control link, even when type-130 SETUP returns no dataPort.
+         * Earlier code only started its CSM when a separate TCP tunnel existed,
+         * leaving Buick in NORMAL with no StartIdentification until its 30s reset.
+         */
+        private var virtualCsmStarted = false
+        private var virtualIdentified = false
 
-        /** 同步回显待投递（隧道门闸：回显真正写进隧道 TCP 后才允许发 0x1D00）。 */
+        /** Only start CSM after the peer's SYN echo reached its transport. */
         private var pendingEchoFlush = false
-        private var tunnelEchoDelivered = false
+        private var virtualEchoDelivered = false
+        private var virtualCsmStartedAt = 0L
 
         init {
             engine.onEaData = { bytes -> handleEaData(bytes) }
@@ -1282,14 +1289,22 @@ class AirPlayClient(
                 val ok = tunnel.writeIapBytes(out)
                 if (ok && pendingEchoFlush) {
                     pendingEchoFlush = false
-                    if (!tunnelEchoDelivered) {
-                        tunnelEchoDelivered = true
-                        log("IAPLINK: ✓ 同步回显已写入隧道（链路协商完成，发送端 CSM 就绪）")
+                    if (!virtualEchoDelivered) {
+                        virtualEchoDelivered = true
+                        log("IAPLINK T43: ✓ SYN echo delivered through type-130 TCP; CSM can start after NORMAL")
                     }
                 }
             } else {
-                sendIap(out)
-                pendingEchoFlush = false
+                val ok = sendIap(out)
+                if (ok && pendingEchoFlush) {
+                    pendingEchoFlush = false
+                    if (!virtualEchoDelivered) {
+                        virtualEchoDelivered = true
+                        log("IAPLINK T43: ✓ SYN echo accepted by Buick CONTROL RTSP; waiting for NORMAL before CSM")
+                    }
+                } else if (!ok && pendingEchoFlush) {
+                    log("IAPLINK T43: SYN echo RTSP send failed; virtual CSM will NOT start prematurely")
+                }
             }
         }
 
@@ -1306,29 +1321,29 @@ class AirPlayClient(
                     }
                 }
             }
-            // 先冲刷（回显必须先行送达对端），再启动 CSM，最后再冲刷 CSM 字节
+            // Deliver peer's SYN echo BEFORE first CSM; then flush 0x1D00.
             flushOutputLocked()
-            maybeStartTunnelCsmLocked()
+            maybeStartVirtualCsmLocked()
             flushOutputLocked()
         }
 
         /**
-         * 隧道发送端握手启动：链路协商完成（NORMAL）且同步回显已送达后，主动发
-         * 0x1D00 StartIdentification。DiPlay 的隧道控制端（Iap2WirelessControlClient）
-         * 在 awaitReady 返回后等待我们发 0x1D00；缺此步其 5 分钟窗口超时即拆掉
-         * 整条链路（2026-10-11 实测根因）。回显送达门闸保证对端引擎先进入 NORMAL
-         * （其对端在未收到 SYN 前收到任何裸 ACK 会直接 die）。
+         * T43: after NORMAL, run virtual iAP2 CSM over either type-130 TCP
+         * (existing lab receiver) OR Buick B233's Events/RTSP bridge.
+         * The latter has streams=null and was previously permanently gated out.
+         * Only B233 is changed; other receiver Events links stay passive.
          */
-        private fun maybeStartTunnelCsmLocked() {
-            if (tunnelCsmStarted || iapTunnel == null || !tunnelEchoDelivered) return
+        private fun maybeStartVirtualCsmLocked() {
+            if (virtualCsmStarted || !virtualEchoDelivered) return
             if (engine.state != Iap2LinkEngine.State.NORMAL) return
-            tunnelCsmStarted = true
-            sendCsmLocked(
-                Iap2MessageIds.START_IDENTIFICATION,
-            )
+            if (iapTunnel == null && !isBuickE5Receiver()) return
+            virtualCsmStarted = true
+            virtualCsmStartedAt = SystemClock.uptimeMillis()
+            log("IAPLINK T43: virtual link NORMAL; starting 0x1D00 over ${if (iapTunnel != null) "type-130 TCP" else "Buick AirPlay CONTROL RTSP"}")
+            sendCsmLocked(Iap2MessageIds.START_IDENTIFICATION)
         }
 
-        /** 隧道上的 CSM 发送（计入发送窗口由引擎 flush 到隧道 TCP）。 */
+        /** Virtual iAP2 CSM send (engine chooses the peer's advertised control session ID). */
         private fun sendCsmLocked(
             messageId: Int,
             body: ByteArray = ByteArray(0),
@@ -1338,7 +1353,7 @@ class AirPlayClient(
                     .encode(messageId, body)
             val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L)
             log(
-                "IAPLINK: 隧道 tx 0x${messageId.toString(16)} " +
+                "IAPLINK T43: virtual CSM tx 0x${messageId.toString(16)} " +
                     "(${Iap2MessageIds.nameOf(messageId)}) " +
                     "${frame.size}B ok=$ok",
             )
@@ -1352,18 +1367,18 @@ class AirPlayClient(
          * 完成后对方发出订阅并视为隧道就绪，5 分钟拆链不再发生。
          */
         private fun maybeRespondTunnelCsmLocked(frame: Iap2Csm.Frame) {
-            if (iapTunnel == null) return
+            if (iapTunnel == null && !isBuickE5Receiver()) return
             val ids = Iap2MessageIds
             when (frame.messageId) {
                 ids.IDENTIFICATION_INFORMATION -> {
-                    if (tunnelIdentified) return
-                    tunnelIdentified = true
+                    if (virtualIdentified) return
+                    virtualIdentified = true
                     val params =
                         Iap2Csm
                             .parseParams(frame.body)
                             .associateBy { it.id }
                     log(
-                        "IAPLINK: 隧道 rx 0x1d01 接收端身份 " +
+                        "IAPLINK T43: virtual rx 0x1d01 identity " +
                             "name=${params[0]?.value?.decodeToString()?.trimEnd('\u0000')} " +
                             "model=${params[1]?.value?.decodeToString()?.trimEnd('\u0000')}",
                     )
@@ -1382,7 +1397,7 @@ class AirPlayClient(
 
                 ids.MFI_RESPONSE -> {
                     sendCsmLocked(ids.MFI_AUTHENTICATION_SUCCEEDED)
-                    log("IAPLINK: 隧道 MFi 完成——等待对端订阅（随后其标记隧道就绪）")
+                    log("IAPLINK T43: virtual MFi response received; 0xAA05 sent (receipt is NOT signature verification)")
                 }
             }
         }
