@@ -40,6 +40,45 @@ internal object BuickB233VirtualPostAuth {
         return candidates.filter { (id, _) -> id in acceptedIds }
     }
 
+    /**
+     * Reactive replies only: the receiver must first request a subscription.
+     * Empty payloads match the upstream's documented MIB3 initial/idle state,
+     * but do not send any Audi-only unsolicited location/status traffic.
+     */
+    fun replyToSubscription(requestId: Int): Pair<Int, ByteArray>? = when (requestId) {
+        0x5000 -> 0x5001 to rawBody(
+            "404000555001002a00000005000100000800040000000000050006000005000c0000" +
+                "0500100000050012000005001a8000250001000500000000080001000000000005" +
+                "000500000500060000050007000005001000",
+        )
+
+        0x4157 -> 0x4158 to rawBody(
+            "404000644158000500000100050001060005000200000e0004e697a053494de58da1" +
+                "00000500050100050006010005000700000500080000050009000005000a000005" +
+                "000b000005000c010005000d000005000e000005000f0000050010000005001100",
+        )
+
+        0x4154 -> 0x4155 to Iap2Csm.param(0x0002, byteArrayOf(0))
+        0x4170 -> 0x4171 to (
+            Iap2Csm.param(0x0000, byteArrayOf(0)) +
+                Iap2Csm.param(0x0002, byteArrayOf(0, 0)) +
+                Iap2Csm.param(0x0005, byteArrayOf(0)) +
+                Iap2Csm.param(0x0007, byteArrayOf(0, 0))
+        )
+
+        else -> null
+    }
+
+    private fun rawBody(frameHex: String): ByteArray {
+        val bytes = ByteArray(frameHex.length / 2) { i ->
+            frameHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+        }
+        require(bytes.size >= Iap2Csm.HEADER_BYTES)
+        val declaredLength = ((bytes[2].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF)
+        require(declaredLength == bytes.size) { "Invalid upstream CSM frame length" }
+        return bytes.copyOfRange(Iap2Csm.HEADER_BYTES, bytes.size)
+    }
+
     private fun deviceTimeParams(atMillis: Long): ByteArray {
         val zone = TimeZone.getDefault()
         val offsetMin = zone.getOffset(atMillis) / 60_000
