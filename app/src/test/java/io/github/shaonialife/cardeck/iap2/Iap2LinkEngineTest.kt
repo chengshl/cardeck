@@ -116,6 +116,11 @@ class Iap2LinkEngineTest {
         car.start(0)
         exchangeUntilNormal(phone, car)
         assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+        assertEquals(Iap2LinkEngine.State.NORMAL, car.state)
+        // A handshake may have one final ACK buffered after NORMAL.
+        // Clear only handshake residue before testing the 9-byte idle packet.
+        phone.takeOutput()
+        car.takeOutput()
 
         assertTrue(phone.offerIdleAcknowledgement())
         val first = phone.takeOutput()
