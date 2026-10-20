@@ -124,6 +124,24 @@ object AudioProfileMemory {
         }
     }
 
+    /**
+     * T16: reopen ONLY profiles rejected by the obsolete B233 AAC RTCP
+     * refusal handler. The T14 handler no longer shuts down healthy AAC
+     * RTP when the independent RTCP sync port rejects writes, so that
+     * historical refusal cannot be reused as evidence of AAC failure.
+     * Retain proven working PCM and every unrelated rejected profile.
+     */
+    fun reopenRejectedProfiles(
+        context: Context?,
+        identityText: String,
+        profileKeys: Set<String>,
+    ) {
+        if (profileKeys.isEmpty()) return
+        update(context, identityText) { entry ->
+            entry.copy(rejected = entry.rejected - profileKeys, disabled = false)
+        }
+    }
+
     /** 手动恢复（换车机后复位，或车机固件升级后重新试探）。 */
     fun reset(
         context: Context?,

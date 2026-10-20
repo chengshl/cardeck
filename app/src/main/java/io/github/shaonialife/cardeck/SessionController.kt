@@ -1195,6 +1195,37 @@ object SessionController {
                 appendLog("AUDIO: 本车机（$identity）有「全部档位拆链」的旧记忆，已重置并重试")
             }
             val candidates = client.audioCandidates(preferCompat = audioPreferCompat)
+            // T16: T13 ran once; its AAC RTCP/6011 ECONNREFUSED was
+            // permanently recorded as a rejected AAC profile by the old T10
+            // recovery, so T14 never actually exercised its AAC-RTP fix.
+            // Re-open only that B233 AAC-LC 48k media key ONCE after T14,
+            // without deleting PCM successes or other cars' compatibility
+            // history. A genuinely rejected AAC SETUP after this migration
+            // is still recorded normally by recordRejected below.
+            if (client.currentEndpoint.isBuickB233) {
+                val aac48MediaKeys =
+                    candidates.filter {
+                        it.streamType == 102L &&
+                            it.sampleRate == 48_000 &&
+                            it.audioType.equals("media", ignoreCase = true)
+                    }.map { it.key }.toSet()
+                val migration = context.applicationContext.getSharedPreferences(
+                    "b233_audio_t16_retrial", Context.MODE_PRIVATE,
+                )
+                val migrationKey = "aac_rtcp_${AudioProfileMemory.receiverKey(identity)}"
+                if (aac48MediaKeys.isNotEmpty() && !migration.getBoolean(migrationKey, false)) {
+                    val oldRejected = entry.rejected.intersect(aac48MediaKeys)
+                    AudioProfileMemory.reopenRejectedProfiles(
+                        context.applicationContext, identity, aac48MediaKeys,
+                    )
+                    entry = AudioProfileMemory.load(context.applicationContext, identity)
+                    migration.edit().putBoolean(migrationKey, true).apply()
+                    appendLog(
+                        "AUDIO T16: B233 清除旧 RTCP 误判的 AAC48 拒绝记忆=" +
+                            "$oldRejected；本轮重试 AAC，保留其他档位历史",
+                    )
+                }
+            }
             // T13 follows upstream Honda PR #9: PCM SETUP success does not
             // prove that the car will consume/accept that media stream.
             // On B233, retry its advertised 102/media AAC-LC 48k before PCM.

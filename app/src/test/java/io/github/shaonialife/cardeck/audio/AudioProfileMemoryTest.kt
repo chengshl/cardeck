@@ -140,6 +140,36 @@ class AudioProfileMemoryTest {
     }
 
     @Test
+    fun b233T16OnlyReopensLegacyAacRtcpRejection() {
+        val id = "BUICK B233 T16 targeted AAC-RTCP migration"
+        val aac = AudioProfile(
+            "media", 1L shl 23, 48_000, 250,
+            streamType = 102L, codec = AudioCodec.AAC_LC,
+        )
+        val pcm = AudioProfile("media", 1L shl 15, 48_000, 250)
+        val other = AudioProfile("compatibility", 1L shl 15, 48_000, 250)
+        AudioProfileMemory.reset(null, id)
+        AudioProfileMemory.recordTransportFailure(null, id, aac.key)
+        AudioProfileMemory.recordRejected(
+            null, id, other.key, setOf(pcm.key, other.key, aac.key),
+            markExhausted = false,
+        )
+        assertEquals(pcm.key, AudioProfileMemory.orderForBuickB233(
+            listOf(pcm, aac, other), AudioProfileMemory.load(null, id),
+        ).first().key)
+
+        AudioProfileMemory.reopenRejectedProfiles(null, id, setOf(aac.key))
+        val after = AudioProfileMemory.load(null, id)
+        assertFalse(after.rejected.contains(aac.key))
+        assertTrue("unrelated rejected profile preserved", after.rejected.contains(other.key))
+        assertFalse(after.disabled)
+        assertEquals(aac.key, AudioProfileMemory.orderForBuickB233(
+            listOf(pcm, aac, other), after,
+        ).first().key)
+        AudioProfileMemory.reset(null, id)
+    }
+
+    @Test
     fun b233ExplicitTransportFailureInvalidatesRememberedAacSuccess() {
         val id = "BUICK B233 audio-transport-unit-test"
         val aac = AudioProfile(
