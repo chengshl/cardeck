@@ -27,6 +27,17 @@ class BuickB233VirtualPostAuthTest {
     }
 
     @Test
+    fun subscriptionsAreReactiveAndUseValidIdleFrames() {
+        val requests = mapOf(0x5000 to 0x5001, 0x4157 to 0x4158, 0x4154 to 0x4155, 0x4170 to 0x4171)
+        for ((request, reply) in requests) {
+            val actual = BuickB233VirtualPostAuth.replyToSubscription(request)
+            assertEquals(reply, actual?.first)
+            assertTrue((actual?.second?.size ?: 0) > 0)
+        }
+        assertEquals(null, BuickB233VirtualPostAuth.replyToSubscription(0xA101))
+    }
+
+    @Test
     fun missingOrMalformedCapabilityListDoesNotGenerateUnsolicitedMessages() {
         assertTrue(BuickB233VirtualPostAuth.receiveIds(null).isEmpty())
         assertTrue(BuickB233VirtualPostAuth.receiveIds(byteArrayOf(0x4e)).isEmpty())
