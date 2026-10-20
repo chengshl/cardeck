@@ -618,6 +618,8 @@ class VirtualIap2Link(
                     val challenge = ByteArray(32).also { SecureRandom().nextBytes(it) }
                     sendCsmLocked(ids.MFI_REQUEST_CHALLENGE, Iap2Csm.param(0, challenge))
                     mfiCurrentLength = 32
+                    mfiChallengeSentAtMs = nowMillis()
+                    mfiWindowMillis = 3_000L
                     mib3AuthStage = 3
                     log("IAPLINK T48: B233 Wi-Fi MFi 32B only")
                 } else if (mib3) {
