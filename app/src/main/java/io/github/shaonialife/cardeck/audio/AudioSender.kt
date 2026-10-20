@@ -187,9 +187,10 @@ class AudioSender(
         if (running.get()) return true
         return try {
             val client = DatagramSocket()
-            if (carWifiNetwork != null) {
-                runCatching { carWifiNetwork.bindSocket(client) }
-                    .onSuccess { log("CAR-NET T47: audio UDP bound to car Wi-Fi $carWifiNetwork") }
+            val physicalWifi = carWifiNetwork
+            if (physicalWifi != null) {
+                runCatching { physicalWifi.bindSocket(client) }
+                    .onSuccess { log("CAR-NET T47: audio UDP bound to car Wi-Fi $physicalWifi") }
                     .onFailure {
                         log("CAR-NET T47: audio UDP explicit Wi-Fi unavailable (${it.message}); using system LAN route")
                     }
