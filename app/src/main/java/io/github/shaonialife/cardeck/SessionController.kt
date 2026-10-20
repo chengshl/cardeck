@@ -2005,13 +2005,34 @@ object SessionController {
                                     activeTargetFps = fps
                                     // 车机触摸在通告视图坐标系（如 1160×540），流已按比例
                                     // 缩放（如 1450×674）——注入前需映射，否则点击漂移
+                                    // B233 touch HID 0..3082/0..814 != AirPlay 1972x520.
+                                    // Read maxima from the actual advertised Digitizer HID descriptor.
+                                    val hidLogical =
+                                        if (client.currentEndpoint.isBuickB233) {
+                                            setup.hidDescriptors.values.asSequence()
+                                                .mapNotNull(TouchReports::logicalMaximaFromDescriptor)
+                                                .firstOrNull()
+                                        } else {
+                                            null
+                                        }
                                     TouchRouter
                                         .setCoordinateScale(
                                             setup.displayWidth,
                                             setup.displayHeight,
                                             streamW,
                                             streamH,
+                                            hidMaxX = hidLogical?.x,
+                                            hidMaxY = hidLogical?.y,
                                         )
+                                    if (client.currentEndpoint.isBuickB233) {
+                                        appendLog(
+                                            "TOUCH T8: B233 HID=${hidLogical?.x ?: "unknown"}x" +
+                                                "${hidLogical?.y ?: "unknown"} → " +
+                                                "CarPlay=${setup.displayWidth}x${setup.displayHeight} " +
+                                                "stream=${streamW}x$streamH " +
+                                                "normalized=${hidLogical != null}",
+                                        )
+                                    }
                                     appendLog(
                                         "DISPLAY: 流 ${setup.displayWidth}x${setup.displayHeight} → " +
                                             "${streamW}x$streamH（$scalePct%）@${fps}fps",

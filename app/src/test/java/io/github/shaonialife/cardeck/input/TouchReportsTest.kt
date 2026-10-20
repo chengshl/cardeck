@@ -196,6 +196,37 @@ class TouchReportsTest {
         )
 
     @Test
+    fun b233LogicalAxesAreNotAirPlayPixels() {
+        // Real Buick B233 /info hidDescriptor #0, 62B. X logical max=0x0C0A,
+        // Y max=0x032E; AirPlay advertises a smaller 1972x520 display.
+        val descriptor = (
+            "05 0d 09 04 a1 01 05 0d 09 22 a1 02 05 0d 09 33 " +
+                "15 00 25 01 75 01 95 01 81 02 75 07 95 01 81 01 " +
+                "05 01 09 30 15 00 26 0a 0c 75 10 95 01 81 02 " +
+                "09 31 15 00 26 2e 03 75 10 95 01 81 02 c0 c0"
+        ).split(' ').map { it.toInt(16).toByte() }.toByteArray()
+        assertEquals(TouchReports.Format.SINGLE_ABSOLUTE, TouchReports.formatFromDescriptor(descriptor))
+        val maxima = TouchReports.logicalMaximaFromDescriptor(descriptor)!!
+        assertEquals(3082, maxima.x)
+        assertEquals(814, maxima.y)
+        // User log: old unscaled X=2720 -> oversampled appHi X=3898 (>2776).
+        // Normalized canvas location instead falls inside the advertised 1972x520.
+        val x = (2720f * 1972 / maxima.x).toInt()
+        val y = (138f * 520 / maxima.y).toInt()
+        assertTrue(x in 0 until 1972)
+        assertTrue(y in 0 until 520)
+    }
+
+    @Test
+    fun nonTouchDescriptorNeverProvidesLogicalAxes() {
+        assertNull(
+            TouchReports.logicalMaximaFromDescriptor(
+                byteArrayOf(0x05, 0x0c, 0x09, 0x01, 0xa1.toByte(), 0x01, 0xc0.toByte()),
+            ),
+        )
+    }
+
+    @Test
     fun audiSingleTouchDescriptorDetected() {
         assertEquals(
             TouchReports.Format.SINGLE_ABSOLUTE,

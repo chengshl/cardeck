@@ -63,15 +63,28 @@ object TouchRouter {
     @Volatile
     private var coordScaleY = 1f
 
+    @Volatile private var normalizedCanvasW = 0
+    @Volatile private var normalizedCanvasH = 0
+
     /** 会话建立时设置：视图（车机通告 display）尺寸 → 流（编码/虚拟屏）尺寸。 */
     fun setCoordinateScale(
         viewW: Int,
         viewH: Int,
         streamW: Int,
         streamH: Int,
+        hidMaxX: Int? = null,
+        hidMaxY: Int? = null,
     ) {
-        coordScaleX = if (viewW > 0) streamW.toFloat() / viewW else 1f
-        coordScaleY = if (viewH > 0) streamH.toFloat() / viewH else 1f
+        // B233 explicitly opts into HID-axis normalization. Other receivers
+        // retain the upstream view-pixel mapping without any behavior change.
+        val normalize = hidMaxX != null && hidMaxY != null &&
+            hidMaxX > 0 && hidMaxY > 0 && streamW > 0 && streamH > 0
+        coordScaleX = if (normalize) streamW.toFloat() / hidMaxX!! else
+            if (viewW > 0) streamW.toFloat() / viewW else 1f
+        coordScaleY = if (normalize) streamH.toFloat() / hidMaxY!! else
+            if (viewH > 0) streamH.toFloat() / viewH else 1f
+        normalizedCanvasW = if (normalize) streamW else 0
+        normalizedCanvasH = if (normalize) streamH else 0
     }
 
     fun onContact(
@@ -80,8 +93,10 @@ object TouchRouter {
     ) {
         // 空闲槽占位（未按下且 0,0）忽略
         if (!contact.down && contact.xPixels == 0 && contact.yPixels == 0) return
-        val px = (contact.xPixels * coordScaleX).toInt().coerceAtLeast(0)
-        val py = (contact.yPixels * coordScaleY).toInt().coerceAtLeast(0)
+        val scaledX = (contact.xPixels * coordScaleX).toInt().coerceAtLeast(0)
+        val scaledY = (contact.yPixels * coordScaleY).toInt().coerceAtLeast(0)
+        val px = if (normalizedCanvasW > 0) scaledX.coerceAtMost(normalizedCanvasW - 1) else scaledX
+        val py = if (normalizedCanvasH > 0) scaledY.coerceAtMost(normalizedCanvasH - 1) else scaledY
 
         // 叠加卡片（「强制横屏未生效」提示）优先消费触摸：它画在应用区的黑边上，
         // 必须先于注入判定命中，否则触摸会穿透到下面的应用。
@@ -272,6 +287,8 @@ object TouchRouter {
         tapDragSlot = -1
         coordScaleX = 1f
         coordScaleY = 1f
+        normalizedCanvasW = 0
+        normalizedCanvasH = 0
     }
 
     // ---- 仪表盘地图 tile「快速点按 → 全屏地图」检测 ----
