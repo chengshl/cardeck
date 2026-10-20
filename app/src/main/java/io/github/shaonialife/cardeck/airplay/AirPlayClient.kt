@@ -329,9 +329,10 @@ class AirPlayClient(
             var udp: java.net.DatagramSocket? = null
             try {
                 udp = java.net.DatagramSocket()
-                if (carWifiNetwork != null) {
-                    runCatching { udp?.let { carWifiNetwork.bindSocket(it) } }
-                        .onSuccess { log("CAR-NET T47: UDP keepAlive on car Wi-Fi $carWifiNetwork") }
+                val physicalWifi = carWifiNetwork
+                if (physicalWifi != null) {
+                    runCatching { udp?.let { physicalWifi.bindSocket(it) } }
+                        .onSuccess { log("CAR-NET T47: UDP keepAlive on car Wi-Fi $physicalWifi") }
                         .onFailure {
                             log("CAR-NET T47: UDP explicit Wi-Fi unavailable (${it.message}); system LAN route remains in use")
                         }
