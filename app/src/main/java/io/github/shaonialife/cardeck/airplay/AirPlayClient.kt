@@ -1143,6 +1143,14 @@ class AirPlayClient(
     @Volatile
     private var iapLink: IapLinkOverEvent? = null
 
+    /**
+     * T44 Buick B233 experiment: called ONCE after the Wi-Fi virtual iAP2
+     * receiver ACKs 0xAA05, never merely after our send() returns.
+     * SessionController may then hand over from the old RFCOMM transport.
+     */
+    @Volatile
+    var onVirtualIapAuthenticated: (() -> Unit)? = null
+
     /** 车机 iAPSendMessage 字节入口（MainActivity 事件命令处理器调用）。 */
     fun onIapEventBytes(data: ByteArray) {
         val link =
@@ -1176,6 +1184,9 @@ class AirPlayClient(
         private var linkSentLogs = 0
         private var linkAckLogs = 0
         private var firstDetectAt = 0L
+        private var awaitingVirtualMfiFrame = false
+        private var virtualMfiSequence: Int? = null
+        private var virtualMfiAckNotified = false
 
         /** Diagnostic boundary: whether the car ever advanced past DETECT. */
         fun logDiagnosticSummary() {
@@ -1215,8 +1226,27 @@ class AirPlayClient(
             // T43: if Buick accepts POST /command but never processes 0x1D00,
             // the virtual ACK and CSM sequence numbers will identify the exact stall.
             engine.onFrameSent = { ctl, seq, ack, sid, size ->
+                // Record the actual transmitted 0xAA05 sequence, not a guessed 104.
+                // Some receivers may use different initial sequence/window layouts.
+                if (awaitingVirtualMfiFrame && sid != 0 && size == Iap2Csm.HEADER_BYTES &&
+                    ctl and 0x40 != 0 && ctl and 0x80 == 0
+                ) {
+                    awaitingVirtualMfiFrame = false
+                    virtualMfiSequence = seq
+                    log("IAPLINK T44: virtual 0xAA05 sent as seq=$seq; awaiting peer ACK before Bluetooth handover")
+                }
                 if (isBuickE5Receiver() && linkSentLogs++ < 16) {
                     log("IAPLINK T43: tx frame ctl=0x${ctl.toString(16)} seq=$seq ack=$ack session=$sid payload=$size")
+                }
+            }
+            engine.onAcknowledgementProgress = { ack, _, _ ->
+                if (!virtualMfiAckNotified && virtualMfiSequence == ack &&
+                    engine.state == Iap2LinkEngine.State.NORMAL &&
+                    iapTunnel == null && isBuickE5Receiver()
+                ) {
+                    virtualMfiAckNotified = true
+                    log("IAPLINK T44: Buick Wi-Fi virtual MFi 0xAA05 ACK=$ack confirmed; requesting controlled RFCOMM handover")
+                    onVirtualIapAuthenticated?.invoke()
                 }
             }
             engine.onLinkAckDiagnostic = { detail ->
@@ -1410,8 +1440,11 @@ class AirPlayClient(
                 }
 
                 ids.MFI_RESPONSE -> {
-                    sendCsmLocked(ids.MFI_AUTHENTICATION_SUCCEEDED)
-                    log("IAPLINK T43: virtual MFi response received; 0xAA05 sent (receipt is NOT signature verification)")
+                    if (!virtualMfiAckNotified && virtualMfiSequence == null) {
+                        awaitingVirtualMfiFrame = true
+                        sendCsmLocked(ids.MFI_AUTHENTICATION_SUCCEEDED)
+                        log("IAPLINK T43: virtual MFi response received; 0xAA05 sent (receipt is NOT signature verification)")
+                    }
                 }
             }
         }
