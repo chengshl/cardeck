@@ -285,18 +285,35 @@ class Iap2BluetoothClient(
                 // （HFP/A2DP 在线）时，车机不开放无线 CarPlay 的 iAP2 服务窗口——
                 // 表现为每 3s 连接失败。iAP2 是独立的 SDP 直连服务，与这些配置文件
                 // 无关，断开后不影响 CarPlay 本身（声音走 WiFi 的 AirPlay）。
-                run {
-                    val dropped = BtProfiles.disconnect(context, device)
-                    if (dropped.isNotEmpty()) {
-                        val now = android.os.SystemClock.uptimeMillis()
-                        if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
-                            lastProfileLogAt = now
-                            val left = BtProfiles.stillConnected(context, device.address)
-                            log(
-                                "BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString("/")}）——已断开" +
-                                    if (left.isEmpty()) "" else "（仍有 ${left.joinToString("/")} 在线）",
-                            )
-                            log("BT-C: 车机在「蓝牙已连接」状态下不接受 CarPlay——保持仅配对")
+                if (knownBuick) {
+                    // T22 B233-only A/B experiment:
+                    // keep HFP/A2DP/LE_AUDIO unchanged and observe whether the
+                    // previously unacknowledged 0x4300 (seq110) gets a peer ACK.
+                    // Audi MIB3 may REQUIRE the legacy disconnect path, so
+                    // retain the original branch for every non-B233 receiver.
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
+                        lastProfileLogAt = now
+                        val active = BtProfiles.connectedNames(context, device.address)
+                        log(
+                            "BT-C T22: B233 实验：保留 HFP/A2DP/LE 连接，不主动断开；" +
+                                "当前配置文件=${if (active.isEmpty()) "无" else active.joinToString("/")}",
+                        )
+                    }
+                } else {
+                    run {
+                        val dropped = BtProfiles.disconnect(context, device)
+                        if (dropped.isNotEmpty()) {
+                            val now = android.os.SystemClock.uptimeMillis()
+                            if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
+                                lastProfileLogAt = now
+                                val left = BtProfiles.stillConnected(context, device.address)
+                                log(
+                                    "BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString("/")}）——已断开" +
+                                        if (left.isEmpty()) "" else "（仍有 ${left.joinToString("/")} 在线）",
+                                )
+                                log("BT-C: 车机在「蓝牙已连接」状态下不接受 CarPlay——保持仅配对")
+                            }
                         }
                     }
                 }
