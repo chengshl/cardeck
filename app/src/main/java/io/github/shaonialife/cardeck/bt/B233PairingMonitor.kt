@@ -21,7 +21,13 @@ import androidx.core.content.ContextCompat
  */
 internal object B233PairingMonitor {
     private val gate = B233PairingGate()
+    private val knownAddresses = java.util.Collections.synchronizedSet(HashSet<String>())
     private var registered = false
+
+    /** Remember verified B233 candidates; Android may not resolve name at SSP time. */
+    fun trackKnownReceiver(address: String) {
+        knownAddresses.add(address.uppercase(java.util.Locale.ROOT))
+    }
 
     @Synchronized
     fun start(context: Context, log: (String) -> Unit) {
@@ -45,7 +51,16 @@ internal object B233PairingMonitor {
                 val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
                     ?: return
                 val name = runCatching { device.name }.getOrNull()
-                if (!BuickB233Route.isKnownReceiver(name)) return
+                val address = runCatching { device.address }.getOrNull()
+                val selected = TargetDevicePrefs.get(ctx)
+                val bySelectedAddress = selected != null &&
+                    BuickB233Route.isKnownReceiver(selected.name) &&
+                    TargetDevicePrefs.matches(selected, address)
+                val byKnownAddress = address != null &&
+                    knownAddresses.contains(address.uppercase(java.util.Locale.ROOT))
+                if (!BuickB233Route.isKnownReceiver(name) &&
+                    !bySelectedAddress && !byKnownAddress
+                ) return
                 when (intent.action) {
                     BluetoothDevice.ACTION_PAIRING_REQUEST -> {
                         gate.onPairingRequest(SystemClock.elapsedRealtime())
