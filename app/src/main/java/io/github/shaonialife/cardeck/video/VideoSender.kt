@@ -95,15 +95,22 @@ class VideoSender(
         val existing = socket
         if (existing != null && !existing.isClosed) return true
         return try {
+            var scopedToVehicleWifi = false
             val client =
                 vehicleNetwork?.let { network ->
                     runCatching { network.socketFactory.createSocket() }
-                        .onFailure { log("VIDEO T24: WiFi socket 创建失败，退回默认路由 - ${it.message}") }
+                        .onSuccess { scopedToVehicleWifi = true }
+                        .onFailure { log("VIDEO T25: WiFi socket 绑定失败，退回系统默认路由 - ${it.message}") }
                         .getOrNull()
                 } ?: Socket()
             client.connect(InetSocketAddress(host, dataPort), 5_000)
             if (vehicleNetwork != null) {
-                log("VIDEO T24: 车机数据 TCP 指定 WiFi Network=$vehicleNetwork")
+                log(
+                    if (scopedToVehicleWifi)
+                        "VIDEO T25: 车机数据 TCP 已实际绑定 WiFi Network=$vehicleNetwork"
+                    else
+                        "VIDEO T25: 车机数据 TCP 走默认路由，未绑定车机 WiFi（VPN 切换仍可能断流）"
+                )
             }
             client.tcpNoDelay = true
             socket = client
