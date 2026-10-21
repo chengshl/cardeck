@@ -50,6 +50,8 @@ class VideoSender(
      * RECORD 后 10.2s 整轮被 reset，视频/feedback/事件通道全都健康）。
      */
     private val keepAliveWithStats: Boolean = false,
+    /** T24: explicit vehicle WiFi route for B233 video across VPN toggles. */
+    private val vehicleNetwork: android.net.Network? = null,
 ) {
     private val width: Int = (width / 2) * 2
     private val height: Int = (height / 2) * 2
@@ -93,8 +95,16 @@ class VideoSender(
         val existing = socket
         if (existing != null && !existing.isClosed) return true
         return try {
-            val client = Socket()
+            val client =
+                vehicleNetwork?.let { network ->
+                    runCatching { network.socketFactory.createSocket() }
+                        .onFailure { log("VIDEO T24: WiFi socket 创建失败，退回默认路由 - ${it.message}") }
+                        .getOrNull()
+                } ?: Socket()
             client.connect(InetSocketAddress(host, dataPort), 5_000)
+            if (vehicleNetwork != null) {
+                log("VIDEO T24: 车机数据 TCP 指定 WiFi Network=$vehicleNetwork")
+            }
             client.tcpNoDelay = true
             socket = client
             log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
