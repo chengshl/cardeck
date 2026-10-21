@@ -528,17 +528,19 @@ class VirtualIap2Link(
         body: ByteArray = ByteArray(0),
     ) {
         val frame = Iap2Csm.encode(messageId, body)
-        // T11: on B233 the NowPlaying *empty state* reply can be rejected
-        // with no link-layer ACK while the audio stream is being initialized.
-        // The 4s x 5 watchdog killed the entire virtual iAP2 link 20.1s
-        // later (packet 114), followed by VIDEO Broken pipe. Transmit once,
-        // without treating this optional media-metadata response as a fatal
-        // transport requirement. Keep ACK semantics unchanged for all other
-        // CSM and all other receiver models.
+        // T23: 2026-10-21 real B233 audio test: 0x4171 (list update
+        // subscription reply) seq=113 was retried at +4/+8/+12/+16s,
+        // then the sender's LOCAL iAP2 watchdog killed both video and audio
+        // at +20s. A prior B233 trial had the same failure for 0x5001.
+        // Both are optional *state notifications*, not the identity/MFi/
+        // session handshake; emit normally but do not kill CarPlay solely
+        // for a missing link-layer ACK. Strict ACKs remain for all other
+        // messages and for non-B233 receivers.
         val awaitAck = shouldAwaitCsmAck(isBuickB233 && buickArmed, messageId)
         val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L, awaitAck = awaitAck)
         if (!awaitAck) {
-            log("IAPLINK T11: B233 0x5001 NowPlaying best-effort; no fatal retransmit watchdog")
+            log("IAPLINK T23: B233 0x%04x state update best-effort; no fatal retransmit watchdog"
+                .format(messageId))
         }
         log(
             "IAPLINK: 隧道 tx 0x${messageId.toString(16)} " +
@@ -947,9 +949,9 @@ class VirtualIap2Link(
     }
 
     companion object {
-        /** Only B233 0x5001 is noncritical; all other handshake/CSM must be ACKed. */
+        /** T23: only B233's optional 0x5001 / 0x4171 notifications are best-effort. */
         internal fun shouldAwaitCsmAck(buickB233: Boolean, messageId: Int): Boolean =
-            !buickB233 || messageId != 0x5001
+            !buickB233 || (messageId != 0x5001 && messageId != 0x4171)
 
         /** 隧道 MFi 冷启动基线（Frida 真机 20B 优先；顺序会被按车机记忆重排）。 */
         val TUNNEL_MFI_BASELINE = listOf(20, 32, 16)
