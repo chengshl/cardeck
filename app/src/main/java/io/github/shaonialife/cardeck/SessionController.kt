@@ -1300,6 +1300,8 @@ object SessionController {
                     codec = profile.codec,
                     streamType = profile.streamType,
                     adtsFrames = tuning.adts,
+                    vehicleNetwork =
+                        if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                     // 同步包目标端口：车机在 SETUP 应答里下发。缺了它就没有 RTP↔NTP 锚点，
                     // 接收端只能「按到达时刻猜」，严格的实现干脆不排播（2026-10-20 实测）。
                     controlPort = audio.controlPort,
@@ -1827,6 +1829,10 @@ object SessionController {
                             effectiveEndpoint,
                             log = { line -> appendLog(line) },
                             context = context.applicationContext,
+                            // T24: B233 AirPlay sockets are scoped to vehicle WiFi.
+                            // process-wide bind may return false under active VPN.
+                            vehicleNetwork =
+                                if (effectiveEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                             endpointRefresher = { current -> enrichEndpointFromBrowser(current, source) },
                             retryTick = { attempt ->
                                 // 配对重试期间车机仍可能没探测到 ctrl（Bonjour 漏掉首次公告）：
@@ -2224,6 +2230,8 @@ object SessionController {
                                             height = streamH,
                                             targetFps = fps,
                                             log = { line -> appendLog(line) },
+                                            vehicleNetwork =
+                                                if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                                             keepAliveWithStats = setup.keepAliveSendStatsAsBody,
                                             onEnded = {
                                                 // A deliberately retired or superseded stream cannot
