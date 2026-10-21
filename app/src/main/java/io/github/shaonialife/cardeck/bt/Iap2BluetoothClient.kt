@@ -263,6 +263,22 @@ class Iap2BluetoothClient(
                     }
                     continue
                 }
+                // T19: Android owns the SSP confirmation. A reconnect that
+                // disconnects the ACL link while the system prompt is visible
+                // can invalidate the pending user choice. This is B233-only
+                // and never calls setPairingConfirmation/creates a bond.
+                if (knownBuick &&
+                    B233PairingMonitor.isWaitingForConfirmation(
+                        android.os.SystemClock.elapsedRealtime(),
+                    )
+                ) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
+                        lastProfileLogAt = now
+                        log("BT-C T19: 检测到 B233 蓝牙系统确认待处理；暂停主动连接和 HFP/A2DP 断开，等待用户确认")
+                    }
+                    continue
+                }
                 // 「只配对、不连接」：奥迪 MIB3 实测手机与车机处于蓝牙已连接状态
                 // （HFP/A2DP 在线）时，车机不开放无线 CarPlay 的 iAP2 服务窗口——
                 // 表现为每 3s 连接失败。iAP2 是独立的 SDP 直连服务，与这些配置文件
