@@ -248,6 +248,7 @@ class Iap2BluetoothClient(
                 // in its SDP cache. Bypass only this known receiver, never all
                 // paired devices (headphones/watch still require SDP).
                 val knownBuick = BuickB233Route.isKnownReceiver(name)
+                if (knownBuick) B233PairingMonitor.trackKnownReceiver(device.address)
                 if (targetProvider() == null && knownBuick &&
                     skippedNoService.add("B233:" + device.address)
                 ) {
