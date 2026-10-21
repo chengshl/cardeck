@@ -69,6 +69,15 @@ CarDeck 2026-10-20 22:29:44 曾成功收到 0x4301；2026-10-21 T18 多次在 0x
 - **T25 扩展**：除了蓝牙适配器只读监测，还为 B233 监听 `BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED` 和 `BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED`，记录 `BT-AUDIO T25: A2DP/HFP CONNECTED/DISCONNECTED`；不自动重连或切换蓝牙音源。
 - 测试目的：在 VPN 切换前后，看 `BT-AUDIO` 是否独立恢复到 A2DP CONNECTED；即使 RFCOMM/CarPlay 成功，A2DP 仍断开则需专项研究恢复机制，而非重建 CarPlay 配对。
 
+## 2026-10-21 13:26 实车 A/B：VPN 不直接导致蓝牙音乐断线 / T26 资源所有权实验
+
+- 用户确认：**不运行 CarDeck、仅普通蓝牙 A2DP 音乐**时切换 VPN，音乐完全不受影响。故不应将普通蓝牙断线归因于 VPN 开关本身。
+- T25 实车日志：B233 在 13:21:31 建 A2DP、13:21:48 CarDeck 手动断开后 13:21:49 ACL/A2DP/HFP 一起断开；13:22:24 A2DP 恢复。13:23:06 VPN OFF 时 CarPlay EVENT/VIDEO socket abort，13:23:08 ACL/A2DP/HFP 断开，13:23:41 A2DP 恢复。表明问题与 CarPlay/iAP2 会话终止过程相关；具体由车机还是 Android 发起 ACL 断开仍待蓝牙 HCI 确认。
+- 另发现 CarDeck `AirPlayClient.assertModes()` 一直声明主屏资源 `resourceID=1` 和主音频资源 `resourceID=2` 都归手机 CarPlay（`entity=permanentEntity=1`），**包括用户已经选“仅视频”、让普通蓝牙 A2DP 播放音乐时**。是否因此导致 B233 对普通蓝牙的异常资源仲裁尚未证实。
+- **T26 受控单变量试验**：仅当 B233 且本次`audioEnabledForSession=false`时，`modesChanged` 只声明主屏 `resourceID=1`，不声明 `resourceID=2`；车机 `changeModes` 再次要求资源时亦按相同规则。B233 推送 CarPlay 音频模式、其他车型原双资源不变。
+- **失败边界**：有些车机要求屏幕 SETUP 必须同时声明音频资源，本版可能出现屏幕拒绝 SETUP / 视频无法启动；如复现，应立刻回退 T25，不可将 T26 当成已证实修复。即使视频能启动，仍需以 A2DP/ACL 事件和 VPN 开/关后的音乐是否中断判断效果。
+- 首次验收应看日志 `AIRPLAY T26: resource experiment B233=true sessionAudio=false claimCarPlayAudio=false`，`modesChanged` 状态 200，随后 `VIDEO` 成功；再分别测视频内切 VPN 和手动断开 CarDeck，观察 A2DP 连接是否保持。此实验不改 HFP/A2DP 操作、BT RFCOMM 关闭、音视频 RTP、VPN 路由。
+
 ## 真车验证（仅停车状态）
 
 - **A：首次连接**：手机已配对 E5、已连热点，启动 CarDeck，检查 `0x4300` 是否获得链路 ACK、是否出现 `0x4301`。
