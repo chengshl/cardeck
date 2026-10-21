@@ -61,6 +61,14 @@ CarDeck 2026-10-20 22:29:44 曾成功收到 0x4301；2026-10-21 T18 多次在 0x
 - **T25 仅诊断**：原有 `B233PairingMonitor` 只记录配对/ACL，未订阅 `BluetoothAdapter.ACTION_STATE_CHANGED`。现加入只读 `BT-ADAPTER T25: ON/TURNING_OFF/OFF/TURNING_ON` 初始状态和状态变化日志。不关闭/开启蓝牙，不改 HFP/A2DP/配对/重试行为。修复 VideoSender 在 socketFactory `EPERM` 退回默认路由时仍打印“指定 WiFi”的错误文案。
 - 待验证：若出现用户所见的“蓝牙自己关掉”，检查当时日志是否有明确 `BT-ADAPTER T25: ON -> TURNING_OFF -> OFF`。如仅 `BT-PAIR T19: ACL ... 断开` 而始终无适配器 OFF，说明只观察到车机链路断开，并非手机蓝牙开关真正关闭。若确有 OFF，需 Android 系统事件日志确认触发者，不能直接归因 CarDeck。
 
+## 2026-10-21 13:04 用户纠正：蓝牙音频连接掉线，而非手机蓝牙总开关
+
+- 用户确认：目前 CarDeck 仅视频模式，车机切到蓝牙音源即可播放手机普通 A2DP 音乐；VPN 切换时除了 CarPlay 重连，**普通蓝牙音乐也会断音**，并非 Android 的 BluetoothAdapter 开关 OFF。
+- 实测对比：12:55:26 `BT-C T22` 观察到 B233 `通话(HFP)/音频(A2DP)` 同时在线，12:59:47 VPN 切换造成 EVENT/VIDEO socket abort，12:59:48 ACL 断开，12:59:50 RFCOMM 重连时只显示 `通话(HFP)`。**CarPlay 的 `0x4301` 成功不等于 A2DP 已恢复**。
+- 已检查源码：B233 T22 主动连接循环不调用 `BtProfiles.disconnect`；`retireSession()` 也不主动拆 HFP/A2DP。不能把这个 A2DP 断开断言为 App 主动执行；可能由车机/Android 在旧 CarPlay 会话结束时释放普通音乐配置文件。
+- **T25 扩展**：除了蓝牙适配器只读监测，还为 B233 监听 `BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED` 和 `BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED`，记录 `BT-AUDIO T25: A2DP/HFP CONNECTED/DISCONNECTED`；不自动重连或切换蓝牙音源。
+- 测试目的：在 VPN 切换前后，看 `BT-AUDIO` 是否独立恢复到 A2DP CONNECTED；即使 RFCOMM/CarPlay 成功，A2DP 仍断开则需专项研究恢复机制，而非重建 CarPlay 配对。
+
 ## 真车验证（仅停车状态）
 
 - **A：首次连接**：手机已配对 E5、已连热点，启动 CarDeck，检查 `0x4300` 是否获得链路 ACK、是否出现 `0x4301`。
