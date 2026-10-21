@@ -439,8 +439,16 @@ class Iap2SenderSession(
                     Iap2Csm.u8(0, 1),
                     Iap2Csm.string(1, mac),
                 )
+        val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, body)
+        // Only the first 8 SHA-256 bytes: reproducible without exposing the
+        // device identifier/Bluetooth MAC in raw diagnostics.
+        val availabilityDigest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(availabilityFrame).take(8).joinToString("") { "%02x".format(it) }
         log("iap2 Buick B233: sending 0x4300 two-group availability; frameBytes=" +
-            Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, body).size)
+            availabilityFrame.size)
+        log("iap2 B233 T21: 0x4300 frameSHA256prefix=$availabilityDigest " +
+            "preSend=${channel.controlAckSnapshot()} (脱敏校验指纹，便于成功/失败轮次比对)")
+        val availabilityStartedAt = System.nanoTime()
         send(Iap2MessageIds.CARPLAY_AVAILABILITY, body)
 
         // Never synthesize Wi-Fi credentials when B233 is silent. A missing 0x4301
@@ -460,7 +468,26 @@ class Iap2SenderSession(
                 }
                 true
             }
-        } ?: throw IOException("Buick B233: 0x4301 not received within 30s after 0x4300")
+        }
+        if (start == null) {
+            val elapsedMillis = (System.nanoTime() - availabilityStartedAt) / 1_000_000L
+            val ackSnapshot = channel.controlAckSnapshot()
+            log("iap2 B233 T21: 0x4301 未到，elapsedMs=$elapsedMillis " +
+                "frameSHA256prefix=$availabilityDigest $ackSnapshot")
+            // The link engine typically closes an unacknowledged 0x4300 after
+            // ~20 seconds: it is not truthful to report that as a 30s 0x4301
+            // application-layer timeout.
+            throw IOException(
+                if (!channel.isAlive) {
+                    "Buick B233: iAP2 link closed while waiting 0x4301 after ${elapsedMillis}ms ($ackSnapshot)"
+                } else {
+                    "Buick B233: 0x4301 wait expired after ${elapsedMillis}ms ($ackSnapshot)"
+                },
+            )
+        }
+        log("iap2 B233 T21: 0x4301 arrived after " +
+            "${(System.nanoTime() - availabilityStartedAt) / 1_000_000L}ms; " +
+            "frameSHA256prefix=$availabilityDigest ${channel.controlAckSnapshot()}")
         // Do not dump the raw body: wireless group contains the hotspot password.
         for (param in Iap2Csm.parseParams(start.body)) {
             log("iap2 Buick B233: rx 0x4301 param=0x" +
