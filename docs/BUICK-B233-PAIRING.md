@@ -42,6 +42,16 @@ CarDeck 2026-10-20 22:29:44 曾成功收到 0x4301；2026-10-21 T18 多次在 0x
 - 如 T23 仍断开，先记录新的第一条失败事件、是否仍有 `packet ... not acknowledged`，以及 B233 是否主动 RESET；不能将音频 UDP refused 自动归因于 AAC 编码。
 - 断连后自动重试仍会遇到 `0x4300 ACK=109`，应在虚拟链路稳定后再独立做“旧会话清理 / 车机重连节流”专项。
 
+## 2026-10-21 12:30:26 T22 VPN 切换故障 / T24 网络路由专项
+
+- 上传日志应用版本 `20261021115535`（**T22，不是 T23**），仅视频模式。12:23:46 B233 `0x4300 ACK=110`、`0x4301` 在 150ms 返回；AirPlay /pair-verify/SETUP/RECORD 成功，画面和事件通道持续到 12:27:08。
+- 用户反映**关闭 VPN 时画面断开**；日志 12:27:08 首个断链信号为 `EVENT: 读取结束 - Software caused connection abort`，随后 VIDEO socket abort、iAP2 RFCOMM/ACL 断开。日志旧版**没有 VPN 状态广播/默认网络切换事件**，所以只能认定时间相关，尚不能认定由 VPN 直接杀掉 socket。
+- 后续重连进入 RFCOMM、`0x1d01`、MFi、`0x4e0c ACK=109`，但 `0x4300 seq110` 反复不获 ACK，约 20s 后本地看门狗关闭。更早 12:21～12:23 已出现相同故障，因此 VPN 并非其必要条件。
+- **已确认代码缺陷**：`WifiCarPlayConnector.bindCurrentWifi()` 即使 `connectivityManager.bindProcessToNetwork(network)` 返回 `false`，仍通过 `onResult(true)` 报告“绑定成功”。日志确实显示 `WiFi network 120 bindProcessToNetwork=false`。无法据此断言路由已经被系统正确绑定。
+- **T24 试验**：B233 专属：显式将 AirPlay RTSP/事件/iAP 隧道/视频 TCP socket 通过车机 `Network.socketFactory` 创建；Timing UDP、音频 RTP/RTCP 使用 `Network.bindSocket`，尽量在 VPN 默认路由切换时保持原 WiFi 通道。其他车型网络行为不变，创建绑定失败提供带警告的默认路由回退。
+- **T24 诊断**：增加进程绑定是否成功、车机 WiFi 网络句柄、系统默认网络是否 VPN，以及 VPN 开关过程系统默认网络回调；同时保留车机 WiFi 丢失独立诊断。不能保证 Android VPN lockdown/系统主动杀 socket 场景自动恢复。
+- 当前无法修复证据不足的 B233 旧会话拒绝 `0x4300`，**不通过删除配对或无限重试掩盖故障**。T24 首先验证在已成功推视频时开/关 VPN，确认视频是否继续、下一条断线原因。纯视频+蓝牙 A2DP 为目前车内稳定路线。
+
 ## 真车验证（仅停车状态）
 
 - **A：首次连接**：手机已配对 E5、已连热点，启动 CarDeck，检查 `0x4300` 是否获得链路 ACK、是否出现 `0x4301`。
