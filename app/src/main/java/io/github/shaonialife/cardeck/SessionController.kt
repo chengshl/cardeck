@@ -2073,9 +2073,17 @@ object SessionController {
 
                                     "changeModes" -> {
                                         // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
-                                        // 回 modesChanged 声明手机持有主屏/主音频
-                                        appendLog("EVENT: 车机请求 changeModes → 回 modesChanged 接管资源")
-                                        client.assertModes()
+                                        // T26: B233 video-only/A2DP should not take
+                                        // ownership of CarPlay main audio on reassert.
+                                        val claimAudio = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
+                                            client.currentEndpoint.isBuickB233,
+                                            audioEnabledForSession,
+                                        )
+                                        appendLog(
+                                            "EVENT T26: 车机请求 changeModes → 回 modesChanged；" +
+                                                if (claimAudio) "主屏+CarPlay音频" else "仅主屏，保留蓝牙A2DP"
+                                        )
+                                        client.assertModes(claimAudioResource = claimAudio)
                                     }
 
                                     else ->
@@ -2095,8 +2103,20 @@ object SessionController {
                                         )
                                 }
                             }
-                            // 资源声明（must）：真车对未声明资源的屏幕流 SETUP 直接 400
-                            client.assertModes()
+                            // T26: Always claim main screen; for B233 video-only
+                            // avoid claiming main audio while music runs via A2DP.
+                            // Audi/non-B233 and CarPlay-audio mode remain unchanged.
+                            val claimAudioForCarPlay = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
+                                client.currentEndpoint.isBuickB233,
+                                audioEnabledForSession,
+                            )
+                            appendLog(
+                                "AIRPLAY T26: resource experiment B233=" +
+                                    client.currentEndpoint.isBuickB233 +
+                                    " sessionAudio=$audioEnabledForSession " +
+                                    "claimCarPlayAudio=$claimAudioForCarPlay"
+                            )
+                            client.assertModes(claimAudioResource = claimAudioForCarPlay)
                             // HID 输入模式武装：/info hidDevices（奥迪字符串 "0"/"1"，触摸="1"）。
                             // display features=0x08（高保真触摸）已声明，缺这步车机不发 hidSendReport。
                             setup.hidDeviceUuids.forEach { uuid ->
