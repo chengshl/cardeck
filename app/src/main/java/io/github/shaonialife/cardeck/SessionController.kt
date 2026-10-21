@@ -9,6 +9,7 @@ import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
 import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.bt.BtProfiles
+import io.github.shaonialife.cardeck.bt.B233PairingMonitor
 import io.github.shaonialife.cardeck.bt.BtSessionGate
 import io.github.shaonialife.cardeck.bt.Iap2BluetoothClient
 import io.github.shaonialife.cardeck.bt.Iap2BluetoothServer
@@ -122,6 +123,7 @@ object SessionController {
     /** Activity onCreate 时调用：登记 applicationContext 并创建会话对象（幂等）。 */
     fun ensure(context: Context) {
         appContext = context.applicationContext
+        B233PairingMonitor.start(context.applicationContext, ::appendLog)
         ensureSessionObjects(context.applicationContext)
         // 横屏兼容写入失败的原因（user build 限制 / Shizuku 故障）只有这里能落盘：
         // 车机侧设置面板的 toast 只给用户看，排查需要日志。
@@ -416,6 +418,7 @@ object SessionController {
      * 幂等：已有会话时 BT 组件的 start() 自行短路，不会双开。
      */
     fun startConnection(context: Context) {
+        B233PairingMonitor.start(context.applicationContext, ::appendLog)
         connectCancelled = false
         phaseHint = "蓝牙就绪，等待车机回连…"
         when (
