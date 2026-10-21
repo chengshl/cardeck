@@ -132,6 +132,15 @@ class Iap2LinkChannel(
         return false
     }
 
+    /**
+     * T21 read-only B233 diagnostic. Snapshot is taken under the same lock
+     * as onFrameReceived/onFrameSent; it never dumps identifiers or credentials.
+     */
+    fun controlAckSnapshot(): String = synchronized(lock) {
+        "sentSeq=${lastOutboundControlSeq ?: "none"} " +
+            "peerAck=${lastPeerAck ?: "none"} alive=${!terminated}"
+    }
+
     /** 取下一个控制载荷；超时或链路结束返回 null。 */
     fun recvControl(timeoutMillis: Long): ByteArray? {
         if (timeoutMillis == 0L && terminated && controls.isEmpty()) return null
