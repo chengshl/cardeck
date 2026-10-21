@@ -4,6 +4,29 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class B233ReconnectPolicyTest {
+    @Test fun t27ClassifiesT21Unacknowledged4300AndLegacyTimeout() {
+        val oldMessage = "Buick B233: 0x4301 not received within 30s after 0x4300"
+        val t21Message =
+            "Buick B233: iAP2 link closed while waiting 0x4301 after 20001ms " +
+                "(sentSeq=110 peerAck=109 alive=false)"
+        assertEquals(true, B233ReconnectPolicy.isUnansweredStartSession(oldMessage))
+        assertEquals(true, B233ReconnectPolicy.isUnansweredStartSession(t21Message))
+        assertEquals(
+            true,
+            B233ReconnectPolicy.isUnansweredStartSession(
+                "Buick B233: 0x4301 not received after 30001ms",
+            ),
+        )
+    }
+
+    @Test fun t27DoesNotBackOffOnManualCancelOrOtherLinkFailures() {
+        assertEquals(false, B233ReconnectPolicy.isUnansweredStartSession(null))
+        assertEquals(false, B233ReconnectPolicy.isUnansweredStartSession(""))
+        assertEquals(false, B233ReconnectPolicy.isUnansweredStartSession("interrupted before 0x4300"))
+        assertEquals(false, B233ReconnectPolicy.isUnansweredStartSession("iAP2 link closed before 0x4300"))
+        assertEquals(false, B233ReconnectPolicy.isUnansweredStartSession("socket is closed"))
+        assertEquals(false, B233ReconnectPolicy.isUnansweredStartSession("0x4300 ACK received and video ended"))
+    }
     @Test fun audioTeardownDelaysOnlyAutomaticRetry() {
         val p = B233ReconnectPolicy()
         assertEquals(0L, p.remainingMs(1_000L))
