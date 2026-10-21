@@ -52,6 +52,38 @@ class WifiCarPlayConnector(
 
     private val callback = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
 
+    /** T24: passive VPN/default-route observations, no routing changes. */
+    private val routeMonitor = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
+    private val lastDefaultRoute = AtomicReference<String?>(null)
+
+    private fun monitorDefaultRoute() {
+        val observer = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                log("WiFi T24: Android 默认网络切换 → $network（正在获取 capabilities）")
+            }
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val state =
+                    "network=$network vpn=${capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)} " +
+                        "wifi=${capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)} " +
+                        "cellular=${capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)}"
+                if (lastDefaultRoute.getAndSet(state) != state) {
+                    log("WiFi T24: Android 默认网络状态 → $state")
+                }
+            }
+
+            override fun onLost(network: Network) {
+                log("WiFi T24: Android 默认网络失效 → $network（不等于车机热点失效）")
+            }
+        }
+        if (!routeMonitor.compareAndSet(null, observer)) return
+        runCatching { connectivityManager.registerDefaultNetworkCallback(observer) }
+            .onFailure {
+                routeMonitor.compareAndSet(observer, null)
+                log("WiFi T24: 默认网络监听不可用 - ${it.message}")
+            }
+    }
+
     val currentNetwork: Network? get() = boundNetwork.get()
     private val boundNetwork = AtomicReference<Network?>(null)
 
@@ -159,6 +191,7 @@ class WifiCarPlayConnector(
             buildSpecifier(ssid, passphrase, securityType)
                 ?: return JoinResult.Unsupported
         release()
+        monitorDefaultRoute()
         val request =
             NetworkRequest
                 .Builder()
@@ -275,6 +308,7 @@ class WifiCarPlayConnector(
      */
     fun bindCurrentWifi(onResult: (Boolean) -> Unit = {}) {
         release()
+        monitorDefaultRoute()
         val request =
             NetworkRequest
                 .Builder()
@@ -340,6 +374,10 @@ class WifiCarPlayConnector(
     }
 
     fun release() {
+        routeMonitor.getAndSet(null)?.let {
+            runCatching { connectivityManager.unregisterNetworkCallback(it) }
+        }
+        lastDefaultRoute.set(null)
         callback.getAndSet(null)?.let {
             runCatching { connectivityManager.unregisterNetworkCallback(it) }
         }
