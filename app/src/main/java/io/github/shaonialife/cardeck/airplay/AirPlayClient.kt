@@ -105,7 +105,7 @@ class AirPlayClient(
      * 计时服务（初始 SETUP 通告端口；车机 NTP ping 它同步媒体时钟）。
      * 懒启动、跨重试常驻（close() 不停它——UDP socket 无会话状态）。
      */
-    private val timingServer = TimingServer(log)
+    private val timingServer = TimingServer(log, vehicleNetwork)
 
     /** pair-verify 之后启用：所有后续 RTSP 报文整体加密封装。 */
     private var cipher: ControlCipher? = null
