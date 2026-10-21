@@ -87,6 +87,15 @@ CarDeck 2026-10-20 22:29:44 曾成功收到 0x4301；2026-10-21 T18 多次在 0x
 - **T27 修复**：提取 `B233ReconnectPolicy.isUnansweredStartSession` 同时接受旧/新两种“已发送 0x4300 等 0x4301”错误；仍排除 `interrupted before 0x4300`、`iAP2 link closed before 0x4300`、用户取消和其他网络错误。B233 连续无 ACK 时应用退避 15、30、60s，进而恢复 T18 的一次性车机主动入站通路，减少车机和 A2DP 链路被过密尝试搅动；正常第一次成功连接时没有额外延迟。
 - **边界**：T27 不是 VPN 不断流或普通蓝牙不会掉线的证明。T26 资源声明保留作为可观测实验；后续可在独立版本撤回，以便不混淆其他变量。下一份日志需检查 `BT-C T17: B233 0x4300 无回应，下一轮等待 15s/30s/60s` 是否生效、A2DP 实际掉线次数是否减少，以及可恢复的 ACK=110/0x4301 是否仍出现。
 
+## 2026-10-21 T28：Sony Xperia 1 V / Android 15 RescueParty 显示器崩溃隔离诊断
+
+- **系统级证据**：XQ-DQ72 `67.2.A.3.178` 经 Termux 本机无线 ADB 获取 `reboot,rescueparty`；17:24:30/17:25:07/17:26:52/17:31:39 四次 `system_server android.ui` `WindowContextListenerController.WindowContextListenerImpl` NPE，调用链 `RootWindowContainer.onDisplayAdded()` → `DisplayContent.onParentChanged()` → `registerWindowContainerListener()`。另有 17:22 左右系统服务/RescueParty 问题；不能在没有完整时序证明前声称全部由 CarDeck 引起。
+- T27 的 B233/音频退避不触发此系统 NPE；连接 `RECORD` 后旧版 `HiddenDisplaySource.attach()`→`VirtualLauncher.attach()`会用 Shizuku `DisplayManager.createVirtualDisplay` 依次生成 CarPlayDock、CarPlayApp、CarPlayAppHi、CarPlayMap，正好击中 `onDisplayAdded` 路径。
+- **T28 默认安全门槛**：仅 **Sony/XQ-DQ72，SDK>=35，车机 Endpoint=B233**，启用 `SonyB233CrashGuard.useDisplaylessDiagnostic`。保留蓝牙 iAP2、WiFi、MFi、AirPlay SETUP/RECORD、编码器与视频 TCP，但**不调用 HiddenDisplaySource/VirtualLauncher、不建任何 DisplayManager/受信或非受信虚拟屏**。直接用 `SafeDiagnosticFrameSource` (recordable EGL + GLES20)，对 MediaCodec 的输入 Surface 发送深色背景+移动蓝绿色条纹，约 5fps；禁用触摸注入，不展示 CarDeck 桌面和导航地图，普通 A2DP 未修改。
+- **安全边界**：这是无桌面功能的诊断包，不是完整的 CarDeck 修复。即使不创建虚拟屏，Sony 固件可能还有自己的系统组件异常；首先保存 Bugreport、不要反复故意触发重启。首次停车测试只尝试 **一次连接**，确认 `SAFETY T28`、`VIDEO: 帧`、`AIRPLAY: ✓ RECORD`；如再次整机重启，立即停止测试，提取新 Bugreport，不能再次连续重试。
+- 非 B233、其他 Sony 型号、Android<=14、其他品牌手机保留此前虚拟桌面行为。T28 没有改 T26 主屏/音频资源策略，也没改 T27 退避和 A2DP/HFP 管理。
+- 如果诊断画面能长时间运行而不触发 NPE：可证实关闭虚拟显示器路径后系统至少在该次测试中稳定，但还不能证明是哪一块虚拟屏或哪个 flag。下一步逐项恢复单屏/受信标志，**必须先要求用户同意风险**；若测试画面也导致 NPE，应查 Sony 系统 / ROM / Shizuku 服务版本差异，避免继续迭代虚拟屏。
+
 ## 真车验证（仅停车状态）
 
 - **A：首次连接**：手机已配对 E5、已连热点，启动 CarDeck，检查 `0x4300` 是否获得链路 ACK、是否出现 `0x4301`。
