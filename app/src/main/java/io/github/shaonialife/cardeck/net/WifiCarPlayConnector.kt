@@ -290,7 +290,23 @@ class WifiCarPlayConnector(
                 override fun onAvailable(network: Network) {
                     boundNetwork.set(network)
                     val bound = connectivityManager.bindProcessToNetwork(network)
-                    log("WiFi: 已绑定当前WiFi网络 $network bindProcessToNetwork=$bound")
+                    // T24: previously reported "WiFi bound" even when the OS
+                    // declined process binding (Android 15 / VPN path).  Keep
+                    // the usable Network handle for explicit WiFi-scoped
+                    // sockets; do NOT mark the process route as successful.
+                    val active = connectivityManager.activeNetwork
+                    val activeCaps = active?.let { connectivityManager.getNetworkCapabilities(it) }
+                    val vpnDefault = activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                    log(
+                        "WiFi T24: vehicleNetwork=$network processBound=$bound " +
+                            "defaultNetwork=$active defaultIsVpn=$vpnDefault " +
+                            "transportWifi=" +
+                            (connectivityManager.getNetworkCapabilities(network)
+                                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true),
+                    )
+                    if (!bound) {
+                        log("WiFi T24: 进程绑定被 Android 拒绝；B233 AirPlay 改走车机 WiFi 专属 socket，不能依赖默认网络")
+                    }
                     if (reported.compareAndSet(false, true)) onResult(true)
                 }
 
