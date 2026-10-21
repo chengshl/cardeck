@@ -277,7 +277,8 @@ class Iap2BluetoothClient(
                         lastProfileLogAt = now
                         log("BT-C T19: 检测到 B233 蓝牙系统确认待处理；暂停主动连接和 HFP/A2DP 断开，等待用户确认")
                     }
-                    continue
+                    // Do not fall through to a different paired receiver.
+                    break
                 }
                 // 「只配对、不连接」：奥迪 MIB3 实测手机与车机处于蓝牙已连接状态
                 // （HFP/A2DP 在线）时，车机不开放无线 CarPlay 的 iAP2 服务窗口——
