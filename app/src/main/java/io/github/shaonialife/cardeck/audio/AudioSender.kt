@@ -69,6 +69,8 @@ class AudioSender(
     private val mutePhoneOutput: Boolean = true,
     /** T13 B233: 1 Hz RTP/capture diagnostics for first 45s; other cars unchanged. */
     private val verboseStartupDiagnostics: Boolean = false,
+    /** T24: B233 audio RTP and RTCP must not depend on VPN/default routes. */
+    private val vehicleNetwork: android.net.Network? = null,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -280,6 +282,11 @@ class AudioSender(
         stopped.set(false)
         return try {
             val client = DatagramSocket()
+            vehicleNetwork?.let { network ->
+                runCatching { network.bindSocket(client) }
+                    .onSuccess { log("AUDIO T24: RTP UDP 指定车机 WiFi Network=$network") }
+                    .onFailure { log("AUDIO T24: RTP WiFi 路由绑定失败 - ${it.message}") }
+            }
             client.connect(InetAddress.getByName(host), dataPort)
             socket = client
 
@@ -424,7 +431,14 @@ class AudioSender(
         }
         val client =
             try {
-                DatagramSocket().apply { connect(InetAddress.getByName(host), controlPort) }
+                DatagramSocket().apply {
+                    vehicleNetwork?.let { network ->
+                        runCatching { network.bindSocket(this) }
+                            .onSuccess { log("AUDIO T24: RTCP UDP 指定车机 WiFi Network=$network") }
+                            .onFailure { log("AUDIO T24: RTCP WiFi 路由绑定失败 - ${it.message}") }
+                    }
+                    connect(InetAddress.getByName(host), controlPort)
+                }
             } catch (error: Exception) {
                 log("AUDIO: 同步包套接字创建失败 - ${error.message}")
                 return
