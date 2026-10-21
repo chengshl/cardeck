@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   shared-build:
+    if: github.ref == 'refs/heads/Buick-E5'
     permissions:
       contents: write
     uses: chengshl/cardeck/.github/workflows/build-shared-latest.yml@main

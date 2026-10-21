@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="entry_title">入口配置</string>
+    <string name="entry_address_label">服务地址</string>
+    <string name="entry_address_hint">填写完整的 wss:// 服务地址与路径</string>
+    <string name="entry_token_label">入口凭证</string>
+    <string name="entry_token_hint">请输入入口凭证</string>
+    <string name="entry_token_kept">已保存；留空保留原凭证</string>
+    <string name="entry_help">配置保存后可在此修改。服务地址不包含凭证；更换服务地址时需重新填写凭证。</string>
+    <string name="entry_save">保存配置</string>
+    <string name="entry_clear">清空配置</string>
+    <string name="entry_loading">正在读取配置…</string>
+    <string name="entry_unconfigured">尚未配置入口</string>
+    <string name="entry_configured">已保存入口配置</string>
+    <string name="entry_saved">配置已保存</string>
+    <string name="entry_load_failed">配置读取失败，请清空后重新配置。</string>
+    <string name="entry_save_failed">操作失败，原配置未确认变更，请重试。</string>
+    <string name="entry_invalid_address">请输入完整的 wss:// 地址和路径，不含凭证或查询参数。</string>
+    <string name="entry_invalid_token">请输入有效凭证，不包含空格或换行。</string>
+    <string name="entry_changed_address_token">更换服务地址后，请重新填写该入口的凭证。</string>
+</resources>

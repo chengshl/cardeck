@@ -89,6 +89,10 @@
             android:name=".PhoneSettingsActivity"
             android:exported="false" />
         <activity
+            android:name=".EntryConfigActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
             android:name=".SettingsContentActivity"
             android:exported="false" />
 

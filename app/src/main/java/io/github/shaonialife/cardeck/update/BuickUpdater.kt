@@ -21,13 +21,12 @@ import java.net.URL
 import java.security.MessageDigest
 import kotlin.concurrent.thread
 
-/** All CarDeck branches consume the same latest successful signed build. */
+/** 测试更新线独立校验来源，绝不回退到共享更新标签。 */
 object BuickUpdater {
-    private const val RELEASES = "https://api.github.com/repos/chengshl/cardeck/releases/tags/cardeck-latest"
-    private const val PREF = "cardeck_shared_updater"
+    private const val PREF = "buick_test_updater"
     private const val KEY_AUTO = "auto_check"
     private val main = Handler(Looper.getMainLooper())
-    private fun downloadedApk(activity: Activity) = File(activity.cacheDir, "updates/CarDeck-latest.apk")
+    private fun downloadedApk(activity: Activity, channel: UpdateChannel) = File(activity.cacheDir, channel.cachePath)
 
     /**
      * Keep CarPlay process-bound to E5 Wi-Fi; route updater requests independently.
@@ -89,7 +88,7 @@ object BuickUpdater {
             connectTimeout = connectMs
             readTimeout = readMs
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "CarDeck-Shared-Updater")
+            setRequestProperty("User-Agent", "CarDeck-Test-Updater")
         }
     }
 
@@ -116,7 +115,7 @@ object BuickUpdater {
         if (shared.contains(KEY_AUTO)) return shared.getBoolean(KEY_AUTO, true)
         // Keep the user's previous auto-update preference when migrating from
         // either branch-specific updater; don't unexpectedly re-enable it.
-        for (previous in listOf("buick_updater", "buick_main_updater")) {
+        for (previous in listOf("cardeck_shared_updater", "buick_updater")) {
             val legacy = activity.getSharedPreferences(previous, 0)
             if (legacy.contains(KEY_AUTO)) return legacy.getBoolean(KEY_AUTO, true)
         }
@@ -130,8 +129,9 @@ object BuickUpdater {
     fun check(activity: Activity, silent: Boolean = false) {
         thread(name = "buick-update-check") {
             try {
+                val channel = UpdateChannel.load(activity)
                 val release = tryRoutes(activity, "检查 GitHub 更新") { route ->
-                    val conn = openHttp(RELEASES, route, 15_000, 20_000)
+                    val conn = openHttp(channel.releaseUrl, route, 15_000, 20_000)
                     try {
                         conn.setRequestProperty("Accept", "application/vnd.github+json")
                         require(conn.responseCode == 200) { "GitHub HTTP ${conn.responseCode}" }
@@ -140,14 +140,17 @@ object BuickUpdater {
                         conn.disconnect()
                     }
                 }
+                require(release.optString("tag_name") == channel.releaseTag && !release.optBoolean("draft")) {
+                    "更新标签不匹配，拒绝安装"
+                }
                 val assets = release.getJSONArray("assets")
                 var apkUrl: String? = null
                 var digestUrl: String? = null
                 for (i in 0 until assets.length()) {
                     val asset = assets.getJSONObject(i)
                     val name = asset.optString("name")
-                    if (name == "CarDeck-latest.apk") apkUrl = asset.optString("browser_download_url")
-                    if (name == "CarDeck-latest.apk.sha256") digestUrl = asset.optString("browser_download_url")
+                    if (name == channel.apkName) apkUrl = asset.optString("browser_download_url")
+                    if (name == "${channel.apkName}.sha256") digestUrl = asset.optString("browser_download_url")
                 }
                 val code = release.optString("body").lineSequence()
                     .firstOrNull { it.startsWith("versionCode=") }
@@ -162,7 +165,7 @@ object BuickUpdater {
                     .firstOrNull { it.startsWith("branch=") }
                     ?.substringAfter("=")?.trim().orEmpty()
                 val changeNotes = UpdateNotes.extract(release.optString("body"))
-                require(branch in setOf("main", "Buick-main", "Buick-E5")) {
+                require(channel.acceptsSource(release.optString("tag_name"), branch)) {
                     "更新来源分支无效：$branch"
                 }
                 val packageInfo = activity.packageManager.getPackageInfo(activity.packageName, 0)
@@ -187,17 +190,17 @@ object BuickUpdater {
                         }
                     } else {
                         AlertDialog.Builder(activity)
-                            .setTitle("发现 CarDeck 最新构建")
+                            .setTitle("发现 Buick-Test 更新")
                             .setMessage(
                                 "当前版本：$installedVersionName\n" +
                                     "最新版本：$versionName\n" +
                                     "来源分支：$branch\n\n" +
                                     "更新说明：\n$changeNotes\n\n" +
-                                    "安装后将切换到该分支的功能，是否继续？",
+                                    "将安装本测试分支的新版本，是否继续？",
                             )
                             .setNegativeButton("取消", null)
-                            .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity)) }
-                            .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl) }
+                            .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity, channel)) }
+                            .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl, channel) }
                             .show()
                     }
                 }
@@ -207,16 +210,16 @@ object BuickUpdater {
         }
     }
 
-    private fun download(activity: Activity, url: String, shaUrl: String) {
+    private fun download(activity: Activity, url: String, shaUrl: String, channel: UpdateChannel) {
         val dialog = android.app.ProgressDialog(activity).apply {
-            setTitle("下载 CarDeck 最新构建")
+            setTitle("下载 Buick-Test 更新")
             setMessage("正在下载…")
             setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
             setCancelable(false)
             show()
         }
         thread(name = "buick-update-download") {
-            val target = downloadedApk(activity)
+            val target = downloadedApk(activity, channel)
             try {
                 target.parentFile?.mkdirs()
                 tryRoutes(activity, "下载并校验 APK") { route ->

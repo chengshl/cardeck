@@ -1,5 +1,13 @@
 # AGENTS.md — 给 AI 编码助手的项目指引
 
+## Buick-Test 分支约定（2026-10-22）
+
+- 基线为 Buick-E5 的 `7d33dce6384d9b3d618a6c2953db1048bf83aad0`，后续测试改动只在 Buick-Test 处理。
+- 入口地址和凭证通过「入口配置」管理；凭证使用 Android Keystore 加密保存在 noBackupFilesDir，不得写入源码、日志、URL 或发布附件。
+- 独立更新线由 `app/src/main/assets/config/update-channel.json` 描述，只读取 `buick-test-latest`；只发布 `CarDeck-Buick-Test.apk` 及校验文件，不写共享标签或旧分支别名。
+- 本分支继承的 E5 发布工作流必须保留分支守卫，禁止在 Buick-Test 手动触发共享更新发布。
+- 本次仅提供入口配置与独立更新线，未增加远程 Gateway 连接或车辆指令功能。后续客户端应统一调用 EntryConfigStore，并沿用后台线程及凭证保护约定。
+
 让一台未 root 的 Android 手机（荣耀 Magic7 Pro）扮演 **CarPlay 发送端（iPhone 角色）**：
 自绘车机桌面 → H.264 编码推流 → 奥迪车机 / DiPlay 测试台（Redmi K40 上的接收端）显示，
 车机触摸经 Shizuku（shell 权限）回注虚拟屏。协议链路：蓝牙 iAP2 → 车机热点 → mDNS →

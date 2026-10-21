@@ -39,16 +39,26 @@ class PhoneSettingsActivity : AppCompatActivity() {
             return MenuHolder(view)
         }
 
-        override fun getItemCount() = SettingsMenus.ALL.size + 1
+        override fun getItemCount() = SettingsMenus.ALL.size + 2
 
         override fun onBindViewHolder(
             holder: MenuHolder,
             position: Int,
         ) {
+            holder.itemView.setOnLongClickListener(null)
             if (position == SettingsMenus.ALL.size) {
+                holder.icon.setImageResource(android.R.drawable.ic_menu_manage)
+                holder.title.text = "入口配置"
+                holder.desc.text = "设置服务地址和入口凭证"
+                holder.itemView.setOnClickListener {
+                    startActivity(Intent(this@PhoneSettingsActivity, EntryConfigActivity::class.java))
+                }
+                return
+            }
+            if (position == SettingsMenus.ALL.size + 1) {
                 holder.icon.setImageResource(android.R.drawable.stat_sys_download)
-                holder.title.text = "在线更新（所有分支）"
-                holder.desc.text = "点击检查更新；长按切换自动检查"
+                holder.title.text = "检查更新（Buick-Test）"
+                holder.desc.text = "仅检查测试分支更新；长按切换自动检查"
                 holder.itemView.setOnClickListener { BuickUpdater.check(this@PhoneSettingsActivity) }
                 holder.itemView.setOnLongClickListener {
                     val enabled = !BuickUpdater.autoEnabled(this@PhoneSettingsActivity)
