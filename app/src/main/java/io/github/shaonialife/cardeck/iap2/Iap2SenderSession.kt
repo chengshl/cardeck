@@ -446,8 +446,21 @@ class Iap2SenderSession(
         // Never synthesize Wi-Fi credentials when B233 is silent. A missing 0x4301
         // is an explicit bring-up failure, unlike generic mDNS-only Audi devices.
         val waitUntil = minOf(deadline, System.nanoTime() + BUICK_START_SESSION_WAIT_NANOS)
-        val start = expectOrNull(Iap2MessageIds.CARPLAY_START_SESSION, waitUntil)
-            ?: throw IOException("Buick B233: 0x4301 not received within 30s after 0x4300")
+        val reidGate = B233ReidentificationGate()
+        val start = expectOrNull(Iap2MessageIds.CARPLAY_START_SESSION, waitUntil) { frame ->
+            if (frame.messageId != Iap2MessageIds.IDENTIFICATION_INFORMATION) {
+                false
+            } else {
+                val replayIdentity = identityText(frame)
+                if (reidGate.claim(frame.messageId, replayIdentity)) {
+                    log("iap2 B233 T20: 收到第二次 0x1d01，触发一次 iPhone 抓包同款重新识别/认证（限本轮一次）")
+                    replayBuickIdentification(frame, waitUntil, body)
+                } else {
+                    log("iap2 B233 T20: 重复/身份不匹配的 0x1d01，禁止再次认证")
+                }
+                true
+            }
+        } ?: throw IOException("Buick B233: 0x4301 not received within 30s after 0x4300")
         // Do not dump the raw body: wireless group contains the hotspot password.
         for (param in Iap2Csm.parseParams(start.body)) {
             log("iap2 Buick B233: rx 0x4301 param=0x" +
@@ -464,6 +477,64 @@ class Iap2SenderSession(
             " ipCount=" + endpoint.ipAddresses.size + " publicKeyPresent=" +
             !endpoint.publicKey.isNullOrEmpty())
         return buickEndpoint
+    }
+
+    /**
+     * T20 one-shot B233 path only. The iPhone 11:34 HCI capture proves that
+     * B233 sometimes sends a SECOND 0x1D01 after 0x4300, then accepts
+     * 0x1D02/0xAA00/0xAA02/0xAA05 plus a renewed 0x4300.
+     *
+     * A repeated 0x1D01 is an actual receiver event, NOT a local timeout.
+     * Do not invent a confirmation packet when no repeat arrived.
+     */
+    private fun replayBuickIdentification(
+        identification: Iap2Csm.Frame,
+        deadline: Long,
+        availabilityBody: ByteArray,
+    ) {
+        logIdentification(identification)
+        send(Iap2MessageIds.IDENTIFICATION_ACCEPTED)
+        send(Iap2MessageIds.MFI_REQUEST_CERTIFICATE)
+
+        // In the captured repeat B233 sends 0xAA06 (serial) rather than AA01.
+        // In other firmware revisions it may send the certificate itself.
+        // Never send a challenge without first observing one of these.
+        var authenticationReady = false
+        val readyDeadline = minOf(deadline, System.nanoTime() + 2_000_000_000L)
+        while (System.nanoTime() < readyDeadline && channel.isAlive) {
+            val remaining = ((readyDeadline - System.nanoTime()) / 1_000_000L).coerceAtLeast(1L)
+            val next = recvNewFrame(remaining) ?: continue
+            if (next.messageId == 0xAA06 || next.messageId == Iap2MessageIds.MFI_CERTIFICATE) {
+                log("iap2 B233 T20: 第二次 MFi 收到 0x${next.messageId.toString(16)}，进行32B challenge")
+                authenticationReady = true
+                break
+            }
+            // A start-session reply may race with renewed identification.
+            // Preserve it for the caller rather than swallowing it in MFi.
+            pendingFrames += next
+            if (next.messageId == Iap2MessageIds.CARPLAY_START_SESSION) return
+        }
+        if (!authenticationReady) {
+            log("iap2 B233 T20: 第二次识别未收到 MFi serial/certificate；不伪造成功，继续等待车机 0x4301")
+            return
+        }
+        val receiverKey = identityText(identification)
+        runMfiChallenge(deadline, receiverKey = receiverKey, buickStrict = true)
+        send(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
+
+        // iPhone repeat: 4e0c -> 4e0a -> 4e0b -> 4e09 -> 4300.
+        send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
+        send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
+        val now = System.currentTimeMillis()
+        send(
+            Iap2MessageIds.DEVICE_TIME_UPDATE,
+            Iap2Csm.param(0, u64Bytes(now / 1000L)) +
+                Iap2Csm.u16(1, (java.util.TimeZone.getDefault().getOffset(now) / 60_000) and 0xFFFF) +
+                Iap2Csm.u8(2, 0),
+        )
+        send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
+        send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
+        log("iap2 B233 T20: 二次认证结束，重新发送同一75B 0x4300；等待车机 0x4301")
     }
 
     /** 24-hex stable device identifier from the phone's MAC, never an iPhone ID. */
@@ -721,12 +792,13 @@ class Iap2SenderSession(
     private fun expectOrNull(
         messageId: Int,
         deadlineNanos: Long,
+        onUnexpected: ((Iap2Csm.Frame) -> Boolean)? = null,
     ): Iap2Csm.Frame? {
-        pendingFrames.firstOrNull { it.messageId == messageId }?.let {
-            pendingFrames.remove(it)
-            return it
-        }
         while (true) {
+            pendingFrames.firstOrNull { it.messageId == messageId }?.let {
+                pendingFrames.remove(it)
+                return it
+            }
             val remaining = (deadlineNanos - System.nanoTime()) / 1_000_000L
             if (remaining <= 0) return null
             val frame = recvNewFrame(remaining)
@@ -735,6 +807,7 @@ class Iap2SenderSession(
                 continue
             }
             if (frame.messageId == messageId) return frame
+            if (onUnexpected?.invoke(frame) == true) continue
             log(
                 "iap2 rx=0x${frame.messageId.toString(16).padStart(4, '0')} " +
                     "(${Iap2MessageIds.nameOf(frame.messageId)})，非预期，暂存待后续消费",
