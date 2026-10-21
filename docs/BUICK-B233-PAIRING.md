@@ -8,7 +8,7 @@ CarDeck 2026-10-20 22:29:44 曾成功收到 0x4301；2026-10-21 T18 多次在 0x
 
 ## 本次变更
 
-1. **T19（B233 专属）**：应用进程监听 Android `ACTION_PAIRING_REQUEST`、`ACTION_BOND_STATE_CHANGED`、`ACTION_ACL_CONNECTED/DISCONNECTED`。仅匹配 `BUICK_2427`，不记录 PIN/数字配对码、也不自动接受配对。
+1. **T19（B233 专属）**：应用进程监听 Android `ACTION_PAIRING_REQUEST`、`ACTION_BOND_STATE_CHANGED`、`ACTION_ACL_CONNECTED/DISCONNECTED`。匹配 `BUICK_2427` 名称、已选 B233 地址或本轮已识别 B233 地址（系统首次配对时名称可能为空），不记录 PIN/数字配对码、也不自动接受配对。
 2. **T19 连接保护**：如收到系统配对请求，最长 45 秒内暂停 B233 的主动 RFCOMM 重试和 HFP/A2DP 拆链；收到 `BOND_BONDED` / `BOND_NONE` 立即结束等待。未收到事件则原行为不变。
 3. **T20（B233 专属）**：只有在 **等待 0x4301 的窗口内，确实再次收到符合 B233 身份的 0x1D01**，才执行最多一次 0x1D02/MFi/0x4300 恢复。期望 0xAA06 或 0xAA01 后再尝试 32B challenge；没有观察到该前置信号不会伪造成功。不修改其他车机、视频/音频 RTP 格式、VPN 路由或触摸代码。
 4. 自动更新页继续显示 `## 更新说明`。本轮仍是未经实车验证的专项实验，**CI 成功不等于车机恢复成功**。
