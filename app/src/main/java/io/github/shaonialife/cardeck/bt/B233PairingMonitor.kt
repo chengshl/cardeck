@@ -2,6 +2,7 @@ package io.github.shaonialife.cardeck.bt
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -43,10 +44,24 @@ internal object B233PairingMonitor {
             addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            // T25: adapter power state is different from B233 ACL link state.
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
         }
         val receiver = object : BroadcastReceiver() {
             @SuppressLint("MissingPermission")
             override fun onReceive(ctx: Context, intent: Intent) {
+                // Adapter power events have no EXTRA_DEVICE. They must be
+                // inspected BEFORE the B233-device filter below.
+                if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                    val from = intent.getIntExtra(BluetoothAdapter.EXTRA_PREVIOUS_STATE, -1)
+                    val to = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)
+                    log(
+                        "BT-ADAPTER T25: 手机蓝牙开关状态 " +
+                            "${adapterStateName(from)} -> ${adapterStateName(to)}；" +
+                            "仅观察，CarDeck 不执行蓝牙开关操作"
+                    )
+                    return
+                }
                 @Suppress("DEPRECATION")
                 val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
                     ?: return
@@ -88,12 +103,31 @@ internal object B233PairingMonitor {
                 ContextCompat.RECEIVER_EXPORTED)
             registered = true
             log("BT-PAIR T19: B233 Android 配对/ACL 事件监听已开启（只记录不自动确认）")
+            // Read the initial radio state so that a missing OFF broadcast
+            // cannot be mistaken for proof the radio was always enabled.
+            val initial = runCatching {
+                (context.getSystemService(Context.BLUETOOTH_SERVICE)
+                    as android.bluetooth.BluetoothManager).adapter?.state
+            }.getOrNull()
+            log(
+                "BT-ADAPTER T25: 已启用手机蓝牙开关状态监听；当前=" +
+                    (initial?.let(::adapterStateName) ?: "UNKNOWN") +
+                    "；ACL 断开不等于蓝牙开关关闭"
+            )
         } catch (error: Exception) {
             log("BT-PAIR T19: 无法注册系统蓝牙事件监听：${error.javaClass.simpleName}")
         }
     }
 
     fun isWaitingForConfirmation(nowMs: Long): Boolean = gate.isWaiting(nowMs)
+
+    private fun adapterStateName(state: Int): String = when (state) {
+        BluetoothAdapter.STATE_OFF -> "OFF"
+        BluetoothAdapter.STATE_TURNING_ON -> "TURNING_ON"
+        BluetoothAdapter.STATE_ON -> "ON"
+        BluetoothAdapter.STATE_TURNING_OFF -> "TURNING_OFF"
+        else -> "UNKNOWN($state)"
+    }
 
     private fun bondStateName(state: Int): String = when (state) {
         BluetoothDevice.BOND_NONE -> "NONE"
