@@ -15,6 +15,23 @@ internal class B233ReconnectPolicy {
     companion object {
         const val AFTER_AUDIO_TEARDOWN_MS = 20_000L
         const val MAX_START_TIMEOUT_BACKOFF_MS = 60_000L
+
+        /**
+         * T27: T21 changed the thrown IOException from the old text
+         * "0x4301 not received..." to
+         * "iAP2 link closed while waiting 0x4301 after ...".
+         * The previous call-site only matched the old text, silently
+         * disabling T17 backoff and T18 one-shot inbound recovery.
+         *
+         * Classify only failures AFTER 0x4300 (waiting for 0x4301).
+         * A user stop, pre-0x4300 error or unrelated RF failure must not
+         * enter the slow backoff path.
+         */
+        fun isUnansweredStartSession(message: String?): Boolean {
+            val detail = message?.lowercase() ?: return false
+            return detail.contains("0x4301 not received") ||
+                detail.contains("while waiting 0x4301")
+        }
     }
 
     private var until = 0L
