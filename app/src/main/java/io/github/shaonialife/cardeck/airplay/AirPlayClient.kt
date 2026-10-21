@@ -49,6 +49,14 @@ class AirPlayClient(
      * （catplay 每 1s force_announce）。
      */
     private val retryTick: ((attempt: Int) -> Unit)? = null,
+    /**
+     * T24 / B233 only: route each CarPlay TCP socket through the vehicle
+     * WiFi Network instead of relying on the Android process default.
+     * Required because bindProcessToNetwork(network) can return false
+     * while VPN is enabled and toggling VPN can change the default route.
+     * All non-B233 callers keep null/legacy socket behavior.
+     */
+    private val vehicleNetwork: android.net.Network? = null,
 ) {
     /**
      * 当前使用的接收端端点。0x4301 晚到 / mDNS 后上线时由主控热更新；
@@ -60,6 +68,18 @@ class AirPlayClient(
     /** 端点代数：ensureConnected 用它检测「连接途中端点被换掉」，避免把新端点的请求发到旧地址。 */
     @Volatile
     private var endpointGeneration = 0
+
+    private fun newVehicleSocket(): Socket {
+        val network = vehicleNetwork ?: return Socket()
+        return try {
+            network.socketFactory.createSocket().also {
+                log("AIRPLAY T24: TCP socket 指定车机 WiFi Network=$network（不依赖 VPN 默认路由）")
+            }
+        } catch (error: Exception) {
+            log("AIRPLAY T24: WiFi socket 创建失败 - ${error.message}；退回普通 TCP（可能受 VPN 影响）")
+            Socket()
+        }
+    }
 
     private var socket: Socket? = null
     private var cSeq = 0
@@ -905,7 +925,7 @@ class AirPlayClient(
         return try {
             log("AIRPLAY: /info 侧信道探测 → $host:${target.airPlayPort}（独立短连接，不碰会话）")
             probe =
-                Socket().apply {
+                newVehicleSocket().apply {
                     connect(InetSocketAddress(resolveAddress(host), target.airPlayPort), timeoutMillis)
                     soTimeout = timeoutMillis
                 }
@@ -1230,7 +1250,7 @@ class AirPlayClient(
             )
         val tcp =
             try {
-                Socket()
+                newVehicleSocket()
             } catch (error: IOException) {
                 return null
             }
@@ -2067,7 +2087,7 @@ class AirPlayClient(
         }
         val host = receiverHost() ?: return
         try {
-            val socket = Socket()
+            val socket = newVehicleSocket()
             socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)
             socket.tcpNoDelay = true
             socket.soTimeout = 30_000
@@ -2272,7 +2292,7 @@ class AirPlayClient(
                     continue
                 }
             try {
-                val newSocket = Socket()
+                val newSocket = newVehicleSocket()
                 newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
                 if (generation != endpointGeneration) {
                     // 连接途中端点已更新：丢弃这条旧连接，下一轮按新地址重连
