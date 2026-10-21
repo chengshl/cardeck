@@ -3,7 +3,10 @@ package io.github.shaonialife.cardeck.bt
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothA2dp
+import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -46,6 +49,10 @@ internal object B233PairingMonitor {
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             // T25: adapter power state is different from B233 ACL link state.
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            // B233 uses regular Bluetooth A2DP for music in video-only mode.
+            // The ACL can recover while A2DP remains disconnected.
+            addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+            addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
         }
         val receiver = object : BroadcastReceiver() {
             @SuppressLint("MissingPermission")
@@ -93,6 +100,23 @@ internal object B233PairingMonitor {
                         log("BT-PAIR T19: B233 ACL 物理蓝牙链路建立（不等于 iAP2/CarPlay 已接受）")
                     BluetoothDevice.ACTION_ACL_DISCONNECTED ->
                         log("BT-PAIR T19: B233 ACL 物理蓝牙链路断开（可能触发后续重新认证）")
+                    BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED,
+                    BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
+                        val profileName =
+                            if (intent.action == BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+                                "A2DP(音乐)" else "HFP(通话)"
+                        val oldState = intent.getIntExtra(
+                            BluetoothProfile.EXTRA_PREVIOUS_STATE, -1
+                        )
+                        val newState = intent.getIntExtra(
+                            BluetoothProfile.EXTRA_STATE, -1
+                        )
+                        log(
+                            "BT-AUDIO T25: B233 $profileName " +
+                                "${profileStateName(oldState)} -> ${profileStateName(newState)}；" +
+                                "只记录，不主动断开/重连音乐配置文件"
+                        )
+                    }
                 }
             }
         }
@@ -103,6 +127,7 @@ internal object B233PairingMonitor {
                 ContextCompat.RECEIVER_EXPORTED)
             registered = true
             log("BT-PAIR T19: B233 Android 配对/ACL 事件监听已开启（只记录不自动确认）")
+            log("BT-AUDIO T25: 已启用 B233 HFP/A2DP 连接变化监听；不修改普通蓝牙音频连接")
             // Read the initial radio state so that a missing OFF broadcast
             // cannot be mistaken for proof the radio was always enabled.
             val initial = runCatching {
@@ -120,6 +145,14 @@ internal object B233PairingMonitor {
     }
 
     fun isWaitingForConfirmation(nowMs: Long): Boolean = gate.isWaiting(nowMs)
+
+    private fun profileStateName(state: Int): String = when (state) {
+        BluetoothProfile.STATE_DISCONNECTED -> "DISCONNECTED"
+        BluetoothProfile.STATE_CONNECTING -> "CONNECTING"
+        BluetoothProfile.STATE_CONNECTED -> "CONNECTED"
+        BluetoothProfile.STATE_DISCONNECTING -> "DISCONNECTING"
+        else -> "UNKNOWN($state)"
+    }
 
     private fun adapterStateName(state: Int): String = when (state) {
         BluetoothAdapter.STATE_OFF -> "OFF"
