@@ -52,6 +52,15 @@ CarDeck 2026-10-20 22:29:44 曾成功收到 0x4301；2026-10-21 T18 多次在 0x
 - **T24 诊断**：增加进程绑定是否成功、车机 WiFi 网络句柄、系统默认网络是否 VPN，以及 VPN 开关过程系统默认网络回调；同时保留车机 WiFi 丢失独立诊断。不能保证 Android VPN lockdown/系统主动杀 socket 场景自动恢复。
 - 当前无法修复证据不足的 B233 旧会话拒绝 `0x4300`，**不通过删除配对或无限重试掩盖故障**。T24 首先验证在已成功推视频时开/关 VPN，确认视频是否继续、下一条断线原因。纯视频+蓝牙 A2DP 为目前车内稳定路线。
 
+## 2026-10-21 13:01:38 T24 真车复核 / T25 蓝牙开关专项
+
+- 用户确认 T24 在 VPN 开/关时**仍然断开**，但断开后**大多能自动重连**。
+- Sony XQ-DQ72 Android 15，APK `20261021124408`，仅视频模式：12:56:27 首次成功建会话；12:59:47 VPN 从开→关时 EVENT/VIDEO 发生 `Software caused connection abort`，12:59:56 重新获 `0x4301`；13:00:48 VPN 从关→开时同样发生 socket abort，13:00:58 再次成功获 `0x4301`。
+- T24 的明确限制：VPN 开启时 `bindProcessToNetwork=false`，B233 `Network.socketFactory.createSocket()` 与 `Network.bindSocket(UDP)` 均返回 `EPERM`；因此它们实际退回默认网络，VPN 切换仍会触发已有 TCP socket abort。VPN 关闭后绑定 WiFi Network 125 成功。避免将“代码尝试绑定”描述成“已真正绑定”。
+- 事件次序：首先 EVENT/VIDEO socket abort 与 Android 默认网络从 `VPN` 切换为 `WiFi`（及反向）；约 0.5–1.5s 后 iAP2/蓝牙 ACL 才断开，之后 ACL 建立、`0x4300` 收到链路 ACK 和 `0x4301`。不能把这一现象推定为蓝牙无线电总开关 OFF。
+- **T25 仅诊断**：原有 `B233PairingMonitor` 只记录配对/ACL，未订阅 `BluetoothAdapter.ACTION_STATE_CHANGED`。现加入只读 `BT-ADAPTER T25: ON/TURNING_OFF/OFF/TURNING_ON` 初始状态和状态变化日志。不关闭/开启蓝牙，不改 HFP/A2DP/配对/重试行为。修复 VideoSender 在 socketFactory `EPERM` 退回默认路由时仍打印“指定 WiFi”的错误文案。
+- 待验证：若出现用户所见的“蓝牙自己关掉”，检查当时日志是否有明确 `BT-ADAPTER T25: ON -> TURNING_OFF -> OFF`。如仅 `BT-PAIR T19: ACL ... 断开` 而始终无适配器 OFF，说明只观察到车机链路断开，并非手机蓝牙开关真正关闭。若确有 OFF，需 Android 系统事件日志确认触发者，不能直接归因 CarDeck。
+
 ## 真车验证（仅停车状态）
 
 - **A：首次连接**：手机已配对 E5、已连热点，启动 CarDeck，检查 `0x4300` 是否获得链路 ACK、是否出现 `0x4301`。
