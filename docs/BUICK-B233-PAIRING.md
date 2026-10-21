@@ -78,6 +78,15 @@ CarDeck 2026-10-20 22:29:44 曾成功收到 0x4301；2026-10-21 T18 多次在 0x
 - **失败边界**：有些车机要求屏幕 SETUP 必须同时声明音频资源，本版可能出现屏幕拒绝 SETUP / 视频无法启动；如复现，应立刻回退 T25，不可将 T26 当成已证实修复。即使视频能启动，仍需以 A2DP/ACL 事件和 VPN 开/关后的音乐是否中断判断效果。
 - 首次验收应看日志 `AIRPLAY T26: resource experiment B233=true sessionAudio=false claimCarPlayAudio=false`，`modesChanged` 状态 200，随后 `VIDEO` 成功；再分别测视频内切 VPN 和手动断开 CarDeck，观察 A2DP 连接是否保持。此实验不改 HFP/A2DP 操作、BT RFCOMM 关闭、音视频 RTP、VPN 路由。
 
+## 2026-10-21 14:04:30 T26 验证与 T27 T17 重试失效修复
+
+- T26 `20261021134325`（Sony XQ-DQ72 Android 15，B233）：**视频功能通过 A/B 验证**。4 次 `0x4301` ACK=110 和 4 次 AirPlay RECORD 成功；所有初始 `modesChanged` 均声明 `claimCarPlayAudio=false`（只占屏幕、未声明音频资源）且得到 `RTSP/1.0 200 OK`。因此“B233 不占用音频资源时无法推视频”假设被排除。
+- **T26 未解决 A2DP 断开**：13:47:08 VPN ON→OFF，EVENT/VIDEO socket abort，0.5s 后 iAP2 socket read=-1、ACL 断，13:47:09 A2DP/HFP 断，13:47:11 A2DP 恢复；13:52:41 VPN OFF→ON，同样先 AirPlay abort、13:52:42 ACL 断、随后 A2DP 重建。
+- **手动停止也导致音频配置文件掉线**：13:48:39 当 CarPlay 视频已结束、仍不断尝试 `0x4300` 时，用户点击停止，应用关闭当前 RFCOMM；13:48:43 A2DP/HFP 断、ACL 随后断。这是蓝牙控制会话关闭与车机重置蓝牙的时间相关证据，但不能单凭 App 日志认定 HCI 断线由手机还是车机发起。13:50:44 与 13:51:21 的日志中同样有应用主动断开引发 EVENT `Connection reset`，不能把它们误判成 VPN 故障。
+- **新发现 T17 漏洞**：T21 将旧异常 `0x4301 not received within ...` 改为 `iAP2 link closed while waiting 0x4301 after 20001ms`，但 `Iap2BluetoothClient.runSession` 仍然只识别旧字符串。因此 T17 的 15/30/60s 阶梯退避和 T18 一次性被动车机回连门槛一直未实际启动，导致无 `ACK=110` 的重复 RFCOMM 周期接近 28s（20s + 3s + 握手）。
+- **T27 修复**：提取 `B233ReconnectPolicy.isUnansweredStartSession` 同时接受旧/新两种“已发送 0x4300 等 0x4301”错误；仍排除 `interrupted before 0x4300`、`iAP2 link closed before 0x4300`、用户取消和其他网络错误。B233 连续无 ACK 时应用退避 15、30、60s，进而恢复 T18 的一次性车机主动入站通路，减少车机和 A2DP 链路被过密尝试搅动；正常第一次成功连接时没有额外延迟。
+- **边界**：T27 不是 VPN 不断流或普通蓝牙不会掉线的证明。T26 资源声明保留作为可观测实验；后续可在独立版本撤回，以便不混淆其他变量。下一份日志需检查 `BT-C T17: B233 0x4300 无回应，下一轮等待 15s/30s/60s` 是否生效、A2DP 实际掉线次数是否减少，以及可恢复的 ACK=110/0x4301 是否仍出现。
+
 ## 真车验证（仅停车状态）
 
 - **A：首次连接**：手机已配对 E5、已连热点，启动 CarDeck，检查 `0x4300` 是否获得链路 ACK、是否出现 `0x4301`。
