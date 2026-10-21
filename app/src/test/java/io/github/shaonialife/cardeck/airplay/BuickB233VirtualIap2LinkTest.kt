@@ -9,12 +9,20 @@ import org.junit.Test
 /** B233 must use the T48 receiver-initiated handshake, not Audi's proactive DETECT. */
 class BuickB233VirtualIap2LinkTest {
     @Test
-    fun onlyBuickNowPlayingEmptyUpdateSkipsFatalAckWatchdog() {
+    fun buickOptionalStateUpdatesDoNotKillCarPlayOnMissingAck() {
+        // On the 2026-10-21 audio run 0x4171 seq113 was sent again
+        // 4 times and then closed CarPlay after ~20 seconds.
+        assertFalse(VirtualIap2Link.shouldAwaitCsmAck(true, 0x4171))
         assertFalse(VirtualIap2Link.shouldAwaitCsmAck(true, 0x5001))
+        // Audi and all other receivers keep their original reliable CSM.
+        assertTrue(VirtualIap2Link.shouldAwaitCsmAck(false, 0x4171))
         assertTrue(VirtualIap2Link.shouldAwaitCsmAck(false, 0x5001))
+        // Do not disable auth, session or other subscription ACKs.
         assertTrue(VirtualIap2Link.shouldAwaitCsmAck(true, 0xAA05))
+        assertTrue(VirtualIap2Link.shouldAwaitCsmAck(true, 0x4155))
         assertTrue(VirtualIap2Link.shouldAwaitCsmAck(true, 0x4158))
         assertTrue(VirtualIap2Link.shouldAwaitCsmAck(true, 0x4E0C))
+        assertTrue(VirtualIap2Link.shouldAwaitCsmAck(true, 0x4300))
     }
 
     @Test
