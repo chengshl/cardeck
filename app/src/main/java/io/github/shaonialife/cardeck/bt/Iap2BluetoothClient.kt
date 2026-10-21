@@ -440,7 +440,8 @@ class Iap2BluetoothClient(
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")
             if (knownBuick &&
-                error.message.orEmpty().contains("0x4301 not received", ignoreCase = true)
+                B233ReconnectPolicy.isUnansweredStartSession(error.message) &&
+                running
             ) {
                 val backoff = b233ReconnectPolicy.onStartSessionTimeout(
                     android.os.SystemClock.uptimeMillis(),
