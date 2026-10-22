@@ -15,3 +15,22 @@ reference/
 keystore.properties
 *.jks
 *.keystore
+
+# Local deployment settings, signing/certificate material and secret files
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*.key
+*.crt
+*.p8
+*.mobileprovision
+*.secrets
+**/secrets/
+**/private/
+private-deploy/
+*.local.yaml
+*.local.yml
+*.local.json
