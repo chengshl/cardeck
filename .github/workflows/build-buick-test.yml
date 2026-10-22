@@ -66,6 +66,7 @@ jobs:
       - name: Verify Gateway status protocol and query isolation
         run: |
           python3 -m pip install --disable-pip-version-check -r tools/gateway/requirements.txt
+          python3 tools/mcp/test_server.py
           python3 tools/gateway/test_log_archive.py
           python3 tools/gateway/test_gateway.py
       - name: Record inherited E5 protocol test status
