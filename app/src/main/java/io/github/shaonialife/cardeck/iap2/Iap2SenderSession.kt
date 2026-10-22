@@ -481,6 +481,7 @@ class Iap2SenderSession(
                     log("iap2 B233 T20: 重复/身份不匹配的 0x1d01，禁止再次认证")
                 }
                 true
+            }
             },
         )
         if (start == null) {
