@@ -12,7 +12,7 @@
 
 日志两端都隐藏当前入口凭证、Bearer/常见密钥行、URL、IP、MAC、邮箱、常见标识及 SSID 等，超长内容裁剪或省略。脱敏不能识别所有自由文本，因此系统快照必须完整预览后由用户决定。系统原文和凭证不得写入软件日志、URL、剪贴板、通知或发布附件。TLS 使用系统证书和主机名校验，拒绝重定向；socket 和 DNS 单独绑定网络，网络丢失后重建路由。
 
-Gateway 源码、清单和测试位于 `tools/gateway/`。设备在线状态和当前连接计数仍为内存（最多 100 个注册，满时淘汰离线状态，不删除持久日志）；后续接收的日志持久保存到共享盘 `/data/files/cardeck-private-logs/`，经 hostPath 挂载至 `/var/lib/cardeck-logs/`。三个节点均已核实为同一 CIFS 共享盘。启动检查挂载类型、来源及目录归属标记；不能写入时不确认上传，也不退回内存冒充持久成功。旧的内存日志不作为本次已持久化历史承诺。
+Gateway 源码、清单和测试位于 `tools/gateway/`。设备在线状态和当前连接计数仍为内存（最多 100 个注册，满时淘汰离线状态，不删除持久日志）；后续接收的日志持久保存到共享盘 `<PRIVATE_CIFS_LOG_ROOT>`，经 hostPath 挂载至 `/var/lib/cardeck-logs/`。三个节点均已核实为同一 CIFS 共享盘。启动检查挂载类型、来源及目录归属标记；不能写入时不确认上传，也不退回内存冒充持久成功。旧的内存日志不作为本次已持久化历史承诺。
 
 路径为 `logs/<安装UUID>/<北京时间YYYY-MM-DD>/<app或system>/<首条毫秒时间>-<序号>-<随机值>.jsonl`。app 表示软件日志，system 表示已确认系统快照，分文件保存；16MiB 或整点切分。每批写入后 fsync 完成才返回 logs_ack，网络 ACK 丢失仍可能导致客户端重试后重复。网关采用单副本 Recreate 和共享文件锁，避免多个写进程并发；历史查询从文件读取，Pod 重建后仍可按原安装 UUID 查询。
 
@@ -27,3 +27,8 @@ Gateway 源码、清单和测试位于 `tools/gateway/`。设备在线状态和�
 按用户要求不在本地构建。独立 GitHub Actions 必过检查覆盖 TLS/鉴权/心跳、注册状态、自动软件日志、系统日志显式确认、ACK 超时、旧网关兼容、脱敏和有界缓存；Python 集成检查覆盖查询隔离、批次去重、未确认系统日志拒收、持久写入失败不确认与后台过期清理。归档测试覆盖分卷/分类、重启恢复、残缺行、精确七天边界、无总配额、满盘不提前删除新日志、单写锁、路径边界及 fsync 失败。真实手机的通知、Shizuku 读取、取消弹窗、跨页面继续上传和断网恢复仍需安装新版 APK 验证。更新说明优先中文。
 
 公开仓库仅保存 `log-storage.example.json` 和不含私有 ConfigMap 内容的部署模板，实际 CIFS 地址只保留在集群及本地运行配置。部署前用示例在私有位置填写真实 `expected_mount.source`，创建 `cardeck-log-storage` ConfigMap，再初始化目录并应用部署模板；禁止把私有运行配置直接提交到公开仓库。模板摘要占位需替换，配置更新后要显式滚动更新。
+
+## 公开模板与私有部署参数
+
+仓库中的 Deployment / 初始化 Job 为**不可直接应用的脱敏模板**。`/REPLACE_WITH_PRIVATE_CIFS_LOG_DIRECTORY` 和 `/REPLACE_WITH_PRIVATE_CIFS_SHARE_DIRECTORY` 必须在私有运维配置中替换为实际挂载点，切勿将已渲染的清单提交公开仓库。
+Gateway 默认只允许无 Origin 的原生应用客户端；如需经浏览器访问，应由私有 Deployment 配置 `CARDECK_GATEWAY_ALLOWED_ORIGINS`（逗号分隔的 HTTPS Origin）。实际公网域名、CIFS 来源、Token 与 Secret 内容仅放入私有环境。

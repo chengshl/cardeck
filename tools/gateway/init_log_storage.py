@@ -19,4 +19,4 @@ if not probe.exists():
         handle.write("CarDeck storage isolation check; no device data.\n")
         handle.flush()
         os.fsync(handle.fileno())
-print(json.dumps({"initialized": True, "directory": "/data/files/cardeck-private-logs", "shared_filesystem": "cifs"}))
+print(json.dumps({"initialized": True, "directory": "configured-private-storage", "shared_filesystem": "cifs"}))

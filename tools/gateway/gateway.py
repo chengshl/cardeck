@@ -273,6 +273,23 @@ async def handler(ws):
             devices[device_id].update(online=False, last_seen_ms=int(time.time() * 1000))
 
 
+def allowed_browser_origins():
+    """Explicit HTTPS browser origins from private runtime configuration."""
+    origins = [None]  # Native app WSS clients need no Origin.
+    for entry in os.environ.get("CARDECK_GATEWAY_ALLOWED_ORIGINS", "").split(","):
+        origin = entry.strip()
+        if not origin:
+            continue
+        parsed = urlsplit(origin)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.path or parsed.query or parsed.fragment
+                or "*" in origin or origin.endswith("/")):
+            raise ValueError("Invalid browser Origin configuration")
+        if origin not in origins:
+            origins.append(origin)
+    return origins
+
+
 async def main():
     settings = json.loads(Path(os.environ.get("CARDECK_LOG_CONFIG", "/etc/cardeck-logs/storage.json")).read_text(encoding="utf-8"))
     interval = settings.pop("cleanup_interval_seconds", 60)
@@ -288,7 +305,7 @@ async def main():
         asyncio.get_running_loop().add_signal_handler(sig, terminate)
     try:
         async with serve(handler, "0.0.0.0", 8080, process_request=process_request,
-                         origins=[None, "https://cardeck.once.wiki:8443", "https://cardeck.once.wiki"],
+                         origins=allowed_browser_origins(),
                          ping_interval=20, ping_timeout=10, close_timeout=5,
                          open_timeout=5, max_size=16384, max_queue=4,
                          compression=None, server_header=None):

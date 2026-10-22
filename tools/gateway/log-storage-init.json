@@ -117,7 +117,7 @@
               {
                 "name": "share",
                 "hostPath": {
-                  "path": "/data/files",
+                  "path": "/REPLACE_WITH_PRIVATE_CIFS_SHARE_DIRECTORY",
                   "type": "Directory"
                 }
               }
