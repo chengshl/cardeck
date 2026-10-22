@@ -456,17 +456,15 @@ class Iap2SenderSession(
         // is an explicit bring-up failure, unlike generic mDNS-only Audi devices.
         val waitUntil = minOf(deadline, System.nanoTime() + BUICK_START_SESSION_WAIT_NANOS)
         val reidGate = B233ReidentificationGate()
-        var peerRestartedDuringAvailability = false
+        var markerEchoSent = false
         val start = expectOrNull(
             Iap2MessageIds.CARPLAY_START_SESSION,
             waitUntil,
             pollIntervalMillis = 750L,
-            abortWait = {
-                if (channel.receivedMarkerCount() - markersBeforeAvailability >= 4L) {
-                    peerRestartedDuringAvailability = true
-                    true
-                } else {
-                    false
+            onPoll = {
+                if (channel.probeB233StalledAvailability(markersBeforeAvailability)) {
+                    markerEchoSent = true
+                    log("iap2 B233 T31: BT DETECT 已回应一次，保持 0x4300 会话等待 0x4301")
                 }
             },
             onUnexpected = { frame ->
@@ -485,14 +483,11 @@ class Iap2SenderSession(
             },
         )
         if (start == null) {
-            if (peerRestartedDuringAvailability && channel.isAlive) {
-                log("iap2 B233 T30: 连续 BT DETECT marker，终止旧 0x4300 并保留重连退避")
-                throw IOException("Buick B233: peer restarted iAP2 while waiting 0x4301")
-            }
             val elapsedMillis = (System.nanoTime() - availabilityStartedAt) / 1_000_000L
             val ackSnapshot = channel.controlAckSnapshot()
-            log("iap2 B233 T21: 0x4301 未到，elapsedMs=$elapsedMillis " +
-                "frameSHA256prefix=$availabilityDigest $ackSnapshot")
+            log("iap2 B233 T31: 0x4301 未到 elapsedMs=$elapsedMillis " +
+                "markersSince4300=" + (channel.receivedMarkerCount() - markersBeforeAvailability) +
+                " markerEchoSent=$markerEchoSent frameSHA256prefix=$availabilityDigest $ackSnapshot")
             // The link engine typically closes an unacknowledged 0x4300 after
             // ~20 seconds: it is not truthful to report that as a 30s 0x4301
             // application-layer timeout.
@@ -840,14 +835,14 @@ class Iap2SenderSession(
         deadlineNanos: Long,
         onUnexpected: ((Iap2Csm.Frame) -> Boolean)? = null,
         pollIntervalMillis: Long = 0L,
-        abortWait: (() -> Boolean)? = null,
+        onPoll: (() -> Unit)? = null,
     ): Iap2Csm.Frame? {
         while (true) {
             pendingFrames.firstOrNull { it.messageId == messageId }?.let {
                 pendingFrames.remove(it)
                 return it
             }
-            if (abortWait?.invoke() == true) return null
+            onPoll?.invoke()
             val remaining = (deadlineNanos - System.nanoTime()) / 1_000_000L
             if (remaining <= 0) return null
             val window = if (pollIntervalMillis > 0L) minOf(remaining, pollIntervalMillis) else remaining
