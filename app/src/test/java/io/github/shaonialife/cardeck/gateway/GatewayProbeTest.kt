@@ -12,6 +12,8 @@ import okhttp3.tls.HeldCertificate
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.json.JSONObject
 import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.LinkedBlockingQueue
@@ -43,12 +45,71 @@ class GatewayProbeTest {
         server.shutdown()
     }
 
-    private fun start(replyTimeout: Long = 2_000): GatewayProbe {
+    private fun start(replyTimeout: Long = 2_000, deviceInfo: GatewayDeviceInfo? = null): GatewayProbe {
         return GatewayProbe(client, observer = { events.offer(it) }, heartbeatIntervalMs = 100,
-            replyTimeoutMs = replyTimeout).also {
+            replyTimeoutMs = replyTimeout, deviceInfo = deviceInfo).also {
             probe = it
             it.start(EntryConfig(server.url("/ws/device").toString().replaceFirst("https://", "wss://"), "test-only-token"))
         }
+    }
+
+    private val info = GatewayDeviceInfo("65bddcd6-0e81-4f98-b509-7aafc1ddc3f8", "test-build", 35)
+
+    private fun reportingGateway(acknowledge: Boolean, received: LinkedBlockingQueue<JSONObject>) =
+        MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            private var reports = 0
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                webSocket.send("""{"type":"hello","mode":"transport-test","capabilities":["device_status_v1"]}""")
+            }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val message = JSONObject(text)
+                received.offer(message)
+                when (message.getString("type")) {
+                    "register" -> webSocket.send("""{"type":"register_ack"}""")
+                    "heartbeat" -> webSocket.send("""{"type":"heartbeat_ack"}""")
+                    "status" -> if (acknowledge) {
+                        reports++
+                        webSocket.send(JSONObject().put("type", "status_ack").put("report_count", reports).toString())
+                    }
+                }
+            }
+        })
+
+    @Test
+    fun registersAndOnlyCountsServerConfirmedReports() {
+        val received = LinkedBlockingQueue<JSONObject>()
+        server.enqueue(reportingGateway(true, received))
+        start(deviceInfo = info)
+        val beforeAck = await(GatewayProbe.State.HEALTHY)
+        assertEquals(0, beforeAck.reportCount)
+        assertTrue(beforeAck.reportsSupported)
+        assertEquals(1, await(GatewayProbe.State.HEALTHY).reportCount)
+        val registration = received.poll(2, TimeUnit.SECONDS)!!
+        assertEquals(setOf("type", "device_id", "app_version", "sdk"), registration.keys().asSequence().toSet())
+        assertEquals(info.deviceId, registration.getString("device_id"))
+        assertEquals(info.appVersion, registration.getString("app_version"))
+        assertEquals(info.sdk, registration.getInt("sdk"))
+        assertEquals("heartbeat", received.poll(2, TimeUnit.SECONDS)!!.getString("type"))
+        val status = received.poll(2, TimeUnit.SECONDS)!!
+        assertEquals(setOf("type", "heartbeat_count", "latency_ms"), status.keys().asSequence().toSet())
+        assertEquals(1, status.getInt("heartbeat_count"))
+    }
+
+    @Test
+    fun missingReportAckFailsWithoutCountingUpload() {
+        server.enqueue(reportingGateway(false, LinkedBlockingQueue()))
+        start(replyTimeout = 700, deviceInfo = info)
+        assertEquals(0, await(GatewayProbe.State.HEALTHY).reportCount)
+        assertEquals(GatewayProbe.Failure.PROTOCOL, await(GatewayProbe.State.FAILED).failure)
+    }
+
+    @Test
+    fun legacyGatewayRemainsHeartbeatOnlyWithDeviceInfo() {
+        server.enqueue(gateway())
+        start(deviceInfo = info)
+        val healthy = await(GatewayProbe.State.HEALTHY)
+        assertFalse(healthy.reportsSupported)
+        assertEquals(0, healthy.reportCount)
     }
 
     private fun await(state: GatewayProbe.State): GatewayProbe.Snapshot {

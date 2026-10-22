@@ -20,6 +20,7 @@ class GatewayProbe(
     private val observer: (Snapshot) -> Unit,
     private val heartbeatIntervalMs: Long = 10_000,
     private val replyTimeoutMs: Long = 10_000,
+    private val deviceInfo: GatewayDeviceInfo? = null,
 ) : AutoCloseable {
     private val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     enum class State { CONNECTING, CONNECTED, HEALTHY, AUTH_FAILED, DISCONNECTED, FAILED }
@@ -31,6 +32,8 @@ class GatewayProbe(
         val httpCode: Int? = null,
         val heartbeatCount: Int = 0,
         val latencyMs: Long = 0,
+        val reportsSupported: Boolean = false,
+        val reportCount: Int = 0,
     )
 
     private val timer = Executors.newSingleThreadScheduledExecutor { task ->
@@ -44,6 +47,11 @@ class GatewayProbe(
     private var greeted = false
     private var pendingSince: Long? = null
     private var heartbeatCount = 0
+    private var reportsSupported = false
+    private var registered = false
+    private var awaitingReport = false
+    private var reportCount = 0
+    private var latencyMs = 0L
 
     @Synchronized
     fun start(config: EntryConfig) {
@@ -97,6 +105,22 @@ class GatewayProbe(
                         }
                         greeted = true
                         deadline?.cancel(false)
+                        val capabilities = message.optJSONArray("capabilities")
+                        reportsSupported = deviceInfo != null && capabilities != null &&
+                            (0 until capabilities.length()).any { capabilities.optString(it) == "device_status_v1" }
+                        if (reportsSupported) {
+                            sendReportMessage(deviceInfo!!.registration())
+                        } else {
+                            sendHeartbeat()
+                        }
+                    }
+                    "register_ack" -> {
+                        if (!reportsSupported || registered || pendingSince != null) {
+                            fail(Failure.PROTOCOL)
+                            return
+                        }
+                        registered = true
+                        deadline?.cancel(false)
                         sendHeartbeat()
                     }
                     "heartbeat_ack" -> {
@@ -108,9 +132,24 @@ class GatewayProbe(
                         pendingSince = null
                         deadline?.cancel(false)
                         heartbeatCount++
-                        observer(Snapshot(State.HEALTHY, heartbeatCount = heartbeatCount,
-                            latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - sent)))
-                        nextHeartbeat = timer.schedule({ sendHeartbeat() }, heartbeatIntervalMs, TimeUnit.MILLISECONDS)
+                        latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - sent)
+                        publishHealthy()
+                        if (registered) {
+                            awaitingReport = true
+                            sendReportMessage(JSONObject().put("type", "status")
+                                .put("heartbeat_count", heartbeatCount).put("latency_ms", latencyMs))
+                        } else scheduleHeartbeat()
+                    }
+                    "status_ack" -> {
+                        if (!awaitingReport || message.optInt("report_count", -1) != reportCount + 1) {
+                            fail(Failure.PROTOCOL)
+                            return
+                        }
+                        awaitingReport = false
+                        deadline?.cancel(false)
+                        reportCount++
+                        publishHealthy()
+                        scheduleHeartbeat()
                     }
                     else -> fail(Failure.PROTOCOL)
                 }
@@ -137,6 +176,22 @@ class GatewayProbe(
                 else -> fail(Failure.NETWORK)
             }
         }
+    }
+
+    private fun publishHealthy() = observer(Snapshot(State.HEALTHY,
+        heartbeatCount = heartbeatCount, latencyMs = latencyMs,
+        reportsSupported = reportsSupported, reportCount = reportCount))
+
+    private fun scheduleHeartbeat() {
+        nextHeartbeat = timer.schedule({ sendHeartbeat() }, heartbeatIntervalMs, TimeUnit.MILLISECONDS)
+    }
+
+    private fun sendReportMessage(message: JSONObject) {
+        if (socket?.send(message.toString()) != true) {
+            fail(Failure.NETWORK)
+            return
+        }
+        deadline = timer.schedule({ fail(Failure.PROTOCOL) }, replyTimeoutMs, TimeUnit.MILLISECONDS)
     }
 
     @Synchronized

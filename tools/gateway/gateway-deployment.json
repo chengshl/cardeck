@@ -1,0 +1,263 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "cardeck-gateway-source",
+        "namespace": "cardeck-diagnostics",
+        "labels": {
+          "app.kubernetes.io/name": "cardeck-gateway",
+          "app.kubernetes.io/part-of": "cardeck-transport-test"
+        }
+      },
+      "data": {
+        "gateway.py": "\"\"\"CarDeck transport test gateway; no vehicle operations or tunnel coupling.\"\"\"\nimport asyncio\nimport hmac\nimport json\nimport logging\nimport os\nimport signal\nimport time\nimport uuid\nfrom http import HTTPStatus\n\nfrom websockets.asyncio.server import serve\nfrom websockets.exceptions import ConnectionClosed\n\nTOKEN = os.environ[\"CARDECK_GATEWAY_TOKEN\"]\nREAD_TOKEN = os.environ[\"CARDECK_GATEWAY_READ_TOKEN\"]\nif len(TOKEN) < 32:\n    raise RuntimeError(\"Gateway token must contain at least 32 characters\")\nif len(READ_TOKEN) < 32 or READ_TOKEN == TOKEN:\n    raise RuntimeError(\"A separate read token is required\")\n\n# Bounded, Pod-lifetime status only. No addresses, raw logs or vehicle data.\ndevices = {}\nowners = {}\n\n\ndef authorized(request, token):\n    values = request.headers.get_all(\"Authorization\")\n    return len(values) == 1 and hmac.compare_digest(\n        values[0].encode(), (\"Bearer \" + token).encode())\n\n\ndef integer(value, maximum):\n    return type(value) is int and 0 <= value <= maximum\n\n\ndef registration(payload):\n    if set(payload) != {\"type\", \"device_id\", \"app_version\", \"sdk\"}:\n        return None\n    device_id = payload.get(\"device_id\")\n    try:\n        if str(uuid.UUID(device_id, version=4)) != device_id:\n            return None\n    except (ValueError, TypeError, AttributeError):\n        return None\n    version = payload.get(\"app_version\")\n    if not isinstance(version, str) or not 1 <= len(version) <= 64:\n        return None\n    if any(ord(c) < 32 or ord(c) > 126 for c in version):\n        return None\n    if not integer(payload.get(\"sdk\"), 1000):\n        return None\n    return {\"device_id\": device_id, \"app_version\": version, \"sdk\": payload[\"sdk\"]}\n\n# Never log request headers, paths, credentials, or device payloads.\nlogging.getLogger(\"websockets\").setLevel(logging.CRITICAL)\n\n\ndef process_request(connection, request):\n    if request.path in (\"/healthz\", \"/readyz\"):\n        return connection.respond(HTTPStatus.OK, \"ok\\n\")\n    if request.path == \"/api/devices\":\n        if not authorized(request, READ_TOKEN):\n            return connection.respond(HTTPStatus.UNAUTHORIZED, \"unauthorized\\n\")\n        response = connection.respond(HTTPStatus.OK, json.dumps({\n            \"retention\": \"pod-lifetime\", \"devices\": list(devices.values())}))\n        response.headers[\"Content-Type\"] = \"application/json\"\n        response.headers[\"Cache-Control\"] = \"no-store\"\n        return response\n    if request.path != \"/ws/device\":\n        return connection.respond(HTTPStatus.NOT_FOUND, \"not found\\n\")\n    if not authorized(request, TOKEN):\n        response = connection.respond(HTTPStatus.UNAUTHORIZED, \"unauthorized\\n\")\n        response.headers[\"WWW-Authenticate\"] = 'Bearer realm=\"cardeck-test\"'\n        return response\n\n\nasync def handler(ws):\n    device_id = None\n    await ws.send(json.dumps({\"type\": \"hello\", \"mode\": \"transport-test\",\n                              \"capabilities\": [\"device_status_v1\"],\n                              \"ping_interval_seconds\": 20, \"ping_timeout_seconds\": 10}))\n    try:\n        async for message in ws:\n            if not isinstance(message, str):\n                await ws.close(1003, \"text JSON required\")\n                return\n            try:\n                payload = json.loads(message)\n            except (ValueError, TypeError):\n                await ws.close(1007, \"invalid JSON\")\n                return\n            if not isinstance(payload, dict):\n                await ws.close(1007, \"JSON object required\")\n                return\n            kind = payload.get(\"type\")\n            if kind in (\"heartbeat\", \"ping\"):\n                if device_id:\n                    devices[device_id][\"last_seen_ms\"] = int(time.time() * 1000)\n                await ws.send(json.dumps({\n                    \"type\": \"heartbeat_ack\" if kind == \"heartbeat\" else \"pong\",\n                    \"server_time_ms\": int(time.time() * 1000),\n                    \"transport_latency_ms\": round(ws.latency * 1000, 3),\n                }))\n            elif kind == \"register\":\n                record = registration(payload)\n                if device_id or record is None or record[\"device_id\"] in owners:\n                    await ws.close(1008, \"invalid registration\")\n                    return\n                if len(devices) >= 100 and record[\"device_id\"] not in devices:\n                    offline = [key for key in devices if key not in owners]\n                    if not offline:\n                        await ws.close(1013, \"registry full\")\n                        return\n                    del devices[min(offline, key=lambda key: devices[key][\"last_seen_ms\"])]\n                device_id = record[\"device_id\"]\n                owners[device_id] = ws\n                devices[device_id] = dict(record, online=True,\n                    last_seen_ms=int(time.time() * 1000), report_count=0)\n                await ws.send('{\"type\":\"register_ack\"}')\n            elif kind == \"status\":\n                if (not device_id or set(payload) != {\"type\", \"heartbeat_count\", \"latency_ms\"}\n                    or not integer(payload.get(\"heartbeat_count\"), 2147483647)\n                    or not integer(payload.get(\"latency_ms\"), 86400000)):\n                    await ws.close(1008, \"invalid status\")\n                    return\n                record = devices[device_id]\n                record.update(heartbeat_count=payload[\"heartbeat_count\"],\n                    latency_ms=payload[\"latency_ms\"], last_seen_ms=int(time.time() * 1000),\n                    last_report_ms=int(time.time() * 1000),\n                    report_count=record[\"report_count\"] + 1, connection_state=\"healthy\")\n                await ws.send(json.dumps({\"type\": \"status_ack\", \"report_count\": record[\"report_count\"]}))\n            else:\n                await ws.send('{\"type\":\"error\",\"code\":\"unsupported_test_message\"}')\n    except ConnectionClosed:\n        pass\n    finally:\n        if device_id and owners.get(device_id) is ws:\n            del owners[device_id]\n            devices[device_id].update(online=False, last_seen_ms=int(time.time() * 1000))\n\n\nasync def main():\n    stop = asyncio.get_running_loop().create_future()\n    def terminate():\n        if not stop.done():\n            stop.set_result(None)\n    for sig in (signal.SIGINT, signal.SIGTERM):\n        asyncio.get_running_loop().add_signal_handler(sig, terminate)\n    async with serve(handler, \"0.0.0.0\", 8080, process_request=process_request,\n                     origins=[None, \"https://cardeck.once.wiki:8443\", \"https://cardeck.once.wiki\"],\n                     ping_interval=20, ping_timeout=10, close_timeout=5,\n                     open_timeout=5, max_size=16384, max_queue=4,\n                     compression=None, server_header=None):\n        print(\"CarDeck transport test gateway ready on 8080\", flush=True)\n        await stop\n\n\nif __name__ == \"__main__\":\n    asyncio.run(main())\n"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "cardeck-gateway",
+        "namespace": "cardeck-diagnostics",
+        "labels": {
+          "app.kubernetes.io/name": "cardeck-gateway",
+          "app.kubernetes.io/part-of": "cardeck-transport-test"
+        }
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "selector": {
+          "app.kubernetes.io/name": "cardeck-gateway",
+          "app.kubernetes.io/part-of": "cardeck-transport-test"
+        },
+        "ports": [
+          {
+            "name": "ws",
+            "port": 8080,
+            "targetPort": "ws"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "cardeck-gateway",
+        "namespace": "cardeck-diagnostics",
+        "labels": {
+          "app.kubernetes.io/name": "cardeck-gateway",
+          "app.kubernetes.io/part-of": "cardeck-transport-test"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "cardeck-gateway",
+            "app.kubernetes.io/part-of": "cardeck-transport-test"
+          }
+        },
+        "progressDeadlineSeconds": 300,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "cardeck-gateway",
+              "app.kubernetes.io/part-of": "cardeck-transport-test"
+            },
+            "annotations": {
+              "source-sha256": "6f10b2e40a7dcac1cd0f60359b4e860962eafec8dba2b1449af7630351ccf983"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "terminationGracePeriodSeconds": 15,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 10001,
+              "runAsGroup": 10001,
+              "fsGroup": 10001,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "initContainers": [
+              {
+                "name": "install-websockets",
+                "image": "python:3.12-slim",
+                "imagePullPolicy": "IfNotPresent",
+                "command": [
+                  "python",
+                  "-m",
+                  "pip",
+                  "install",
+                  "--disable-pip-version-check",
+                  "--no-input",
+                  "--no-cache-dir",
+                  "--retries",
+                  "2",
+                  "--timeout",
+                  "20",
+                  "--target",
+                  "/deps",
+                  "websockets==15.0.1"
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "env": [
+                  {
+                    "name": "HOME",
+                    "value": "/tmp"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "64Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "deps",
+                    "mountPath": "/deps"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ]
+              }
+            ],
+            "containers": [
+              {
+                "name": "gateway",
+                "image": "python:3.12-slim",
+                "imagePullPolicy": "IfNotPresent",
+                "command": [
+                  "python",
+                  "-u",
+                  "/app/gateway.py"
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "env": [
+                  {
+                    "name": "PYTHONPATH",
+                    "value": "/deps"
+                  },
+                  {
+                    "name": "PYTHONDONTWRITEBYTECODE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "CARDECK_GATEWAY_TOKEN",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "cardeck-gateway-auth",
+                        "key": "token"
+                      }
+                    }
+                  },
+                  {
+                    "name": "CARDECK_GATEWAY_READ_TOKEN",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "cardeck-gateway-reader",
+                        "key": "token"
+                      }
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "ws",
+                    "containerPort": 8080
+                  }
+                ],
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/readyz",
+                    "port": "ws"
+                  },
+                  "periodSeconds": 5
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": "ws"
+                  },
+                  "initialDelaySeconds": 10,
+                  "periodSeconds": 10
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "25m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "250m",
+                    "memory": "128Mi"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "source",
+                    "mountPath": "/app",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "deps",
+                    "mountPath": "/deps",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "source",
+                "configMap": {
+                  "name": "cardeck-gateway-source"
+                }
+              },
+              {
+                "name": "deps",
+                "emptyDir": {
+                  "sizeLimit": "32Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

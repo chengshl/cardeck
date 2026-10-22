@@ -12,6 +12,7 @@ import io.github.shaonialife.cardeck.config.EntryConfig
 import io.github.shaonialife.cardeck.config.EntryConfigStore
 import io.github.shaonialife.cardeck.gateway.GatewayNetworkRoute
 import io.github.shaonialife.cardeck.gateway.GatewayProbe
+import io.github.shaonialife.cardeck.gateway.GatewayIdentity
 import io.github.shaonialife.cardeck.util.Bg
 
 class EntryConfigActivity : AppCompatActivity() {
@@ -163,12 +164,13 @@ class EntryConfigActivity : AppCompatActivity() {
         val appContext = applicationContext
         Bg.run("gateway-probe-start") {
             val prepared = runCatching {
+                val deviceInfo = GatewayIdentity.load(appContext)
                 val selectedRoute = GatewayNetworkRoute.create(appContext)
                 val selectedProbe = GatewayProbe(selectedRoute.client, observer = { snapshot ->
                     runOnUiThread {
                         if (testGeneration == generation && !isFinishing && !isDestroyed) renderGateway(snapshot)
                     }
-                })
+                }, deviceInfo = deviceInfo)
                 selectedRoute to selectedProbe
             }
             runOnUiThread {
@@ -199,7 +201,9 @@ class EntryConfigActivity : AppCompatActivity() {
         gatewayStatus.text = when (snapshot.state) {
             GatewayProbe.State.CONNECTING -> getString(R.string.gateway_connecting)
             GatewayProbe.State.CONNECTED -> getString(R.string.gateway_connected)
-            GatewayProbe.State.HEALTHY -> getString(R.string.gateway_healthy, snapshot.heartbeatCount, snapshot.latencyMs)
+            GatewayProbe.State.HEALTHY -> getString(R.string.gateway_healthy, snapshot.heartbeatCount, snapshot.latencyMs) +
+                "\n" + if (snapshot.reportsSupported) getString(R.string.gateway_reports, snapshot.reportCount)
+                else getString(R.string.gateway_reports_unsupported)
             GatewayProbe.State.AUTH_FAILED -> getString(R.string.gateway_auth_failed)
             GatewayProbe.State.DISCONNECTED -> getString(R.string.gateway_disconnected)
             GatewayProbe.State.FAILED -> when (snapshot.failure) {

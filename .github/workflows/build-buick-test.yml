@@ -63,6 +63,10 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest --tests '*EntryAddressTest' --tests '*UpdateChannelTest' --tests '*GatewayProbeTest' --stacktrace
+      - name: Verify Gateway status protocol and query isolation
+        run: |
+          python3 -m pip install --disable-pip-version-check -r tools/gateway/requirements.txt
+          python3 tools/gateway/test_gateway.py
       - name: Record inherited E5 protocol test status
         id: inherited_tests
         continue-on-error: true
