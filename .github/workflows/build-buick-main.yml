@@ -89,6 +89,20 @@ jobs:
           echo "Branch versionName=$RELEASE_VERSION_NAME versionCode=$CODE branch=$GITHUB_REF_NAME"
       - name: Build signed release APK
         run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify APK package ID, visible app label and entry components
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(find "${ANDROID_HOME}/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.main.cardeck'" <<< "$BADGING"
+          grep -Fq "application-label:'CarDeck- Buick-main'" <<< "$BADGING"
+          MANIFEST="$("$AAPT" dump xmltree "$APK" AndroidManifest.xml)"
+          grep -Fq 'io.github.shaonialife.cardeck.SenderApp' <<< "$MANIFEST"
+          grep -Fq 'io.github.shaonialife.cardeck.MainActivity' <<< "$MANIFEST"
+          echo "Verified independent APK identity: Buick-main"
       - uses: actions/upload-artifact@v4
         with:
           name: CarDeck-${{ github.ref_name }}-${{ github.run_id }}
