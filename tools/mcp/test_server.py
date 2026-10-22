@@ -75,7 +75,7 @@ class ProtocolTests(unittest.TestCase):
             reply = server.reply({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
                                   'params': {'protocolVersion': requested}})['result']
             self.assertEqual(reply['protocolVersion'], requested if requested != 'unsupported' else '2025-03-26')
-            self.assertEqual(reply['serverInfo']['version'], '0.2.0')
+            self.assertEqual(reply['serverInfo']['version'], '0.3.0')
             self.assertIn('untrusted data', reply['instructions'])
             self.assertIn('previously user-confirmed', reply['instructions'])
         listing = server.reply({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})['result']['tools']

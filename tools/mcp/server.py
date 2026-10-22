@@ -216,7 +216,7 @@ def call_tool(name, args):
                 'keyword_counts': {key: len(re.findall(pattern, value, re.I)) for key, pattern in patterns.items()},
                 'note': 'Keyword counts only; no root cause inferred.'}
     if name == 'diagnostics_status' and not args:
-        status = {'status': 'ok', 'mode': 'gateway_read_only', 'version': '0.2.0',
+        status = {'status': 'ok', 'mode': 'gateway_read_only', 'version': '0.3.0',
                   'cluster_access': False, 'vehicle_commands': False, 'system_log_capture': False,
                   'utc': datetime.now(timezone.utc).isoformat()}
         try:
@@ -266,7 +266,7 @@ def reply(request):
         if version not in ('2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'):
             version = '2025-03-26'
         result = {'protocolVersion': version, 'capabilities': {'tools': {'listChanged': False}},
-                  'serverInfo': {'name': 'CarDeck Diagnostics', 'version': '0.2.0'}, 'instructions': INSTRUCTIONS}
+                  'serverInfo': {'name': 'CarDeck Diagnostics', 'version': '0.3.0'}, 'instructions': INSTRUCTIONS}
     elif method == 'ping':
         result = {}
     elif method == 'tools/list':
