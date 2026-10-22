@@ -16,8 +16,17 @@ DOC_RANGES = tuple(ipaddress.ip_network(net) for net in
                    ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "198.18.0.0/15"))
 IP_PATTERN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 MAC_PATTERN = re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b")
-PRIVATE_DOMAIN = re.compile(r"[A-Za-z0-9.-]+\." + "once" + r"\." + "wiki\b", re.I)
+PRIVATE_DOMAIN = re.compile(r"[A-Za-z0-9.-]+\." + "once" + r"\." + r"wiki\b", re.I)
 PRIVATE_STORAGE = re.compile("/" + "data" + r"/(?:files|cert)(?:/|\b)")
+# Never commit a Bluetooth/SSID name derived from the user's specific vehicle.
+# Car model and protocol family labels (e.g. B233 and Buick-E5) remain allowed.
+VEHICLE_IDENTIFIER = re.compile(
+    r"(?i)\b(?:BUICK|CHEVROLET|CADILLAC)[_-]\d{3,}(?:[-_][A-Za-z0-9]+)?\b"
+)
+DIAGNOSTIC_FILENAME = re.compile(
+    r"(?i)^(?:CarDeck-log-|CarDeck-system-crash|bugreport[-_]|sysdiagnose[-_])"
+)
+
 CREDENTIAL_ASSIGNMENT = re.compile(
     r"""(?i)\b(?:access[_-]?token|api[_-]?key|password|passwd|read[_-]?token|secret)\s*[:=]\s*["']?([A-Za-z0-9+/=_-]{24,})"""
 )
@@ -39,6 +48,8 @@ def reasons(path: Path, contents: str) -> list[str]:
         issues.add("private project domain")
     if PRIVATE_STORAGE.search(contents):
         issues.add("private filesystem location")
+    if VEHICLE_IDENTIFIER.search(contents):
+        issues.add("specific vehicle Bluetooth or hotspot identifier")
     if PRIVATE_KEY_HEADER.search(contents) or PROVIDER_KEYS.search(contents):
         issues.add("possible credential or private key")
     if CREDENTIAL_ASSIGNMENT.search(contents):
@@ -70,6 +81,9 @@ def main() -> int:
         if not filename:
             continue
         path = Path(filename.decode("utf-8", "surrogateescape"))
+        if DIAGNOSTIC_FILENAME.search(path.name):
+            violations.append((str(path), "tracked private diagnostic attachment"))
+            continue
         if path.suffix.lower() in PRIVATE_FILE_SUFFIXES or path.name.startswith(".env"):
             violations.append((str(path), "tracked private filename"))
             continue
