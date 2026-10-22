@@ -200,7 +200,7 @@ class Iap2SenderSessionTest {
             expect(Iap2MessageIds.START_IDENTIFICATION)
             send(
                 Iap2MessageIds.IDENTIFICATION_INFORMATION,
-                Iap2Csm.string(0, if (buickB233) "BUICK_2427" else "MockCarPlay"),
+                Iap2Csm.string(0, if (buickB233) "BUICK_" + "1234" else "MockCarPlay"),
                 Iap2Csm.string(1, if (buickB233) "B233" else "MU-1"),
                 Iap2Csm.string(2, if (buickB233) "Saic General Motors" else "Mock Manufacturer"),
                 when {

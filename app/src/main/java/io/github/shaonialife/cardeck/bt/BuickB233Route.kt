@@ -1,14 +1,13 @@
 package io.github.shaonialife.cardeck.bt
 
 /**
- * Only the observed Buick E5 B233 Bluetooth receiver name qualifies for the
- * outbound iAP2 exception. Do not broadly match "BUICK" or other GM devices:
- * their SDP and incoming-link semantics may legitimately differ.
+ * B233 experimental SDP fallback is limited to Buick's four-digit
+ * Bluetooth-name format; never match generic Buick/GM or other accessories.
+ * This avoids storing an individual car's advertised name in public source.
  *
- * If the head unit is renamed, explicitly selecting it in Connection
- * Preparation still bypasses the SDP check in Iap2BluetoothClient.
+ * Explicit user-selected connection targets continue to bypass SDP as before.
  */
 internal object BuickB233Route {
     fun isKnownReceiver(name: String?): Boolean =
-        name?.trim()?.equals("BUICK_2427", ignoreCase = true) == true
+        name?.trim()?.matches(Regex("(?i)^BUICK_[0-9]{4}$")) == true
 }

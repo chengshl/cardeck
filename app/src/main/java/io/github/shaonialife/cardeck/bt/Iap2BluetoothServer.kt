@@ -132,7 +132,7 @@ class Iap2BluetoothServer(
             // consecutive outbound failures; no default protocol change.
             val isB233 = BuickB233Route.isKnownReceiver(peerName)
             if (isB233 && !claimB233InboundRecovery()) {
-                log("BT: BUICK_2427 入站 iAP2 暂不启用（须连续两次 0x4300 失败）")
+                log("BT: B233 receiver 入站 iAP2 暂不启用（须连续两次 0x4300 失败）")
                 runCatching { socket.close() }
                 continue
             }

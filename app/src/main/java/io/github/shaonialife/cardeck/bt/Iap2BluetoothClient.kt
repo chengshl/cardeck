@@ -243,7 +243,7 @@ class Iap2BluetoothClient(
                         null
                     } ?: device.address
                 runCatching { adapter.cancelDiscovery() }
-                // BUICK_2427 (B233) was verified with an outbound RFCOMM link
+                // B233 receiver (B233) was verified with an outbound RFCOMM link
                 // in T1, but Android sometimes reports no accessory iAP2 UUID
                 // in its SDP cache. Bypass only this known receiver, never all
                 // paired devices (headphones/watch still require SDP).
@@ -252,7 +252,7 @@ class Iap2BluetoothClient(
                 if (targetProvider() == null && knownBuick &&
                     skippedNoService.add("B233:" + device.address)
                 ) {
-                    log("BT-C: 自动识别 BUICK_2427（B233）：SDP 可能缺少 iAP2 UUID，仍尝试主动连入")
+                    log("BT-C: 自动识别 B233 receiver（B233）：SDP 可能缺少 iAP2 UUID，仍尝试主动连入")
                 }
                 // 自动模式（未选目标）先过 SDP 闸门：候选=全部已配对设备，耳机/手表
                 // 没有 iAP2 服务，连不上还白白被断 HFP/A2DP（设备级断开兜底更会波及
