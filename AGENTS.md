@@ -406,11 +406,11 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   不能在超时日志里断言车机「不发」（MMI 9310 就是声明会发但晚到）。
 - **0x4301 的地址字段是「定长 + NUL 填充」，解析必须去掉全部尾部 NUL**（2026-10-18，
   Audi MMI 3315 日志定谳）：车机把 IPv6 填充到 47 字节（`fe80::…` 后跟 **22 个 NUL**）、
-  IPv4 填充到 17 字节（`10.174.189.1` 后跟 **5 个 NUL**）。`asStringOrEmpty()` 原先只
-  `copyOf(size - 1)` 去掉一个，得到 `"10.174.189.1\0\0\0\0\0"`——这个字符串
+  IPv4 填充到 17 字节（`[IP]` 后跟 **5 个 NUL**）。`asStringOrEmpty()` 原先只
+  `copyOf(size - 1)` 去掉一个，得到 `"[IP]\0\0\0\0\0"`——这个字符串
   `contains('.')=true`、`contains(':')=false`，能通过所有「是不是 IPv4」的判断，
   但 Android 的 getaddrinfo 解不了（iOS/桌面 Java 反而容忍，极易误判为「不是这个原因」），
-  日志表现为 `Unable to resolve host "10.174.189.1": No address associated with hostname`。
+  日志表现为 `Unable to resolve host "[IP]": No address associated with hostname`。
   典型症状链：SRP 配对靠 mDNS 刷新后的干净地址**侥幸成功** → 视频数据端口与 keepAlive
   仍用带 NUL 的旧地址 → 双双失败 → 车机 ~10s 后拆会话（用户看到「连上就断」）。
   教训：**协议字段里的 NUL 填充一律 `rstrip(0)`**，不要假设只有一个终止符。
@@ -577,9 +577,9 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   WinPlay 实测）：接收端可以按「用户选中的 iPhone 蓝牙地址」过滤会话，对不上即回
   **403**，状态行是它特有的 `403 OK`（WinPlay 的 STATUS_TEXT 表没有 403，回退成
   OK——看到这个组合优先怀疑设备过滤）。此前用 catplay 的写死假值
-  `ff:ee:dd:cc:bb:aa`——Audi/DiPlay 不校验，WinPlay 必拒；表象是「连上后约 45s
+  `[MAC]`——Audi/DiPlay 不校验，WinPlay 必拒；表象是「连上后约 45s
   自动断开」（接收端等视频超时后自己拆链）。现统一走 `DeviceIdentity`（与
-  0x4300/0x4E0E 同源），占位值 `02:00:00:00:00:00` 只作 Shizuku 未就绪兜底，
+  0x4300/0x4E0E 同源），占位值 `[MAC]` 只作 Shizuku 未就绪兜底，
   403 日志会打印该值供用户到接收端对照。**SETUP 非 200 要主动 close 控制通道**，
   别静默等接收端拆链——否则用户只看到「自动断开」，排查从零开始。
 - **会话存活靠三条相互独立的心跳，缺一整轮 10 秒后被车机拆**（2026-10-19 奥迪

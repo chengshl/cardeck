@@ -104,7 +104,7 @@ FF 5A | u16 总长 | u8 控制 | u8 seq | u8 ack | u8 会话ID | u8 头校验和
 **车机侧**广播 `_airplay._tcp`，TXT 记录：
 
 ```
-deviceid=AA:BB:CC:DD:EE:FF   features=0x44540380,0x61   flags=0x4
+deviceid=[MAC]   features=0x44540380,0x61   flags=0x4
 model=...  srcvers=...  protovers=1.1
 pi=<配对ID>  pk=<ed25519公钥hex>
 ```
@@ -181,7 +181,7 @@ nonce(12B) = 4 字节零 + 尾 8 字节小端计数（逐包递增）
 | MFi | ✅ | **20 字节挑战**（32B 静默但不打断链）；0xAA03 签名 132B |
 | WiFi 凭据 | ✅ | 0x5702 → 0x5703 ssid=Audi_MMI_6318_5GHz ch=149 psk 明文 |
 | ctrl 邀请 | ✅ | 车机在 WiFi 上发现手机 `_carplay-ctrl._tcp` 后 `GET /ctrl-int/1/connect`（死锁关键：手机必须**在 0x5703 到达时立即**绑 WiFi + 广播带**真实蓝牙 MAC** 的 ctrl） |
-| mDNS 端点 | ✅ | 车机 `_airplay._tcp` 上线于 10.174.189.1:7000，TXT: `features=0x4040280,0x61 srcvers=320.17.7 flags=0x4 model=AUDI 3260 deviceid=54:64:DE:5E:51:B0`（**无 pk 字段**） |
+| mDNS 端点 | ✅ | 车机 `_airplay._tcp` 上线于 [IP]:7000，TXT: `features=0x4040280,0x61 srcvers=320.17.7 flags=0x4 model=AUDI 3260 deviceid=[MAC]`（**无 pk 字段**） |
 | AirPlay /info | ✅ | RTSP 200/455（在线） |
 | pair-setup | ❌ 403 | 车机不接受匿名 SRP 配对（iAP2 已完成 MFi 信任） |
 | pair-verify 快路径 | ⏳ | 403 后转「已配对设备」pair-verify，待实测 |
@@ -203,13 +203,13 @@ nonce(12B) = 4 字节零 + 尾 8 字节小端计数（逐包递增）
 1. 0x4301 因**车机型号/固件而异，不能按「奥迪」一概而论**：
    - **Audi MMI 6318（2026-10-09/11 全通那台）**：不发 0x4301——识别帧声明可收
      `0x4e0c 0x4e09 0x4e0d 0x4e0e 0x5702 0xea00 0xea01`、可发 `0x5703 0xea03`；
-     AirPlay 端点只能走 WiFi 的 mDNS `_airplay._tcp`（10.174.189.1:7000）
+     AirPlay 端点只能走 WiFi 的 mDNS `_airplay._tcp`（[IP]:7000）
    - **Audi MMI 9310（AUDI 5810 / DELPHI，2026-10-18 用户实测）**：识别帧
      **明确声明会发 0x4301**（`车机发送清单(2)=0x4301 0xea03`），但实际在 Phase 1
      结束后 **2 分 35 秒**才发（车机侧 CarPlay 窗口刚开）；此时我们的 3s 等待窗口、
      4s ctrl 邀请窗口、120s 配对窗口**全部已过期**。若把它当心跳丢弃，车机等 15s
      无人连入即拆 RFCOMM → 用户看到「连上后自动断开」。
-     另：该车热点网关是 `10.174.189.254`（不是 .1），网关兜底端口 7000 仍 Connection
+     另：该车热点网关是 `[IP]`（不是 .1），网关兜底端口 7000 仍 Connection
      refused——是否端口不同未定谳（该轮 mDNS 全程未发现 `_airplay._tcp`），
      下一轮日志的 `iap2 0x4301 原始体` 可确认它是否携带 IPv4/端口。
    - 结论：**0x4301 必须作为生命周期事件处理**（迟到也要解析并触发配对），
@@ -227,7 +227,7 @@ nonce(12B) = 4 字节零 + 尾 8 字节小端计数（逐包递增）
    整轮 AirPlay 窗口）
 
 **设备身份（0x4300/0x4E0E/ctrl TXT id 用）**：真实蓝牙 MAC 必须动态解析
-（Android 11+ 应用层只能拿到占位 `02:00:00:00:00:00`）。
+（Android 11+ 应用层只能拿到占位 `[MAC]`）。
 Shizuku shell 侧读法：`content query --uri content://settings/secure/bluetooth_address`。
 
 ## 9c. 奥迪 MIB3 全通记录（2026-10-11，Phase 3-C 验收）
@@ -265,7 +265,7 @@ iAP2 → WiFi → mDNS → 配对全通，卡在会话级 SETUP。
   （`reference/WinPlay/src/engine/run.ts:64`）。
 - 会话级 SETUP 里 `dict.deviceID` 对不上（或缺字段）直接回 **403**
   （`src/engine/protocol/cpStack.ts:696-699`）；`RECORD` 在设备验收前同样 403。
-- 我们此前发的是 catplay 的写死假值 `ff:ee:dd:cc:bb:aa`
+- 我们此前发的是 catplay 的写死假值 `[MAC]`
   （旧注释「车机不校验」只在 Audi/DiPlay 成立）。
 - 状态行 `RTSP/1.0 403 OK` 是 WinPlay 的指纹：它的 `STATUS_TEXT` 表没有 403 条目，
   `buildResponse` 回退成 `OK`（`src/engine/protocol/rtspMessage.ts`）。看到「403 OK」
@@ -275,7 +275,7 @@ iAP2 → WiFi → mDNS → 配对全通，卡在会话级 SETUP。
 
 对照 Audi/DiPlay：两者都不校验 SETUP 的 deviceID，所以这个字段长期没有被发现。
 本项目已改为复用 `DeviceIdentity` 解析出的**真实本机蓝牙 MAC**（与 0x4300/0x4E0E
-一致），占位值 `02:00:00:00:00:00` 只在 Shizuku 未就绪时兜底，并在 403 日志里
+一致），占位值 `[MAC]` 只在 Shizuku 未就绪时兜底，并在 403 日志里
 明确提示「接收端请选择该地址」。
 
 **WinPlay 的其他特性（对本项目有用的）**：
