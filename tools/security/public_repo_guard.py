@@ -21,7 +21,7 @@ PRIVATE_STORAGE = re.compile("/" + "data" + r"/(?:files|cert)(?:/|\b)")
 # Never commit a Bluetooth/SSID name derived from the user's specific vehicle.
 # Car model and protocol family labels (e.g. B233 and Buick-E5) remain allowed.
 VEHICLE_IDENTIFIER = re.compile(
-    r"(?i)\\b(?:BUICK|CHEVROLET|CADILLAC)[_-]\\d{3,}(?:[-_][A-Za-z0-9]+)?\\b"
+    r"(?i)\b(?:BUICK|CHEVROLET|CADILLAC)[_-]\d{3,}(?:[-_][A-Za-z0-9]+)?\b"
 )
 DIAGNOSTIC_FILENAME = re.compile(
     r"(?i)^(?:CarDeck-log-|CarDeck-system-crash|bugreport[-_]|sysdiagnose[-_])"
