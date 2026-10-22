@@ -1,6 +1,9 @@
 package io.github.shaonialife.cardeck
 
 import android.app.Application
+import android.app.Activity
+import android.os.Bundle
+import io.github.shaonialife.cardeck.service.GatewayLogService
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -22,9 +25,19 @@ class SenderApp : Application() {
         // 之后的部分。必须在这里写（Application 是进程最早入口），晚于任何业务日志
         // 都会让它被算进「历史」。
         DebugFileLog.markSessionStart(this)
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityResumed(activity: Activity) { GatewayLogService.resumeIfEnabled(activity) }
+            override fun onActivityCreated(activity: Activity, state: Bundle?) {}
+            override fun onActivityStarted(activity: Activity) {}
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivityStopped(activity: Activity) {}
+            override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) {}
+            override fun onActivityDestroyed(activity: Activity) {}
+        })
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             Log.e(TAG, "未捕获异常（线程 ${thread.name}，已吞掉保进程）", throwable)
+            DebugFileLog.append(this, "未捕获异常（线程 ${thread.name}）\n" + Log.getStackTraceString(throwable))
             // 不调用 previous：默认处理器会 killProcess 杀死整个 app
         }
         // 应用安装/卸载/更新 → 桌面与车机设置的共享应用清单缓存失效

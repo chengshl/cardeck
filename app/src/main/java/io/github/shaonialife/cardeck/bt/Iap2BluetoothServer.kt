@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
+import io.github.shaonialife.cardeck.gateway.GatewayVehicleIdentity
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
@@ -158,6 +159,7 @@ class Iap2BluetoothServer(
         val channel = Iap2LinkChannel(stream, name = "iap2-bt") { line -> log(line) }
         activeChannel = channel
         BtSessionGate.inboundActive = true
+        val vehicleId = runCatching { GatewayVehicleIdentity.activate(context, socket.remoteDevice?.address) }.getOrNull()
         try {
             channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpointUpdate)
         } catch (error: IOException) {
@@ -165,6 +167,7 @@ class Iap2BluetoothServer(
         } finally {
             if (activeChannel === channel) activeChannel = null
             BtSessionGate.inboundActive = false
+            GatewayVehicleIdentity.clearIfActive(vehicleId)
             channel.close()
             log("SESSION 结束，等待接收端重连（BT 监听仍在运行）")
         }

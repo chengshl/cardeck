@@ -3,6 +3,7 @@ package io.github.shaonialife.cardeck.bt
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
+import io.github.shaonialife.cardeck.gateway.GatewayVehicleIdentity
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
@@ -345,7 +346,13 @@ class Iap2BluetoothClient(
                 runCatching { connected.close() }
                 return
             }
-            runSession(connected, connectedKnownBuick)
+            // Diagnostics only: resolve a random vehicle label after a real RFCOMM connection.
+            val vehicleId = runCatching { GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address) }.getOrNull()
+            try {
+                runSession(connected, connectedKnownBuick)
+            } finally {
+                GatewayVehicleIdentity.clearIfActive(vehicleId)
+            }
             sleepQuietly(RETRY_DELAY_MILLIS)
         }
         log("BT-C: 客户端已停止")

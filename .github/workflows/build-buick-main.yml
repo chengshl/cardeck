@@ -51,6 +51,16 @@ jobs:
             echo "keyPassword=$KEYSTORE_PASSWORD"
           } > keystore.properties
           chmod 600 keystore.properties
+      - name: Verify Buick-main Gateway diagnostic tests (required)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests '*EntryAddressTest' --tests '*GatewayProbeTest' --tests '*GatewayLogBufferVehicleTest' --tests '*LogRedactorTest' --stacktrace
+      - name: Verify Gateway/MCP read-only server tests (required)
+        run: |
+          python3 -m pip install --disable-pip-version-check -r tools/gateway/requirements.txt
+          python3 tools/mcp/test_server.py
+          python3 tools/gateway/test_log_archive.py
+          python3 tools/gateway/test_gateway.py
       - name: Run Android unit tests
         id: unit_tests
         # Buick-E5 had two failing mock iAP2 tests before the shared updater
@@ -102,6 +112,8 @@ jobs:
           MANIFEST="$("$AAPT" dump xmltree "$APK" AndroidManifest.xml)"
           grep -Fq 'io.github.shaonialife.cardeck.SenderApp' <<< "$MANIFEST"
           grep -Fq 'io.github.shaonialife.cardeck.MainActivity' <<< "$MANIFEST"
+          grep -Fq 'io.github.shaonialife.cardeck.EntryConfigActivity' <<< "$MANIFEST"
+          grep -Fq 'io.github.shaonialife.cardeck.service.GatewayLogService' <<< "$MANIFEST"
           echo "Verified independent APK identity: Buick-main"
       - uses: actions/upload-artifact@v4
         with:

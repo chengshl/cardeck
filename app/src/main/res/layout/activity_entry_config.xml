@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/m3_surface"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="12dp">
+
+        <ImageView
+            android:id="@+id/btnBack"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_ripple_circle"
+            android:contentDescription="返回"
+            android:padding="12dp"
+            android:src="@drawable/ic_chev_left" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:text="@string/entry_title"
+            android:textColor="#EDF3F3"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:labelFor="@id/entryAddress"
+                android:text="@string/entry_address_label"
+                android:textColor="#EDF3F3"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/entryAddress"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:autofillHints=""
+                android:background="@drawable/bg_ssid_input_idle"
+                android:hint="@string/entry_address_hint"
+                android:importantForAutofill="no"
+                android:inputType="textUri"
+                android:maxLength="2048"
+                android:minHeight="52dp"
+                android:padding="14dp"
+                android:singleLine="true"
+                android:textColor="#EDF3F3"
+                android:textColorHint="#94A3A8"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:labelFor="@id/entryCredential"
+                android:text="@string/entry_token_label"
+                android:textColor="#EDF3F3"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/entryCredential"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_ssid_input_idle"
+                android:hint="@string/entry_token_hint"
+                android:importantForAutofill="no"
+                android:inputType="textPassword"
+                android:maxLength="4096"
+                android:minHeight="52dp"
+                android:padding="14dp"
+                android:saveEnabled="false"
+                android:singleLine="true"
+                android:textColor="#EDF3F3"
+                android:textColorHint="#94A3A8"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/entry_help"
+                android:textColor="#94A3A8"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/entryStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:accessibilityLiveRegion="polite"
+                android:text="@string/entry_loading"
+                android:textColor="#7EDCE6"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/testEntry"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="20dp"
+                android:text="@string/gateway_test" />
+
+            <TextView
+                android:id="@+id/gatewayStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:accessibilityLiveRegion="polite"
+                android:text="@string/gateway_idle"
+                android:textColor="#7EDCE6"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/disconnectEntry"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/gateway_disconnect" />
+
+            <TextView
+                android:id="@+id/gatewayLogStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/gateway_log_waiting"
+                android:textColor="#7EDCE6"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/uploadSystemLogs"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/gateway_system_preview" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/gateway_test_help"
+                android:textColor="#94A3A8"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/saveEntry"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="24dp"
+                android:backgroundTint="#7EDCE6"
+                android:text="@string/entry_save"
+                android:textColor="#101418" />
+
+            <Button
+                android:id="@+id/clearEntry"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/entry_clear" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

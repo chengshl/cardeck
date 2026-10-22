@@ -1,0 +1,11 @@
+{
+  "root": "/var/lib/cardeck-logs",
+  "max_file_bytes": 16777216,
+  "retention_seconds": 604800,
+  "cleanup_interval_seconds": 60,
+  "utc_offset_hours": 8,
+  "expected_mount": {
+    "filesystem": "cifs",
+    "source": "CHANGE_ME_TO_THE_EXISTING_CIFS_SOURCE"
+  }
+}
