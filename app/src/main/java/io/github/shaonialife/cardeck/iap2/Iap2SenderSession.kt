@@ -437,6 +437,11 @@ class Iap2SenderSession(
                 if (!channel.isAlive) break
                 continue
             }
+            // A late 0x4301 carries real Wi-Fi/AirPlay endpoint data. Handle it
+            // before repetitive-message logging is throttled (the peer may retry it).
+            if (frame.messageId == Iap2MessageIds.CARPLAY_START_SESSION) {
+                handleLateStartSession(frame)
+            }
             if (frame.messageId == lastLoggedId) {
                 repeatCount++
                 if (repeatCount % 100 != 0) continue
@@ -453,6 +458,31 @@ class Iap2SenderSession(
             )
         }
         log("SESSION 保活结束（链路断开）")
+    }
+
+    /** Phase 1 can finish without 0x4301; an accessory may announce its
+     * endpoint only after Wi-Fi/mDNS invitation. Do not drop that late message.
+     * Never log its raw payload because it can contain the Wi-Fi passphrase. */
+    private fun handleLateStartSession(frame: Iap2Csm.Frame) {
+        runCatching {
+            val fallback = wifi ?: WifiConfiguration("", "", 0, 0)
+            val endpoint = parseStartSession(frame, fallback)
+            if (endpoint.ssid.isBlank()) {
+                log("iap2 晚到 0x4301 未提供有效 SSID，忽略本条端点更新")
+                return
+            }
+            if (wifi == null) {
+                wifi = WifiConfiguration(
+                    endpoint.ssid, endpoint.passphrase, endpoint.channel, endpoint.securityType,
+                )
+            }
+            // A repeated notification may still be needed by pairing retry logic.
+            onEndpointUpdate?.invoke(endpoint)
+            log("iap2 晚到 0x4301 已通知主控：port=${endpoint.airPlayPort} ipCount=${endpoint.ipAddresses.size}")
+        }.onFailure { error ->
+            // Malformed or unexpected peer data must not take down iAP2 keep-alive.
+            log("iap2 晚到 0x4301 处理失败：${error.javaClass.simpleName}")
+        }
     }
 
     // ---- 帧收发 ----
@@ -831,12 +861,13 @@ class Iap2SenderSession(
             .toString()
             .uppercase()
 
-    private fun ByteArray.asStringOrEmpty(): String? =
-        if (isNotEmpty() && last() == 0.toByte()) {
-            copyOf(size - 1).decodeToString()
-        } else {
-            null
-        }
+    /** CSM strings are NUL-terminated; some OEMs pad the whole fixed-size field. */
+    private fun ByteArray.asStringOrEmpty(): String? {
+        if (isEmpty() || last() != 0.toByte()) return null
+        var end = size
+        while (end > 0 && this[end - 1] == 0.toByte()) end--
+        return copyOf(end).decodeToString()
+    }
 
     private fun ByteArray.asU32(): Int =
         if (size == 4) {

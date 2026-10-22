@@ -69,13 +69,8 @@ jobs:
           python3 tools/mcp/test_server.py
           python3 tools/gateway/test_log_archive.py
           python3 tools/gateway/test_gateway.py
-      - name: Record inherited E5 protocol test status
-        id: inherited_tests
-        continue-on-error: true
+      - name: Run all Android unit tests (required)
         run: ./gradlew :app:testDebugUnitTest --stacktrace
-      - name: Report inherited protocol test failures
-        if: steps.inherited_tests.outcome == 'failure'
-        run: echo "::warning::E5 protocol tests failed; inspect test reports. Entry/channel tests are a separate hard gate. Real-car testing remains required."
       - name: Check Android lint
         run: ./gradlew :app:lintDebug --stacktrace
       - name: Assign test build version
