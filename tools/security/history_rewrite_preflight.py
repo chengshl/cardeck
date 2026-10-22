@@ -60,11 +60,15 @@ def main():
     ]).decode("utf-8", "replace")
     fixture_macs = {MAC.findall(fixture)[0].lower()}
     # The MCP unit test also contains a deliberately synthetic device MAC.
-    mcp_fixture = subprocess.check_output([
-        "git", "show",
-        "refs/remotes/origin/Buick-Test:tools/mcp/test_server.py"
-    ]).decode("utf-8", "replace")
-    fixture_macs.update(m.lower() for m in MAC.findall(mcp_fixture))
+    for ref in ("refs/remotes/origin/Buick-Test", "refs/heads/Buick-Test"):
+        result = subprocess.run(["git", "show", f"{ref}:tools/mcp/test_server.py"],
+                                capture_output=True, check=False)
+        if result.returncode == 0:
+            fixture_macs.update(m.lower() for m in MAC.findall(
+                result.stdout.decode("utf-8", "replace")))
+            break
+    else:
+        raise RuntimeError("Current Buick-Test public fixture could not be loaded")
     for path, content in read_blobs():
         if KEY.search(content):
             raise RuntimeError("Possible credential requires rotation and explicit handling before rewrite")
