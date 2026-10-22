@@ -1,0 +1,19 @@
+name: Public repository privacy guard
+
+on:
+  push:
+    branches: [main, Buick-main, Buick-E5, Buick-Test]
+  pull_request:
+    branches: [main, Buick-main, Buick-E5, Buick-Test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-tree-privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tracked files for private infrastructure and secrets
+        run: python3 tools/security/public_repo_guard.py
