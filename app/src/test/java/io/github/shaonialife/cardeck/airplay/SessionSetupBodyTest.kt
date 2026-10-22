@@ -26,7 +26,7 @@ class SessionSetupBodyTest {
                 deviceIdentifier = null,
                 publicKey = null,
                 sourceVersion = null,
-                ipAddresses = listOf("192.168.137.1"),
+                ipAddresses = listOf("192.0.2.1"),
             ),
             log = {},
         )

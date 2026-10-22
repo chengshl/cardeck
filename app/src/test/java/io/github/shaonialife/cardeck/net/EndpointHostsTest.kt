@@ -29,10 +29,10 @@ class EndpointHostsTest {
                 listOf(
                     "fe80::1%wlan0",
                     "2001:db8::5",
-                    "10.174.189.1",
+                    "192.0.2.1",
                 ),
             )
-        assertEquals(listOf("10.174.189.1", "2001:db8::5", "fe80::1%wlan0"), ordered)
+        assertEquals(listOf("192.0.2.1", "2001:db8::5", "fe80::1%wlan0"), ordered)
     }
 
     @Test
@@ -44,31 +44,31 @@ class EndpointHostsTest {
 
     @Test
     fun ipv4NetworkFilterUses24Prefix() {
-        assertTrue(EndpointHosts.isSameNetwork("10.174.189.1", "10.174.189.57"))
-        assertFalse(EndpointHosts.isSameNetwork("172.30.8.246", "10.174.189.57"))
+        assertTrue(EndpointHosts.isSameNetwork("192.0.2.1", "192.0.2.57"))
+        assertFalse(EndpointHosts.isSameNetwork("198.51.100.246", "192.0.2.57"))
         // 拿不到本地 IPv4 时不设限（旧行为）
-        assertTrue(EndpointHosts.isSameNetwork("10.174.189.1", null))
+        assertTrue(EndpointHosts.isSameNetwork("192.0.2.1", null))
     }
 
     @Test
     fun linkLocalIpv6AlwaysAcceptedGlobalIpv6NeedsMatchingPrefix() {
-        assertTrue(EndpointHosts.isSameNetwork("fe80::1%wlan0", "10.0.0.2"))
+        assertTrue(EndpointHosts.isSameNetwork("fe80::1%wlan0", "203.0.113.2"))
         assertTrue(
             EndpointHosts.isSameNetwork(
                 "2001:db8:1:2::5",
-                "10.0.0.2",
+                "203.0.113.2",
                 listOf("2001:db8:1:2::99"),
             ),
         )
         assertFalse(
             EndpointHosts.isSameNetwork(
                 "2001:db8:9:9::5",
-                "10.0.0.2",
+                "203.0.113.2",
                 listOf("2001:db8:1:2::99"),
             ),
         )
         // 本地没有 IPv6 信息：拒绝全局 IPv6（宁可走网关兜底，也不误连家庭网络设备）
-        assertFalse(EndpointHosts.isSameNetwork("2001:db8:1:2::5", "10.0.0.2"))
+        assertFalse(EndpointHosts.isSameNetwork("2001:db8:1:2::5", "203.0.113.2"))
     }
 
     @Test
