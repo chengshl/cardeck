@@ -45,9 +45,9 @@ class GatewayProbeTest {
         server.shutdown()
     }
 
-    private fun start(replyTimeout: Long = 2_000, deviceInfo: GatewayDeviceInfo? = null): GatewayProbe {
+    private fun start(replyTimeout: Long = 2_000, deviceInfo: GatewayDeviceInfo? = null, appLogs: GatewayLogBuffer? = null): GatewayProbe {
         return GatewayProbe(client, observer = { events.offer(it) }, heartbeatIntervalMs = 100,
-            replyTimeoutMs = replyTimeout, deviceInfo = deviceInfo).also {
+            replyTimeoutMs = replyTimeout, deviceInfo = deviceInfo, appLogs = appLogs).also {
             probe = it
             it.start(EntryConfig(server.url("/ws/device").toString().replaceFirst("https://", "wss://"), "test-only-token"))
         }
@@ -55,11 +55,12 @@ class GatewayProbeTest {
 
     private val info = GatewayDeviceInfo("65bddcd6-0e81-4f98-b509-7aafc1ddc3f8", "test-build", 35)
 
-    private fun reportingGateway(acknowledge: Boolean, received: LinkedBlockingQueue<JSONObject>) =
+    private fun reportingGateway(acknowledge: Boolean, received: LinkedBlockingQueue<JSONObject>, logs: Boolean = false, logAck: Boolean = true) =
         MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
             private var reports = 0
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send("""{"type":"hello","mode":"transport-test","capabilities":["device_status_v1"]}""")
+                val capabilities = if (logs) "[\"device_status_v1\",\"logs_v1\"]" else "[\"device_status_v1\"]"
+                webSocket.send("""{"type":"hello","mode":"transport-test","capabilities":$capabilities}""")
             }
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val message = JSONObject(text)
@@ -71,6 +72,9 @@ class GatewayProbeTest {
                         reports++
                         webSocket.send(JSONObject().put("type", "status_ack").put("report_count", reports).toString())
                     }
+                    "logs" -> if (logAck) webSocket.send(JSONObject().put("type", "logs_ack")
+                        .put("source", message.getString("source")).put("batch_id", message.getString("batch_id"))
+                        .put("accepted_lines", message.getJSONArray("lines").length()).toString())
                 }
             }
         })
@@ -93,6 +97,60 @@ class GatewayProbeTest {
         val status = received.poll(2, TimeUnit.SECONDS)!!
         assertEquals(setOf("type", "heartbeat_count", "latency_ms"), status.keys().asSequence().toSet())
         assertEquals(1, status.getInt("heartbeat_count"))
+    }
+
+    private fun awaitLogCount(app: Int = 0, system: Int = 0): GatewayProbe.Snapshot {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+        while (System.nanoTime() < deadline) {
+            val event = await(GatewayProbe.State.HEALTHY)
+            if (event.appLogLines >= app && event.systemLogLines >= system) return event
+        }
+        error("Log acknowledgement missing")
+    }
+
+    @Test
+    fun appLogsStreamAutomaticallyButSystemLogsRequireExplicitConfirmation() {
+        val received = LinkedBlockingQueue<JSONObject>()
+        val buffer = GatewayLogBuffer(LogRedactor(listOf("test-only-token")))
+        buffer.offer("软件日志：连接建立 192.168.1.2")
+        server.enqueue(reportingGateway(true, received, logs = true))
+        val active = start(deviceInfo = info, appLogs = buffer)
+        assertTrue(awaitLogCount(app = 1).logsSupported)
+        assertFalse(received.any { it.optString("source") == "system" })
+        val appMessage = received.first { it.optString("type") == "logs" }
+        assertEquals("app", appMessage.getString("source"))
+        assertFalse(appMessage.getBoolean("user_confirmed"))
+        assertFalse(appMessage.getJSONArray("lines").getString(0).contains("192.168.1.2"))
+        assertTrue(active.uploadConfirmedSystemLogs(listOf("已预览系统日志")))
+        assertEquals(1, awaitLogCount(system = 1).systemLogLines)
+        val systemMessage = received.first { it.optString("source") == "system" }
+        assertTrue(systemMessage.getBoolean("user_confirmed"))
+        assertEquals("已预览系统日志", systemMessage.getJSONArray("lines").getString(0))
+        active.close()
+        assertFalse(active.uploadConfirmedSystemLogs(listOf("已过期预览")))
+    }
+
+    @Test
+    fun unacknowledgedAppLogBatchFailsAndReturnsToBoundedBuffer() {
+        val received = LinkedBlockingQueue<JSONObject>()
+        val buffer = GatewayLogBuffer(LogRedactor())
+        buffer.offer("等待确认的日志")
+        server.enqueue(reportingGateway(true, received, logs = true, logAck = false))
+        start(replyTimeout = 700, deviceInfo = info, appLogs = buffer)
+        assertEquals(GatewayProbe.Failure.LOG_UPLOAD, await(GatewayProbe.State.FAILED).failure)
+        assertEquals(listOf("等待确认的日志"), buffer.take())
+    }
+
+    @Test
+    fun gatewayWithoutLogCapabilityDoesNotReceiveLogs() {
+        val received = LinkedBlockingQueue<JSONObject>()
+        val buffer = GatewayLogBuffer(LogRedactor())
+        buffer.offer("仅保留在有界缓冲中的日志")
+        server.enqueue(reportingGateway(true, received))
+        start(deviceInfo = info, appLogs = buffer)
+        assertFalse(await(GatewayProbe.State.HEALTHY).logsSupported)
+        Thread.sleep(350)
+        assertFalse(received.any { it.optString("type") == "logs" })
     }
 
     @Test

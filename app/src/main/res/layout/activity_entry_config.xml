@@ -139,6 +139,23 @@
                 android:text="@string/gateway_disconnect" />
 
             <TextView
+                android:id="@+id/gatewayLogStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/gateway_log_waiting"
+                android:textColor="#7EDCE6"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/uploadSystemLogs"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/gateway_system_preview" />
+
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"

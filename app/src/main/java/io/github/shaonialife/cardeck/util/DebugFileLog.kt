@@ -6,6 +6,7 @@ import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * 全局调试文件日志（files/main_debug.log）。
@@ -16,6 +17,12 @@ import java.util.Locale
 object DebugFileLog {
     private val lock = Any()
     private val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val listeners = CopyOnWriteArrayList<(String) -> Unit>()
+
+    fun subscribe(listener: (String) -> Unit): AutoCloseable {
+        listeners.add(listener)
+        return AutoCloseable { listeners.remove(listener) }
+    }
 
     /**
      * 「本次进程启动」标记行。日志文件跨进程保留（最多 2MB），用户反馈问题时
@@ -88,5 +95,7 @@ object DebugFileLog {
             }
         } catch (_: Throwable) {
         }
+        // Outside the file lock: consumers only redact and enqueue, never perform network I/O here.
+        listeners.forEach { listener -> runCatching { listener(message) } }
     }
 }

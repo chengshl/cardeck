@@ -9,6 +9,9 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
+import org.json.JSONArray
+import java.util.ArrayDeque
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -21,10 +24,11 @@ class GatewayProbe(
     private val heartbeatIntervalMs: Long = 10_000,
     private val replyTimeoutMs: Long = 10_000,
     private val deviceInfo: GatewayDeviceInfo? = null,
+    private val appLogs: GatewayLogBuffer? = null,
 ) : AutoCloseable {
     private val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     enum class State { CONNECTING, CONNECTED, HEALTHY, AUTH_FAILED, DISCONNECTED, FAILED }
-    enum class Failure { NETWORK, TLS, HANDSHAKE, PROTOCOL, HEARTBEAT, CONFIGURATION }
+    enum class Failure { NETWORK, TLS, HANDSHAKE, PROTOCOL, HEARTBEAT, CONFIGURATION, LOG_UPLOAD }
 
     data class Snapshot(
         val state: State,
@@ -34,6 +38,11 @@ class GatewayProbe(
         val latencyMs: Long = 0,
         val reportsSupported: Boolean = false,
         val reportCount: Int = 0,
+        val logsSupported: Boolean = false,
+        val appLogLines: Int = 0,
+        val systemLogLines: Int = 0,
+        val droppedLogLines: Long = 0,
+        val systemPending: Boolean = false,
     )
 
     private val timer = Executors.newSingleThreadScheduledExecutor { task ->
@@ -52,6 +61,14 @@ class GatewayProbe(
     private var awaitingReport = false
     private var reportCount = 0
     private var latencyMs = 0L
+    private var logsSupported = false
+    private var appLogLines = 0
+    private var systemLogLines = 0
+    private data class LogBatch(val source: String, val lines: List<String>, val id: String = UUID.randomUUID().toString())
+    private val systemBatches = ArrayDeque<LogBatch>()
+    private var pendingLog: LogBatch? = null
+    private var logDeadline: ScheduledFuture<*>? = null
+    private var logPump: ScheduledFuture<*>? = null
 
     @Synchronized
     fun start(config: EntryConfig) {
@@ -108,6 +125,8 @@ class GatewayProbe(
                         val capabilities = message.optJSONArray("capabilities")
                         reportsSupported = deviceInfo != null && capabilities != null &&
                             (0 until capabilities.length()).any { capabilities.optString(it) == "device_status_v1" }
+                        logsSupported = reportsSupported && appLogs != null &&
+                            (0 until capabilities!!.length()).any { capabilities.optString(it) == "logs_v1" }
                         if (reportsSupported) {
                             sendReportMessage(deviceInfo!!.registration())
                         } else {
@@ -122,6 +141,7 @@ class GatewayProbe(
                         registered = true
                         deadline?.cancel(false)
                         sendHeartbeat()
+                        if (logsSupported) logPump = timer.scheduleWithFixedDelay({ pumpLogs() }, 250, 250, TimeUnit.MILLISECONDS)
                     }
                     "heartbeat_ack" -> {
                         if (!greeted) {
@@ -150,6 +170,18 @@ class GatewayProbe(
                         reportCount++
                         publishHealthy()
                         scheduleHeartbeat()
+                    }
+                    "logs_ack" -> {
+                        val pending = pendingLog
+                        if (pending == null || message.optString("batch_id") != pending.id ||
+                            message.optString("source") != pending.source || message.optInt("accepted_lines", -1) != pending.lines.size) {
+                            fail(Failure.PROTOCOL)
+                            return
+                        }
+                        logDeadline?.cancel(false)
+                        if (pending.source == "app") appLogLines += pending.lines.size else systemLogLines += pending.lines.size
+                        pendingLog = null
+                        if (heartbeatCount > 0) publishHealthy()
                     }
                     else -> fail(Failure.PROTOCOL)
                 }
@@ -180,7 +212,31 @@ class GatewayProbe(
 
     private fun publishHealthy() = observer(Snapshot(State.HEALTHY,
         heartbeatCount = heartbeatCount, latencyMs = latencyMs,
-        reportsSupported = reportsSupported, reportCount = reportCount))
+        reportsSupported = reportsSupported, reportCount = reportCount,
+        logsSupported = logsSupported, appLogLines = appLogLines, systemLogLines = systemLogLines,
+        droppedLogLines = appLogs?.dropped ?: 0,
+        systemPending = systemBatches.isNotEmpty() || pendingLog?.source == "system"))
+
+    /** Call only from the positive action of the exact redacted preview, never during capture. */
+    @Synchronized
+    fun uploadConfirmedSystemLogs(preview: List<String>): Boolean {
+        if (stopped || !registered || !logsSupported || heartbeatCount == 0 || systemBatches.isNotEmpty() || pendingLog?.source == "system") return false
+        if (preview.isEmpty() || preview.size > 64 || preview.any { it.isBlank() || it.length > 256 }) return false
+        preview.chunked(8).forEach { systemBatches.addLast(LogBatch("system", it.toList())) }
+        publishHealthy()
+        return true
+    }
+
+    @Synchronized
+    private fun pumpLogs() {
+        if (stopped || !registered || !logsSupported || pendingLog != null) return
+        val batch = systemBatches.pollFirst() ?: appLogs?.take()?.takeIf { it.isNotEmpty() }?.let { LogBatch("app", it) } ?: return
+        pendingLog = batch
+        val message = JSONObject().put("type", "logs").put("source", batch.source).put("batch_id", batch.id)
+            .put("user_confirmed", batch.source == "system").put("lines", JSONArray(batch.lines))
+        if (socket?.send(message.toString()) != true) { fail(Failure.NETWORK); return }
+        logDeadline = timer.schedule({ fail(Failure.LOG_UPLOAD) }, replyTimeoutMs, TimeUnit.MILLISECONDS)
+    }
 
     private fun scheduleHeartbeat() {
         nextHeartbeat = timer.schedule({ sendHeartbeat() }, heartbeatIntervalMs, TimeUnit.MILLISECONDS)
@@ -217,6 +273,11 @@ class GatewayProbe(
         stopped = true
         deadline?.cancel(false)
         nextHeartbeat?.cancel(false)
+        logPump?.cancel(false)
+        logDeadline?.cancel(false)
+        pendingLog?.takeIf { it.source == "app" }?.let { appLogs?.retry(it.lines) }
+        pendingLog = null
+        systemBatches.clear() // A new connection always requires a fresh system-log preview and confirmation.
         socket?.cancel()
         socket = null
         timer.shutdownNow()

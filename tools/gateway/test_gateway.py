@@ -18,8 +18,8 @@ from websockets.exceptions import ConnectionClosed
 async def main():
     async with gateway.serve(gateway.handler, '127.0.0.1', 0, process_request=gateway.process_request) as server:
         port = server.sockets[0].getsockname()[1]
-        def get(token):
-            request = urllib.request.Request(f'http://127.0.0.1:{port}/api/devices', headers={'Authorization': 'Bearer ' + token})
+        def get(token, path='/api/devices'):
+            request = urllib.request.Request(f'http://127.0.0.1:{port}' + path, headers={'Authorization': 'Bearer ' + token})
             try:
                 with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=3) as response:
                     return response.status, json.load(response)
@@ -41,6 +41,27 @@ async def main():
             record = (await asyncio.to_thread(get, gateway.READ_TOKEN))[1]['devices'][0]
             assert record['online'] and record['heartbeat_count'] == 1 and record['latency_ms'] == 27
             assert record['app_version'] == 'synthetic-test' and record['report_count'] == 1
+            app_batch = dict(type='logs', source='app', batch_id=str(uuid.uuid4()), user_confirmed=False,
+                lines=['connection 192.168.10.200 user@example.com', 'Authorization: Bearer test-secret'])
+            await ws.send(json.dumps(app_batch))
+            ack = json.loads(await ws.recv())
+            assert ack['type'] == 'logs_ack' and ack['accepted_lines'] == 2
+            path = '/api/logs?device_id=' + device_id
+            assert (await asyncio.to_thread(get, gateway.TOKEN, path))[0] == 401
+            entries = (await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs']
+            assert len(entries) == 2 and all(item['source'] == 'app' for item in entries)
+            assert not any('192.168' in item['text'] or 'test-secret' in item['text'] or 'user@example.com' in item['text'] for item in entries)
+            await ws.send(json.dumps(app_batch))
+            assert json.loads(await ws.recv())['batch_id'] == app_batch['batch_id']
+            assert len((await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs']) == 2
+            await ws.send(json.dumps(dict(type='logs', source='system', batch_id=str(uuid.uuid4()), user_confirmed=True, lines=['confirmed-preview'])))
+            assert json.loads(await ws.recv())['accepted_lines'] == 1
+            entries = (await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs']
+            assert entries[-1]['source'] == 'system' and entries[-1]['text'] == 'confirmed-preview'
+            for index in range(26):
+                await ws.send(json.dumps(dict(type='logs', source='app', batch_id=str(uuid.uuid4()), user_confirmed=False, lines=[f'bounded-line-{index}'] * 8)))
+                assert json.loads(await ws.recv())['accepted_lines'] == 8
+            assert len((await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs']) == 200
             await ws.send('{"type":"status","heartbeat_count":true,"latency_ms":27,"raw_log":"forbidden"}')
             try:
                 await ws.recv()
@@ -50,6 +71,17 @@ async def main():
         await asyncio.sleep(.05)
         record = (await asyncio.to_thread(get, gateway.READ_TOKEN))[1]['devices'][0]
         assert not record['online'] and 'raw_log' not in record
-        print('PASS reader/device credential isolation, registration, acknowledged report query, field validation, disconnect state')
+        async with connect(f'ws://127.0.0.1:{port}/ws/device', additional_headers=auth, proxy=None) as ws:
+            await ws.recv()
+            await ws.send(json.dumps(dict(type='register', device_id=device_id, app_version='synthetic-test', sdk=35)))
+            assert json.loads(await ws.recv())['type'] == 'register_ack'
+            await ws.send(json.dumps(dict(type='logs', source='system', batch_id=str(uuid.uuid4()), user_confirmed=False, lines=['must-not-store'])))
+            try:
+                await ws.recv()
+                raise AssertionError('Unconfirmed system logs accepted')
+            except ConnectionClosed as error:
+                assert error.code == 1008
+            assert not any(item['text'] == 'must-not-store' for item in (await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs'])
+        print('PASS isolated credentials, status query, app logs, confirmed system logs, unconfirmed rejection, deduplication, redaction, offline state')
 
 asyncio.run(main())

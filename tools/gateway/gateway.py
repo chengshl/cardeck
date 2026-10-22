@@ -7,6 +7,9 @@ import os
 import signal
 import time
 import uuid
+import re
+from collections import deque
+from urllib.parse import parse_qs, urlsplit
 from http import HTTPStatus
 
 from websockets.asyncio.server import serve
@@ -22,6 +25,25 @@ if len(READ_TOKEN) < 32 or READ_TOKEN == TOKEN:
 # Bounded, Pod-lifetime status only. No addresses, raw logs or vehicle data.
 devices = {}
 owners = {}
+logs = {}
+accepted_batches = {}
+
+
+def redact(text):
+    for secret in (TOKEN, READ_TOKEN):
+        text = text.replace(secret, "[已隐藏凭证]")
+    if re.search(r"(?i)authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|credential|nonce|salt|signature|密码|凭证", text):
+        return "[已隐藏含凭证或密钥的日志行]"
+    text = re.sub(r"(?i)\b[a-z][a-z0-9+.-]*://\S+", "[地址]", text)
+    text = re.sub(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", "[MAC]", text)
+    text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[IP]", text)
+    text = re.sub(r"(?i)(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]+", "[IPv6]", text)
+    text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}\b", "[邮箱]", text)
+    text = re.sub(r"[A-Za-z0-9_+/=-]{32,}", "[长标识]", text)
+    text = re.sub(r"\b\d{11,18}\b", "[数字标识]", text)
+    text = re.sub(r"\b[A-HJ-NPR-Z0-9]{17}\b", "[车辆标识]", text)
+    text = re.sub(r"(?i)(ssid|serial|device.?id|vin|latitude|longitude)\s*[:=].*", r"\1=[已隐藏]", text)
+    return ''.join(c if ord(c) >= 32 and ord(c) != 127 else ' ' for c in text)[:256]
 
 
 def authorized(request, token):
@@ -67,6 +89,19 @@ def process_request(connection, request):
         response.headers["Content-Type"] = "application/json"
         response.headers["Cache-Control"] = "no-store"
         return response
+    if urlsplit(request.path).path == "/api/logs":
+        if not authorized(request, READ_TOKEN):
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+        query = parse_qs(urlsplit(request.path).query)
+        if set(query) != {"device_id"} or len(query["device_id"]) != 1:
+            return connection.respond(HTTPStatus.BAD_REQUEST, "device_id required\n")
+        device_id = query["device_id"][0]
+        response = connection.respond(HTTPStatus.OK, json.dumps({
+            "retention": "pod-lifetime-last-200-lines", "device_id": device_id,
+            "logs": list(logs.get(device_id, []))}))
+        response.headers["Content-Type"] = "application/json"
+        response.headers["Cache-Control"] = "no-store"
+        return response
     if request.path != "/ws/device":
         return connection.respond(HTTPStatus.NOT_FOUND, "not found\n")
     if not authorized(request, TOKEN):
@@ -78,7 +113,7 @@ def process_request(connection, request):
 async def handler(ws):
     device_id = None
     await ws.send(json.dumps({"type": "hello", "mode": "transport-test",
-                              "capabilities": ["device_status_v1"],
+                              "capabilities": ["device_status_v1", "logs_v1"],
                               "ping_interval_seconds": 20, "ping_timeout_seconds": 10}))
     try:
         async for message in ws:
@@ -112,7 +147,10 @@ async def handler(ws):
                     if not offline:
                         await ws.close(1013, "registry full")
                         return
-                    del devices[min(offline, key=lambda key: devices[key]["last_seen_ms"])]
+                    oldest = min(offline, key=lambda key: devices[key]["last_seen_ms"])
+                    del devices[oldest]
+                    logs.pop(oldest, None)
+                    accepted_batches.pop(oldest, None)
                 device_id = record["device_id"]
                 owners[device_id] = ws
                 devices[device_id] = dict(record, online=True,
@@ -130,6 +168,35 @@ async def handler(ws):
                     last_report_ms=int(time.time() * 1000),
                     report_count=record["report_count"] + 1, connection_state="healthy")
                 await ws.send(json.dumps({"type": "status_ack", "report_count": record["report_count"]}))
+            elif kind == "logs":
+                lines = payload.get("lines")
+                source = payload.get("source")
+                batch_id = payload.get("batch_id")
+                try:
+                    valid_id = str(uuid.UUID(batch_id)) == batch_id
+                except (ValueError, TypeError, AttributeError):
+                    valid_id = False
+                if (not device_id or set(payload) != {"type", "source", "batch_id", "user_confirmed", "lines"}
+                    or not valid_id or source not in ("app", "system")
+                    or type(payload.get("user_confirmed")) is not bool
+                    or payload["user_confirmed"] != (source == "system")
+                    or not isinstance(lines, list) or not 1 <= len(lines) <= 8
+                    or any(not isinstance(line, str) or not 1 <= len(line) <= 256 for line in lines)):
+                    await ws.close(1008, "invalid log batch")
+                    return
+                recent = accepted_batches.setdefault(device_id, deque(maxlen=64))
+                if batch_id not in recent:
+                    recent.append(batch_id)
+                    entries = logs.setdefault(device_id, deque(maxlen=200))
+                    now = int(time.time() * 1000)
+                    for line in lines:
+                        entries.append({"source": source, "received_ms": now, "text": redact(line)})
+                    record = devices[device_id]
+                    counter = "app_log_lines" if source == "app" else "system_log_lines"
+                    record[counter] = record.get(counter, 0) + len(lines)
+                    record["last_log_ms"] = now
+                await ws.send(json.dumps({"type": "logs_ack", "source": source,
+                    "batch_id": batch_id, "accepted_lines": len(lines)}))
             else:
                 await ws.send('{"type":"error","code":"unsupported_test_message"}')
     except ConnectionClosed:

@@ -62,7 +62,7 @@ jobs:
       - name: Verify entry configuration and channel isolation
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests '*EntryAddressTest' --tests '*UpdateChannelTest' --tests '*GatewayProbeTest' --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests '*EntryAddressTest' --tests '*UpdateChannelTest' --tests '*GatewayProbeTest' --tests '*LogRedactorTest' --stacktrace
       - name: Verify Gateway status protocol and query isolation
         run: |
           python3 -m pip install --disable-pip-version-check -r tools/gateway/requirements.txt
@@ -115,7 +115,7 @@ jobs:
             printf 'versionName=%s\nversionCode=%s\nbranch=Buick-Test\ncommit=%s\n' \
               "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_SHA"
             printf '\n## 更新说明\n'
-            git log -1 --pretty=%s
+            git log -1 --pretty=%B
           } > test-release-notes.txt
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" --clobber

@@ -10,9 +10,14 @@ import androidx.appcompat.app.AppCompatActivity
 import io.github.shaonialife.cardeck.config.EntryAddress
 import io.github.shaonialife.cardeck.config.EntryConfig
 import io.github.shaonialife.cardeck.config.EntryConfigStore
-import io.github.shaonialife.cardeck.gateway.GatewayNetworkRoute
 import io.github.shaonialife.cardeck.gateway.GatewayProbe
-import io.github.shaonialife.cardeck.gateway.GatewayIdentity
+import io.github.shaonialife.cardeck.gateway.GatewayLogRuntime
+import io.github.shaonialife.cardeck.gateway.LogRedactor
+import io.github.shaonialife.cardeck.gateway.SystemLogCapture
+import io.github.shaonialife.cardeck.service.GatewayLogService
+import android.widget.ScrollView
+import androidx.appcompat.app.AlertDialog
+import android.os.SystemClock
 import io.github.shaonialife.cardeck.util.Bg
 
 class EntryConfigActivity : AppCompatActivity() {
@@ -28,9 +33,12 @@ class EntryConfigActivity : AppCompatActivity() {
     private var configLoaded = false
     private var storageBusy = false
     private var testRunning = false
-    private var testGeneration = 0
-    private var probe: GatewayProbe? = null
-    private var route: GatewayNetworkRoute? = null
+    private lateinit var logStatus: TextView
+    private lateinit var systemLogs: Button
+    private var observer: AutoCloseable? = null
+    private var previewDialog: AlertDialog? = null
+    private var previewGeneration = 0
+    private var captureBusy = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,6 +53,9 @@ class EntryConfigActivity : AppCompatActivity() {
         test = findViewById(R.id.testEntry)
         disconnect = findViewById(R.id.disconnectEntry)
         gatewayStatus = findViewById(R.id.gatewayStatus)
+        logStatus = findViewById(R.id.gatewayLogStatus)
+        systemLogs = findViewById(R.id.uploadSystemLogs)
+        systemLogs.setOnClickListener { previewSystemLogs() }
         val draft = savedInstanceState?.getString("entry_address_draft")
         busy(true)
         val appContext = applicationContext
@@ -90,7 +101,9 @@ class EntryConfigActivity : AppCompatActivity() {
         save.isEnabled = editable && configLoaded
         clear.isEnabled = editable
         test.isEnabled = editable && configLoaded && stored != null
-        disconnect.isEnabled = testRunning
+        disconnect.isEnabled = testRunning || GatewayLogRuntime.running
+        val snapshot = GatewayLogRuntime.snapshot
+        systemLogs.isEnabled = !captureBusy && GatewayLogRuntime.running && snapshot?.state == GatewayProbe.State.HEALTHY && snapshot.logsSupported && !snapshot.systemPending
     }
 
     private fun saveConfig() {
@@ -108,6 +121,7 @@ class EntryConfigActivity : AppCompatActivity() {
             credential.error = getString(R.string.entry_changed_address_token)
             return
         }
+        stopTest()
         busy(true)
         val appContext = applicationContext
         Bg.run("entry-config-save") {
@@ -129,6 +143,7 @@ class EntryConfigActivity : AppCompatActivity() {
     }
 
     private fun clearConfig() {
+        stopTest()
         busy(true)
         val appContext = applicationContext
         Bg.run("entry-config-clear") {
@@ -157,43 +172,13 @@ class EntryConfigActivity : AppCompatActivity() {
             gatewayStatus.setText(R.string.gateway_save_first)
             return
         }
-        val generation = ++testGeneration
         testRunning = true
         gatewayStatus.setText(R.string.gateway_connecting)
         refreshControls()
-        val appContext = applicationContext
-        Bg.run("gateway-probe-start") {
-            val prepared = runCatching {
-                val deviceInfo = GatewayIdentity.load(appContext)
-                val selectedRoute = GatewayNetworkRoute.create(appContext)
-                val selectedProbe = GatewayProbe(selectedRoute.client, observer = { snapshot ->
-                    runOnUiThread {
-                        if (testGeneration == generation && !isFinishing && !isDestroyed) renderGateway(snapshot)
-                    }
-                }, deviceInfo = deviceInfo)
-                selectedRoute to selectedProbe
-            }
-            runOnUiThread {
-                if (testGeneration != generation || isFinishing || isDestroyed) {
-                    prepared.getOrNull()?.let { (unusedRoute, unusedProbe) ->
-                        unusedRoute.close()
-                        unusedProbe.close()
-                    }
-                    return@runOnUiThread
-                }
-                prepared.onSuccess { (selectedRoute, selectedProbe) ->
-                    route = selectedRoute
-                    probe = selectedProbe
-                    runCatching {
-                        selectedRoute.watch { selectedProbe.networkLost() }
-                        selectedProbe.start(config)
-                    }.onFailure { selectedProbe.networkLost() }
-                }.onFailure {
-                    testRunning = false
-                    gatewayStatus.setText(R.string.gateway_network_failed)
-                    refreshControls()
-                }
-            }
+        runCatching { GatewayLogService.start(this) }.onFailure {
+            testRunning = false
+            gatewayStatus.setText(R.string.gateway_log_start_failed)
+            refreshControls()
         }
     }
 
@@ -205,38 +190,97 @@ class EntryConfigActivity : AppCompatActivity() {
                 "\n" + if (snapshot.reportsSupported) getString(R.string.gateway_reports, snapshot.reportCount)
                 else getString(R.string.gateway_reports_unsupported)
             GatewayProbe.State.AUTH_FAILED -> getString(R.string.gateway_auth_failed)
-            GatewayProbe.State.DISCONNECTED -> getString(R.string.gateway_disconnected)
+            GatewayProbe.State.DISCONNECTED -> getString(if (GatewayLogRuntime.running) R.string.gateway_reconnecting else R.string.gateway_disconnected)
             GatewayProbe.State.FAILED -> when (snapshot.failure) {
                 GatewayProbe.Failure.TLS -> getString(R.string.gateway_tls_failed)
                 GatewayProbe.Failure.HANDSHAKE -> getString(R.string.gateway_handshake_failed, snapshot.httpCode ?: 0)
                 GatewayProbe.Failure.PROTOCOL -> getString(R.string.gateway_protocol_failed)
                 GatewayProbe.Failure.HEARTBEAT -> getString(R.string.gateway_heartbeat_failed)
                 GatewayProbe.Failure.CONFIGURATION -> getString(R.string.gateway_save_first)
+                GatewayProbe.Failure.LOG_UPLOAD -> getString(R.string.gateway_log_timeout)
                 else -> getString(R.string.gateway_network_failed)
             }
         }
-        if (snapshot.state in setOf(GatewayProbe.State.AUTH_FAILED, GatewayProbe.State.DISCONNECTED, GatewayProbe.State.FAILED)) {
-            testRunning = false
-            route?.close()
-            route = null
-            probe = null
-            refreshControls()
-        }
+        logStatus.text = if (snapshot.state == GatewayProbe.State.HEALTHY && snapshot.logsSupported) {
+            getString(R.string.gateway_log_counts, snapshot.appLogLines, snapshot.systemLogLines, snapshot.droppedLogLines) +
+                if (snapshot.systemPending) "\n" + getString(R.string.gateway_system_pending) else ""
+        } else getString(if (snapshot.state == GatewayProbe.State.HEALTHY) R.string.gateway_log_unsupported else R.string.gateway_log_waiting)
+        testRunning = GatewayLogRuntime.running
+        refreshControls()
     }
 
     private fun stopTest() {
-        testGeneration++
-        route?.close()
-        route = null
-        probe?.close()
-        probe = null
-        if (testRunning) gatewayStatus.setText(R.string.gateway_disconnected)
+        previewGeneration++
+        previewDialog?.dismiss()
+        previewDialog = null
+        GatewayLogService.stop(applicationContext)
+        gatewayStatus.setText(R.string.gateway_disconnected)
         testRunning = false
         refreshControls()
     }
 
+    private fun previewSystemLogs() {
+        val target = GatewayLogRuntime.probe ?: return
+        val config = stored ?: return
+        if (captureBusy) return
+        val generation = ++previewGeneration
+        captureBusy = true
+        logStatus.setText(R.string.gateway_system_collecting)
+        refreshControls()
+        val appContext = applicationContext
+        Bg.run("system-log-preview") {
+            val result = runCatching { SystemLogCapture.preview(appContext, LogRedactor(listOf(config.token))) }
+            runOnUiThread {
+                if (generation != previewGeneration || isFinishing || isDestroyed) return@runOnUiThread
+                captureBusy = false
+                refreshControls()
+                val lines = result.getOrNull()
+                if (lines.isNullOrEmpty()) {
+                    logStatus.setText(R.string.gateway_system_unavailable)
+                    return@runOnUiThread
+                }
+                val expires = SystemClock.elapsedRealtime() + 120_000
+                val body = TextView(this).apply {
+                    text = lines.joinToString("\n")
+                    setTextIsSelectable(true)
+                    textSize = 12f
+                    setPadding(24, 16, 24, 16)
+                }
+                val scroll = ScrollView(this).apply { addView(body) }
+                previewDialog = AlertDialog.Builder(this)
+                    .setTitle(R.string.gateway_system_preview_title)
+                    .setMessage(getString(R.string.gateway_system_preview_help, lines.size))
+                    .setView(scroll)
+                    .setNegativeButton(R.string.gateway_system_cancel, null)
+                    .setPositiveButton(R.string.gateway_system_confirm) { _, _ ->
+                        val valid = GatewayLogRuntime.running && GatewayLogRuntime.probe === target && SystemClock.elapsedRealtime() <= expires
+                        val accepted = valid && target.uploadConfirmedSystemLogs(lines)
+                        logStatus.setText(if (accepted) R.string.gateway_system_pending else R.string.gateway_system_expired)
+                    }.create().also { dialog ->
+                        dialog.show()
+                        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        scroll.layoutParams = scroll.layoutParams.apply { height = (320 * resources.displayMetrics.density).toInt() }
+                    }
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        observer = GatewayLogRuntime.subscribe { snapshot ->
+            runOnUiThread { if (!isFinishing && !isDestroyed) renderGateway(snapshot) }
+        }
+        testRunning = GatewayLogRuntime.running
+        refreshControls()
+    }
+
     override fun onStop() {
-        stopTest()
+        observer?.close()
+        observer = null
+        previewGeneration++
+        captureBusy = false
+        previewDialog?.dismiss()
+        previewDialog = null
         super.onStop()
     }
 }
