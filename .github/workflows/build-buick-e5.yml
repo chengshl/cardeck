@@ -61,18 +61,8 @@ jobs:
           python3 tools/mcp/test_server.py
           python3 tools/gateway/test_log_archive.py
           python3 tools/gateway/test_gateway.py
-      - name: Run Android unit tests
-        id: unit_tests
-        # Buick-E5 had two failing mock iAP2 tests before the shared updater
-        # was introduced (late 0x4301 callback and NUL-padded addresses).
-        # Record the failure but do not disable signed APK delivery while
-        # integration tests are being reconciled with the experimental branch.
-        # All other branches keep unit tests as a hard release gate.
-        continue-on-error: true
+      - name: Run all Android unit tests (required)
         run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --stacktrace
-      - name: Warn about known Buick-E5 mock-test failures
-        if: ${{ github.ref_name == 'Buick-E5' && steps.unit_tests.outcome == 'failure' }}
-        run: echo "::warning::Buick-E5 legacy iAP2 mock tests are failing; APK build proceeds, CarPlay real-car verification still required."
       - name: Assign monotonic branch Android version
         shell: bash
         run: |
