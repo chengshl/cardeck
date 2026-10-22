@@ -134,7 +134,6 @@ class Iap2BluetoothServer(
     }
 
     private fun runSession(socket: BluetoothSocket) {
-        val vehicleId = GatewayVehicleIdentity.activate(context, runCatching { socket.remoteDevice.address }.getOrNull())
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
@@ -142,6 +141,10 @@ class Iap2BluetoothServer(
         val channel = Iap2LinkChannel(stream, name = "iap2-bt") { line -> log(line) }
         activeChannel = channel
         BtSessionGate.inboundActive = true
+        // Diagnostics must never prevent a valid CarPlay session.
+        val vehicleId = runCatching {
+            GatewayVehicleIdentity.activate(context, socket.remoteDevice.address)
+        }.getOrNull()
         try {
             channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpointUpdate)
         } catch (error: IOException) {

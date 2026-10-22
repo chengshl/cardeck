@@ -210,7 +210,7 @@ class Iap2BluetoothClient(
                 t35Attempts += 1
                 log("BT-C T39: Buick RFCOMM session #$t35Attempts start (no fixed retry cap; no HFP/A2DP disconnect)")
             }
-            val vehicleId = GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address)
+            val vehicleId = runCatching { GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address) }.getOrNull()
             try {
                 runSession(connected)
             } finally {
