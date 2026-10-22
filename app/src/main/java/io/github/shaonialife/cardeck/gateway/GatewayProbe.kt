@@ -25,6 +25,7 @@ class GatewayProbe(
     private val replyTimeoutMs: Long = 10_000,
     private val deviceInfo: GatewayDeviceInfo? = null,
     private val appLogs: GatewayLogBuffer? = null,
+    private val vehicleProvider: () -> String? = { null },
 ) : AutoCloseable {
     private val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     enum class State { CONNECTING, CONNECTED, HEALTHY, AUTH_FAILED, DISCONNECTED, FAILED }
@@ -64,7 +65,13 @@ class GatewayProbe(
     private var logsSupported = false
     private var appLogLines = 0
     private var systemLogLines = 0
-    private data class LogBatch(val source: String, val lines: List<String>, val id: String = UUID.randomUUID().toString())
+    private data class LogBatch(
+        val source: String,
+        val lines: List<String>,
+        val id: String = UUID.randomUUID().toString(),
+        val vehicleId: String? = null,
+        val taggedLines: List<GatewayLogBuffer.TaggedLine> = emptyList(),
+    )
     private val systemBatches = ArrayDeque<LogBatch>()
     private var pendingLog: LogBatch? = null
     private var logDeadline: ScheduledFuture<*>? = null
@@ -156,8 +163,10 @@ class GatewayProbe(
                         publishHealthy()
                         if (registered) {
                             awaitingReport = true
-                            sendReportMessage(JSONObject().put("type", "status")
-                                .put("heartbeat_count", heartbeatCount).put("latency_ms", latencyMs))
+                            val status = JSONObject().put("type", "status")
+                                .put("heartbeat_count", heartbeatCount).put("latency_ms", latencyMs)
+                            vehicleProvider()?.let { status.put("vehicle_id", it) }
+                            sendReportMessage(status)
                         } else scheduleHeartbeat()
                     }
                     "status_ack" -> {
@@ -222,7 +231,8 @@ class GatewayProbe(
     fun uploadConfirmedSystemLogs(preview: List<String>): Boolean {
         if (stopped || !registered || !logsSupported || heartbeatCount == 0 || systemBatches.isNotEmpty() || pendingLog?.source == "system") return false
         if (preview.isEmpty() || preview.size > 64 || preview.any { it.isBlank() || it.length > 256 }) return false
-        preview.chunked(8).forEach { systemBatches.addLast(LogBatch("system", it.toList())) }
+        val confirmedVehicle = vehicleProvider()
+        preview.chunked(8).forEach { systemBatches.addLast(LogBatch("system", it.toList(), vehicleId = confirmedVehicle)) }
         publishHealthy()
         return true
     }
@@ -230,10 +240,13 @@ class GatewayProbe(
     @Synchronized
     private fun pumpLogs() {
         if (stopped || !registered || !logsSupported || pendingLog != null) return
-        val batch = systemBatches.pollFirst() ?: appLogs?.take()?.takeIf { it.isNotEmpty() }?.let { LogBatch("app", it) } ?: return
+        val batch = systemBatches.pollFirst() ?: appLogs?.takeTagged()?.takeIf { it.isNotEmpty() }?.let {
+            LogBatch("app", it.map { line -> line.text }, vehicleId = it.first().vehicleId, taggedLines = it)
+        } ?: return
         pendingLog = batch
         val message = JSONObject().put("type", "logs").put("source", batch.source).put("batch_id", batch.id)
             .put("user_confirmed", batch.source == "system").put("lines", JSONArray(batch.lines))
+        batch.vehicleId?.let { message.put("vehicle_id", it) }
         if (socket?.send(message.toString()) != true) { fail(Failure.NETWORK); return }
         logDeadline = timer.schedule({ fail(Failure.LOG_UPLOAD) }, replyTimeoutMs, TimeUnit.MILLISECONDS)
     }
@@ -275,7 +288,7 @@ class GatewayProbe(
         nextHeartbeat?.cancel(false)
         logPump?.cancel(false)
         logDeadline?.cancel(false)
-        pendingLog?.takeIf { it.source == "app" }?.let { appLogs?.retry(it.lines) }
+        pendingLog?.takeIf { it.source == "app" }?.let { appLogs?.retryTagged(it.taggedLines) }
         pendingLog = null
         systemBatches.clear() // A new connection always requires a fresh system-log preview and confirmation.
         socket?.cancel()

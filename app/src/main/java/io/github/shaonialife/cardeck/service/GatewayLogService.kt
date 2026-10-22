@@ -21,6 +21,7 @@ import io.github.shaonialife.cardeck.config.EntryConfig
 import io.github.shaonialife.cardeck.config.EntryConfigStore
 import io.github.shaonialife.cardeck.gateway.GatewayDeviceInfo
 import io.github.shaonialife.cardeck.gateway.GatewayIdentity
+import io.github.shaonialife.cardeck.gateway.GatewayVehicleIdentity
 import io.github.shaonialife.cardeck.gateway.GatewayLogBuffer
 import io.github.shaonialife.cardeck.gateway.GatewayLogRuntime
 import io.github.shaonialife.cardeck.gateway.GatewayNetworkRoute
@@ -73,7 +74,7 @@ class GatewayLogService : Service() {
                     main.post { stopSelf() }
                     return@execute
                 }
-                val queue = GatewayLogBuffer(LogRedactor(listOf(config.token)))
+                val queue = GatewayLogBuffer(LogRedactor(listOf(config.token)), vehicleProvider = GatewayVehicleIdentity::current)
                 buffer = queue
                 subscription = DebugFileLog.subscribe(queue::offer)
                 queue.offer("CarDeck 软件日志实时上报已启动")
@@ -104,7 +105,7 @@ class GatewayLogService : Service() {
                         } }
                     }
                 }
-            }, deviceInfo = info, appLogs = queue)
+            }, deviceInfo = info, appLogs = queue, vehicleProvider = GatewayVehicleIdentity::current)
             if (destroyed) { selected.close(); attempt.close(); return }
             connection = attempt
             GatewayLogRuntime.probe = attempt

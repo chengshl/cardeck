@@ -3,6 +3,7 @@ package io.github.shaonialife.cardeck.bt
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
+import io.github.shaonialife.cardeck.gateway.GatewayVehicleIdentity
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
@@ -209,7 +210,12 @@ class Iap2BluetoothClient(
                 t35Attempts += 1
                 log("BT-C T39: Buick RFCOMM session #$t35Attempts start (no fixed retry cap; no HFP/A2DP disconnect)")
             }
-            runSession(connected)
+            val vehicleId = GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address)
+            try {
+                runSession(connected)
+            } finally {
+                GatewayVehicleIdentity.clearIfActive(vehicleId)
+            }
             if (t35Buick) {
                 log("BT-C T39: Buick RFCOMM session #$t35Attempts ended; outbound reconnect remains enabled")
             }
