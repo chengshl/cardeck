@@ -15,7 +15,7 @@ class ControlCipherTest {
         val receiver = ControlCipher(phoneWriteKey, phoneReadKey) // 接收端视角：读我写、写我读
 
         val request =
-            "SETUP rtsp://192.168.149.253:7000/ RTSP/1.0\r\nContent-Length: 4\r\n\r\nbody"
+            "SETUP rtsp://192.0.2.253:7000/ RTSP/1.0\r\nContent-Length: 4\r\n\r\nbody"
                 .toByteArray()
         assertArrayEquals(request, receiver.decrypt(phone.encrypt(request)).data)
 
