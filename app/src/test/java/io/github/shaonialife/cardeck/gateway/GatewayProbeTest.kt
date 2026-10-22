@@ -156,6 +156,7 @@ class GatewayProbeTest {
         assertFalse(receivedLegacy.first { it.optString("type") == "status" }.has("vehicle_id"))
         probe?.close()
         probe = null
+        events.clear()
 
         val receivedNew = LinkedBlockingQueue<JSONObject>()
         val modernBuffer = GatewayLogBuffer(LogRedactor(), vehicleProvider = { vehicle })
