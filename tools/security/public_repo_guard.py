@@ -16,7 +16,7 @@ DOC_RANGES = tuple(ipaddress.ip_network(net) for net in
                    ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "198.18.0.0/15"))
 IP_PATTERN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 MAC_PATTERN = re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b")
-PRIVATE_DOMAIN = re.compile(r"[A-Za-z0-9.-]+\." + "once" + r"\." + "wiki\b", re.I)
+PRIVATE_DOMAIN = re.compile(r"[A-Za-z0-9.-]+\." + "once" + r"\." + r"wiki\b", re.I)
 PRIVATE_STORAGE = re.compile("/" + "data" + r"/(?:files|cert)(?:/|\b)")
 # Never commit a Bluetooth/SSID name derived from the user's specific vehicle.
 # Car model and protocol family labels (e.g. B233 and Buick-E5) remain allowed.
