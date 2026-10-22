@@ -53,19 +53,31 @@ def report_refs() -> dict:
 
 
 
-def public_test_fixture_mac() -> str | None:
-    """Known synthetic Catplay fallback used as a public test sentinel."""
-    fixture_path = "app/src/test/java/io/github/shaonialife/cardeck/airplay/SessionSetupBodyTest.kt"
-    for ref in ("HEAD", "refs/heads/main", "refs/remotes/origin/main"):
-        result = subprocess.run(["git", "show", f"{ref}:{fixture_path}"],
-                                capture_output=True, check=False)
-        if result.returncode == 0:
+def public_test_fixture_macs() -> set[str]:
+    """Synthetic MAC addresses used by current public unit tests."""
+    examples = set()
+    specs = [
+        ("app/src/test/java/io/github/shaonialife/cardeck/airplay/SessionSetupBodyTest.kt",
+         ("HEAD", "refs/heads/main", "refs/remotes/origin/main"), True),
+        ("tools/mcp/test_server.py",
+         ("refs/remotes/origin/Buick-Test", "refs/heads/Buick-Test"), False)
+    ]
+    for path, refs, first_only in specs:
+        for ref in refs:
+            result = subprocess.run(["git", "show", f"{ref}:{path}"],
+                                    capture_output=True, check=False)
+            if result.returncode != 0:
+                continue
             values = MAC.findall(result.stdout.decode("utf-8", "replace"))
-            return values[0].lower() if values else None
-    return None
+            if first_only:
+                values = values[:1]
+            examples.update(value.lower() for value in values)
+            break
+    return examples
 
 
-PUBLIC_PLACEHOLDER_MAC = public_test_fixture_mac()
+PUBLIC_FIXTURE_MACS = public_test_fixture_macs()
+
 
 def audit_blob(path: str, raw: bytes) -> dict[str, int]:
     if b"\0" in raw[:8192] or pathlib.PurePosixPath(path).suffix.lower() in SKIP_EXTS:
@@ -96,7 +108,7 @@ def audit_blob(path: str, raw: bytes) -> dict[str, int]:
     flag("non_documentation_ipv4", len(addresses))
     if pathlib.PurePosixPath(path).suffix.lower() in DOC_EXTS:
         flag("device_mac_in_document", sum(
-            m.lower() not in ("00:00:00:00:00:00", "02:00:00:00:00:00", PUBLIC_PLACEHOLDER_MAC)
+            m.lower() not in ("00:00:00:00:00:00", "02:00:00:00:00:00") and m.lower() not in PUBLIC_FIXTURE_MACS
             for m in MAC.findall(value)
         ))
     return issues
