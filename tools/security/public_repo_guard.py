@@ -86,6 +86,7 @@ def main() -> int:
         for issue in reasons(path, contents):
             violations.append((str(path), issue))
     for filename, issue in violations:
+        print(f"Public-tree finding: {filename}: {issue}")
         print(f"::error file={filename}::Public-tree privacy guard: {issue}")
     print(f"Public-tree privacy guard scanned {checked} text files; {len(violations)} finding(s).")
     return 1 if violations else 0
