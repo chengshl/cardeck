@@ -8,6 +8,7 @@ import android.net.NetworkRequest
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.io.IOException
+import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 
 /** 只为测试 socket 选择互联网线路，不修改 CarPlay 的进程网络绑定。 */
@@ -54,7 +55,9 @@ class GatewayNetworkRoute private constructor(
             }.minByOrNull { it.first }?.second ?: throw IOException("No Internet network")
             val client = OkHttpClient.Builder()
                 .socketFactory(network.socketFactory)
-                .dns(Dns { hostname -> network.getAllByName(hostname).toList() })
+                .dns(object : Dns {
+                    override fun lookup(hostname: String): List<InetAddress> = network.getAllByName(hostname).toList()
+                })
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(0, TimeUnit.SECONDS)
                 .pingInterval(20, TimeUnit.SECONDS)
