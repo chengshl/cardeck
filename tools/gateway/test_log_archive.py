@@ -45,6 +45,27 @@ class ArchiveTests(unittest.TestCase):
         self.assertIsNone(self.store.stats()["total_size_limit_bytes"])
         self.assertTrue(any("2026-10-22" in path.parts for path in files))
 
+    def test_vehicle_labels_keep_legacy_and_two_cars_separate_after_restart(self):
+        car_a = str(uuid.uuid4())
+        car_b = str(uuid.uuid4())
+        self.assertNotEqual(car_a, car_b)
+        self.append(lines=["unassigned legacy record"])
+        self.store.append(self.device, "app", ["vehicle A early"], str(uuid.uuid4()), car_a)
+        for n in range(240):
+            self.store.append(self.device, "app", [f"B flood {n}"], str(uuid.uuid4()), car_b)
+        self.assertEqual(["vehicle A early"], [r["text"] for r in self.store.tail(
+            self.device, "app", 200, car_a)])
+        self.assertEqual(200, len(self.store.tail(self.device, "app", 200, car_b)))
+        with self.assertRaises(ValueError):
+            self.store.append(self.device, "app", ["invalid"], str(uuid.uuid4()), "not-a-uuid")
+        found = self.store.list_vehicles(self.device)
+        self.assertEqual({car_a, car_b}, {r["vehicle_id"] for r in found})
+        self.store.close()
+        self.store = LogArchive(self.root, max_file_bytes=1800, clock=lambda: self.now)
+        self.assertEqual(["vehicle A early"], [r["text"] for r in self.store.tail(
+            self.device, "app", 200, car_a)])
+        self.assertEqual({car_a, car_b}, {r["vehicle_id"] for r in self.store.list_vehicles(self.device)})
+
     def test_restart_recovers_logs_and_does_not_require_device_registration(self):
         self.append(lines=["persisted before restart"])
         with next(iter(self.store.segments)).open("ab") as handle:

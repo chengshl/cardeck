@@ -198,6 +198,33 @@ class QueryTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(server.GatewayError):
                 server.logs_result(value, DEVICE, 'app', 50)
 
+    def test_anonymous_vehicle_listing_and_filtered_query(self):
+        vehicle = '74a97cc7-51f6-4e10-acd7-e9d4c3a25130'
+        upstream = {'device_id': DEVICE, 'vehicles': [
+            {'vehicle_id': vehicle, 'last_log_ms': 123}, {'vehicle_id': 'invalid', 'last_log_ms': 5}]}
+        with self.assertRaises(server.GatewayError):
+            server.vehicles_result(upstream, DEVICE)
+        upstream['vehicles'].pop()
+        with patch.object(server, 'fetch_gateway', return_value=upstream) as fetch:
+            result = payload(server.reply(tool_request('list_vehicles', {'device_id': DEVICE})))
+        fetch.assert_called_once_with('/api/vehicles?device_id=' + DEVICE)
+        self.assertEqual(result['vehicles'], [{'vehicle_id': vehicle, 'last_log_ms': 123}])
+
+        rows = [{'source': 'app', 'received_ms': 4, 'text': 'private car log',
+                 'vehicle_id': vehicle}]
+        with patch.object(server, 'fetch_gateway', return_value={
+                 'device_id': DEVICE, 'vehicle_id': vehicle, 'logs': rows}) as fetch:
+            result = payload(server.reply(tool_request('get_device_logs', {
+                'device_id': DEVICE, 'source': 'app', 'vehicle_id': vehicle})))
+        fetch.assert_called_once_with(
+            '/api/logs?device_id=' + DEVICE + '&source=app&vehicle_id=' + vehicle)
+        self.assertEqual(result['logs'][0]['vehicle_id'], vehicle)
+        self.assertEqual(result['vehicle_id'], vehicle)
+        with self.assertRaises(server.GatewayError):
+            server.logs_result({'device_id': DEVICE, 'vehicle_id': vehicle,
+                                'logs': [dict(rows[0], vehicle_id=str(uuid.uuid4()))]},
+                               DEVICE, 'app', 50, vehicle)
+
     def test_logs_are_redacted_again_and_control_characters_removed(self):
         sensitive = ['Authorization: Bearer fake', 'password=hunter', '凭证=隐藏', TOKEN]
         with patch.dict(os.environ, {'CARDECK_GATEWAY_READ_TOKEN': TOKEN}):

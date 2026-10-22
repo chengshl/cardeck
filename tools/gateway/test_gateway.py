@@ -64,6 +64,25 @@ async def verify():
             assert json.loads(await ws.recv())['accepted_lines'] == 1
             entries = (await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs']
             assert entries[-1]['source'] == 'system' and entries[-1]['text'] == 'confirmed-preview'
+            car_a, car_b = str(uuid.uuid4()), str(uuid.uuid4())
+            await ws.send(json.dumps(dict(type='status', heartbeat_count=2, latency_ms=1, vehicle_id=car_a)))
+            assert (await ws.recv() and True)
+            status_record = (await asyncio.to_thread(get, gateway.READ_TOKEN))[1]['devices'][0]
+            assert status_record.get('vehicle_id') == car_a
+            await ws.send(json.dumps(dict(type='logs', source='app', batch_id=str(uuid.uuid4()),
+                vehicle_id=car_a, user_confirmed=False, lines=['from vehicle A'])))
+            assert json.loads(await ws.recv())['accepted_lines'] == 1
+            await ws.send(json.dumps(dict(type='logs', source='app', batch_id=str(uuid.uuid4()),
+                vehicle_id=car_b, user_confirmed=False, lines=['from vehicle B'])))
+            assert json.loads(await ws.recv())['accepted_lines'] == 1
+            filtered_a = (await asyncio.to_thread(get, gateway.READ_TOKEN, path + '&vehicle_id=' + car_a))[1]['logs']
+            filtered_b = (await asyncio.to_thread(get, gateway.READ_TOKEN, path + '&vehicle_id=' + car_b))[1]['logs']
+            assert [item['text'] for item in filtered_a] == ['from vehicle A']
+            assert [item['text'] for item in filtered_b] == ['from vehicle B']
+            inventory = (await asyncio.to_thread(get, gateway.READ_TOKEN,
+                '/api/vehicles?device_id=' + device_id))[1]['vehicles']
+            assert {item['vehicle_id'] for item in inventory} == {car_a, car_b}
+            assert (await asyncio.to_thread(get, gateway.READ_TOKEN, path + '&vehicle_id=invalid'))[0] == 400
             stats = (await asyncio.to_thread(get, gateway.READ_TOKEN, '/api/storage'))[1]
             assert stats['persistent'] and stats['total_size_limit_bytes'] is None
             assert stats['retention_seconds'] == 7 * 86400
