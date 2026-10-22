@@ -108,7 +108,7 @@ jobs:
           test -x "$AAPT"
           BADGING="$("$AAPT" dump badging "$APK")"
           grep -Fq "package: name='io.github.buick.main.cardeck'" <<< "$BADGING"
-          grep -Fq "application-label:'CarDeck- Buick-main'" <<< "$BADGING"
+          grep -Fq "application-label:'CarDeck-Buick-main'" <<< "$BADGING"
           MANIFEST="$("$AAPT" dump xmltree "$APK" AndroidManifest.xml)"
           grep -Fq 'io.github.shaonialife.cardeck.SenderApp' <<< "$MANIFEST"
           grep -Fq 'io.github.shaonialife.cardeck.MainActivity' <<< "$MANIFEST"
