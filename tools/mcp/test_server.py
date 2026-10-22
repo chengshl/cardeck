@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import unittest
+import uuid
 from unittest.mock import patch
 
 
@@ -79,7 +80,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertIn('previously user-confirmed', reply['instructions'])
         listing = server.reply({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})['result']['tools']
         self.assertEqual({t['name'] for t in listing}, {
-            'diagnostics_status', 'summarize_log', 'list_devices', 'get_device_logs', 'get_log_storage_status'})
+            'diagnostics_status', 'summarize_log', 'list_devices', 'list_vehicles', 'get_device_logs', 'get_log_storage_status'})
         for entry in listing:
             self.assertEqual(entry['annotations'], {
                 'readOnlyHint': True, 'destructiveHint': False, 'openWorldHint': False})
