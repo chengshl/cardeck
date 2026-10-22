@@ -2,7 +2,7 @@ package io.github.shaonialife.cardeck.gateway
 
 /** Both preview and transmission use this exact bounded representation. */
 class LogRedactor(private val secrets: List<String> = emptyList()) {
-    private val sensitive = Regex("authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|credential|nonce|salt|signature|密码|凭证", RegexOption.IGNORE_CASE)
+    private val sensitive = Regex("authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|write.?key|read.?key|credential|nonce|salt|signature|密码|凭证", RegexOption.IGNORE_CASE)
     private val replacements = listOf(
         Regex("\\b[a-z][a-z0-9+.-]*://\\S+", RegexOption.IGNORE_CASE) to "[地址]",
         Regex("\\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\\b", RegexOption.IGNORE_CASE) to "[MAC]",

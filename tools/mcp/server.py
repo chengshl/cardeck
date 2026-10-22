@@ -104,7 +104,7 @@ def redact(text):
     token = os.environ.get('CARDECK_GATEWAY_READ_TOKEN', '')
     if token:
         text = text.replace(token, '[已隐藏凭证]')
-    if re.search(r'(?i)authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|credential|nonce|salt|signature|密码|凭证', text):
+    if re.search(r'(?i)authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|write.?key|read.?key|credential|nonce|salt|signature|密码|凭证', text):
         return '[已隐藏含凭证或密钥的日志行]'
     text = re.sub(r'(?i)\b[a-z][a-z0-9+.-]*://\S+', '[地址]', text)
     text = re.sub(r'(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b', '[MAC]', text)

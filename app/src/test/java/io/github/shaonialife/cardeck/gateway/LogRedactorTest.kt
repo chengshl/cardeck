@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LogRedactorTest {
+    @org.junit.Test
+    fun airplaySessionKeyFragmentsNeverLeaveTheDevice() {
+        val redactor = LogRedactor()
+        val line = "AIRPLAY paired writeKey=abcdef012345 readKey=abcdef987654"
+        org.junit.Assert.assertEquals("[已隐藏含凭证或密钥的日志行]", redactor.line(line))
+        org.junit.Assert.assertEquals("[已隐藏含凭证或密钥的日志行]", redactor.line("AirPlay READKEY=1234"))
+    }
+
     @Test fun masksCredentialsAddressesIdentifiersAndControlCharacters() {
         val redactor = LogRedactor(listOf("exact-short-secret"))
         assertFalse(redactor.line("value=exact-short-secret").contains("exact-short-secret"))
