@@ -63,6 +63,7 @@ class GatewayProbe(
     private var reportCount = 0
     private var latencyMs = 0L
     private var logsSupported = false
+    private var vehicleSupported = false
     private var appLogLines = 0
     private var systemLogLines = 0
     private data class LogBatch(
@@ -134,6 +135,8 @@ class GatewayProbe(
                             (0 until capabilities.length()).any { capabilities.optString(it) == "device_status_v1" }
                         logsSupported = reportsSupported && appLogs != null &&
                             (0 until capabilities!!.length()).any { capabilities.optString(it) == "logs_v1" }
+                        vehicleSupported = logsSupported &&
+                            (0 until capabilities.length()).any { capabilities.optString(it) == "vehicle_scope_v1" }
                         if (reportsSupported) {
                             sendReportMessage(deviceInfo!!.registration())
                         } else {
@@ -165,7 +168,7 @@ class GatewayProbe(
                             awaitingReport = true
                             val status = JSONObject().put("type", "status")
                                 .put("heartbeat_count", heartbeatCount).put("latency_ms", latencyMs)
-                            vehicleProvider()?.let { status.put("vehicle_id", it) }
+                            if (vehicleSupported) vehicleProvider()?.let { status.put("vehicle_id", it) }
                             sendReportMessage(status)
                         } else scheduleHeartbeat()
                     }
@@ -246,7 +249,7 @@ class GatewayProbe(
         pendingLog = batch
         val message = JSONObject().put("type", "logs").put("source", batch.source).put("batch_id", batch.id)
             .put("user_confirmed", batch.source == "system").put("lines", JSONArray(batch.lines))
-        batch.vehicleId?.let { message.put("vehicle_id", it) }
+        if (vehicleSupported) batch.vehicleId?.let { message.put("vehicle_id", it) }
         if (socket?.send(message.toString()) != true) { fail(Failure.NETWORK); return }
         logDeadline = timer.schedule({ fail(Failure.LOG_UPLOAD) }, replyTimeoutMs, TimeUnit.MILLISECONDS)
     }

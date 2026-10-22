@@ -41,3 +41,5 @@ Gateway 默认只允许无 Origin 的原生应用客户端；如需经浏览器�
 - `list_vehicles(device_id)` 仅返回最近七天该手机日志中出现的匿名车辆 ID 和最后日志时间；`get_device_logs(device_id, source, vehicle_id?)` 可以筛选该车辆，省略 `vehicle_id` 则查询手机所有车辆的日志。
 - 系统日志绑定的是用户**确认上传时的当前车辆会话**，不证明系统崩溃的根因来自该车辆；连接结束或无法确认时则不附车辆 ID。
 - 按顺序部署新版 Gateway → MCP → Android App。先验证旧版无车辆 ID 仍可上报，再验证两辆模拟车的独立过滤和重启后的日志保留。不要将公开 Kubernetes 占位模板直接部署到生产环境。
+
+新客户端仅在 Gateway 的 `hello.capabilities` 包含 `vehicle_scope_v1` 时，才向 `status` 或 `logs` 增加 `vehicle_id`。旧版 Gateway 不识别该能力时，客户端继续使用旧协议上传日志，车辆标签仅在手机队列中保留；升级后新上传的日志才具备服务端车辆关联。不 retroactively 给旧日志猜测车辆 ID。

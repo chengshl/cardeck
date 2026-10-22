@@ -35,7 +35,8 @@ async def verify():
         device_id = str(uuid.uuid4())
         auth = {'Authorization': 'Bearer ' + gateway.TOKEN}
         async with connect(f'ws://127.0.0.1:{port}/ws/device', additional_headers=auth, proxy=None) as ws:
-            assert 'device_status_v1' in json.loads(await ws.recv())['capabilities']
+            capabilities = json.loads(await ws.recv())['capabilities']
+            assert 'device_status_v1' in capabilities and 'vehicle_scope_v1' in capabilities
             await ws.send(json.dumps(dict(type='register', device_id=device_id, app_version='synthetic-test', sdk=35)))
             assert json.loads(await ws.recv())['type'] == 'register_ack'
             await ws.send('{"type":"heartbeat"}')

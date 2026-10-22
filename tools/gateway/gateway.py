@@ -210,7 +210,7 @@ async def process_request(connection, request):
 async def handler(ws):
     device_id = None
     await ws.send(json.dumps({"type": "hello", "mode": "transport-test",
-                              "capabilities": ["device_status_v1", "logs_v1"],
+                              "capabilities": ["device_status_v1", "logs_v1", "vehicle_scope_v1"],
                               "ping_interval_seconds": 20, "ping_timeout_seconds": 10}))
     try:
         async for message in ws:
