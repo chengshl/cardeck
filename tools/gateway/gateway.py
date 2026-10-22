@@ -11,6 +11,10 @@ import re
 from collections import deque
 from urllib.parse import parse_qs, urlsplit
 from http import HTTPStatus
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from pathlib import Path
+from log_archive import LogArchive
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
@@ -25,8 +29,44 @@ if len(READ_TOKEN) < 32 or READ_TOKEN == TOKEN:
 # Bounded, Pod-lifetime status only. No addresses, raw logs or vehicle data.
 devices = {}
 owners = {}
-logs = {}
 accepted_batches = {}
+archive = None
+storage_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cardeck-log-storage")
+storage_errors = 0
+last_storage_error = None
+
+
+async def configure_archive(settings):
+    global archive
+    archive = await asyncio.get_running_loop().run_in_executor(
+        storage_worker, partial(LogArchive, **settings))
+
+
+async def storage_call(method, *args):
+    if archive is None:
+        raise OSError("Persistent storage unavailable")
+    return await asyncio.get_running_loop().run_in_executor(storage_worker, partial(getattr(archive, method), *args))
+
+
+def storage_failure(kind):
+    global storage_errors, last_storage_error
+    storage_errors += 1
+    last_storage_error = kind
+
+
+async def close_archive():
+    if archive is not None:
+        await storage_call("close")
+    storage_worker.shutdown(wait=True)
+
+
+async def maintain_archive(interval):
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await storage_call("cleanup")
+        except OSError:
+            storage_failure("cleanup_failed")
 
 
 def redact(text):
@@ -78,14 +118,26 @@ def registration(payload):
 logging.getLogger("websockets").setLevel(logging.CRITICAL)
 
 
-def process_request(connection, request):
+async def process_request(connection, request):
     if request.path in ("/healthz", "/readyz"):
         return connection.respond(HTTPStatus.OK, "ok\n")
     if request.path == "/api/devices":
         if not authorized(request, READ_TOKEN):
             return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
         response = connection.respond(HTTPStatus.OK, json.dumps({
-            "retention": "pod-lifetime", "devices": list(devices.values())}))
+            "retention": "persistent-seven-days", "devices": list(devices.values())}))
+        response.headers["Content-Type"] = "application/json"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    if request.path == "/api/storage":
+        if not authorized(request, READ_TOKEN):
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+        try:
+            stats = await storage_call("stats")
+            stats.update(storage_errors=storage_errors, last_error=last_storage_error)
+        except OSError:
+            return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "storage unavailable\n")
+        response = connection.respond(HTTPStatus.OK, json.dumps(stats))
         response.headers["Content-Type"] = "application/json"
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -93,12 +145,24 @@ def process_request(connection, request):
         if not authorized(request, READ_TOKEN):
             return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
         query = parse_qs(urlsplit(request.path).query)
-        if set(query) != {"device_id"} or len(query["device_id"]) != 1:
+        if (not set(query) <= {"device_id", "source"} or "device_id" not in query
+                or any(len(value) != 1 for value in query.values())):
             return connection.respond(HTTPStatus.BAD_REQUEST, "device_id required\n")
         device_id = query["device_id"][0]
+        source = query.get("source", [None])[0]
+        try:
+            if str(uuid.UUID(device_id)) != device_id or source not in (None, "app", "system"):
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError):
+            return connection.respond(HTTPStatus.BAD_REQUEST, "invalid query\n")
+        try:
+            entries = await storage_call("tail", device_id, source)
+        except OSError:
+            storage_failure("read_failed")
+            return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "storage unavailable\n")
         response = connection.respond(HTTPStatus.OK, json.dumps({
-            "retention": "pod-lifetime-last-200-lines", "device_id": device_id,
-            "logs": list(logs.get(device_id, []))}))
+            "retention": "persistent-seven-days", "device_id": device_id,
+            "limit": 200, "logs": entries}))
         response.headers["Content-Type"] = "application/json"
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -149,7 +213,6 @@ async def handler(ws):
                         return
                     oldest = min(offline, key=lambda key: devices[key]["last_seen_ms"])
                     del devices[oldest]
-                    logs.pop(oldest, None)
                     accepted_batches.pop(oldest, None)
                 device_id = record["device_id"]
                 owners[device_id] = ws
@@ -186,11 +249,14 @@ async def handler(ws):
                     return
                 recent = accepted_batches.setdefault(device_id, deque(maxlen=64))
                 if batch_id not in recent:
+                    try:
+                        entries = await storage_call("append", device_id, source, [redact(line) for line in lines], batch_id)
+                    except (OSError, ValueError, UnicodeError):
+                        storage_failure("write_failed")
+                        await ws.close(1011, "persistent storage unavailable")
+                        return  # Never ACK a batch that wasn't flushed to persistent storage.
                     recent.append(batch_id)
-                    entries = logs.setdefault(device_id, deque(maxlen=200))
-                    now = int(time.time() * 1000)
-                    for line in lines:
-                        entries.append({"source": source, "received_ms": now, "text": redact(line)})
+                    now = entries[-1]["received_ms"]
                     record = devices[device_id]
                     counter = "app_log_lines" if source == "app" else "system_log_lines"
                     record[counter] = record.get(counter, 0) + len(lines)
@@ -208,19 +274,30 @@ async def handler(ws):
 
 
 async def main():
+    settings = json.loads(Path(os.environ.get("CARDECK_LOG_CONFIG", "/etc/cardeck-logs/storage.json")).read_text(encoding="utf-8"))
+    interval = settings.pop("cleanup_interval_seconds", 60)
+    if type(interval) is not int or not 1 <= interval <= 60:
+        raise ValueError("Cleanup interval must be at most 60 seconds")
+    await configure_archive(settings)
+    cleanup = asyncio.create_task(maintain_archive(interval))
     stop = asyncio.get_running_loop().create_future()
     def terminate():
         if not stop.done():
             stop.set_result(None)
     for sig in (signal.SIGINT, signal.SIGTERM):
         asyncio.get_running_loop().add_signal_handler(sig, terminate)
-    async with serve(handler, "0.0.0.0", 8080, process_request=process_request,
-                     origins=[None, "https://cardeck.once.wiki:8443", "https://cardeck.once.wiki"],
-                     ping_interval=20, ping_timeout=10, close_timeout=5,
-                     open_timeout=5, max_size=16384, max_queue=4,
-                     compression=None, server_header=None):
-        print("CarDeck transport test gateway ready on 8080", flush=True)
-        await stop
+    try:
+        async with serve(handler, "0.0.0.0", 8080, process_request=process_request,
+                         origins=[None, "https://cardeck.once.wiki:8443", "https://cardeck.once.wiki"],
+                         ping_interval=20, ping_timeout=10, close_timeout=5,
+                         open_timeout=5, max_size=16384, max_queue=4,
+                         compression=None, server_header=None):
+            print("CarDeck persistent log gateway ready on 8080", flush=True)
+            await stop
+    finally:
+        cleanup.cancel()
+        await asyncio.gather(cleanup, return_exceptions=True)
+        await close_archive()
 
 
 if __name__ == "__main__":

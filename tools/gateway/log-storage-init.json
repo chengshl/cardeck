@@ -1,0 +1,130 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "cardeck-log-storage-bootstrap",
+        "namespace": "cardeck-diagnostics",
+        "labels": {
+          "app.kubernetes.io/name": "cardeck-gateway",
+          "app.kubernetes.io/part-of": "cardeck-transport-test"
+        }
+      },
+      "data": {
+        "log_archive.py": "\"\"\"Single-writer JSONL archive. Only owned, expired segments may be deleted.\"\"\"\nimport errno\nimport json\nimport os\nimport re\nimport stat\nimport time\nimport uuid\nimport heapq\nfrom dataclasses import dataclass\nfrom datetime import datetime, timedelta, timezone\nfrom pathlib import Path\n\nFORMAT = {\"format\": \"cardeck-log-archive\", \"version\": 1}\nSEGMENT = re.compile(r\"(\\d{13})-(\\d{20})-([0-9a-f-]{36})\\.jsonl\")\nREWRITE = re.compile(r\"\\.rewrite-[0-9a-f-]{36}\\.tmp\")\n\n\nclass ArchiveBusy(OSError):\n    pass\n\n\ndef canonical_device(value):\n    if not isinstance(value, str) or str(uuid.UUID(value)) != value:\n        raise ValueError(\"Invalid installation ID\")\n    return value\n\n\ndef verify_mount(root, expected):\n    if not expected:\n        return\n    root = str(Path(root).resolve(strict=True))\n    matches = []\n    with open(\"/proc/self/mountinfo\", encoding=\"utf-8\") as handle:\n        for line in handle:\n            left, right = line.rstrip().split(\" - \", 1)\n            fields, mount = left.split(), right.split()\n            point = fields[4].replace(\"\\\\040\", \" \").replace(\"\\\\134\", \"\\\\\")\n            if root == point or root.startswith(point.rstrip(\"/\") + \"/\"):\n                matches.append((len(point), mount[0], mount[1], mount[2]))\n    if not matches:\n        raise OSError(\"Expected shared filesystem is unavailable\")\n    _, filesystem, source, options = max(matches)\n    if (filesystem != expected[\"filesystem\"] or source != expected[\"source\"]\n            or \"nobrl\" in options.split(\",\")):\n        raise OSError(\"Shared filesystem identity or locking check failed\")\n\n\ndef initialize_root(root, expected_mount=None):\n    \"\"\"Explicit bootstrap only; never adopt a directory containing unrelated files.\"\"\"\n    root = Path(root)\n    if root.is_symlink() or not root.is_dir():\n        raise OSError(\"Archive root must be an existing dedicated directory\")\n    verify_mount(root, expected_mount)\n    marker = root / \".cardeck-archive.json\"\n    if marker.is_symlink():\n        raise OSError(\"Invalid ownership marker\")\n    if marker.exists():\n        if json.loads(marker.read_text(encoding=\"utf-8\")) != FORMAT:\n            raise OSError(\"Archive ownership mismatch\")\n        return\n    if any(root.iterdir()):\n        raise OSError(\"Refusing to adopt a nonempty directory\")\n    fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, \"O_BINARY\", 0), 0o600)\n    with os.fdopen(fd, \"wb\") as handle:\n        handle.write(json.dumps(FORMAT).encode(\"utf-8\"))\n        handle.flush()\n        os.fsync(handle.fileno())\n\n\n@dataclass\nclass Segment:\n    path: Path\n    device: str\n    source: str\n    first_ms: int\n    sequence: int\n    size: int\n\n\nclass LogArchive:\n    def __init__(self, root, max_file_bytes=16 * 1024 * 1024,\n                 retention_seconds=7 * 86400, utc_offset_hours=8,\n                 expected_mount=None, clock=time.time):\n        if not 1024 <= max_file_bytes <= 1024 * 1024 * 1024:\n            raise ValueError(\"Invalid segment limit\")\n        if not 0 < retention_seconds <= 7 * 86400:\n            raise ValueError(\"Retention cannot exceed seven days\")\n        self.root = Path(root)\n        if self.root.is_symlink() or not self.root.is_dir():\n            raise OSError(\"Persistent archive is unavailable\")\n        verify_mount(self.root, expected_mount)\n        marker = self.root / \".cardeck-archive.json\"\n        if marker.is_symlink() or json.loads(marker.read_text(encoding=\"utf-8\")) != FORMAT:\n            raise OSError(\"Archive ownership mismatch\")\n        self.root = self.root.resolve(strict=True)\n        self.max_file_bytes = max_file_bytes\n        self.retention_seconds = retention_seconds\n        self.zone = timezone(timedelta(hours=utc_offset_hours))\n        self.clock = clock\n        self.segments = {}\n        self.expiry = []\n        self.current = {}\n        self.sequence = 0\n        self.deleted_expired = 0\n        self.compacted_files = 0\n        self.last_cleanup_ms = None\n        self.lock = None\n        try:\n            path = self.root / \".writer.lock\"\n            if path.is_symlink():\n                raise OSError(\"Invalid lock path\")\n            flags = os.O_RDWR | os.O_CREAT | getattr(os, \"O_NOFOLLOW\", 0) | getattr(os, \"O_BINARY\", 0)\n            self.lock = os.fdopen(os.open(path, flags, 0o600), \"r+b\")\n            if os.name == \"nt\":\n                import msvcrt\n                if os.fstat(self.lock.fileno()).st_size == 0:\n                    self.lock.write(b\"0\")\n                    self.lock.flush()\n                self.lock.seek(0)\n                msvcrt.locking(self.lock.fileno(), msvcrt.LK_NBLCK, 1)\n            else:\n                import fcntl\n                try:\n                    fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n                except OSError as error:\n                    if error.errno in (errno.EACCES, errno.EAGAIN):\n                        raise ArchiveBusy(\"Archive already has a writer\") from None\n                    raise\n            self.base = self.root / \"logs\"\n            if self.base.is_symlink():\n                raise OSError(\"Invalid archive directory\")\n            self.base.mkdir(exist_ok=True)\n            self._scan()\n            self.cleanup()\n        except Exception:\n            self.close()\n            raise\n\n    def _inside(self, path):\n        path = Path(path)\n        if path.is_symlink() or not path.resolve().is_relative_to(self.root):\n            raise OSError(\"Archive path escaped its dedicated root\")\n        node = self.root\n        for part in path.relative_to(self.root).parts:\n            node = node / part\n            if node.is_symlink():\n                raise OSError(\"Symlinks are not allowed in archive paths\")\n        return path\n\n    def _scan(self):\n        for device in self.base.iterdir():\n            if device.is_symlink():\n                raise OSError(\"Symlinks are not allowed in the archive\")\n            try:\n                canonical_device(device.name)\n            except (ValueError, TypeError, AttributeError):\n                continue\n            if not device.is_dir():\n                continue\n            for day in device.iterdir():\n                self._inside(day)\n                try:\n                    datetime.strptime(day.name, \"%Y-%m-%d\")\n                except ValueError:\n                    continue\n                if not day.is_dir():\n                    continue\n                for source in day.iterdir():\n                    self._inside(source)\n                    if source.name not in (\"app\", \"system\") or not source.is_dir():\n                        continue\n                    for path in source.iterdir():\n                        self._inside(path)\n                        if REWRITE.fullmatch(path.name) and path.is_file():\n                            # A crashed rewrite never replaced the original; its duplicate is uncommitted.\n                            path.unlink()\n                            continue\n                        match = SEGMENT.fullmatch(path.name)\n                        if not match or not path.is_file():\n                            continue\n                        first, sequence = int(match[1]), int(match[2])\n                        segment = Segment(path, device.name, source.name, first, sequence, path.stat().st_size)\n                        self.segments[path] = segment\n                        heapq.heappush(self.expiry, (first, sequence, path))\n                        self.sequence = max(self.sequence, sequence)\n\n    def _new_segment(self, device, source, now_ms):\n        day = datetime.fromtimestamp(now_ms / 1000, self.zone).strftime(\"%Y-%m-%d\")\n        parent = self.base / device / day / source\n        self._inside(parent)\n        parent.mkdir(parents=True, exist_ok=True)\n        self.sequence += 1\n        path = parent / f\"{now_ms:013d}-{self.sequence:020d}-{uuid.uuid4()}.jsonl\"\n        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, \"O_NOFOLLOW\", 0) | getattr(os, \"O_BINARY\", 0), 0o600)\n        os.close(fd)\n        segment = Segment(path, device, source, now_ms, self.sequence, 0)\n        self.segments[path] = segment\n        heapq.heappush(self.expiry, (now_ms, self.sequence, path))\n        self.current[(device, source)] = segment\n        return segment\n\n    def append(self, device, source, lines, batch_id):\n        canonical_device(device)\n        if source not in (\"app\", \"system\") or not lines or len(lines) > 8:\n            raise ValueError(\"Invalid log batch\")\n        if any(not isinstance(line, str) or not 1 <= len(line) <= 256 for line in lines):\n            raise ValueError(\"Invalid log line\")\n        canonical_device(batch_id)\n        self.cleanup()\n        now_ms = int(self.clock() * 1000)\n        rows = [dict(source=source, received_ms=now_ms, batch_id=batch_id, text=line) for line in lines]\n        encoded = [(json.dumps(row, ensure_ascii=False, separators=(\",\", \":\")) + \"\\n\").encode(\"utf-8\") for row in rows]\n        if any(len(row) > self.max_file_bytes for row in encoded):\n            raise ValueError(\"A record exceeds the segment limit\")\n        fd, opened = None, None\n        try:\n            for data in encoded:\n                segment = self.current.get((device, source))\n                if (segment is None or segment.first_ms // 3600000 != now_ms // 3600000\n                        or segment.size + len(data) > self.max_file_bytes):\n                    segment = self._new_segment(device, source, now_ms)\n                if opened is not segment:\n                    if fd is not None:\n                        os.fsync(fd)\n                        os.close(fd)\n                        fd = None\n                    self._inside(segment.path)\n                    fd = os.open(segment.path, os.O_WRONLY | os.O_APPEND | getattr(os, \"O_NOFOLLOW\", 0) | getattr(os, \"O_BINARY\", 0))\n                    opened = segment\n                remaining = memoryview(data)\n                while remaining:\n                    count = os.write(fd, remaining)\n                    if count <= 0:\n                        raise OSError(\"Archive write made no progress\")\n                    segment.size += count\n                    remaining = remaining[count:]\n            if fd is not None:\n                os.fsync(fd)  # ACK is sent only after every touched segment has been flushed.\n        except Exception:\n            # Never append a later acknowledged record behind a partially written JSON line.\n            self.current.pop((device, source), None)\n            raise\n        finally:\n            if fd is not None:\n                os.close(fd)\n        return rows\n\n    def cleanup(self):\n        now_ms = int(self.clock() * 1000)\n        cutoff = now_ms - int(self.retention_seconds * 1000)\n        while self.expiry and self.expiry[0][0] <= cutoff:\n            first, sequence, path = self.expiry[0]\n            segment = self.segments.get(path)\n            if segment is None or segment.first_ms != first or segment.sequence != sequence:\n                heapq.heappop(self.expiry)\n                continue\n            self._inside(segment.path)\n            if (segment.first_ms // 3600000 + 1) * 3600000 > cutoff:\n                replacement = self._compact_boundary(segment, cutoff)\n                if replacement is not None:\n                    heapq.heappop(self.expiry)\n                    self.segments.pop(segment.path)\n                    self.segments[replacement.path] = replacement\n                    if self.current.get((segment.device, segment.source)) is segment:\n                        self.current[(segment.device, segment.source)] = replacement\n                    heapq.heappush(self.expiry, (replacement.first_ms, replacement.sequence, replacement.path))\n                    self.compacted_files += 1\n                    continue\n            try:\n                segment.path.unlink()\n            except FileNotFoundError:\n                pass\n            self.segments.pop(segment.path)\n            heapq.heappop(self.expiry)\n            if self.current.get((segment.device, segment.source)) is segment:\n                self.current.pop((segment.device, segment.source))\n            self.deleted_expired += 1\n            parent = segment.path.parent\n            for _ in range(3):\n                self._inside(parent)\n                try:\n                    parent.rmdir()  # Empty source/date/device directories only; never recursive deletion.\n                except OSError as error:\n                    if error.errno in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT):\n                        break\n                    raise\n                parent = parent.parent\n        self.last_cleanup_ms = now_ms\n\n    def _compact_boundary(self, segment, cutoff):\n        \"\"\"Remove expired rows without prematurely deleting younger rows in the boundary file.\"\"\"\n        temp = segment.path.parent / f\".rewrite-{uuid.uuid4()}.tmp\"\n        output = None\n        first_ms = None\n        size = 0\n        try:\n            with segment.path.open(\"rb\") as original:\n                for data in original:\n                    try:\n                        row = json.loads(data)\n                    except (ValueError, UnicodeDecodeError):\n                        continue\n                    if not isinstance(row, dict) or type(row.get(\"received_ms\")) is not int or row[\"received_ms\"] <= cutoff:\n                        continue\n                    if output is None:\n                        first_ms = row[\"received_ms\"]\n                        output = temp.open(\"xb\")\n                    output.write(data)\n                    size += len(data)\n            if output is None:\n                return None\n            output.flush()\n            os.fsync(output.fileno())\n            output.close()\n            output = None\n            identity = SEGMENT.fullmatch(segment.path.name)[3]\n            path = segment.path.with_name(f\"{first_ms:013d}-{segment.sequence:020d}-{identity}.jsonl\")\n            self._inside(path)\n            os.replace(temp, path)  # Original remains intact until its replacement has been flushed.\n            segment.path.unlink()\n            return Segment(path, segment.device, segment.source, first_ms, segment.sequence, size)\n        finally:\n            if output is not None:\n                output.close()\n            if temp.exists():\n                self._inside(temp)\n                temp.unlink()\n\n    def tail(self, device, source=None, limit=200):\n        canonical_device(device)\n        if source not in (None, \"app\", \"system\") or not 1 <= limit <= 200:\n            raise ValueError(\"Invalid query\")\n        cutoff = int(self.clock() * 1000) - int(self.retention_seconds * 1000)\n        combined = []\n        for kind in ((source,) if source else (\"app\", \"system\")):\n            rows = []\n            segments = sorted((s for s in self.segments.values() if s.device == device and s.source == kind),\n                              key=lambda item: (item.first_ms, item.sequence), reverse=True)\n            for segment in segments:\n                self._inside(segment.path)\n                with segment.path.open(\"rb\") as handle:\n                    offset = max(0, segment.size - limit * 4096)\n                    handle.seek(offset)\n                    data = handle.read(limit * 4096)\n                parts = data.splitlines()\n                if offset:\n                    parts = parts[1:]\n                valid = []\n                for line in parts:\n                    try:\n                        value = json.loads(line)\n                    except (ValueError, UnicodeDecodeError):\n                        continue  # An interrupted, unacknowledged last record may be incomplete.\n                    if (isinstance(value, dict) and type(value.get(\"received_ms\")) is int\n                            and value[\"received_ms\"] > cutoff and value.get(\"source\") == kind\n                            and isinstance(value.get(\"text\"), str)):\n                        valid.append(value)\n                rows = valid[-limit:] + rows\n                if len(rows) >= limit:\n                    break\n            combined.extend(rows[-limit:])\n        return sorted(combined, key=lambda row: row[\"received_ms\"])[-limit:]\n\n    def stats(self):\n        space = os.statvfs(self.root) if hasattr(os, \"statvfs\") else None\n        return {\"persistent\": True, \"retention_seconds\": self.retention_seconds,\n                \"max_file_bytes\": self.max_file_bytes, \"total_size_limit_bytes\": None,\n                \"files\": len(self.segments), \"bytes\": sum(s.size for s in self.segments.values()),\n                \"free_bytes\": space.f_bavail * space.f_frsize if space else None,\n                \"deleted_expired_files\": self.deleted_expired, \"last_cleanup_ms\": self.last_cleanup_ms}\n\n    def close(self):\n        if self.lock is not None:\n            self.lock.close()\n            self.lock = None\n",
+        "init_log_storage.py": "\"\"\"One-time explicit bootstrap of the dedicated hostPath directory.\"\"\"\nimport json\nimport os\nfrom pathlib import Path\nfrom log_archive import initialize_root, verify_mount\n\nshare = Path(\"/shared\")\nsettings = json.loads(Path(os.environ.get(\"CARDECK_LOG_CONFIG\", \"/etc/cardeck-logs/storage.json\")).read_text(encoding=\"utf-8\"))\nexpected = settings[\"expected_mount\"]\nverify_mount(share, expected)\nroot = share / \"cardeck-private-logs\"\nif root.is_symlink() or root.resolve().parent != share.resolve():\n    raise OSError(\"Invalid dedicated directory\")\nroot.mkdir(mode=0o700, exist_ok=True)\ninitialize_root(root, expected)\nprobe = root / \"http-isolation-probe.txt\"\nif not probe.exists():\n    with probe.open(\"x\", encoding=\"utf-8\") as handle:\n        handle.write(\"CarDeck storage isolation check; no device data.\\n\")\n        handle.flush()\n        os.fsync(handle.fileno())\nprint(json.dumps({\"initialized\": True, \"directory\": \"/data/files/cardeck-private-logs\", \"shared_filesystem\": \"cifs\"}))\n"
+      }
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "cardeck-log-storage-init-v1",
+        "namespace": "cardeck-diagnostics",
+        "labels": {
+          "app.kubernetes.io/name": "cardeck-gateway",
+          "app.kubernetes.io/part-of": "cardeck-transport-test"
+        }
+      },
+      "spec": {
+        "backoffLimit": 0,
+        "activeDeadlineSeconds": 120,
+        "ttlSecondsAfterFinished": 3600,
+        "template": {
+          "spec": {
+            "nodeName": "node-1",
+            "automountServiceAccountToken": false,
+            "restartPolicy": "Never",
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 10001,
+              "runAsGroup": 10001,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "containers": [
+              {
+                "name": "init",
+                "image": "python:3.12-slim",
+                "command": [
+                  "python",
+                  "/bootstrap/init_log_storage.py"
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "env": [
+                  {
+                    "name": "PYTHONDONTWRITEBYTECODE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "CARDECK_LOG_CONFIG",
+                    "value": "/etc/cardeck-logs/storage.json"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "16Mi"
+                  },
+                  "limits": {
+                    "cpu": "100m",
+                    "memory": "64Mi"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "source",
+                    "mountPath": "/bootstrap",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "share",
+                    "mountPath": "/shared"
+                  },
+                  {
+                    "name": "config",
+                    "mountPath": "/etc/cardeck-logs",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "source",
+                "configMap": {
+                  "name": "cardeck-log-storage-bootstrap"
+                }
+              },
+              {
+                "name": "config",
+                "configMap": {
+                  "name": "cardeck-log-storage"
+                }
+              },
+              {
+                "name": "share",
+                "hostPath": {
+                  "path": "/data/files",
+                  "type": "Directory"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

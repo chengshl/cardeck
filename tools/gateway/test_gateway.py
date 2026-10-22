@@ -2,9 +2,12 @@ import asyncio
 import importlib.util
 import json
 import os
+import sys
 import urllib.request
 import urllib.error
 import uuid
+import tempfile
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ['CARDECK_GATEWAY_TOKEN'] = 'local-test-device-token-' + 'x' * 32
@@ -14,8 +17,9 @@ gateway = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gateway)
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
+from log_archive import initialize_root
 
-async def main():
+async def verify():
     async with gateway.serve(gateway.handler, '127.0.0.1', 0, process_request=gateway.process_request) as server:
         port = server.sockets[0].getsockname()[1]
         def get(token, path='/api/devices'):
@@ -42,7 +46,7 @@ async def main():
             assert record['online'] and record['heartbeat_count'] == 1 and record['latency_ms'] == 27
             assert record['app_version'] == 'synthetic-test' and record['report_count'] == 1
             app_batch = dict(type='logs', source='app', batch_id=str(uuid.uuid4()), user_confirmed=False,
-                lines=['connection 192.168.10.200 user@example.com', 'Authorization: Bearer test-secret'])
+                lines=['connection 192.0.2.10 user@example.com', 'Authorization: Bearer test-secret'])
             await ws.send(json.dumps(app_batch))
             ack = json.loads(await ws.recv())
             assert ack['type'] == 'logs_ack' and ack['accepted_lines'] == 2
@@ -50,7 +54,7 @@ async def main():
             assert (await asyncio.to_thread(get, gateway.TOKEN, path))[0] == 401
             entries = (await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs']
             assert len(entries) == 2 and all(item['source'] == 'app' for item in entries)
-            assert not any('192.168' in item['text'] or 'test-secret' in item['text'] or 'user@example.com' in item['text'] for item in entries)
+            assert not any('192.0.2' in item['text'] or 'test-secret' in item['text'] or 'user@example.com' in item['text'] for item in entries)
             await ws.send(json.dumps(app_batch))
             assert json.loads(await ws.recv())['batch_id'] == app_batch['batch_id']
             assert len((await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs']) == 2
@@ -58,6 +62,9 @@ async def main():
             assert json.loads(await ws.recv())['accepted_lines'] == 1
             entries = (await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs']
             assert entries[-1]['source'] == 'system' and entries[-1]['text'] == 'confirmed-preview'
+            stats = (await asyncio.to_thread(get, gateway.READ_TOKEN, '/api/storage'))[1]
+            assert stats['persistent'] and stats['total_size_limit_bytes'] is None
+            assert stats['retention_seconds'] == 7 * 86400
             for index in range(26):
                 await ws.send(json.dumps(dict(type='logs', source='app', batch_id=str(uuid.uuid4()), user_confirmed=False, lines=[f'bounded-line-{index}'] * 8)))
                 assert json.loads(await ws.recv())['accepted_lines'] == 8
@@ -82,6 +89,35 @@ async def main():
             except ConnectionClosed as error:
                 assert error.code == 1008
             assert not any(item['text'] == 'must-not-store' for item in (await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs'])
+        async with connect(f'ws://127.0.0.1:{port}/ws/device', additional_headers=auth, proxy=None) as ws:
+            await ws.recv()
+            await ws.send(json.dumps(dict(type='register', device_id=device_id, app_version='synthetic-test', sdk=35)))
+            assert json.loads(await ws.recv())['type'] == 'register_ack'
+            with patch.object(gateway.archive, 'append', side_effect=OSError('synthetic unavailable storage')):
+                await ws.send(json.dumps(dict(type='logs', source='app', batch_id=str(uuid.uuid4()), user_confirmed=False, lines=['must-not-ack'])))
+                try:
+                    await ws.recv()
+                    raise AssertionError('Failed storage was acknowledged')
+                except ConnectionClosed as error:
+                    assert error.code == 1011
+            assert not any(item['text'] == 'must-not-ack' for item in (await asyncio.to_thread(get, gateway.READ_TOKEN, path))[1]['logs'])
         print('PASS isolated credentials, status query, app logs, confirmed system logs, unconfirmed rejection, deduplication, redaction, offline state')
+
+async def main():
+    with tempfile.TemporaryDirectory(prefix='cardeck-owned-http-test-', dir=os.environ.get('CARDECK_TEST_TEMP')) as root:
+        initialize_root(root)
+        await gateway.configure_archive({'root': root})
+        try:
+            await verify()
+            import time
+            gateway.archive.clock = lambda: time.time() + 7 * 86400 + 1
+            task = asyncio.create_task(gateway.maintain_archive(.02))
+            await asyncio.sleep(.08)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            assert (await gateway.storage_call('stats'))['files'] == 0
+            print('PASS failed storage never ACKs; idle background cleanup expires files')
+        finally:
+            await gateway.close_archive()
 
 asyncio.run(main())
