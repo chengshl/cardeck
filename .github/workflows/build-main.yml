@@ -1,4 +1,4 @@
-name: Build main and publish shared CarDeck latest
+name: Build main and publish isolated update
 
 on:
   workflow_dispatch:
@@ -13,15 +13,137 @@ on:
       - '.github/workflows/build-main.yml'
       - '.github/workflows/build-shared-latest.yml'
 
-# Serialize publication across ALL branches; preserve the most recently
-# successful APK without cancelling a half-published release.
 concurrency:
-  group: cardeck-all-branches-latest
+  group: cardeck-main-isolated-release
   cancel-in-progress: false
 
 jobs:
-  shared-build:
+  signed-build:
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    uses: chengshl/cardeck/.github/workflows/build-shared-latest.yml@main
-    secrets: inherit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify isolated branch release destination
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "main"
+          grep -Fq 'private const val RELEASE_TAG = "main-latest"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+          grep -Fq 'private const val SOURCE_BRANCH = "main"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+          grep -Fq 'private const val APK_NAME = "CarDeck-main.apk"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+          printf 'RELEASE_TAG=%s\nAPK_NAME=%s\n' "main-latest" "CarDeck-main.apk" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Restore existing APK signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_B64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" ]]; then
+            echo "::error::Missing CarDeck APK signing secrets"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-upload.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-upload.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-upload.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Run Android unit tests
+        id: unit_tests
+        # Buick-E5 had two failing mock iAP2 tests before the shared updater
+        # was introduced (late 0x4301 callback and NUL-padded addresses).
+        # Record the failure but do not disable signed APK delivery while
+        # integration tests are being reconciled with the experimental branch.
+        # All other branches keep unit tests as a hard release gate.
+        continue-on-error: false
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --stacktrace
+      - name: Warn about known Buick-E5 mock-test failures
+        if: ${{ github.ref_name == 'Buick-E5' && steps.unit_tests.outcome == 'failure' }}
+        run: echo "::warning::Buick-E5 legacy iAP2 mock tests are failing; APK build proceeds, CarPlay real-car verification still required."
+      - name: Assign monotonic branch Android version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep time-based Android versionCode, but isolate tags, APKs and caches.
+          # 2024-01-01 UTC remains the code epoch.
+          BUILD_EPOCH="$(date -u +%s)"
+          CODE=$(( BUILD_EPOCH - 1704067200 ))
+          # Human-facing APK versionName: Beijing time YYYYMMDDHHMMSS.
+          # Android versionCode remains a monotonic 32-bit integer and must
+          # never be set to this 14-digit timestamp.
+          RELEASE_VERSION_NAME="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
+          if [[ ! "$RELEASE_VERSION_NAME" =~ ^[0-9]{14}$ ]]; then
+            echo "::error::Invalid datetime versionName: $RELEASE_VERSION_NAME"
+            exit 1
+          fi
+          if (( CODE < 300000 || CODE > 2100000000 )); then
+            echo "::error::Computed Android versionCode out of range: $CODE"
+            exit 1
+          fi
+          echo "CARDECK_BUILD_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$RELEASE_VERSION_NAME" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_BRANCH=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          echo "Branch versionName=$RELEASE_VERSION_NAME versionCode=$CODE branch=$GITHUB_REF_NAME"
+      - name: Build signed release APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarDeck-${{ github.ref_name }}-${{ github.run_id }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+      - name: Publish only main update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "main"
+          test "$RELEASE_TAG" = "main-latest"
+          test "$APK_NAME" = "CarDeck-main.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$APK_NAME"
+          sha256sum "$APK_NAME" > "$APK_NAME.sha256"
+
+          COMMIT_NOTES="$(git log -1 --pretty=%B | awk '
+            /^CarDeck-Notes:$/ { in_notes=1; next }
+            in_notes && NF > 0 { print }
+          ')"
+          if [[ -z "$COMMIT_NOTES" ]]; then
+            COMMIT_NOTES="- $(git log -1 --pretty=%s)"
+          fi
+          {
+            printf 'versionName=%s\nversionCode=%s\nbranch=%s\ncommit=%s\nbuiltAt=%s\ntimezone=Asia/Shanghai\n' \
+              "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$(date -u +%FT%TZ)"
+            printf '\n## 更新说明\n%s\n' "$COMMIT_NOTES"
+          } > release-notes.txt
+
+          PREVIOUS_CODE="$(gh release view "$RELEASE_TAG" --json body --jq '.body' 2>/dev/null \
+            | sed -n 's/^versionCode=//p' | head -n 1 || true)"
+          PREVIOUS_BRANCH="$(gh release view "$RELEASE_TAG" --json body --jq '.body' 2>/dev/null \
+            | sed -n 's/^branch=//p' | head -n 1 || true)"
+          if [[ "$PREVIOUS_BRANCH" == "$GITHUB_REF_NAME" && "$PREVIOUS_CODE" =~ ^[0-9]+$ ]] && (( CARDECK_BUILD_VERSION_CODE <= PREVIOUS_CODE )); then
+            echo "Branch release already newer; keeping existing APK"
+            exit 0
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" --clobber
+            gh release edit "$RELEASE_TAG" --title "CarDeck main $CARDECK_RELEASE_VERSION_NAME" \
+              --notes-file release-notes.txt --prerelease --latest=false
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh release create "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" --target "$GITHUB_SHA" \
+              --title "CarDeck main $CARDECK_RELEASE_VERSION_NAME" \
+              --notes-file release-notes.txt --prerelease --latest=false
+          fi
+          echo "Published isolated $GITHUB_REF_NAME -> $RELEASE_TAG / $APK_NAME"

@@ -21,13 +21,16 @@ import java.net.URL
 import java.security.MessageDigest
 import kotlin.concurrent.thread
 
-/** All CarDeck branches consume the same latest successful signed build. */
+/** Only this branch's own release is accepted; never switch update sources automatically. */
 object BuickUpdater {
-    private const val RELEASES = "https://api.github.com/repos/chengshl/cardeck/releases/tags/cardeck-latest"
-    private const val PREF = "cardeck_shared_updater"
+    private const val RELEASE_TAG = "main-latest"
+    private const val SOURCE_BRANCH = "main"
+    private const val APK_NAME = "CarDeck-main.apk"
+    private const val RELEASES = "https://api.github.com/repos/chengshl/cardeck/releases/tags/main-latest"
+    private const val PREF = "cardeck_main_updater"
     private const val KEY_AUTO = "auto_check"
     private val main = Handler(Looper.getMainLooper())
-    private fun downloadedApk(activity: Activity) = File(activity.cacheDir, "updates/CarDeck-latest.apk")
+    private fun downloadedApk(activity: Activity) = File(activity.cacheDir, "updates/main-latest/CarDeck-main.apk")
 
     /**
      * Keep CarPlay process-bound to E5 Wi-Fi; route updater requests independently.
@@ -89,7 +92,7 @@ object BuickUpdater {
             connectTimeout = connectMs
             readTimeout = readMs
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "CarDeck-Shared-Updater")
+            setRequestProperty("User-Agent", "CarDeck-main-Updater")
         }
     }
 
@@ -116,7 +119,7 @@ object BuickUpdater {
         if (shared.contains(KEY_AUTO)) return shared.getBoolean(KEY_AUTO, true)
         // Keep the user's previous auto-update preference when migrating from
         // either branch-specific updater; don't unexpectedly re-enable it.
-        for (previous in listOf("buick_updater", "buick_main_updater")) {
+        for (previous in listOf("cardeck_shared_updater", "buick_updater", "buick_main_updater")) {
             val legacy = activity.getSharedPreferences(previous, 0)
             if (legacy.contains(KEY_AUTO)) return legacy.getBoolean(KEY_AUTO, true)
         }
@@ -140,14 +143,17 @@ object BuickUpdater {
                         conn.disconnect()
                     }
                 }
+                require(release.optString("tag_name") == RELEASE_TAG && !release.optBoolean("draft")) {
+                    "更新标签不匹配，拒绝安装"
+                }
                 val assets = release.getJSONArray("assets")
                 var apkUrl: String? = null
                 var digestUrl: String? = null
                 for (i in 0 until assets.length()) {
                     val asset = assets.getJSONObject(i)
                     val name = asset.optString("name")
-                    if (name == "CarDeck-latest.apk") apkUrl = asset.optString("browser_download_url")
-                    if (name == "CarDeck-latest.apk.sha256") digestUrl = asset.optString("browser_download_url")
+                    if (name == APK_NAME) apkUrl = asset.optString("browser_download_url")
+                    if (name == "$APK_NAME.sha256") digestUrl = asset.optString("browser_download_url")
                 }
                 val code = release.optString("body").lineSequence()
                     .firstOrNull { it.startsWith("versionCode=") }
@@ -162,8 +168,8 @@ object BuickUpdater {
                     .firstOrNull { it.startsWith("branch=") }
                     ?.substringAfter("=")?.trim().orEmpty()
                 val changeNotes = UpdateNotes.extract(release.optString("body"))
-                require(branch in setOf("main", "Buick-main", "Buick-E5")) {
-                    "更新来源分支无效：$branch"
+                require(branch == SOURCE_BRANCH) {
+                    "更新来源分支不匹配：$branch，预期 $SOURCE_BRANCH"
                 }
                 val packageInfo = activity.packageManager.getPackageInfo(activity.packageName, 0)
                 val installed = if (Build.VERSION.SDK_INT >= 33) {
@@ -187,13 +193,13 @@ object BuickUpdater {
                         }
                     } else {
                         AlertDialog.Builder(activity)
-                            .setTitle("发现 CarDeck 最新构建")
+                            .setTitle("发现 main 更新")
                             .setMessage(
                                 "当前版本：$installedVersionName\n" +
                                     "最新版本：$versionName\n" +
                                     "来源分支：$branch\n\n" +
                                     "更新说明：\n$changeNotes\n\n" +
-                                    "安装后将切换到该分支的功能，是否继续？",
+                                    "仅安装 $SOURCE_BRANCH 分支的新版本，是否继续？",
                             )
                             .setNegativeButton("取消", null)
                             .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity)) }
@@ -209,7 +215,7 @@ object BuickUpdater {
 
     private fun download(activity: Activity, url: String, shaUrl: String) {
         val dialog = android.app.ProgressDialog(activity).apply {
-            setTitle("下载 CarDeck 最新构建")
+            setTitle("下载 main 更新")
             setMessage("正在下载…")
             setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
             setCancelable(false)
