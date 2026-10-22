@@ -112,7 +112,7 @@ class GatewayProbeTest {
     fun appLogsStreamAutomaticallyButSystemLogsRequireExplicitConfirmation() {
         val received = LinkedBlockingQueue<JSONObject>()
         val buffer = GatewayLogBuffer(LogRedactor(listOf("test-only-token")))
-        buffer.offer("软件日志：连接建立 192.168.1.2")
+        buffer.offer("软件日志：连接建立 192.0.2.2")
         server.enqueue(reportingGateway(true, received, logs = true))
         val active = start(deviceInfo = info, appLogs = buffer)
         assertTrue(awaitLogCount(app = 1).logsSupported)
@@ -120,7 +120,7 @@ class GatewayProbeTest {
         val appMessage = received.first { it.optString("type") == "logs" }
         assertEquals("app", appMessage.getString("source"))
         assertFalse(appMessage.getBoolean("user_confirmed"))
-        assertFalse(appMessage.getJSONArray("lines").getString(0).contains("192.168.1.2"))
+        assertFalse(appMessage.getJSONArray("lines").getString(0).contains("192.0.2.2"))
         assertTrue(active.uploadConfirmedSystemLogs(listOf("已预览系统日志")))
         assertEquals(1, awaitLogCount(system = 1).systemLogLines)
         val systemMessage = received.first { it.optString("source") == "system" }

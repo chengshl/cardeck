@@ -8,7 +8,7 @@ class LogRedactorTest {
         val redactor = LogRedactor(listOf("exact-short-secret"))
         assertFalse(redactor.line("value=exact-short-secret").contains("exact-short-secret"))
         assertEquals("[已隐藏含凭证或密钥的日志行]", redactor.line("Authorization: Bearer sample"))
-        val safe = redactor.line("192.168.10.200 00:11:22:33:44:55 user@example.com wss://example.org/?key=sample\n\u0000")
+        val safe = redactor.line("192.0.2.200 00:11:22:33:44:55 user@example.com wss://example.org/?key=sample\n\u0000")
         assertFalse(safe.contains("192.168"))
         assertFalse(safe.contains("00:11:22"))
         assertFalse(safe.contains("user@example"))
