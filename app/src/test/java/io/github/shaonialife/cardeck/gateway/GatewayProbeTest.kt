@@ -144,28 +144,29 @@ class GatewayProbeTest {
     }
 
     @Test
-    fun vehicleMetadataIsSentOnlyWhenGatewayNegotiatesVehicleScope() {
+    fun legacyLogGatewayDoesNotReceiveVehicleMetadata() {
         val vehicle = "74a97cc7-51f6-4e10-acd7-e9d4c3a25130"
-        val receivedLegacy = LinkedBlockingQueue<JSONObject>()
-        val legacyBuffer = GatewayLogBuffer(LogRedactor(), vehicleProvider = { vehicle })
-        legacyBuffer.offer("older gateway must not receive optional vehicle field")
-        server.enqueue(reportingGateway(true, receivedLegacy, logs = true))
-        start(deviceInfo = info, appLogs = legacyBuffer, vehicleProvider = { vehicle })
+        val received = LinkedBlockingQueue<JSONObject>()
+        val buffer = GatewayLogBuffer(LogRedactor(), vehicleProvider = { vehicle })
+        buffer.offer("legacy still uploads without new fields")
+        server.enqueue(reportingGateway(true, received, logs = true))
+        start(deviceInfo = info, appLogs = buffer, vehicleProvider = { vehicle })
         assertEquals(1, awaitLogCount(app = 1).appLogLines)
-        assertFalse(receivedLegacy.first { it.optString("type") == "logs" }.has("vehicle_id"))
-        assertFalse(receivedLegacy.first { it.optString("type") == "status" }.has("vehicle_id"))
-        probe?.close()
-        probe = null
-        events.clear()
+        assertFalse(received.first { it.optString("type") == "logs" }.has("vehicle_id"))
+        assertFalse(received.first { it.optString("type") == "status" }.has("vehicle_id"))
+    }
 
-        val receivedNew = LinkedBlockingQueue<JSONObject>()
-        val modernBuffer = GatewayLogBuffer(LogRedactor(), vehicleProvider = { vehicle })
-        modernBuffer.offer("new gateway vehicle labels")
-        server.enqueue(reportingGateway(true, receivedNew, logs = true, vehicleScope = true))
-        start(deviceInfo = info, appLogs = modernBuffer, vehicleProvider = { vehicle })
+    @Test
+    fun negotiatedGatewayReceivesPrivateVehicleUuidOnly() {
+        val vehicle = "74a97cc7-51f6-4e10-acd7-e9d4c3a25130"
+        val received = LinkedBlockingQueue<JSONObject>()
+        val buffer = GatewayLogBuffer(LogRedactor(), vehicleProvider = { vehicle })
+        buffer.offer("modern labelled log")
+        server.enqueue(reportingGateway(true, received, logs = true, vehicleScope = true))
+        start(deviceInfo = info, appLogs = buffer, vehicleProvider = { vehicle })
         assertEquals(1, awaitLogCount(app = 1).appLogLines)
-        assertEquals(vehicle, receivedNew.first { it.optString("type") == "logs" }.getString("vehicle_id"))
-        assertEquals(vehicle, receivedNew.first { it.optString("type") == "status" }.getString("vehicle_id"))
+        assertEquals(vehicle, received.first { it.optString("type") == "logs" }.getString("vehicle_id"))
+        assertEquals(vehicle, received.first { it.optString("type") == "status" }.getString("vehicle_id"))
     }
 
     @Test
