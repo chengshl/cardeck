@@ -40,6 +40,7 @@ jobs:
           test -f "$TEMP/private-replace-text.rules"
           for branch in main Buick-main Buick-E5 Buick-Test; do
             git rev-parse "refs/remotes/origin/$branch^{tree}" > "$TEMP/$branch.tree"
+            git ls-tree -r "refs/remotes/origin/$branch" > "$TEMP/$branch.files"
           done
           for tag in main-latest buick-main-latest buick-e5-latest buick-test-latest; do
             git rev-parse "refs/tags/$tag^{tree}" > "$TEMP/$tag.tree"
@@ -55,6 +56,17 @@ jobs:
             fi
             test "$(git rev-parse "$new_ref^{tree}")" = "$(cat "$TEMP/$branch.tree")" || {
               echo "::error::Historical rewrite unexpectedly changed current $branch file tree"
+              git ls-tree -r "$new_ref" > "$TEMP/$branch.rewritten.files"
+              python3 - "$TEMP/$branch.files" "$TEMP/$branch.rewritten.files" <<'PY'
+              import sys
+              def entries(path):
+                  with open(path, encoding='utf-8') as handle:
+                      return {line.split('\\t', 1)[1].strip(): line.split('\\t', 1)[0]
+                              for line in handle if '\\t' in line}
+              old, new = entries(sys.argv[1]), entries(sys.argv[2])
+              changed = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+              print("Unexpected changed paths (not contents):",changed[:35])
+              PY
               exit 1
             }
           done
