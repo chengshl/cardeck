@@ -93,6 +93,16 @@ def authorized(request, token):
         values[0].encode(), ("Bearer " + token).encode())
 
 
+def valid_vehicle_id(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        ident = uuid.UUID(value)
+        return ident.version == 4 and str(ident) == value
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def integer(value, maximum):
     return type(value) is int and 0 <= value <= maximum
 
@@ -146,24 +156,46 @@ async def process_request(connection, request):
         if not authorized(request, READ_TOKEN):
             return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
         query = parse_qs(urlsplit(request.path).query)
-        if (not set(query) <= {"device_id", "source"} or "device_id" not in query
+        if (not set(query) <= {"device_id", "source", "vehicle_id"} or "device_id" not in query
                 or any(len(value) != 1 for value in query.values())):
             return connection.respond(HTTPStatus.BAD_REQUEST, "device_id required\n")
         device_id = query["device_id"][0]
         source = query.get("source", [None])[0]
+        vehicle_id = query.get("vehicle_id", [None])[0]
         try:
-            if str(uuid.UUID(device_id)) != device_id or source not in (None, "app", "system"):
+            if (str(uuid.UUID(device_id)) != device_id or source not in (None, "app", "system")
+                    or vehicle_id is not None and not valid_vehicle_id(vehicle_id)):
                 raise ValueError()
         except (ValueError, TypeError, AttributeError):
             return connection.respond(HTTPStatus.BAD_REQUEST, "invalid query\n")
         try:
-            entries = await storage_call("tail", device_id, source)
+            entries = await storage_call("tail", device_id, source, 200, vehicle_id)
         except OSError:
             storage_failure("read_failed")
             return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "storage unavailable\n")
         response = connection.respond(HTTPStatus.OK, json.dumps({
             "retention": "persistent-seven-days", "device_id": device_id,
-            "limit": 200, "logs": entries}))
+            "limit": 200, "logs": entries,
+            **({"vehicle_id": vehicle_id} if vehicle_id is not None else {})}))
+        response.headers["Content-Type"] = "application/json"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    if urlsplit(request.path).path == "/api/vehicles":
+        if not authorized(request, READ_TOKEN):
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+        query = parse_qs(urlsplit(request.path).query)
+        if set(query) != {"device_id"} or len(query["device_id"]) != 1:
+            return connection.respond(HTTPStatus.BAD_REQUEST, "device_id required\n")
+        requested = query["device_id"][0]
+        if not valid_vehicle_id(requested):
+            return connection.respond(HTTPStatus.BAD_REQUEST, "invalid device id\n")
+        try:
+            vehicles = await storage_call("list_vehicles", requested)
+        except OSError:
+            storage_failure("read_failed")
+            return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "storage unavailable\n")
+        response = connection.respond(HTTPStatus.OK, json.dumps({
+            "device_id": requested, "vehicles": vehicles, "retention": "persistent-seven-days"}))
         response.headers["Content-Type"] = "application/json"
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -221,12 +253,18 @@ async def handler(ws):
                     last_seen_ms=int(time.time() * 1000), report_count=0)
                 await ws.send('{"type":"register_ack"}')
             elif kind == "status":
-                if (not device_id or set(payload) != {"type", "heartbeat_count", "latency_ms"}
+                if (not device_id or not set(payload) <= {"type", "heartbeat_count", "latency_ms", "vehicle_id"}
+                    or not {"type", "heartbeat_count", "latency_ms"} <= set(payload)
+                    or ("vehicle_id" in payload and not valid_vehicle_id(payload["vehicle_id"]))
                     or not integer(payload.get("heartbeat_count"), 2147483647)
                     or not integer(payload.get("latency_ms"), 86400000)):
                     await ws.close(1008, "invalid status")
                     return
                 record = devices[device_id]
+                if "vehicle_id" in payload:
+                    record["vehicle_id"] = payload["vehicle_id"]
+                else:
+                    record.pop("vehicle_id", None)
                 record.update(heartbeat_count=payload["heartbeat_count"],
                     latency_ms=payload["latency_ms"], last_seen_ms=int(time.time() * 1000),
                     last_report_ms=int(time.time() * 1000),
@@ -240,7 +278,9 @@ async def handler(ws):
                     valid_id = str(uuid.UUID(batch_id)) == batch_id
                 except (ValueError, TypeError, AttributeError):
                     valid_id = False
-                if (not device_id or set(payload) != {"type", "source", "batch_id", "user_confirmed", "lines"}
+                if (not device_id or not set(payload) <= {"type", "source", "batch_id", "user_confirmed", "lines", "vehicle_id"}
+                    or not {"type", "source", "batch_id", "user_confirmed", "lines"} <= set(payload)
+                    or ("vehicle_id" in payload and not valid_vehicle_id(payload["vehicle_id"]))
                     or not valid_id or source not in ("app", "system")
                     or type(payload.get("user_confirmed")) is not bool
                     or payload["user_confirmed"] != (source == "system")
@@ -251,7 +291,8 @@ async def handler(ws):
                 recent = accepted_batches.setdefault(device_id, deque(maxlen=64))
                 if batch_id not in recent:
                     try:
-                        entries = await storage_call("append", device_id, source, [redact(line) for line in lines], batch_id)
+                        entries = await storage_call("append", device_id, source, [redact(line) for line in lines],
+                            batch_id, payload.get("vehicle_id"))
                     except (OSError, ValueError, UnicodeError):
                         storage_failure("write_failed")
                         await ws.close(1011, "persistent storage unavailable")
@@ -262,6 +303,8 @@ async def handler(ws):
                     counter = "app_log_lines" if source == "app" else "system_log_lines"
                     record[counter] = record.get(counter, 0) + len(lines)
                     record["last_log_ms"] = now
+                    if "vehicle_id" in payload:
+                        record["vehicle_id"] = payload["vehicle_id"]
                 await ws.send(json.dumps({"type": "logs_ack", "source": source,
                     "batch_id": batch_id, "accepted_lines": len(lines)}))
             else:

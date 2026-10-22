@@ -200,16 +200,22 @@ class LogArchive:
         self.current[(device, source)] = segment
         return segment
 
-    def append(self, device, source, lines, batch_id):
+    def append(self, device, source, lines, batch_id, vehicle_id=None):
         canonical_device(device)
         if source not in ("app", "system") or not lines or len(lines) > 8:
             raise ValueError("Invalid log batch")
         if any(not isinstance(line, str) or not 1 <= len(line) <= 256 for line in lines):
             raise ValueError("Invalid log line")
         canonical_device(batch_id)
+        if vehicle_id is not None:
+            canonical_device(vehicle_id)
+            if uuid.UUID(vehicle_id).version != 4:
+                raise ValueError("Invalid anonymous vehicle ID")
         self.cleanup()
         now_ms = int(self.clock() * 1000)
-        rows = [dict(source=source, received_ms=now_ms, batch_id=batch_id, text=line) for line in lines]
+        rows = [dict(source=source, received_ms=now_ms, batch_id=batch_id, text=line,
+                     **({"vehicle_id": vehicle_id} if vehicle_id is not None else {}))
+                for line in lines]
         encoded = [(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8") for row in rows]
         if any(len(row) > self.max_file_bytes for row in encoded):
             raise ValueError("A record exceeds the segment limit")
@@ -327,10 +333,14 @@ class LogArchive:
                 self._inside(temp)
                 temp.unlink()
 
-    def tail(self, device, source=None, limit=200):
+    def tail(self, device, source=None, limit=200, vehicle_id=None):
         canonical_device(device)
         if source not in (None, "app", "system") or not 1 <= limit <= 200:
             raise ValueError("Invalid query")
+        if vehicle_id is not None:
+            canonical_device(vehicle_id)
+            if uuid.UUID(vehicle_id).version != 4:
+                raise ValueError("Invalid anonymous vehicle ID")
         cutoff = int(self.clock() * 1000) - int(self.retention_seconds * 1000)
         combined = []
         for kind in ((source,) if source else ("app", "system")):
@@ -340,12 +350,18 @@ class LogArchive:
             for segment in segments:
                 self._inside(segment.path)
                 with segment.path.open("rb") as handle:
-                    offset = max(0, segment.size - limit * 4096)
-                    handle.seek(offset)
-                    data = handle.read(limit * 4096)
-                parts = data.splitlines()
-                if offset:
-                    parts = parts[1:]
+                    if vehicle_id is not None:
+                        # Scan the full bounded segment, not only its latest
+                        # lines: old vehicle A must remain discoverable after
+                        # vehicle B uploads a large volume of newer logs.
+                        parts = handle.read().splitlines()
+                    else:
+                        offset = max(0, segment.size - limit * 4096)
+                        handle.seek(offset)
+                        data = handle.read(limit * 4096)
+                        parts = data.splitlines()
+                        if offset:
+                            parts = parts[1:]
                 valid = []
                 for line in parts:
                     try:
@@ -354,13 +370,46 @@ class LogArchive:
                         continue  # An interrupted, unacknowledged last record may be incomplete.
                     if (isinstance(value, dict) and type(value.get("received_ms")) is int
                             and value["received_ms"] > cutoff and value.get("source") == kind
-                            and isinstance(value.get("text"), str)):
+                            and isinstance(value.get("text"), str)
+                            and (vehicle_id is None or value.get("vehicle_id") == vehicle_id)):
                         valid.append(value)
                 rows = valid[-limit:] + rows
                 if len(rows) >= limit:
                     break
             combined.extend(rows[-limit:])
         return sorted(combined, key=lambda row: row["received_ms"])[-limit:]
+
+    def list_vehicles(self, device, limit=32):
+        """Anonymous IDs with latest seen timestamp, derived from retained rows."""
+        canonical_device(device)
+        if not 1 <= limit <= 32:
+            raise ValueError("Invalid limit")
+        cutoff = int(self.clock() * 1000) - int(self.retention_seconds * 1000)
+        seen = {}
+        segments = sorted((s for s in self.segments.values() if s.device == device),
+                          key=lambda s: (s.first_ms, s.sequence))
+        for segment in segments:
+            self._inside(segment.path)
+            with segment.path.open("rb") as handle:
+                for raw in handle:
+                    try:
+                        item = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if not isinstance(item, dict) or not isinstance(item.get("vehicle_id"), str):
+                        continue
+                    identity = item["vehicle_id"]
+                    try:
+                        canonical_device(identity)
+                        if uuid.UUID(identity).version != 4:
+                            continue
+                    except (ValueError, AttributeError):
+                        continue
+                    received = item.get("received_ms")
+                    if type(received) is int and received > cutoff:
+                        seen[identity] = max(seen.get(identity, 0), received)
+        return [{"vehicle_id": k, "last_log_ms": v}
+                for k, v in sorted(seen.items(), key=lambda x: x[1], reverse=True)[:limit]]
 
     def stats(self):
         space = os.statvfs(self.root) if hasattr(os, "statvfs") else None
