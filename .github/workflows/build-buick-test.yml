@@ -62,7 +62,7 @@ jobs:
       - name: Verify entry configuration and channel isolation
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests '*EntryAddressTest' --tests '*UpdateChannelTest' --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests '*EntryAddressTest' --tests '*UpdateChannelTest' --tests '*GatewayProbeTest' --stacktrace
       - name: Record inherited E5 protocol test status
         id: inherited_tests
         continue-on-error: true

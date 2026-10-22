@@ -115,6 +115,38 @@
                 android:textSize="14sp" />
 
             <Button
+                android:id="@+id/testEntry"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="20dp"
+                android:text="@string/gateway_test" />
+
+            <TextView
+                android:id="@+id/gatewayStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:accessibilityLiveRegion="polite"
+                android:text="@string/gateway_idle"
+                android:textColor="#7EDCE6"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/disconnectEntry"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/gateway_disconnect" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/gateway_test_help"
+                android:textColor="#94A3A8"
+                android:textSize="13sp" />
+
+            <Button
                 android:id="@+id/saveEntry"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"

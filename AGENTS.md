@@ -6,7 +6,8 @@
 - 入口地址和凭证通过「入口配置」管理；凭证使用 Android Keystore 加密保存在 noBackupFilesDir，不得写入源码、日志、URL 或发布附件。
 - 独立更新线由 `app/src/main/assets/config/update-channel.json` 描述，只读取 `buick-test-latest`；只发布 `CarDeck-Buick-Test.apk` 及校验文件，不写共享标签或旧分支别名。
 - 本分支继承的 E5 发布工作流必须保留分支守卫，禁止在 Buick-Test 手动触发共享更新发布。
-- 本次仅提供入口配置与独立更新线，未增加远程 Gateway 连接或车辆指令功能。后续客户端应统一调用 EntryConfigStore，并沿用后台线程及凭证保护约定。
+- Gateway 连接仅由入口配置页的「连接测试」手动启动，读取 EntryConfigStore 的已保存配置；离开页面即关闭 socket、定时器及网络回调，不启动后台常驻连接或车辆指令。
+- GatewayProbe 只实现测试 hello 与 JSON heartbeat/ack，并正常校验证书、拒绝重定向。网络通过单个 socket 和 DNS 绑定，不得修改 CarPlay 的进程网络绑定。新网关测试必须加入独立 CI 的硬性检查。
 
 让一台未 root 的 Android 手机（荣耀 Magic7 Pro）扮演 **CarPlay 发送端（iPhone 角色）**：
 自绘车机桌面 → H.264 编码推流 → 奥迪车机 / DiPlay 测试台（Redmi K40 上的接收端）显示，

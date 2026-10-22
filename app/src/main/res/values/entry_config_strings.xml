@@ -18,4 +18,19 @@
     <string name="entry_invalid_address">请输入完整的 wss:// 地址和路径，不含凭证或查询参数。</string>
     <string name="entry_invalid_token">请输入有效凭证，不包含空格或换行。</string>
     <string name="entry_changed_address_token">更换服务地址后，请重新填写该入口的凭证。</string>
+    <string name="gateway_test">连接测试</string>
+    <string name="gateway_disconnect">断开测试</string>
+    <string name="gateway_test_help">先保存配置，再测试连接。离开此页面会结束测试。</string>
+    <string name="gateway_idle">尚未测试连接</string>
+    <string name="gateway_save_first">请先保存当前地址和凭证，再进行连接测试。</string>
+    <string name="gateway_connecting">正在连接入口…</string>
+    <string name="gateway_connected">已连接，正在验证心跳…</string>
+    <string name="gateway_healthy">心跳正常 · 已确认 %1$d 次 · 往返 %2$d 毫秒</string>
+    <string name="gateway_auth_failed">鉴权失败，请检查入口凭证。</string>
+    <string name="gateway_disconnected">测试连接已断开</string>
+    <string name="gateway_network_failed">连接已中断或网络不可用，请确认网络后重新测试。</string>
+    <string name="gateway_tls_failed">安全连接验证失败，请检查服务证书和设备时间。</string>
+    <string name="gateway_handshake_failed">入口连接失败（HTTP %1$d），请检查服务地址和网关状态。</string>
+    <string name="gateway_protocol_failed">入口响应与测试协议不匹配，请检查服务地址。</string>
+    <string name="gateway_heartbeat_failed">心跳应答超时，测试连接已断开。</string>
 </resources>
