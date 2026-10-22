@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 
-PROJECT_HOST = re.compile(r"\b[a-z0-9.-]+\." + "once" + r"\." + "wiki\b", re.I)
+PROJECT_HOST = re.compile(r"\b[a-z0-9.-]+\." + "once" + r"\." + r"wiki\b", re.I)
 STORAGE_PATH = re.compile("/" + "data" + r"/(?:files|cert)(?:/|\b)", re.I)
 IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 MAC = re.compile(r"\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", re.I)
