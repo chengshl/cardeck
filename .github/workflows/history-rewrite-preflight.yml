@@ -1,0 +1,76 @@
+name: Preflight sanitized Git history rewrite (no push)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/security/history_rewrite_preflight.py'
+      - '.github/workflows/history-rewrite-preflight.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch affected PR heads for impact validation
+        shell: bash
+        run: |
+          git fetch --no-tags origin '+refs/pull/*/head:refs/audit-pr/*' || echo 'PR refs unavailable'
+      - name: Install rewrite tool
+        run: |
+          python3 -m pip install --user --disable-pip-version-check 'git-filter-repo>=2.47'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Dry-run history replacement in disposable mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEMP="$(mktemp -d)"
+          trap 'rm -rf "$TEMP"' EXIT
+          python3 tools/security/history_rewrite_preflight.py "$TEMP/private-replace-text.rules"
+          git clone --mirror "$GITHUB_WORKSPACE" "$TEMP/rewrite.git"
+          cd "$TEMP/rewrite.git"
+          test -f "$TEMP/private-replace-text.rules"
+          for branch in main Buick-main Buick-E5 Buick-Test; do
+            git rev-parse "refs/remotes/origin/$branch^{tree}" > "$TEMP/$branch.tree"
+          done
+          for tag in main-latest buick-main-latest buick-e5-latest buick-test-latest; do
+            git rev-parse "refs/tags/$tag^{tree}" > "$TEMP/$tag.tree"
+          done
+          git filter-repo --force --sensitive-data-removal --replace-text "$TEMP/private-replace-text.rules"             > "$TEMP/filter-status.txt" 2>&1 || {
+              echo '::error::Disposable git-filter-repo execution failed'
+              exit 1
+            }
+          for branch in main Buick-main Buick-E5 Buick-Test; do
+            test "$(git rev-parse "refs/remotes/origin/$branch^{tree}")" = "$(cat "$TEMP/$branch.tree")" || {
+              echo "::error::Historical rewrite unexpectedly changed current $branch file tree"
+              exit 1
+            }
+          done
+          for tag in main-latest buick-main-latest buick-e5-latest buick-test-latest; do
+            test "$(git rev-parse "refs/tags/$tag^{tree}")" = "$(cat "$TEMP/$tag.tree")" || {
+              echo "::error::Historical rewrite unexpectedly changed $tag release file tree"
+              exit 1
+            }
+          done
+          python3 "$GITHUB_WORKSPACE/tools/security/history_privacy_audit.py"
+          python3 - <<'PY'
+          import json
+          with open('history-privacy-audit-report.json', encoding='utf-8') as handle:
+              report=json.load(handle)
+          categories=report['objects']['finding_categories']
+          if categories:
+              print('::error::Historical findings remain after rewrite:',sorted(categories))
+              raise SystemExit(1)
+          print('Sanitized preflight passed: four branch tips and four active release trees unchanged')
+          print('Remaining historical-content findings: 0')
+          print('Note: commit email metadata, GitHub caches, and original PR refs are not purged by this preflight')
+          PY
+          # No force-push, no backup artifact, no release or tag mutation.
