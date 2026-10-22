@@ -42,7 +42,7 @@ class Iap2SenderSessionTest {
         assertEquals(49152, endpoint.airPlayPort)
         assertEquals("mock-device-id", endpoint.deviceIdentifier)
         assertNotNull(endpoint.publicKey)
-        assertEquals(listOf("192.168.49.1", "fd00::1"), endpoint.ipAddresses)
+        assertEquals(listOf("192.0.2.1", "fd00::1"), endpoint.ipAddresses)
 
         phoneChannel.close()
         accessoryChannel.close()
@@ -92,7 +92,7 @@ class Iap2SenderSessionTest {
         assertNotNull(late)
         assertEquals("MockAP", late!!.ssid)
         assertEquals(49152, late.airPlayPort)
-        assertEquals(listOf("192.168.49.1", "fd00::1"), late.ipAddresses)
+        assertEquals(listOf("192.0.2.1", "fd00::1"), late.ipAddresses)
         assertEquals("mock-device-id", late.deviceIdentifier)
 
         phoneChannel.close()
@@ -102,9 +102,9 @@ class Iap2SenderSessionTest {
 
     /**
      * Audi MMI 3315 形态：0x4301 的地址字段按定长 NUL 填充（IPv6 后 22 个、IPv4 后 5 个）。
-     * 旧实现只去掉**一个**尾部 NUL，得到 `"10.174.189.1\0\0\0\0\0"`——它 contains('.')=true、
+     * 旧实现只去掉**一个**尾部 NUL，得到 `"198.51.100.1\0\0\0\0\0"`——它 contains('.')=true、
      * contains(':')=false，能骗过所有「是不是 IPv4」的判断，但 Android 的 getaddrinfo 解不了，
-     * 表现为 `Unable to resolve host "10.174.189.1"`（2026-10-18 实测：配对成功后视频端口
+     * 表现为 `Unable to resolve host "198.51.100.1"`（2026-10-18 实测：配对成功后视频端口
      * 与 keepAlive 全挂、会话 10 秒被拆）。
      */
     @Test
@@ -131,7 +131,7 @@ class Iap2SenderSessionTest {
             check(address.none { it == '\u0000' }) { "地址含 NUL：${address.toByteArray().toList()}" }
             check(address.trim() == address) { "地址含首尾空白：'$address'" }
         }
-        assertEquals(listOf("192.168.49.1", "fd00::1"), endpoint.ipAddresses)
+        assertEquals(listOf("192.0.2.1", "fd00::1"), endpoint.ipAddresses)
         // 端口解析不受填充影响（同一帧里的 u32 参数）
         assertEquals(49152, endpoint.airPlayPort)
 
@@ -168,7 +168,7 @@ class Iap2SenderSessionTest {
             assertEquals(2, endpoint.securityType)
             assertEquals(49152, endpoint.airPlayPort)
             assertEquals("mock-device-id", endpoint.deviceIdentifier)
-            assertEquals(listOf("192.168.49.1", "fd00::1"), endpoint.ipAddresses)
+            assertEquals(listOf("192.0.2.1", "fd00::1"), endpoint.ipAddresses)
             assertNotNull(endpoint.publicKey)
         } finally {
             phoneChannel.close()
@@ -303,7 +303,7 @@ class Iap2SenderSessionTest {
                     Iap2Csm.string(0, "MockAP"),
                     Iap2Csm.string(1, "secret-passphrase"),
                     Iap2Csm.u8(2, 36),
-                    addressParam(3, "192.168.49.1", padTo = 17),
+                    addressParam(3, "192.0.2.1", padTo = 17),
                     addressParam(3, "fd00::1", padTo = 47),
                     Iap2Csm.u8(4, 2),
                 ),
