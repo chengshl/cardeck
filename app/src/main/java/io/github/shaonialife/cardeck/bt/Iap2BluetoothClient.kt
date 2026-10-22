@@ -459,6 +459,17 @@ class Iap2BluetoothClient(
                     log("BT-C T18: B233 连续两次 0x4300 无 ACK；" +
                         "已允许一次车机主动发起的 iAP2 反向握手（仍保留原有主动连接后备）")
                 }
+            } else if (knownBuick &&
+                B233ReconnectPolicy.isPreAvailabilityPeerSilent(error.message) &&
+                running
+            ) {
+                val backoff = b233ReconnectPolicy.onPreAvailabilityPeerSilent(
+                    android.os.SystemClock.uptimeMillis(),
+                )
+                log(
+                    "BT-C T29: B233 早期 iAP2/0x4E0C 无应答，自动重连冷却 ${backoff / 1000}s；" +
+                        "保留 HFP/A2DP，不删除配对，不误触发 0x4300 反向会话"
+                )
             }
         } finally {
             if (activeChannel === channel) activeChannel = null
