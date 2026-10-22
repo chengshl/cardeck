@@ -37,7 +37,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "io.github.shaonialife.cardeck"
+        applicationId = "io.github.buick.test.cardeck"
         minSdk = 31
         targetSdk = 34
         versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
