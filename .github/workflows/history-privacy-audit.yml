@@ -1,0 +1,36 @@
+name: Audit full reachable Git history for private information
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/security/history_privacy_audit.py'
+      - '.github/workflows/history-privacy-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Include available pull request refs in audit
+        shell: bash
+        run: |
+          git fetch --no-tags origin '+refs/pull/*/head:refs/audit-pr/*' || echo 'PR refs not available; audited branches and tags'
+      - name: Scan reachable historical objects without printing secrets
+        run: python3 tools/security/history_privacy_audit.py
+      - name: Store sanitized history audit summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-privacy-audit-summary
+          path: history-privacy-audit-report.json
+          if-no-files-found: warn
+          retention-days: 7
