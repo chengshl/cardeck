@@ -8,7 +8,7 @@ class BuickB233RouteTest {
     @Test
     fun knownBuickB233MayUseOutboundWithoutSdp() {
         assertTrue(BuickB233Route.isKnownReceiver("BUICK_" + "1234"))
-        assertTrue(BuickB233Route.isKnownReceiver( " + "BUICK_" + "1234" + " "))
+        assertTrue(BuickB233Route.isKnownReceiver(" " + "BUICK_" + "1234" + " "))
     }
 
     @Test
