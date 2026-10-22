@@ -1,12 +1,12 @@
 package io.github.shaonialife.cardeck.audio
 
-import android.net.Network
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
 import io.github.shaonialife.cardeck.airplay.AirPlayCrypto
+import io.github.shaonialife.cardeck.airplay.TimingServer
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -23,8 +23,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - 加密：ChaCha20-Poly1305；AAD = 头 4..12 字节（timestamp+ssrc 的 BE 表示，
  *    catplay 的 "modern AAD"；DiPlay 解密即取同一范围）
  *  - nonce（12B）= 4 字节零 + 尾 8 字节（小端计数，从 0 逐包递增）→ [AirPlayCrypto.nonce64]
- *  - RTP 字段：version=2、PT=100（对照 catplay `payload_type = stream_type`）、
+ *  - RTP 字段：version=2、PT=流类型（100=PCM 通路 / 102=AAC-LC 通路；
+ *    对照 catplay `payload_type = stream_type`）、
  *    SSRC=0（catplay 同款）、timestamp = 累计样本帧数、seq 逐包递增
+ *  - **首个音频包置 Marker 位**（规范：RECORD/FLUSH 之后的首包要打标记，接收端据此
+ *    切分播放边界；catplay 恒 false，但我们的会话是「RECORD 之后才加入音频流」，
+ *    首包标记能帮接收端重新对齐）
+ *
+ * 旁路：
+ *  - **同步包**：[AudioSyncPacket] 每 1 秒发往该流的 `controlPort`，建立 RTP↔NTP 锚点。
+ *    （缺了它接收端只能「按到达时刻猜」，严格的实现干脆不排播——2026-10-20 实测）
  *
  * 采集：`AudioPlaybackCapture`（Android 10+）捕获手机端其他应用播放的媒体/导航音频
  * （需要 MediaProjection——与镜像模式的同一授权）。每包 [SAMPLES_PER_PACKET] 样本帧
@@ -42,8 +50,27 @@ class AudioSender(
      * 44.1k 时由 AirPlayClient 协商下发）。默认 48k。
      */
     private val sampleRate: Int = 48_000,
-    /** Physical car Wi-Fi; does not change the VPN/system default route. */
-    private val carWifiNetwork: Network? = null,
+    /** 负载编码：PCM（type=100 通路）或 AAC-LC（type=102 通路）。 */
+    private val codec: AudioCodec = AudioCodec.PCM,
+    /** RTP 流类型，仅用于日志（PT 与 SETUP 的 type 保持一致）。 */
+    private val streamType: Long = 100L,
+    /** AAC 帧是否补 ADTS 头（见 [AudioTuning.ADTS]，排查车机解码链用）。 */
+    private val adtsFrames: Boolean = false,
+    /**
+     * 该音频流的控制端口（车机在 SETUP 应答里下发）。>0 时每 [SYNC_INTERVAL_MILLIS]
+     * 发一个 [AudioSyncPacket] 建立 RTP↔NTP 锚点；0 = 车机没给（旧车机），只发音频。
+     */
+    private val controlPort: Int = 0,
+    /** B233 only: do not send RTCP before the late-joined audio RECORD succeeds. */
+    private val deferSyncUntilRecord: Boolean = false,
+    /** B233 only: detect rejected audio control endpoint and leave the video session alive. */
+    private val onSyncPortRefused: ((String) -> Unit)? = null,
+    /** B233 T12 diagnosis: keep phone media volume unchanged while verifying playback capture. */
+    private val mutePhoneOutput: Boolean = true,
+    /** T13 B233: 1 Hz RTP/capture diagnostics for first 45s; other cars unchanged. */
+    private val verboseStartupDiagnostics: Boolean = false,
+    /** T24: B233 audio RTP and RTCP must not depend on VPN/default routes. */
+    private val vehicleNetwork: android.net.Network? = null,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -59,17 +86,45 @@ class AudioSender(
         /** 一包负载字节数（16bit 立体声）。 */
         const val PACKET_BYTES = SAMPLES_PER_PACKET * CHANNELS * 2
 
+        /** 同步包发送间隔（规范：每秒一个）。 */
+        const val SYNC_INTERVAL_MILLIS = 1_000L
+
+        /**
+         * T14 B233 trial: this receiver advertises AAC RTCP controlPort=6011
+         * yet returns ICMP Port Unreachable on the second sync send. Stopping
+         * the healthy RTP stream after that error leaves a still-advertised
+         * audio session with no packets; the car tears down CarPlay ~19s later.
+         * Sync sender exits on IOException regardless; only AAC/B233 keeps RTP.
+         * Do NOT apply to PCM or other vehicles without real-car evidence.
+         */
+        internal fun keepRtpAfterSyncPortRefused(
+            isBuickB233: Boolean,
+            codec: AudioCodec,
+        ): Boolean = isBuickB233 && codec == AudioCodec.AAC_LC
+
         private const val RTP_HEADER_LEN = 12
         private const val TAG_SIZE = 16
         private const val NONCE_SIZE = 8
-
-        /** RTP 动态负载类型起点（catplay 直接用 stream type 100 作 PT）。 */
-        private const val PAYLOAD_TYPE = 100
 
         private const val READ_TIMEOUT_QUIET_MILLIS = 500L
 
         /** 静音前媒体音量的持久化键（进程被杀也不丢恢复目标）。 */
         private const val KEY_SAVED_VOLUME = "audio_saved_media_volume"
+
+        /** PCM capture sample peak, independent of AAC codecs (Android AudioRecord is little endian). */
+        internal fun peakPcm16Le(samples: ByteArray): Int {
+            var peak = 0
+            var offset = 0
+            while (offset + 1 < samples.size) {
+                val word = (samples[offset].toInt() and 0xFF) or
+                    ((samples[offset + 1].toInt() and 0xFF) shl 8)
+                val signed = if (word >= 0x8000) word - 0x10000 else word
+                val magnitude = if (signed == Short.MIN_VALUE.toInt()) 32768 else kotlin.math.abs(signed)
+                if (magnitude > peak) peak = magnitude
+                offset += 2
+            }
+            return peak
+        }
 
         /** 小端 s16 → 大端 s16（每两字节换序）。CarPlay 线格式要求大端样本。 */
         fun bigEndianS16(source: ByteArray): ByteArray {
@@ -86,9 +141,46 @@ class AudioSender(
     }
 
     private val running = AtomicBoolean(false)
+
+    /** stop() 幂等闸门（多条收尾路径都会调 stop）。 */
+    private val stopped = AtomicBoolean(false)
     private var socket: DatagramSocket? = null
+    private var syncSocket: DatagramSocket? = null
     private var record: AudioRecord? = null
     private var thread: Thread? = null
+    private var syncThread: Thread? = null
+
+    /** AAC-LC 编码器（仅 [AudioCodec.AAC_LC] 时创建）。 */
+    private var aacEncoder: AacLcEncoder? = null
+
+    /**
+     * RTP 游标（原本是采集循环里的局部变量）。提到字段上是因为**同步包线程**要读
+     * 「当前/下一包时间戳」，否则锚点里的时间戳永远对不上真实发出的包。
+     */
+    @Volatile private var sequence = 0
+
+    @Volatile private var timestamp = 0L
+    @Volatile private var syncRecordAccepted = !deferSyncUntilRecord
+
+    fun activateSyncAfterRecord() {
+        if (!deferSyncUntilRecord) return
+        syncRecordAccepted = true
+        log("AUDIO T10: B233 RECORD confirmed; RTCP will start after first RTP samples")
+    }
+
+    @Volatile private var nonceCounter = 0L
+
+    /** 首个音频包标记（打完就清）；AAC 自检只跑一次。 */
+    private var markerPending = true
+    private var selfChecked = false
+
+    /** 每包/每帧对应的 PCM 字节数（PCM 通路=一包的负载；AAC 通路=一帧的输入）。 */
+    private val framePcmBytes: Int
+        get() = if (codec == AudioCodec.AAC_LC) AacLcEncoder.pcmBytes(CHANNELS) else PACKET_BYTES
+
+    /** 每包推进的样本数（AAC 一帧 1024，PCM 一包 352）。 */
+    private val samplesPerPacket: Long
+        get() = if (codec == AudioCodec.AAC_LC) AacLcEncoder.FRAME_SAMPLES.toLong() else SAMPLES_PER_PACKET.toLong()
 
     /**
      * RTP SSRC：固定 0（catplay `prepare_header` 在真车上即用 0；DiPlay 收端不校验）。
@@ -101,6 +193,8 @@ class AudioSender(
     private var packetsSent = 0L
     private var bytesSent = 0L
     private var lastLogAt = 0L
+    private var diagnosticStartedAt = 0L
+    private var lastCaptureDiagnosticAt = 0L
     private var readFailures = 0
 
     val isRunning: Boolean get() = running.get()
@@ -185,18 +279,27 @@ class AudioSender(
      */
     fun start(projection: MediaProjection): Boolean {
         if (running.get()) return true
+        stopped.set(false)
         return try {
             val client = DatagramSocket()
-            val physicalWifi = carWifiNetwork
-            if (physicalWifi != null) {
-                runCatching { physicalWifi.bindSocket(client) }
-                    .onSuccess { log("CAR-NET T47: audio UDP bound to car Wi-Fi $physicalWifi") }
-                    .onFailure {
-                        log("CAR-NET T47: audio UDP explicit Wi-Fi unavailable (${it.message}); using system LAN route")
-                    }
+            vehicleNetwork?.let { network ->
+                runCatching { network.bindSocket(client) }
+                    .onSuccess { log("AUDIO T24: RTP UDP 指定车机 WiFi Network=$network") }
+                    .onFailure { log("AUDIO T24: RTP WiFi 路由绑定失败 - ${it.message}") }
             }
             client.connect(InetAddress.getByName(host), dataPort)
             socket = client
+
+            // AAC 通路先把编码器立起来：编不出来就没必要采集（也避免「有包无声」的假象）
+            if (codec == AudioCodec.AAC_LC) {
+                val encoder = AacLcEncoder(sampleRate, CHANNELS, wrapAdts = adtsFrames, log = log)
+                if (!encoder.start()) {
+                    client.close()
+                    socket = null
+                    return false
+                }
+                aacEncoder = encoder
+            }
 
             val captureConfig = buildCaptureConfig(projection)
             val audioFormat =
@@ -211,27 +314,65 @@ class AudioSender(
                     .Builder()
                     .setAudioPlaybackCaptureConfig(captureConfig)
                     .setAudioFormat(audioFormat)
-                    .setBufferSizeInBytes(PACKET_BYTES * 8)
+                    .setBufferSizeInBytes(framePcmBytes * 8)
                     .build()
             if (recorder.state != AudioRecord.STATE_INITIALIZED) {
                 log("AUDIO: AudioRecord 初始化失败（state=${recorder.state}）")
                 runCatching { recorder.release() }
+                aacEncoder?.stop()
+                aacEncoder = null
                 client.close()
                 socket = null
                 return false
             }
             record = recorder
-            recorder.startRecording()
             running.set(true)
-            mutePhoneMedia()
+            if (verboseStartupDiagnostics) {
+                diagnosticStartedAt = android.os.SystemClock.uptimeMillis()
+                lastLogAt = diagnosticStartedAt - 1_000L
+                lastCaptureDiagnosticAt = diagnosticStartedAt - 1_000L
+                log("AUDIO T13: B233 前45秒开启每秒 RTP/采集诊断（静音数据也会持续发送）")
+            }
+            if (mutePhoneOutput) {
+                mutePhoneMedia()
+            } else {
+                // T12 isolates B233's all-zero capture from Sony's STREAM_MUSIC mute.
+                // This is diagnostic: phone speaker may be audible as well as the car.
+                val am = context?.getSystemService(android.content.Context.AUDIO_SERVICE)
+                    as? android.media.AudioManager
+                log("AUDIO T12: B233 原媒体音量保留；volume=${am?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)}" +
+                    " musicActive=${am?.isMusicActive}（手机可能同时外放）")
+            }
             log(
                 "AUDIO: 已启动（播放捕获 ${sampleRate}Hz 立体声 → $host:$dataPort，" +
-                    "每包 ${SAMPLES_PER_PACKET} 帧）",
+                    "通路=t$streamType/${codec.name}，" +
+                    if (codec == AudioCodec.AAC_LC) {
+                        "每包 1 个 AAC 帧（${AacLcEncoder.FRAME_SAMPLES} 采样" +
+                            (if (adtsFrames) "，ADTS 封装））" else "，裸帧））")
+                    } else {
+                        "每包 ${SAMPLES_PER_PACKET} 帧 PCM）"
+                    },
             )
 
-            Thread({ runCaptureLoop() }, "audio-capture").apply {
+            // 同步包线程先起：锚点越早建立，接收端越早能排播
+            startSyncLoop()
+
+            Thread(
+                {
+                    try {
+                        recorder.startRecording()
+                    } catch (error: Exception) {
+                        log("AUDIO: 启动采集失败 - ${error.message}")
+                        stop()
+                        return@Thread
+                    }
+                    runCaptureLoop()
+                },
+                "audio-capture",
+            ).apply {
                 isDaemon = true
                 start()
+                thread = this
             }
             true
         } catch (error: Exception) {
@@ -241,15 +382,28 @@ class AudioSender(
         }
     }
 
+    /**
+     * 停止音频。
+     *
+     * 收尾路径不止一条（采集线程 finally、会话结束回调、手动断开），会重复调用；
+     * 必须幂等——否则「已恢复手机媒体音量」会打两遍，且在用户于会话期间手动改过
+     * 音量时，第二次恢复会用旧值把它覆盖回去。
+     */
     fun stop() {
+        if (!stopped.compareAndSet(false, true)) return
         running.set(false)
         runCatching { record?.stop() }
         runCatching { record?.release() }
         record = null
+        aacEncoder?.stop()
+        aacEncoder = null
         runCatching { socket?.close() }
         socket = null
+        runCatching { syncSocket?.close() }
+        syncSocket = null
+        syncThread = null
         thread = null
-        restorePhoneMedia()
+        if (mutePhoneOutput) restorePhoneMedia()
         log("AUDIO: 已停止（共发 $packetsSent 包 / ${bytesSent / 1024}KB）")
     }
 
@@ -268,15 +422,86 @@ class AudioSender(
         return builder.build()
     }
 
+    // ---- 音频同步包（RTP 时间戳 ↔ NTP，每秒一个） ----
+
+    private fun startSyncLoop() {
+        if (controlPort <= 0) {
+            log("AUDIO: 车机未下发 controlPort——不发同步包（只能靠音频包自带时间戳）")
+            return
+        }
+        val client =
+            try {
+                DatagramSocket().apply {
+                    vehicleNetwork?.let { network ->
+                        runCatching { network.bindSocket(this) }
+                            .onSuccess { log("AUDIO T24: RTCP UDP 指定车机 WiFi Network=$network") }
+                            .onFailure { log("AUDIO T24: RTCP WiFi 路由绑定失败 - ${it.message}") }
+                    }
+                    connect(InetAddress.getByName(host), controlPort)
+                }
+            } catch (error: Exception) {
+                log("AUDIO: 同步包套接字创建失败 - ${error.message}")
+                return
+            }
+        syncSocket = client
+        log("AUDIO: 同步包已启用 → $host:$controlPort（每 ${SYNC_INTERVAL_MILLIS}ms 一个，建立 RTP↔NTP 锚点）")
+        val worker =
+            Thread(
+                {
+                    var syncSequence = 0
+                    var first = true
+                    try {
+                        while (running.get() && !client.isClosed) {
+                            // B233 often opens its control UDP port only after the
+                            // audio stream is activated via the *second* RECORD.
+                            // Do not send the old zero->zero RTCP probe before RECORD.
+                            if (deferSyncUntilRecord && (!syncRecordAccepted || timestamp == 0L)) {
+                                Thread.sleep(25L)
+                                continue
+                            }
+                            val next = timestamp
+                            val current = (next - samplesPerPacket).coerceAtLeast(0L)
+                            val ntp = TimingServer.ntpFromNanos(System.nanoTime())
+                            val packet = AudioSyncPacket.build(syncSequence, current, next, ntp, first)
+                            client.send(DatagramPacket(packet, packet.size))
+                            syncSequence = (syncSequence + 1) and 0xFFFF
+                            if (first) {
+                                first = false
+                                log(
+                                    "AUDIO: 首个同步包已发出（X 位=1）ts=$current→$next——" +
+                                        "车机若仍无声，说明它没在等这个锚点",
+                                )
+                            }
+                            Thread.sleep(SYNC_INTERVAL_MILLIS)
+                        }
+                    } catch (error: Exception) {
+                        if (running.get()) {
+                            log("AUDIO: 同步包发送停止 - ${error.message}")
+                            val message = error.message.orEmpty()
+                            if (deferSyncUntilRecord &&
+                                (error is java.net.PortUnreachableException ||
+                                 message.contains("ECONNREFUSED", ignoreCase = true))
+                            ) {
+                                onSyncPortRefused?.invoke(message)
+                            }
+                        }
+                    }
+                },
+                "audio-sync",
+            )
+        worker.isDaemon = true
+        worker.start()
+        syncThread = worker
+    }
+
     // ---- 采集循环 → 封包发送 ----
 
     private fun runCaptureLoop() {
         val recorder = record ?: return
-        val client = socket ?: return
-        val pcm = ByteArray(PACKET_BYTES)
-        var sequence = 0
-        var timestamp = 0L
-        var nonceCounter = 0L
+        val frameBytes = framePcmBytes
+        val pcm = ByteArray(frameBytes)
+        // 诊断抽样节拍：PCM 约 125 包/s（每 20s 一次）；AAC 约 47 帧/s
+        val diagnosticStride = if (codec == AudioCodec.AAC_LC) 600 else 1875
         try {
             while (running.get()) {
                 val read =
@@ -295,49 +520,83 @@ class AudioSender(
                     Thread.sleep(READ_TIMEOUT_QUIET_MILLIS)
                     continue
                 }
-                if (read < PACKET_BYTES) continue // 残包（缓冲尾部）：丢弃，等下一个整包
+                if (read < frameBytes) continue // 残包（缓冲尾部）：丢弃，等下一个整包
                 readFailures = 0
 
                 // 内容诊断（2026-10-17）：播放捕获可能拿到全零（app 禁止捕获 / 音频路由
                 // 到蓝牙 / 无音频播放）。全零时车机静音但手机仍在响，用户会报「声音在
                 // 手机上」——必须能区分「没采到」与「采到了但车机没播」。
-                if (sequence < 3 || sequence % 1875 == 0) { // 约每 20s 抽样一次
+                val diagNow = android.os.SystemClock.uptimeMillis()
+                val earlyB233Diagnostic = verboseStartupDiagnostics &&
+                    diagnosticStartedAt > 0L &&
+                    diagNow - diagnosticStartedAt <= 45_000L &&
+                    diagNow - lastCaptureDiagnosticAt >= 1_000L
+                if (sequence < 3 || sequence % diagnosticStride == 0 || earlyB233Diagnostic) {
+                    if (verboseStartupDiagnostics) lastCaptureDiagnosticAt = diagNow
                     var nonZero = 0
                     var peak = 0
                     var index = 0
-                    while (index < read) {
+                    while (index + 1 < read) {
                         val value = ((pcm[index + 1].toInt() and 0xFF) shl 8) or (pcm[index].toInt() and 0xFF)
                         val magnitude = if (value > 32767) 65536 - value else value
                         if (magnitude > peak) peak = magnitude
                         if (magnitude > 0) nonZero++
                         index += 2
                     }
-                    val percent = nonZero * 100 / (read / 2)
+                    val percent = nonZero * 100 / (read / 2).coerceAtLeast(1)
+                    val activity =
+                        if (!mutePhoneOutput && peak == 0) {
+                            val am = context?.getSystemService(android.content.Context.AUDIO_SERVICE)
+                                as? android.media.AudioManager
+                            " musicActive=${am?.isMusicActive}" +
+                                " mediaVolume=${am?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)}"
+                        } else ""
                     log(
-                        "AUDIO: 采集样本 seq=$sequence 非零$percent% 峰值=$peak" +
-                            if (peak == 0) "（⚠ 全零：捕获不到音频——app 可能禁止播放捕获或音频走了蓝牙）" else "",
+                        "AUDIO: 采集样本 seq=$sequence 非零$percent% 峰值=$peak$activity" +
+                            if (peak == 0) "（⚠ 全零：音乐可能未播放、来源禁止捕获或走了其他音频路由）" else "",
                     )
                 }
 
-                val wire = sealPacket(pcm, sequence, timestamp, nonceCounter)
-                sequence = (sequence + 1) and 0xFFFF
-                timestamp += SAMPLES_PER_PACKET
-                nonceCounter++
+                // PCM 通路：采一段 = 发一包；AAC 通路：喂一帧 PCM，编码器可能吐出 0~N 帧
+                val payloads: List<ByteArray> =
+                    if (codec == AudioCodec.AAC_LC) {
+                        val encoder = aacEncoder ?: break
+                        encoder.encode(pcm, frameBytes)
+                    } else {
+                        listOf(pcm)
+                    }
+                if (payloads.isEmpty()) continue
 
-                try {
-                    client.send(DatagramPacket(wire, wire.size))
-                } catch (error: IOException) {
-                    log("AUDIO: UDP 发送失败 - ${error.message}")
-                    break
+                // 一次性自检：把编码结果自己解一遍，证明比特流有效且非静音。
+                // 这是「车机无声」最需要的一条证据——如果自解码峰值是 0，问题在编码器，
+                // 如果自解码有声音而车机静音，问题在车机侧（会话/音量/路由）。
+                if (!selfChecked) {
+                    selfChecked = true
+                    verifyEncodedFrame(payloads.first())
                 }
-                packetsSent++
-                bytesSent += wire.size
+
+                var sendFailed = false
+                for (payload in payloads) {
+                    if (!sendPayload(payload)) {
+                        sendFailed = true
+                        break
+                    }
+                }
+                if (sendFailed) break
                 val now = android.os.SystemClock.uptimeMillis()
-                if (now - lastLogAt >= 30_000L) {
+                val inTrialWindow = verboseStartupDiagnostics &&
+                    diagnosticStartedAt > 0L &&
+                    now - diagnosticStartedAt <= 45_000L
+                val logInterval = if (inTrialWindow) 1_000L else 30_000L
+                if (now - lastLogAt >= logInterval) {
+                    val elapsedMs = if (diagnosticStartedAt > 0L) now - diagnosticStartedAt else -1L
+                    val label = if (inTrialWindow) "AUDIO T13: B233 RTP" else "AUDIO: 推流中"
+                    val recordState = if (inTrialWindow) " RECORD确认=$syncRecordAccepted" else ""
                     lastLogAt = now
                     log(
-                        "AUDIO: 推流中（累计 $packetsSent 包，${bytesSent / 1024}KB，" +
-                            "seq=$sequence ts=$timestamp）",
+                        "$label（elapsed=${elapsedMs}ms，codec=${codec.name} type=$streamType，" +
+                            "累计 $packetsSent 包，${bytesSent / 1024}KB，" +
+                            "seq=$sequence ts=$timestamp$recordState）",
                     )
                 }
             }
@@ -349,21 +608,80 @@ class AudioSender(
         }
     }
 
+    /** 封包 + 发送一包（同步更新 seq/ts/nonce 游标）。返回 false 表示链路已断。 */
+    private fun sendPayload(payload: ByteArray): Boolean {
+        val wire = sealPacket(payload, sequence, timestamp, nonceCounter, markerPending)
+        markerPending = false
+        sequence = (sequence + 1) and 0xFFFF
+        timestamp += samplesPerPacket
+        nonceCounter++
+        val client = socket ?: return false
+        return try {
+            client.send(DatagramPacket(wire, wire.size))
+            packetsSent++
+            bytesSent += wire.size
+            true
+        } catch (error: IOException) {
+            log("AUDIO: UDP 发送失败 - ${error.message}")
+            false
+        }
+    }
+
+    /** PCM directly checks capture; only AAC requires platform decoder self-test. */
+    private fun verifyEncodedFrame(frame: ByteArray) {
+        if (codec == AudioCodec.PCM) {
+            log("AUDIO T12: PCM 首帧自检 ${frame.size}B peak=${peakPcm16Le(frame)}" +
+                "（原版误把 PCM 交给 AAC 解码器）")
+            return
+        }
+        val payload = frame.copyOf()
+        Thread(
+            {
+                try {
+                    val result = AacLcEncoder.decodePeak(payload, sampleRate, CHANNELS)
+                    if (result == null) {
+                        log("AUDIO: 自检 = 本机解码器没解出样本（首帧 ${payload.size}B）——无法证伪，继续推流")
+                        return@Thread
+                    }
+                    val (peak, samples) = result
+                    log(
+                        "AUDIO: 自检 = 首帧 ${payload.size}B 本机解码 $samples 个样本，峰值 $peak" +
+                            if (peak > 0) {
+                                "（✓ 比特流有效且非静音：车机若无声，问题不在编码/加密）"
+                            } else {
+                                "（⚠ 解码为全零：AAC 编码器输出的是静音数据）"
+                            },
+                    )
+                } catch (error: Exception) {
+                    log("AUDIO: 自检解码异常 - ${error.message}")
+                }
+            },
+            "audio-selfcheck",
+        ).apply {
+            isDaemon = true
+            start()
+        }
+    }
+
     /** 组一个 RTP 包：明文 PCM → ChaCha20 密封 → [头][密文+tag][nonce8]。（internal：测试直测） */
     internal fun sealPacket(
         pcm: ByteArray,
         sequence: Int,
         timestamp: Long,
         nonceCounter: Long,
+        marker: Boolean = false,
     ): ByteArray {
-        val header = buildRtpHeader(sequence, timestamp)
+        val header = buildRtpHeader(sequence, timestamp, marker)
         // AAD = header 的 timestamp+ssrc 段（字节 4..12）——catplay "modern AAD" / DiPlay 解密同款
         val aad = header.copyOfRange(4, RTP_HEADER_LEN)
         // 关键：CarPlay 线格式的 LPCM 是**大端** s16 样本——接收端对收到的负载做
         // byteSwapS16 转回小端再喂 AudioTrack（DiPlay AndroidMediaSink.kt:1687）。
         // Android 采集是原生小端，因此这里必须换序；漏掉会得到「沙沙声」（2026-10-10 实测）。
-        val wirePcm = bigEndianS16(pcm)
-        val sealed = AirPlayCrypto.chachaSeal(streamKey, AirPlayCrypto.nonce64(nonceCounter), wirePcm, aad)
+        //
+        // AAC 通路不做换序：AAC 比特流是字节流，不是 16bit 样本序列，换序会直接把
+        // 比特流搅烂（车机解码失败 → 有包无声）。
+        val wirePayload = if (codec == AudioCodec.AAC_LC) pcm else bigEndianS16(pcm)
+        val sealed = AirPlayCrypto.chachaSeal(streamKey, AirPlayCrypto.nonce64(nonceCounter), wirePayload, aad)
         val wire = ByteArray(RTP_HEADER_LEN + sealed.size + NONCE_SIZE)
         header.copyInto(wire, 0)
         sealed.copyInto(wire, RTP_HEADER_LEN)
@@ -378,10 +696,12 @@ class AudioSender(
     private fun buildRtpHeader(
         sequence: Int,
         timestamp: Long,
+        marker: Boolean = false,
     ): ByteArray {
         val header = ByteArray(RTP_HEADER_LEN)
         header[0] = 0x80.toByte() // version=2
-        header[1] = PAYLOAD_TYPE.toByte()
+        // PT 跟随流类型（catplay `payload_type = stream_type`）：100=PCM 通路、102=AAC 通路
+        header[1] = ((if (marker) 0x80 else 0) or (streamType.toInt() and 0x7F)).toByte()
         header[2] = ((sequence ushr 8) and 0xFF).toByte()
         header[3] = (sequence and 0xFF).toByte()
         val ts = timestamp.toInt()

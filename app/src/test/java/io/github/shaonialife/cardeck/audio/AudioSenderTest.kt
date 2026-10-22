@@ -3,6 +3,8 @@ package io.github.shaonialife.cardeck.audio
 import io.github.shaonialife.cardeck.airplay.AirPlayCrypto
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -19,6 +21,23 @@ class AudioSenderTest {
             streamKey = key,
             log = {},
         )
+
+    @Test
+    fun b233AacKeepsRtpWhenUnrelatedRtcpPortIsRefused() {
+        assertTrue(AudioSender.keepRtpAfterSyncPortRefused(true, AudioCodec.AAC_LC))
+        assertFalse(AudioSender.keepRtpAfterSyncPortRefused(true, AudioCodec.PCM))
+        assertFalse(AudioSender.keepRtpAfterSyncPortRefused(false, AudioCodec.AAC_LC))
+        assertFalse(AudioSender.keepRtpAfterSyncPortRefused(false, AudioCodec.PCM))
+    }
+
+    @Test
+    fun pcmSelfCheckUsesLittleEndianAndDoesNotNeedAacDecoder() {
+        assertEquals(0, AudioSender.peakPcm16Le(ByteArray(16)))
+        // 0x1234 = 4660, signed s16 -2, and saturated -32768.
+        assertEquals(4660, AudioSender.peakPcm16Le(byteArrayOf(0x34, 0x12, 0xfe.toByte(), 0xff.toByte())))
+        assertEquals(32768, AudioSender.peakPcm16Le(byteArrayOf(0, 0x80.toByte())))
+        assertEquals(1, AudioSender.peakPcm16Le(byteArrayOf(1, 0, 127))) // partial sample ignored
+    }
 
     @Test
     fun headerFieldsMatchCarPlayRtpConvention() {

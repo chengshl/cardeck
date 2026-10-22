@@ -12,7 +12,7 @@ plugins {
  * 经典原因（系统只看 versionCode，填小了用户装不上新包，且不会有任何提示）。
  * 0.x 表示实验性阶段；发布前只需改这一行。
  */
-val appVersionName = "0.1.0"
+val appVersionName = "0.1.13"
 val appVersionCode =
     appVersionName
         .split(".")
@@ -41,8 +41,8 @@ android {
         minSdk = 31
         targetSdk = 34
         versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
-        // Human-readable release version is Beijing time yyyyMMddHHmmss.
-        // The integer versionCode stays separate for Android upgrade ordering.
+        // CI releases use Beijing build time (yyyyMMddHHmmss); local builds retain
+        // their semantic project version. Android versionCode is separate (32-bit).
         versionName = System.getenv("CARDECK_RELEASE_VERSION_NAME") ?: appVersionName
     }
 
@@ -66,9 +66,9 @@ android {
             signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")
         }
         debug {
-            // **不要加 applicationIdSuffix**：本项目 debug 包就是日常使用的包——
-            // Shizuku 授权是按包名授予的，改包名会要求重新授权；AGENTS.md 里的
-            // `run-as io.github.shaonialife.cardeck` 调试链路也会一起失效。
+            // 不加 applicationIdSuffix：当前分支的 debug/release 使用同一包名。
+            // Buick 系列三个独立 applicationId 均需单独授予 Shizuku 等权限。
+            // Kotlin namespace 保持上游值，确保 AIDL/类名/反射逻辑不变。
             versionNameSuffix = "-debug"
         }
     }
@@ -96,7 +96,6 @@ android {
 }
 
 dependencies {
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     // CarPlay 风格桌面：分页网格
@@ -107,6 +106,8 @@ dependencies {
     // 隐形屏模式：shell 权限（无线调试激活，免 root）
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")

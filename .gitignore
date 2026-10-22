@@ -16,7 +16,7 @@ keystore.properties
 *.jks
 *.keystore
 
-# Local deployment parameters and credential materials
+# Local deployment settings, signing/certificate material and secret files
 .env
 .env.*
 !.env.example
@@ -47,3 +47,6 @@ sysdiagnose-*
 *.har
 *.trace
 *.log
+
+# 车型重放 fixtures（含真实地址/热点名，逐条评审后才入册）
+app/src/test/resources/carplay/fixtures/*.jsonl

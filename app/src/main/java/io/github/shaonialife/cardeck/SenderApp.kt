@@ -1,6 +1,9 @@
 package io.github.shaonialife.cardeck
 
 import android.app.Application
+import android.app.Activity
+import android.os.Bundle
+import io.github.shaonialife.cardeck.service.GatewayLogService
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -8,9 +11,6 @@ import android.content.IntentFilter
 import android.util.Log
 import io.github.shaonialife.cardeck.launcher.VirtualLauncher
 import io.github.shaonialife.cardeck.util.DebugFileLog
-import io.github.shaonialife.cardeck.service.GatewayLogService
-import android.app.Activity
-import android.os.Bundle
 
 /**
  * 进程级安全网：任一线程的未捕获异常只记录并让该线程结束，

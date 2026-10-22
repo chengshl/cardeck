@@ -1,14 +1,14 @@
 package io.github.shaonialife.cardeck.airplay
 
 import android.content.Context
-import android.net.Network
 import android.os.SystemClock
-import io.github.shaonialife.cardeck.iap2.BuickB233VirtualPostAuth
+import io.github.shaonialife.cardeck.audio.AudioCodec
+import io.github.shaonialife.cardeck.audio.AudioProfile
+import io.github.shaonialife.cardeck.audio.AudioSender
+import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.iap2.Iap2Csm
-import io.github.shaonialife.cardeck.iap2.Iap2LinkEngine
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
-import io.github.shaonialife.cardeck.net.CarPlayNetworkSockets
 import io.github.shaonialife.cardeck.net.EndpointHosts
 import io.github.shaonialife.cardeck.util.DeviceIdentity
 import java.io.IOException
@@ -38,12 +38,26 @@ class AirPlayClient(
      * 早期实现只在配对前查一次，失败后只能对着网关兜底地址空转到 120s 窗口耗尽。
      */
     private val endpointRefresher: ((Iap2SenderSession.CarPlayEndpoint) -> Iap2SenderSession.CarPlayEndpoint?)? = null,
-    /** CarPlay's physical Wi-Fi; does not change the VPN/system default route. */
-    private val carWifiNetwork: Network? = null,
+    /**
+     * 配对重试期间的低频钩子（每 ~10s 一次，必须非阻塞）：主控用它重新公告 ctrl mDNS
+     * 并报告 mDNS 发现状态。
+     *
+     * 为什么需要：2026-10-19 奥迪 0.1.7 日志里车机**始终没有探测 ctrl、也没广播
+     * `_airplay._tcp`**，而我们在 4s 邀请窗口超时后只对着网关 `:7000` 空转 54s
+     * （`ECONNREFUSED`），期间既不再公告、也不报告「mDNS 一条都没发现」。
+     * 车机的 Bonjour 可能错过首次公告；周期性重播给它是真实 iPhone 的做法
+     * （catplay 每 1s force_announce）。
+     */
+    private val retryTick: ((attempt: Int) -> Unit)? = null,
+    /**
+     * T24 / B233 only: route each CarPlay TCP socket through the vehicle
+     * WiFi Network instead of relying on the Android process default.
+     * Required because bindProcessToNetwork(network) can return false
+     * while VPN is enabled and toggling VPN can change the default route.
+     * All non-B233 callers keep null/legacy socket behavior.
+     */
+    private val vehicleNetwork: android.net.Network? = null,
 ) {
-    private fun openCarTcp(address: InetAddress, port: Int, timeoutMillis: Int): Socket =
-        CarPlayNetworkSockets.connectTcp(carWifiNetwork, address, port, timeoutMillis, log)
-
     /**
      * 当前使用的接收端端点。0x4301 晚到 / mDNS 后上线时由主控热更新；
      * 配对循环每轮重试都重新读取，改动在下一轮即生效。
@@ -55,12 +69,20 @@ class AirPlayClient(
     @Volatile
     private var endpointGeneration = 0
 
+    private fun newVehicleSocket(): Socket {
+        val network = vehicleNetwork ?: return Socket()
+        return try {
+            network.socketFactory.createSocket().also {
+                log("AIRPLAY T24: TCP socket 指定车机 WiFi Network=$network（不依赖 VPN 默认路由）")
+            }
+        } catch (error: Exception) {
+            log("AIRPLAY T24: WiFi socket 创建失败 - ${error.message}；退回普通 TCP（可能受 VPN 影响）")
+            Socket()
+        }
+    }
+
     private var socket: Socket? = null
     private var cSeq = 0
-
-    /** T38: invalidates heartbeat tasks when a client is closed/reconnected. */
-    @Volatile
-    private var backgroundGeneration = 0
 
     /**
      * 最近一次成功连上接收端时使用的地址（字符串形式，IPv6 链路本地地址带 `%<iface>`）。
@@ -83,7 +105,7 @@ class AirPlayClient(
      * 计时服务（初始 SETUP 通告端口；车机 NTP ping 它同步媒体时钟）。
      * 懒启动、跨重试常驻（close() 不停它——UDP socket 无会话状态）。
      */
-    private val timingServer = TimingServer(log)
+    private val timingServer = TimingServer(log, vehicleNetwork)
 
     /** pair-verify 之后启用：所有后续 RTSP 报文整体加密封装。 */
     private var cipher: ControlCipher? = null
@@ -97,6 +119,19 @@ class AirPlayClient(
     /** pair-setup 是否被 403 拒绝（真车特征）；主控据此决定是否使用 BT 退役 hack。 */
     @Volatile
     var pairSetupRejected: Boolean = false
+        private set
+
+    /**
+     * 配对期间**任意阶段**出现 403（pair-setup / pair-verify / 认证段）。
+     *
+     * 真机抓包定谳（2026-10-21 奥迪 MMI 3315_5GHz sysdiagnose）：真 iPhone 首次
+     * 连接在 pair-verify 通过后被车机 403 拒（MFi 认证段），车机 **18~20s 自行重发
+     * ctrl 邀请、第二次即成**，全程不断蓝牙。所以任何 403 都意味着「iAP2 信任已
+     * 建立的车机在等自己的状态机就绪」——此时断 BT 或降级明文会话都是反向操作，
+     * 正确姿势是窗口内保持原流程重试（主控按本标志避开两条歧路）。
+     */
+    @Volatile
+    var pairingForbidden: Boolean = false
         private set
 
     /** 本轮是否真正开始过配对（TCP 连上过接收端）。DiPlay 断链 hack 的启用条件。 */
@@ -223,6 +258,10 @@ class AirPlayClient(
             endpointRefresher?.invoke(endpoint)?.let { refreshed ->
                 updateEndpoint(refreshed, "配对期间 mDNS 刷新")
             }
+            // 低频钩子：主控据此重新公告 ctrl mDNS（车机 Bonjour 可能漏掉首次公告）
+            if (attempt == 1 || attempt % RETRY_TICK_ATTEMPTS == 0) {
+                runCatching { retryTick?.invoke(attempt) }
+            }
             close()
             if (!ensureConnected(2_000)) {
                 if (attempt == 1 || attempt % 5 == 0) {
@@ -241,7 +280,10 @@ class AirPlayClient(
                     } catch (error: IOException) {
                         val message = error.message.orEmpty()
                         val forbidden = message.contains("403")
-                        if (forbidden) pairSetupRejected = true
+                        if (forbidden) {
+                            pairSetupRejected = true
+                            pairingForbidden = true
+                        }
                         val unsupported = PAIRING_UNSUPPORTED_STATUS.any { message.contains(it) }
                         log(
                             "AIRPLAY: pair-setup " +
@@ -277,6 +319,9 @@ class AirPlayClient(
                 return keys
             } catch (error: IOException) {
                 val message = error.message.orEmpty()
+                // verify/认证段的 403 与 pair-setup 403 同源（车机信任已建立），
+                // 见 pairingForbidden 注释：标记后主控不再断 BT / 不降级明文
+                if (message.contains("403")) pairingForbidden = true
                 log("AIRPLAY: 配对第 $attempt 次尝试失败 - $message")
                 if (PAIRING_UNSUPPORTED_STATUS.any { message.contains(it) }) {
                     pairingUnsupported = true
@@ -284,7 +329,10 @@ class AirPlayClient(
                     close()
                     return null
                 }
-                Thread.sleep(500)
+                // 403 退避（真机抓包：车机首连被拒后需 18~20s 才进入可接受状态，
+                // 期间高频重试除徒增车机负载外可能一直重置其就绪状态机）；
+                // 其余失败维持快速轮询等端口开放
+                Thread.sleep(pairingRetryBackoffMs(message))
             }
         }
         log("AIRPLAY: 配对最终失败（接收端 RTSP 无应答）")
@@ -325,23 +373,14 @@ class AirPlayClient(
         port: Int,
     ) {
         if (port <= 0) return
-        val generation = backgroundGeneration
         Thread({
             var udp: java.net.DatagramSocket? = null
             try {
                 udp = java.net.DatagramSocket()
-                val physicalWifi = carWifiNetwork
-                if (physicalWifi != null) {
-                    runCatching { udp?.let { physicalWifi.bindSocket(it) } }
-                        .onSuccess { log("CAR-NET T47: UDP keepAlive on car Wi-Fi $physicalWifi") }
-                        .onFailure {
-                            log("CAR-NET T47: UDP explicit Wi-Fi unavailable (${it.message}); system LAN route remains in use")
-                        }
-                }
                 val address = java.net.InetAddress.getByName(host)
                 var sent = 0
                 var lastSentAt = 0L
-                while (generation == backgroundGeneration && isSessionAlive() && udp?.isClosed == false) {
+                while (isSessionAlive() && udp?.isClosed == false) {
                     val now = SystemClock.uptimeMillis()
                     val gap = if (lastSentAt == 0L) 0L else now - lastSentAt
                     lastSentAt = now
@@ -370,19 +409,24 @@ class AirPlayClient(
      * /feedback——接收端的活动看门狗。RTSP 事务由 [rtspLock] 串行化。
      */
     fun startFeedbackLoop() {
-        val generation = backgroundGeneration
         Thread({
             var sent = 0
-            while (generation == backgroundGeneration && isSessionAlive()) {
+            while (isSessionAlive()) {
                 try {
                     val (status, body) = request("POST", "/feedback", ByteArray(0))
                     sent++
-                    if (sent <= 6 || sent % 30 == 0) {
-                        log("AIRPLAY: feedback #$sent [$status]${if (body.isNotEmpty()) " body=${body.size}B" else ""}")
+                    // T13 B233: T12 mistakenly treated 8s of logged feedback
+                    // as feedback stopping at 8s. Dump every reply across the
+                    // entire 20s teardown window and a full 40s comparison.
+                    val b233AudioTrace = endpoint.isBuickB233 && sent <= 45
+                    if (b233AudioTrace || sent <= 6 || sent % 30 == 0) {
+                        log(
+                            (if (b233AudioTrace) "AIRPLAY T13: B233" else "AIRPLAY:") +
+                                " feedback #$sent [$status]" +
+                                if (body.isNotEmpty()) " body=${body.size}B" else " body=empty",
+                        )
                     }
-                    // 车机反馈里带各流状态（收没收到、是否欠载）：音频无声时这是最直接的
-                    // 判据——能区分「车机没收到包」与「收到但不播」（2026-10-17）
-                    if (body.isNotEmpty() && sent <= 3) {
+                    if (body.isNotEmpty() && (b233AudioTrace || sent <= 8 || sent % 30 == 0)) {
                         logFeedbackBody(body)
                     }
                 } catch (_: IOException) {
@@ -428,61 +472,9 @@ class AirPlayClient(
     /** 心跳线程的存活判据：RTSP socket 仍连着。 */
     private fun isSessionAlive(): Boolean = socket?.isClosed == false
 
-    /**
-     * T42 diagnostic / recovery: on Buick B233 only, try to release the active
-     * screen stream before disposing the RTSP control socket. CatPlay's sender
-     * uses TEARDOWN "/" with plist streams=[{type:110,uuid:<display>}].
-     *
-     * Best effort only. A receiver that already reset its Events channel may
-     * also have shut down RTSP; never delay local cleanup beyond 900 ms.
-     * Must be called on a worker thread (VideoSender.onEnded), not the UI thread.
-     */
-    fun tryTeardownBuickScreen(displayUuid: String?): Boolean {
-        if (!isBuickE5Receiver()) return false
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-            log("AIRPLAY T42: TEARDOWN skipped on main thread")
-            return false
-        }
-        val active = socket
-        if (active?.isConnected != true || active.isClosed) {
-            log("AIRPLAY T42: TEARDOWN skipped; RTSP control socket already closed")
-            return false
-        }
-        val stream = linkedMapOf<String, Any?>("type" to SCREEN_STREAM_TYPE)
-        if (!displayUuid.isNullOrBlank()) stream["uuid"] = displayUuid
-        val body = BinaryPlist.encode(linkedMapOf("streams" to listOf(stream)))
-        return try {
-            val (status, _) = request(
-                "TEARDOWN",
-                "/",
-                body,
-                timeoutMillis = 900,
-                contentType = "application/x-apple-binary-plist",
-            )
-            val ok = status.startsWith("RTSP/1.0 200") || status.startsWith("HTTP/1.1 200")
-            log("AIRPLAY T42: screen TEARDOWN status=$status ok=$ok uuidPresent=${displayUuid != null}")
-            ok
-        } catch (error: IOException) {
-            log("AIRPLAY T42: screen TEARDOWN failed/timeout (<=900ms) - ${error.message}")
-            false
-        }
-    }
-
     fun close() {
-        // T38: stop all transports of THIS session, not only RTSP. The old version left
-        // event TCP + NTP timing UDP alive after the video stream had already ended.
-        backgroundGeneration++
         runCatching { socket?.close() }
         socket = null
-        synchronized(eventCommandLock) {
-            log("EVENT T40: reverse Events session closed (outbound commands use CONTROL RTSP); ctrlIapTx=$controlIapCommandCount unexpectedReverseReplies=$unexpectedEventResponseCount")
-            runCatching { eventCommandSocket?.close() }
-            eventCommandSocket = null
-            eventCommandCipher = null
-        }
-        iapLink?.logDiagnosticSummary()
-        iapLink = null
-        timingServer.stop()
         activeHost = null
         activeAddress = null
         // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
@@ -496,6 +488,10 @@ class AirPlayClient(
         failAllPending("控制通道关闭")
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
+        iapLink = null
+        // 注意：controlIapTx 不在这里 shutdown——close() 会被同实例的重试路径
+        // （retryWithPairing 等）复用，杀掉执行器会废掉重连后的 MIB3 出站；
+        // 守护线程常驻的代价可忽略（每客户端实例一根）
     }
 
     /**
@@ -510,7 +506,7 @@ class AirPlayClient(
         mode: Int = 0,
     ): Boolean {
         val sent =
-            postControlCommand(
+            postEventCommand(
                 linkedMapOf(
                     "type" to "hidSetInputMode",
                     "params" to
@@ -520,7 +516,7 @@ class AirPlayClient(
                         ),
                 ),
             )
-        log("AIRPLAY T40: hidSetInputMode(RTSP控制通道) uuid=$deviceUuidHex mode=$mode ok=$sent")
+        log("AIRPLAY: hidSetInputMode(事件通道) uuid=$deviceUuidHex mode=$mode ok=$sent")
         return sent
     }
 
@@ -531,13 +527,10 @@ class AirPlayClient(
      * 语音 None（-1）；resources：主屏(1)/主音频(2)，entity=permanent=Controller(1)。
      */
 
-    // ---- AirPlay directionality (T40) ----
-    // Car -> phone commands arrive as RTSP requests on the reverse Events socket.
-    // Phone -> car commands MUST travel on the existing encrypted RTSP control
-    // connection (:7000), where the receiver handles POST /command. Sending
-    // requests on Events (:5001) instead was silently ignored by CatPlay's
-    // response-only EventsClient; Buick exhibited a 30s DETECT watchdog.
-    // The Events socket below is retained for inbound requests and 200 responses.
+    // ---- 事件通道命令发送（对照 DiPlay sendCommandLocked）----
+    // 车机命令双向都走事件通道 socket 上的 POST /command（不是 RTSP 控制连接！）：
+    // iAPSendMessage（虚拟链路字节）、hidSetInputMode、modesChanged 等。
+    // 异步 fire-and-forget：不等应答（DiPlay 同款写法），独立 CSeq 计数。
 
     @Volatile
     private var eventCommandSocket: Socket? = null
@@ -547,56 +540,57 @@ class AirPlayClient(
     private var eventCommandCipher: ControlCipher? = null
 
     private val eventCommandLock = Any()
-
-    /** Reverse Events requests are sent by the car; phone must only reply. */
-    private var unexpectedEventResponseCount = 0
-    private var controlIapCommandCount = 0
-
-    /**
-     * T40: phone-originated commands use the encrypted control RTSP socket,
-     * NOT the reverse Events socket. Control POST /command is handled by the
-     * receiver (see catplay carplay_rx::receiver::respond_command).
-     *
-     * Called from the background session starter or the Events reader thread;
-     * 1500ms timeout avoids pinning the reader for 10s when a car drops requests.
-     */
-    private fun postControlCommand(command: Map<String, Any?>): Boolean {
-        val type = command["type"]?.toString() ?: "unknown"
-        return try {
-            val (status, _) =
-                request(
-                    "POST",
-                    "/command",
-                    BinaryPlist.encode(command),
-                    timeoutMillis = 1_500,
-                    contentType = "application/x-apple-binary-plist",
-                )
-            if (type == "iAPSendMessage") controlIapCommandCount++
-            val ok = status.contains("200")
-            if (type != "iAPSendMessage" || controlIapCommandCount <= 12 || controlIapCommandCount % 10 == 0 || !ok) {
-                log("AIRPLAY T40: CONTROL POST /command type=$type status=$status ok=$ok iapTx=$controlIapCommandCount")
-            }
-            ok
-        } catch (error: IOException) {
-            log("AIRPLAY T40: CONTROL POST /command type=$type failed - ${error.message}")
-            false
-        }
-    }
+    private var eventCseq = 0
 
     /** 未知请求（非 /command 的合法请求）累计数：前 10 条留痕后静默。 */
     @Volatile
     private var unknownEventRequests = 0
+
+    /** /command 里 plist 解不出来的累计数：前 8 条带原始 hex 留痕（排查车机命令通路）。 */
+    @Volatile
+    private var badEventCommands = 0
+
+    /**
+     * 解不出来的 /command 的「体型指纹」（长度 + 首 8 字节）。
+     *
+     * 车机一般每秒重发同一批命令，按指纹去重后只对**新出现**的体型做全文取证，
+     * 既不刷屏又不会漏掉任何一类（此前只按条数截断，换个车型就只看到前 8 条）。
+     */
+    private val badEventSignatures = LinkedHashSet<String>()
 
     /** 事件通道建立后由 connectEventChannel 调用。cipher=null 表示明文通道。 */
     private fun registerEventCommandChannel(
         socket: Socket,
         cipher: ControlCipher?,
     ) {
-        synchronized(eventCommandLock) {
-            if (eventCommandSocket !== socket) runCatching { eventCommandSocket?.close() }
-            eventCommandSocket = socket
-            eventCommandCipher = cipher
-            unexpectedEventResponseCount = 0
+        eventCommandSocket = socket
+        eventCommandCipher = cipher
+    }
+
+    /** 在事件通道上发 POST /command（通道加密时加密）。通道未就绪时返回 false。 */
+    fun postEventCommand(command: Map<String, Any?>): Boolean {
+        val socket = eventCommandSocket ?: return false
+        val cipher = eventCommandCipher
+        return try {
+            synchronized(eventCommandLock) {
+                eventCseq++
+                val body = BinaryPlist.encode(command)
+                val head =
+                    "POST /command RTSP/1.0\r\n" +
+                        "Content-Type: application/x-apple-binary-plist\r\n" +
+                        "Content-Length: ${body.size}\r\n" +
+                        "CSeq: $eventCseq\r\n\r\n"
+                val plaintext = head.toByteArray(Charsets.US_ASCII) + body
+                val bytes = cipher?.encrypt(plaintext) ?: plaintext
+                socket.getOutputStream().apply {
+                    write(bytes)
+                    flush()
+                }
+            }
+            true
+        } catch (error: IOException) {
+            log("EVENT: 命令发送失败 - ${error.message}")
+            false
         }
     }
 
@@ -606,7 +600,7 @@ class AirPlayClient(
      * 此前对一切入向消息都回 200——对"应答"回应答与 DiPlay 形成乒乓：DiPlay 把我们的
      * 多余应答解析成请求（"RTSP/1.0" 当 method 剥掉后 protocol 取到第三 token），
      * 回出畸形行 "OK 200 OK"；我们再回 → 无限回声，日志雪崩且空耗加密通道。
-     * 通道上的应答与事件写共用锁，避免两线程加密帧交叉。
+     * 通道写与 postEventCommand 共用一把锁，避免两线程加密帧交叉。
      */
     private fun respondEventRequest(cseq: String?) {
         val socket = eventCommandSocket ?: return
@@ -626,7 +620,7 @@ class AirPlayClient(
         }
     }
 
-    fun assertModes(): Boolean {
+    fun assertModes(claimAudioResource: Boolean = true): Boolean {
         val body =
             BinaryPlist.encode(
                 linkedMapOf(
@@ -639,11 +633,9 @@ class AirPlayClient(
                                     linkedMapOf<String, Any?>("appStateID" to 3L, "entity" to 0L),
                                     linkedMapOf<String, Any?>("appStateID" to 1L, "entity" to 0L, "speechMode" to -1L),
                                 ),
-                            "resources" to
-                                listOf(
-                                    linkedMapOf<String, Any?>("resourceID" to 1L, "entity" to 1L, "permanentEntity" to 1L),
-                                    linkedMapOf<String, Any?>("resourceID" to 2L, "entity" to 1L, "permanentEntity" to 1L),
-                                ),
+                            // T26: B233 video-only mode declares only screen
+                            // ownership. Bluetooth A2DP continues to own music.
+                            "resources" to AirPlayModeClaims.resources(claimAudioResource),
                         ),
                 ),
             )
@@ -655,7 +647,11 @@ class AirPlayClient(
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
-            log("AIRPLAY: modesChanged（声明持有主屏/主音频资源）[$statusLine]")
+            log(
+                "AIRPLAY T26: modesChanged（主屏=CarPlay，主音频=" +
+                    (if (claimAudioResource) "CarPlay" else "未声明/保留普通蓝牙 A2DP") +
+                    "）[$statusLine]"
+            )
             statusLine.contains("200")
         } catch (error: IOException) {
             log("AIRPLAY: modesChanged 失败 - ${error.message}")
@@ -700,6 +696,17 @@ class AirPlayClient(
             }
         if (!statusLine.contains("200")) {
             log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")
+            // Safe non-200 diagnostics: no raw plist/password/pairing keys.
+            val errorKeys = runCatching {
+                (BinaryPlist.parse(responseBody) as? Map<*, *>)?.keys
+                    ?.joinToString(",") { it.toString().take(48) }
+            }.getOrNull()
+            log(
+                "AIRPLAY: SETUP non-200 responseBytes=${responseBody.size} " +
+                    "plistKeys=${errorKeys ?: "(none)"} " +
+                    "connectedHost=${activeHost ?: "(none)"} " +
+                    "candidateCount=${EndpointHosts.candidates(endpoint.ipAddresses).size}"
+            )
             if (statusLine.contains("403")) {
                 // 403 的两类成因按可能性排序：设备过滤（WinPlay 等「只接受指定
                 // iPhone」）最常见，其次是接收端不接受的配对/信任状态。把本机
@@ -728,20 +735,19 @@ class AirPlayClient(
             return null
         }
         // 拉取主显示屏参数（跟随接收端屏幕方向；横屏车机应推横屏画面，触摸坐标也按此对齐）
+        // 这一路**不能静默失败**：/info 挂掉意味着显示屏几何、HID 设备（触摸）、音频能力
+        // 全部退回写死值。2026-10-20 宝马 iD9 就是在这里静默失败，日志只剩
+        // `hidDevices uuids=[]` / `displayUuid=null` 两个结果，看不到原因。
         var infoRoot: Map<*, *>? = null
-        val display =
-            try {
-                val (_, infoBody) = requestInfo()
-                val info = BinaryPlist.parse(infoBody) as? Map<*, *>
-                infoRoot = info
-                // 缓存供音频协商使用（audioType / latency / 格式按车机实际声明选择，
-                // 不写死某一台车机的值——2026-10-17 兼容性加固）
-                negotiatedInfo = info
-                val displays = info?.get("displays") as? List<*>
-                displays?.firstOrNull() as? Map<*, *>
-            } catch (_: Exception) {
-                null
-            }
+        val infoMap = loadInfoWithDiagnostics()
+        infoRoot = infoMap
+        val display = (infoMap?.get("displays") as? List<*>)?.firstOrNull() as? Map<*, *>
+        if (display == null) {
+            log(
+                "AIRPLAY: 未取得 /info displays → 显示屏参数退回手机分辨率兜底" +
+                    "（车机侧可能是小画面/黑边）；HID 设备为空 → 车机不会发 hidSendReport（触摸不可用）",
+            )
+        }
         // /info 全量转储：找奥迪私有的数据流 UUID（type-130 的 clientTypeUUID 候选）、
         // HID 设备描述（触摸）、以及任何我们没实现的能力声明
         // uuid 原样保留（奥迪发字符串 "0"/"1"，DiPlay 用整数——hidSetInputMode 原样回传）
@@ -755,9 +761,7 @@ class AirPlayClient(
                     if (key in skipped) "$key=[${(value as? List<*>)?.size ?: "?"}项]" else "$key=${value.toString().take(200)}"
                 }
             log("AIRPLAY: /info 字段: $summary")
-            (root["displays"] as? List<*>)?.forEachIndexed { index, d ->
-                log("AIRPLAY: /info displays[$index]=$d")
-            }
+            // displays 已在 logInfoSummary 里逐条打印（含键值明细），此处不再重复
             // 音频能力逐条打印（整行 /info 被 take(200) 截断，audioFormats 恰好断在中间）：
             // 决定 audioType 只能靠这里——奥迪 type=100 到底声明了 compatibility 还是 media
             (root["audioFormats"] as? List<*>)?.forEachIndexed { index, entry ->
@@ -767,7 +771,10 @@ class AirPlayClient(
                 log(
                     "AIRPLAY: audioFormat[$index] type=${format["type"]} audioType=${format["audioType"]} " +
                         "output=0x${output.toString(16)} input=0x${input.toString(16)}" +
-                        "（PCM48k立体声 bit15=${if ((output and (1L shl 15)) != 0L) "✓" else "✗"}）",
+                        "（PCM44.1k/48k stereo=" +
+                        "${if ((output and (1L shl 11)) != 0L) "✓" else "✗"}" +
+                        "${if ((output and (1L shl 15)) != 0L) "✓" else "✗"}，" +
+                        "AAC-LC 44.1k=${if ((output and (1L shl 22)) != 0L) "✓" else "✗"}）",
                 )
             }
             (root["audioLatencies"] as? List<*>)?.forEachIndexed { index, entry ->
@@ -814,7 +821,12 @@ class AirPlayClient(
                 displayHeight = ((display?.get("heightPixels") as? Long) ?: 2320L).toInt(),
                 // /info displays[0] 的显示屏 UUID（真实 iPhone 会把它回填进屏幕流 SETUP；
                 // 键名以小写 "uuid" 为准，大写 "UUID" 兜底）
-                displayUuid = (display?.get("uuid") ?: display?.get("UUID"))?.toString(),
+                displayUuid =
+                    uuidText(
+                        display?.get("uuid")
+                            ?: display?.get("UUID")
+                            ?: display?.get("displayUUID"),
+                    ),
                 maxFps = ((display?.get("maxFPS") as? Long) ?: 30L).toInt(),
                 hidDeviceUuids = parsedHidUuids,
                 hidDescriptors = parsedHidDescriptors,
@@ -828,6 +840,171 @@ class AirPlayClient(
                 "displayUuid=${info.displayUuid}",
         )
         return info
+    }
+
+    /**
+     * 拉 `/info` 并做完整取证（状态行 / body 长度 / 解析异常 / 原始 hex）。
+     *
+     * 此前的写法是 `catch (_: Exception) { null }`——车机一拒绝就彻底静默（2026-10-20
+     * 宝马 iD9：`/info 字段` 那行日志根本没出现，只有 `uuids=[]` 和 `displayUuid=null`）。
+     * 会话内被拒时再补一次**独立短连接**探测：接收端的 AirPlay 服务通常允许未绑定
+     * 会话的 `/info`（能力查询），而活跃会话内的 `/info` 反而常被按 455/403 拒掉。
+     */
+    private fun loadInfoWithDiagnostics(): Map<*, *>? {
+        var statusLine = "未请求"
+        var body = ByteArray(0)
+        try {
+            val first = requestInfo()
+            statusLine = first.first
+            body = first.second
+            if (!statusLine.contains("200") || body.isEmpty()) {
+                log("AIRPLAY: /info 首次 [$statusLine] body=${body.size}B → 800ms 后重试一次")
+                Thread.sleep(800)
+                ensureConnected(2_000)
+                val retry = requestInfo(5_000)
+                log("AIRPLAY: /info 重试 [${retry.first}] body=${retry.second.size}B")
+                if (retry.first.contains("200") && retry.second.isNotEmpty()) {
+                    statusLine = retry.first
+                    body = retry.second
+                }
+            }
+        } catch (error: Exception) {
+            log("AIRPLAY: /info 请求异常 - ${error.javaClass.simpleName}: ${error.message}")
+        }
+        parseInfoBody(statusLine, body)?.let { return it }
+        scheduleSideProbe()
+        return null
+    }
+
+    /**
+     * 延后 [delayMillis] 再走侧信道 `/info`。
+     *
+     * 为什么不当场探：会话刚建立的头 20 秒正是最关键取证窗口（车机订阅、每秒 `/command`、
+     * 隧道 CSM）。万一副连接让车机把主会话拆了，我们就丢掉整轮证据。延后探测即使出事，
+     * 也能带着完整日志回来定位。
+     *
+     * 探到 HID 设备就立刻补发 `hidSetInputMode`——触摸可能当场生效（显示屏几何本轮已定，
+     * 改不了，但输入通路可以不重建会话就补上）。
+     */
+    private fun scheduleSideProbe(delayMillis: Long = 25_000) {
+        Thread(
+            {
+                runCatching { Thread.sleep(delayMillis) }
+                val info = probeInfoOnSideConnection() ?: return@Thread
+                val uuids =
+                    (info["hidDevices"] as? List<*>).orEmpty().mapNotNull { entry ->
+                        val hid = entry as? Map<*, *> ?: return@mapNotNull null
+                        when (val raw = hid["uuid"]) {
+                            is Number -> raw.toString()
+                            is String -> raw
+                            else -> null
+                        }
+                    }
+                if (uuids.isEmpty()) {
+                    log("AIRPLAY: 侧信道 /info 成功但车机未声明 HID 设备 → 触摸不走 AirPlay HID 通路")
+                    return@Thread
+                }
+                log("AIRPLAY: 侧信道拿到 HID 设备 $uuids → 补发 hidSetInputMode（触摸可能立即生效）")
+                uuids.forEach { uuid -> runCatching { sendHidSetInputMode(uuid, mode = 0) } }
+            },
+            "info-side-probe",
+        ).apply { isDaemon = true }.start()
+    }
+
+    /** `/info` 报文 → 字典。失败时把原因与原始 hex 落日志，并缓存到 negotiatedInfo。 */
+    private fun parseInfoBody(
+        statusLine: String,
+        body: ByteArray,
+    ): Map<*, *>? {
+        log("AIRPLAY: /info 应答 [$statusLine] body=${body.size}B")
+        if (body.isEmpty()) return null
+        val info =
+            try {
+                val result = BinaryPlist.parseRecovered(body)
+                result.note?.let { log("AIRPLAY: /info $it") }
+                result.value as? Map<*, *>
+            } catch (error: IllegalArgumentException) {
+                log("AIRPLAY: /info plist 解析失败 - ${error.message}")
+                log("AIRPLAY: /info 原始体（${body.size}B）hex=" + hexDump(body, 320))
+                null
+            }
+        if (info == null) return null
+        logInfoSummary(info)
+        negotiatedInfo = info
+        return info
+    }
+
+    /**
+     * 独立短连接探测 `/info`（不加密、不带会话）：会话内被拒时的兜底。
+     *
+     * 只新建一条 TCP，发 `GET /info` 读完一条报文就关闭——不碰控制通道的状态机，
+     * 车机若不认（455/403/超时）只是白跑一趟，不会影响已经跑起来的视频流。
+     */
+    private fun probeInfoOnSideConnection(timeoutMillis: Int = 4_000): Map<*, *>? {
+        val target = endpoint
+        if (target.airPlayPort <= 0) return null
+        val host =
+            activeHost ?: EndpointHosts.candidates(target.ipAddresses).firstOrNull() ?: return null
+        var probe: Socket? = null
+        return try {
+            log("AIRPLAY: /info 侧信道探测 → $host:${target.airPlayPort}（独立短连接，不碰会话）")
+            probe =
+                newVehicleSocket().apply {
+                    connect(InetSocketAddress(resolveAddress(host), target.airPlayPort), timeoutMillis)
+                    soTimeout = timeoutMillis
+                }
+            val payload = BinaryPlist.encode(linkedMapOf<String, Any?>())
+            val head =
+                "GET /info RTSP/1.0\r\n" +
+                    "CSeq: 1\r\n" +
+                    "User-Agent: AirPlay/$SENDER_SOURCE_VERSION\r\n" +
+                    "Content-Type: application/x-apple-binary-plist\r\n" +
+                    "Content-Length: ${payload.size}\r\n\r\n"
+            probe.getOutputStream().apply {
+                write(head.toByteArray(Charsets.US_ASCII) + payload)
+                flush()
+            }
+            val input = probe.getInputStream()
+            val collected = java.io.ByteArrayOutputStream()
+            val chunk = ByteArray(16 * 1024)
+            var expected = -1
+            while (true) {
+                val count =
+                    try {
+                        input.read(chunk)
+                    } catch (_: java.net.SocketTimeoutException) {
+                        -1
+                    }
+                if (count < 0) break
+                collected.write(chunk, 0, count)
+                val bytes = collected.toByteArray()
+                if (expected < 0) {
+                    val separator = indexOf(bytes, HEAD_SEPARATOR)
+                    if (separator >= 0) {
+                        val (_, contentLength) =
+                            parseRtspHead(String(bytes, 0, separator, Charsets.ISO_8859_1))
+                        expected = separator + HEAD_SEPARATOR.size + contentLength
+                    }
+                }
+                if (expected >= 0 && bytes.size >= expected) break
+            }
+            val bytes = collected.toByteArray()
+            val separator = indexOf(bytes, HEAD_SEPARATOR)
+            if (separator < 0) {
+                log("AIRPLAY: /info 侧信道无有效应答（${bytes.size}B，车机可能只服务已绑定会话）")
+                return null
+            }
+            val headText = String(bytes, 0, separator, Charsets.ISO_8859_1)
+            val (line, contentLength) = parseRtspHead(headText)
+            val bodyStart = separator + HEAD_SEPARATOR.size
+            val infoBody = bytes.copyOfRange(bodyStart, minOf(bodyStart + contentLength, bytes.size))
+            return parseInfoBody("侧信道 $line", infoBody)
+        } catch (error: Exception) {
+            log("AIRPLAY: /info 侧信道失败 - ${error.javaClass.simpleName}: ${error.message}")
+            null
+        } finally {
+            runCatching { probe?.close() }
+        }
     }
 
     class SetupInfo(
@@ -1087,7 +1264,6 @@ class AirPlayClient(
         val dataPort = ((stream?.get("dataPort") as? Long) ?: 0L).toInt() and 0xFFFF
         if (dataPort == 0) {
             log("TUNNEL: SETUP 应答无 dataPort（streams=$streams）")
-            log("TUNNEL T39: SETUP reply keys=${root.keys}, streamsClass=${root["streams"]?.javaClass?.simpleName ?: "null"}, iAPChannel enabled in initial response=not reported")
             return null
         }
         val key =
@@ -1098,13 +1274,13 @@ class AirPlayClient(
             )
         val tcp =
             try {
-                openCarTcp(resolveAddress(host), dataPort, 5_000)
+                newVehicleSocket()
             } catch (error: IOException) {
-                log("TUNNEL: TCP 连接失败 - ${error.message}")
                 return null
             }
         return try {
             tcp.tcpNoDelay = true
+            tcp.connect(java.net.InetSocketAddress(host, dataPort), 5_000)
             log("TUNNEL: ✓ iAP 隧道已建立 $host:$dataPort（seed=$seed）")
             val client = IapTunnelClient(tcp, key)
             client.startReading()
@@ -1118,9 +1294,9 @@ class AirPlayClient(
     }
 
     /**
-     * 隧道客户端引用（DiPlay 形态）：事件通道虚拟链路（[IapLinkOverEvent]）的**出站方向**
+     * 隧道客户端引用（DiPlay 形态）：事件通道虚拟链路（[VirtualIap2Link]）的**出站方向**
      * 必须写进 type-130 TCP（DiPlay 的隧道链路引擎只从 TCP 读；其出站走事件通道，
-     * 与我们被动接收一致）。无隧道时出站改由主控制 RTSP [sendIap] 发送。
+     * 与我们被动接收一致）。无隧道（Audi 事件通道形态）时出站继续走事件通道 [sendIap]。
      */
     @Volatile
     private var iapTunnel: IapTunnelClient? = null
@@ -1128,12 +1304,12 @@ class AirPlayClient(
     private var sendIapCount = 0
 
     /**
-     * 手机→车机 iAP2: POST /command on encrypted CONTROL RTSP (:7000).
-     * Car→phone iAP2 stays on the separate Events channel (:5001).
+     * 手机→车机 iAP2 消息：事件通道 iAPSendMessage 命令（对照 DiPlay sendIapMessage，
+     * params 信封 + data 字节，catplay CommandIApSendMessage 同款）。
      */
     fun sendIap(data: ByteArray): Boolean {
         val sent =
-            postControlCommand(
+            postEventCommand(
                 linkedMapOf(
                     "type" to "iAPSendMessage",
                     "params" to linkedMapOf<String, Any?>("data" to data),
@@ -1142,7 +1318,7 @@ class AirPlayClient(
         sendIapCount++
         if (sendIapCount <= 10) {
             log(
-                "IAPLINK T40: tx(控制RTSP) ${data.size}B ok=$sent hex=" +
+                "IAPLINK: tx(事件通道) ${data.size}B ok=$sent hex=" +
                     data.joinToString(" ") { "%02x".format(it) }.take(120),
             )
         }
@@ -1157,405 +1333,136 @@ class AirPlayClient(
     // 复用 [io.github.shaonialife.cardeck.iap2.Iap2LinkEngine] 完成握手与帧收发。
 
     @Volatile
-    private var iapLink: IapLinkOverEvent? = null
+    private var iapLink: VirtualIap2Link? = null
 
     /**
-     * T44 Buick B233 experiment: called ONCE after the Wi-Fi virtual iAP2
-     * receiver ACKs 0xAA05, never merely after our send() returns.
-     * SessionController may then hand over from the old RFCOMM transport.
+     * 车机媒体键回调（方向盘/面板的上一曲、下一曲）。
+     *
+     * 通路：事件通道 → iAPSendMessage → iAP2 控制会话 `0x6802 AccessoryHIDReport`
+     * → [ConsumerKeys] 映射成 Android KeyEvent → 本回调。由 SessionController 注入
+     * `dispatchMediaKey`（与 HID 直投那条路合并处理）。
      */
-    @Volatile
-    var onVirtualIapAuthenticated: (() -> Unit)? = null
+    var onMediaKey: ((Int) -> Unit)? = null
 
-    /** 车机 iAPSendMessage 字节入口（MainActivity 事件命令处理器调用）。 */
-    fun onIapEventBytes(data: ByteArray) {
-        val link =
-            iapLink ?: synchronized(this) {
-                iapLink ?: IapLinkOverEvent().also {
+    /** 虚拟链路唯一实例（出站路由/三形态语义见 [VirtualIap2Link]）。 */
+    private fun obtainIapLink(): VirtualIap2Link =
+        iapLink ?: synchronized(this) {
+            iapLink
+                ?: VirtualIap2Link(
+                    log = { line -> log(line) },
+                    sendEventIap = ::sendIap,
+                    sendControlIap = ::postControlIap,
+                    tunnelWriter = { iapTunnel },
+                    alive = { socket?.isClosed == false },
+                    isBuickB233 = endpoint.isBuickB233,
+                ).also {
+                    it.onMediaKey = { keyCode -> onMediaKey?.invoke(keyCode) }
                     it.begin()
                     iapLink = it
                 }
-            }
-        link.onCarBytes(data)
+        }
+
+    /** 车机 iAPSendMessage 字节入口（SessionController 事件命令处理器调用）。 */
+    fun onIapEventBytes(data: ByteArray) {
+        obtainIapLink().onCarBytes(data)
     }
 
-    /** T38 is deliberately scoped to the verified Buick E5 receiver, never Audi/DiPlay. */
-    private fun isBuickE5Receiver(): Boolean {
-        val info = negotiatedInfo ?: return false
-        return info["model"]?.toString() == "B233" &&
-            info["manufacturer"]?.toString()?.contains("Saic General Motors", ignoreCase = true) == true
+    /**
+     * MIB3 布防：屏幕流 SETUP 成功后调用——主动经**控制通道** POST /command 发一次
+     * DETECT，随后等车机 SYN（真机 Frida 时序，详见 [VirtualIap2Link.armMib3]）。
+     * 明文会话（pre-HomeKit 老车机）没有 WiFi 隧道语义，跳过。
+     */
+    private fun armMib3VirtualLink() {
+        if (cipher == null) return
+        if (iapTunnel != null) return // DiPlay 隧道形态：不需要（也不该）布防
+        if (endpoint.isBuickB233) obtainIapLink().armBuickB233() else obtainIapLink().armMib3()
     }
 
-    inner class IapLinkOverEvent {
-        private val lock = Any()
-        private val engine = Iap2LinkEngine()
-        private val parser =
-            Iap2Csm
-                .Parser()
-        private var frameCount = 0
-        private var eaCount = 0
-        private var started = false
-        private var detectReplies = 0
-        private var linkFrameLogs = 0
-        private var linkSentLogs = 0
-        private var linkAckLogs = 0
-        private var firstDetectAt = 0L
-        private var awaitingVirtualMfiFrame = false
-        private var virtualMfiSequence: Int? = null
-        private var virtualMfiAckNotified = false
-        private var virtualAdvertisedReceives: Set<Int> = emptySet()
-        private var t48AckTraces = 0
-
-        /** T45 Buick-only diagnostic: idle iAP2 ACK frame every 5s after Wi-Fi MFi ACK. */
-        private var lastVirtualIdleAckAt = 0L
-        private var virtualIdleAckCount = 0
-
-        /** Diagnostic boundary: whether the car ever advanced past DETECT. */
-        fun logDiagnosticSummary() {
-            synchronized(lock) {
-                val age = if (firstDetectAt == 0L) -1L else SystemClock.uptimeMillis() - firstDetectAt
-                val csmAge = if (virtualCsmStartedAt == 0L) -1L else SystemClock.uptimeMillis() - virtualCsmStartedAt
-                log("IAPLINK T43: summary DETECT=$detectReplies linkState=${engine.state} elapsedSinceFirstDetect=${age}ms csmStarted=$virtualCsmStarted csmIdentified=$virtualIdentified csmElapsed=${csmAge}ms echoDelivered=$virtualEchoDelivered idleAckCount=$virtualIdleAckCount")
-            }
+    /**
+     * 控制通道 iAPSendMessage 出站（MIB3）：手机侧 iAP2 链路帧**必须**走 RTSP 控制
+     * 连接上的 POST /command——写在事件通道上时 MIB3 根本不读（DiPlay 宽容，奥迪
+     * 不宽容；AADisplay Frida 结论）。串行执行器：不阻塞链路节拍线程，与
+     * /feedback 心跳共用 request() 的 CSeq/写锁（线程安全设计见 AirPlayClient）。
+     */
+    private val controlIapTx =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "mib3-iap-tx").apply { isDaemon = true }
         }
+    private var controlIapCount = 0
 
-        /**
-         * T43: the receiver-side virtual iAP2 over AirPlay Events is another
-         * control link, even when type-130 SETUP returns no dataPort.
-         * Earlier code only started its CSM when a separate TCP tunnel existed,
-         * leaving Buick in NORMAL with no StartIdentification until its 30s reset.
-         */
-        private var virtualCsmStarted = false
-        private var virtualIdentified = false
-
-        /** Only start CSM after the peer's SYN echo reached its transport. */
-        private var pendingEchoFlush = false
-        private var virtualEchoDelivered = false
-        private var virtualCsmStartedAt = 0L
-
-        init {
-            engine.onEaData = { bytes -> handleEaData(bytes) }
-            engine.onSynchronizationEchoSent = { pendingEchoFlush = true }
-            engine.onFrameReceived = { control, seq, ack, sessionId, size ->
-                linkFrameLogs++
-                if (linkFrameLogs <= 20) {
-                    log("IAPLINK T40: rx control=0x${control.toString(16)} seq=$seq ack=$ack session=$sessionId payload=$size state=${engine.state}")
-                }
-            }
-            engine.onPeerSynchronizationAdopted = { sync ->
-                log("IAPLINK T43: peer SYN adopted, sessions=${sync.sessions} state=${engine.state}")
-            }
-            // T43: if Buick accepts POST /command but never processes 0x1D00,
-            // the virtual ACK and CSM sequence numbers will identify the exact stall.
-            engine.onFrameSent = { ctl, seq, ack, sid, size ->
-                // Record the actual transmitted 0xAA05 sequence, not a guessed 104.
-                // Some receivers may use different initial sequence/window layouts.
-                if (awaitingVirtualMfiFrame && sid != 0 && size == Iap2Csm.HEADER_BYTES &&
-                    ctl and 0x40 != 0 && ctl and 0x80 == 0
-                ) {
-                    awaitingVirtualMfiFrame = false
-                    virtualMfiSequence = seq
-                    log("IAPLINK T44: virtual 0xAA05 sent as seq=$seq; awaiting peer ACK before Bluetooth handover")
-                }
-                if (isBuickE5Receiver() && linkSentLogs++ < 16) {
-                    log("IAPLINK T43: tx frame ctl=0x${ctl.toString(16)} seq=$seq ack=$ack session=$sid payload=$size")
-                }
-            }
-            engine.onAcknowledgementProgress = { ack, _, _ ->
-                if (virtualMfiAckNotified && t48AckTraces++ < 12) {
-                    log("IAPLINK T48: virtual post-auth peer ACK=${ack} state=${engine.state}")
-                }
-                if (!virtualMfiAckNotified && virtualMfiSequence == ack &&
-                    engine.state == Iap2LinkEngine.State.NORMAL &&
-                    iapTunnel == null && isBuickE5Receiver()
-                ) {
-                    virtualMfiAckNotified = true
-                    lastVirtualIdleAckAt = SystemClock.uptimeMillis()
-                    log("IAPLINK T44: Buick Wi-Fi virtual MFi 0xAA05 ACK=$ack confirmed; requesting controlled RFCOMM handover")
-                    log("IAPLINK T45: B233 idle-link ACK probe armed; interval=5000ms, active until AirPlay closes")
-                    // T48: ACK-only probes did not prevent the repeatable 30s teardown.
-                    // Only send post-MFi messages the receiver explicitly advertises.
-                    val postAuth = BuickB233VirtualPostAuth.burst(virtualAdvertisedReceives)
-                    log("IAPLINK T48: B233 post-auth capability-gated burst ids=" +
-                        postAuth.joinToString(" ") { "0x%04x".format(it.first) } +
-                        " accepted=${virtualAdvertisedReceives.size} (no Audi-specific raw messages)")
-                    for ((messageId, body) in postAuth) {
-                        sendCsmLocked(messageId, body)
-                    }
-                    onVirtualIapAuthenticated?.invoke()
-                }
-            }
-            engine.onLinkAckDiagnostic = { detail ->
-                if (isBuickE5Receiver() && linkAckLogs++ < 16) {
-                    log("IAPLINK T43: peer ACK $detail")
-                }
-            }
-            // 节拍线程：驱动引擎计时器（重传等）
-            Thread({
-                while (socket?.isClosed == false) {
-                    try {
-                        Thread.sleep(200)
-                    } catch (_: InterruptedException) {
-                        return@Thread
-                    }
-                    synchronized(lock) {
-                        engine.advanceTime(System.nanoTime() / 1_000_000L)
-                        // T45 isolated idle test. Do not send business CSM messages,
-                        // increment the data sequence or enable the probe for Audi.
-                        // The virtual-link pacer stops when the RTSP socket closes.
-                        val now = SystemClock.uptimeMillis()
-                        if (virtualMfiAckNotified &&
-                            lastVirtualIdleAckAt > 0L &&
-                            now - lastVirtualIdleAckAt >= 5_000L &&
-                            iapTunnel == null &&
-                            isBuickE5Receiver() &&
-                            engine.state == Iap2LinkEngine.State.NORMAL
-                        ) {
-                            lastVirtualIdleAckAt = now
-                            if (engine.offerIdleAcknowledgement()) {
-                                virtualIdleAckCount++
-                                log(
-                                    "IAPLINK T45: Buick virtual idle ACK #$virtualIdleAckCount " +
-                                        "detectAgeMs=${now - firstDetectAt} " +
-                                        "state=${engine.state} (no CSM data)",
-                                )
-                            }
-                        }
-                        drainLocked()
-                    }
-                }
-            }, "iap-link-pacer").apply {
-                isDaemon = true
-                start()
-            }
-        }
-
-        fun begin() {
-            synchronized(lock) {
-                if (started) return
-                started = true
-                // DETECT 语义（catplay LinkLayer server 角色）：静默进协商，
-                // 车机（客户端）DETECT 一次我们回一次，绝不主动重发
-                engine.enterNegotiating()
-                log("IAPLINK: 车机发来链路 marker（DETECT）——服务端模式待命，等车机 SYN")
-            }
-        }
-
-        fun onCarBytes(bytes: ByteArray) {
-            synchronized(lock) {
-                // 隧道存在时切换「回显先行」协商语义（DiPlay 对端引擎硬性期望，详见 Iap2LinkEngine）
-                engine.echoFirst = iapTunnel != null
-                // 车机 DETECT：一问一答（catplay server 角色：收到即回、绝不主动）。
-                // 引擎处于 NEGOTIATING（尚未见 SYN）时的裸 marker 都按 DETECT 对待
-                if (bytes.size == 6 &&
-                    bytes[0] == 0xFF.toByte() &&
-                    bytes[1] == 0x55.toByte() &&
-                    engine.state == Iap2LinkEngine.State.NEGOTIATING
-                ) {
-                    detectReplies++
-                    if (detectReplies == 1) firstDetectAt = SystemClock.uptimeMillis()
-                    log("IAPLINK: 回 DETECT #$detectReplies")
-                    sendLinkBytes(Iap2LinkEngine.MARKER)
-                }
-                engine.feed(bytes, System.nanoTime() / 1_000_000L)
-                // T38 one-shot SYN was ignored; T40 fixes the outbound command socket.
-                // Keep DETECT handshake passive and wait for real peer SYN.
-                if (detectReplies == 3 && isBuickE5Receiver() && iapTunnel == null) {
-                    log("IAPLINK T40: Buick B233 DETECT #3; replies now travel over CONTROL RTSP, awaiting peer SYN")
-                }
-                drainLocked()
-            }
-        }
-
-        /** 链路字节出站：有隧道走隧道 TCP（DiPlay），否则走控制 RTSP（T40）。 */
-        private fun sendLinkBytes(bytes: ByteArray) {
-            if (bytes.isEmpty()) return
-            val tunnel = iapTunnel
-            if (tunnel != null) {
-                tunnel.writeIapBytes(bytes)
-            } else {
-                sendIap(bytes)
-            }
-        }
-
-        /**
-         * 引擎出站字节落盘：有隧道写隧道 TCP（成功且内容含同步回显时标记回显已送达），
-         * 否则走主 RTSP 控制通道（手机→车机 POST /command），不再误走反向 Events。
-         */
-        private fun flushOutputLocked() {
-            val out = engine.takeOutput()
-            if (out.isEmpty()) return
-            val tunnel = iapTunnel
-            if (tunnel != null) {
-                val ok = tunnel.writeIapBytes(out)
-                if (ok && pendingEchoFlush) {
-                    pendingEchoFlush = false
-                    if (!virtualEchoDelivered) {
-                        virtualEchoDelivered = true
-                        log("IAPLINK T43: ✓ SYN echo delivered through type-130 TCP; CSM can start after NORMAL")
-                    }
-                }
-            } else {
-                val ok = sendIap(out)
-                if (ok && pendingEchoFlush) {
-                    pendingEchoFlush = false
-                    if (!virtualEchoDelivered) {
-                        virtualEchoDelivered = true
-                        log("IAPLINK T43: ✓ SYN echo accepted by Buick CONTROL RTSP; waiting for NORMAL before CSM")
-                    }
-                } else if (!ok && pendingEchoFlush) {
-                    log("IAPLINK T43: SYN echo RTSP send failed; virtual CSM will NOT start prematurely")
-                }
-            }
-        }
-
-        private fun drainLocked() {
-            while (true) {
-                when (val event = engine.pollEvent()) {
-                    null -> break
-                    is Iap2LinkEngine.Event.Control ->
-                        handleFrameLocked(event.bytes)
-
-                    is Iap2LinkEngine.Event.Dead -> {
-                        log("IAPLINK: 虚拟链路终止 - ${event.reason ?: "EOF"}")
-                        return
-                    }
-                }
-            }
-            // Deliver peer's SYN echo BEFORE first CSM; then flush 0x1D00.
-            flushOutputLocked()
-            maybeStartVirtualCsmLocked()
-            flushOutputLocked()
-        }
-
-        /**
-         * T43: after NORMAL, run virtual iAP2 CSM over either type-130 TCP
-         * (existing lab receiver) OR Buick B233's Events/RTSP bridge.
-         * The latter has streams=null and was previously permanently gated out.
-         * Only B233 is changed; other receiver Events links stay passive.
-         */
-        private fun maybeStartVirtualCsmLocked() {
-            if (virtualCsmStarted || !virtualEchoDelivered) return
-            if (engine.state != Iap2LinkEngine.State.NORMAL) return
-            if (iapTunnel == null && !isBuickE5Receiver()) return
-            virtualCsmStarted = true
-            virtualCsmStartedAt = SystemClock.uptimeMillis()
-            log("IAPLINK T43: virtual link NORMAL; starting 0x1D00 over ${if (iapTunnel != null) "type-130 TCP" else "Buick AirPlay CONTROL RTSP"}")
-            sendCsmLocked(Iap2MessageIds.START_IDENTIFICATION)
-        }
-
-        /** Virtual iAP2 CSM send (engine chooses the peer's advertised control session ID). */
-        private fun sendCsmLocked(
-            messageId: Int,
-            body: ByteArray = ByteArray(0),
-        ) {
-            val frame =
-                Iap2Csm
-                    .encode(messageId, body)
-            val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L)
-            log(
-                "IAPLINK T43: virtual CSM tx 0x${messageId.toString(16)} " +
-                    "(${Iap2MessageIds.nameOf(messageId)}) " +
-                    "${frame.size}B ok=$ok",
-            )
-        }
-
-        /**
-         * 隧道发送端握手（对照 DiPlay Iap2WirelessControlClient 的对端期望）：
-         *   0x1D01 → 回 0x1D02（识别完成）→ 随发 0xAA00
-         *   0xAA01 → 发 0xAA02 挑战（32B，DiPlay CARLINKIT 身份只接受精确 32B）
-         *   0xAA03 → 发 0xAA05（自报成功）
-         * 完成后对方发出订阅并视为隧道就绪，5 分钟拆链不再发生。
-         */
-        private fun maybeRespondTunnelCsmLocked(frame: Iap2Csm.Frame) {
-            if (iapTunnel == null && !isBuickE5Receiver()) return
-            val ids = Iap2MessageIds
-            when (frame.messageId) {
-                ids.IDENTIFICATION_INFORMATION -> {
-                    if (virtualIdentified) return
-                    virtualIdentified = true
-                    val params =
-                        Iap2Csm
-                            .parseParams(frame.body)
-                            .associateBy { it.id }
-                    if (isBuickE5Receiver() && iapTunnel == null) {
-                        virtualAdvertisedReceives = BuickB233VirtualPostAuth.receiveIds(params[7]?.value)
-                        log("IAPLINK T48: B233 virtual 0x1D01 canReceive(${virtualAdvertisedReceives.size})=" +
-                            virtualAdvertisedReceives.sorted().joinToString(" ") { "0x%04x".format(it) })
-                        if (virtualAdvertisedReceives.isEmpty()) {
-                            log("IAPLINK T48: no advertised receivable IDs; skip B233 post-auth burst")
-                        }
-                    }
-                    log(
-                        "IAPLINK T43: virtual rx 0x1d01 identity " +
-                            "name=${params[0]?.value?.decodeToString()?.trimEnd('\u0000')} " +
-                            "model=${params[1]?.value?.decodeToString()?.trimEnd('\u0000')}",
+    fun postControlIap(frame: ByteArray) {
+        controlIapTx.execute {
+            try {
+                val body =
+                    BinaryPlist.encode(
+                        linkedMapOf(
+                            "type" to "iAPSendMessage",
+                            "params" to linkedMapOf<String, Any?>("data" to frame),
+                        ),
                     )
-                    sendCsmLocked(ids.IDENTIFICATION_ACCEPTED)
-                    sendCsmLocked(ids.MFI_REQUEST_CERTIFICATE)
-                }
-
-                ids.MFI_CERTIFICATE -> {
-                    val challenge = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
-                    sendCsmLocked(
-                        ids.MFI_REQUEST_CHALLENGE,
-                        Iap2Csm
-                            .param(0, challenge),
+                val (statusLine, reply) =
+                    request(
+                        "POST",
+                        "/command",
+                        body,
+                        contentType = "application/x-apple-binary-plist",
                     )
+                controlIapCount++
+                val head =
+                    "IAPLINK: tx(控制通道) #$controlIapCount ${frame.size}B [$statusLine]" +
+                        (if (reply.isEmpty()) "" else " resp=${reply.size}B hex=" + hexPrefix(reply))
+                if (controlIapCount <= 10 || controlIapCount % 50 == 0 || reply.isNotEmpty()) {
+                    log(head)
                 }
-
-                ids.MFI_RESPONSE -> {
-                    if (!virtualMfiAckNotified && virtualMfiSequence == null) {
-                        awaitingVirtualMfiFrame = true
-                        sendCsmLocked(ids.MFI_AUTHENTICATION_SUCCEEDED)
-                        log("IAPLINK T43: virtual MFi response received; 0xAA05 sent (receipt is NOT signature verification)")
-                    }
+                // 车机可能把链路字节直接塞在应答体里（而不是另发事件通道）：认出来就喂给
+                // 链路引擎，别让它白躺在响应里。
+                if (reply.isNotEmpty() && looksLikeIapLink(reply)) {
+                    log("IAPLINK: 控制通道应答内含链路字节 ${reply.size}B → 喂给链路引擎")
+                    iapLink?.onCarBytes(reply)
                 }
-
-                else -> {
-                    // T48c: only respond to subscriptions actually requested by B233.
-                    // Audi/DiPlay virtual iAP2 paths are intentionally unchanged.
-                    if (iapTunnel == null && isBuickE5Receiver()) {
-                        BuickB233VirtualPostAuth.replyToSubscription(frame.messageId)?.let { (replyId, body) ->
-                            log("IAPLINK T48: B233 subscription 0x%04x -> 0x%04x (empty state)".format(frame.messageId, replyId))
-                            sendCsmLocked(replyId, body)
-                        }
-                    }
-                }
+            } catch (error: IOException) {
+                log("IAPLINK: 控制通道 POST 失败 - ${error.message}")
             }
-        }
-
-        private fun handleFrameLocked(bytes: ByteArray) {
-            frameCount++
-            val frames = parser.offer(bytes)
-            for (frame in frames) {
-                val hex = frame.body.joinToString(" ") { "%02x".format(it) }
-                if (frameCount <= 30 || frameCount % 100 == 0) {
-                    log(
-                        "IAPLINK: rx 0x${frame.messageId.toString(16)} " +
-                            "(${Iap2MessageIds.nameOf(frame.messageId)}) " +
-                            "${frame.body.size}B hex=${hex.take(160)}",
-                    )
-                }
-                maybeRespondTunnelCsmLocked(frame)
-            }
-            if (frames.isEmpty() && frameCount <= 10) {
-                log("IAPLINK: rx ${bytes.size}B（非 CSM）hex=" + bytes.joinToString(" ") { "%02x".format(it) }.take(160))
-            }
-        }
-
-        /** 引擎回调：EA 会话（2 号）数据帧——触摸 HID 的高概率载体。 */
-        var onEaData: ((ByteArray) -> Unit)? = null
-
-        fun handleEaData(bytes: ByteArray) {
-            eaCount++
-            val hex = bytes.joinToString(" ") { "%02x".format(it) }
-            if (eaCount <= 30 || eaCount % 100 == 0) {
-                log("IAPLINK: EA 数据 #$eaCount ${bytes.size}B hex=${hex.take(200)}")
-            }
-            onEaData?.invoke(bytes)
         }
     }
+
+    /** 应答体的十六进制前缀（诊断用，截断到 24 字节）。 */
+    private fun hexPrefix(
+        bytes: ByteArray,
+        limit: Int = 24,
+    ): String = bytes.take(limit).joinToString(" ") { "%02x".format(it) } + if (bytes.size > limit) "…" else ""
+
+    /**
+     * 报文全量十六进制（故障取证用）：默认最多 480 字节、每行 48 字节。
+     * 排查车机 plist 解不出来时，只给 24 字节前缀看不到出错的对象，必须给全文。
+     */
+    private fun hexDump(
+        bytes: ByteArray,
+        limit: Int = 480,
+        perLine: Int = 48,
+    ): String {
+        if (bytes.isEmpty()) return "（空）"
+        val shown = minOf(bytes.size, limit)
+        val builder = StringBuilder(shown * 3)
+        var index = 0
+        while (index < shown) {
+            if (index > 0) builder.append("\n    ")
+            val end = minOf(index + perLine, shown)
+            for (position in index until end) {
+                builder.append("%02x".format(bytes[position]))
+                if (position != end - 1) builder.append(' ')
+            }
+            index = end
+        }
+        if (bytes.size > shown) builder.append(" …（共 ${bytes.size}B，只显示前 $shown）")
+        return builder.toString()
+    }
+
+    /** 应答体是否是 iAP2 链路帧（marker 0xFF55 / 同步包 0xFF5A）。 */
+    private fun looksLikeIapLink(bytes: ByteArray): Boolean =
+        bytes.size >= 6 &&
+            bytes[0] == 0xFF.toByte() &&
+            (bytes[1] == 0x5A.toByte() || bytes[1] == 0x55.toByte())
 
     /** 音频流协商结果（RTP over UDP；密钥同视频流规则，盐用音频连接 ID）。 */
     class AudioStreamInfo(
@@ -1574,8 +1481,18 @@ class AirPlayClient(
         /** 主屏视频流类型（对照接收端 STREAM_TYPE_MAIN_SCREEN；100 是音频、130 是数据/iAP 隧道）。 */
         const val SCREEN_STREAM_TYPE = 110L
 
-        /** 主音频流类型（DiPlay STREAM_TYPE_MAIN_AUDIO；媒体/导航音频走这条）。 */
+        /** 主音频流类型（DiPlay STREAM_TYPE_MAIN_AUDIO；PCM 通路）。 */
         const val AUDIO_STREAM_TYPE = 100L
+
+        /**
+         * 高质量主音频流类型（catplay `StreamType::MainHighAudio`）。
+         *
+         * 部分车机（2026-10-20 Honda HFT / Alpine 8A250-30A 实测）的**真媒体通路**在这条：
+         * `type=102 media` 只声明 AAC-LC，而 `type=100 media` 只声明 PCM——往 100 推 PCM
+         * 时车机 SETUP 回 200、给 dataPort，却不消费（`/feedback` 的 sampleTime 恒 0），
+         * 约 6.5s 后把整条会话拆掉。
+         */
+        const val AUDIO_STREAM_TYPE_MAIN_HIGH = 102L
 
         /** 音频格式位：PCM 48000Hz 16bit 立体声（catplay AudioFormat 定义 1<<15）。 */
         const val AUDIO_FORMAT_PCM_48K_STEREO = 1L shl 15
@@ -1583,7 +1500,10 @@ class AirPlayClient(
         /** 音频格式位：PCM 44100Hz 16bit 立体声（1<<11；48k 不可用时的回退）。 */
         const val AUDIO_FORMAT_PCM_44K_STEREO = 1L shl 11
 
-        /** AAC-LC 48000Hz 立体声（1<<23），/info 偏好时使用；当前仅记录。 */
+        /** AAC-LC 44100Hz 立体声（1<<22；catplay `AAC_LC_44100_STEREO`）。 */
+        const val AUDIO_FORMAT_AAC_LC_44K_STEREO = 1L shl 22
+
+        /** AAC-LC 48000Hz 立体声（1<<23；catplay `AAC_LC_48000_STEREO`）。 */
         const val AUDIO_FORMAT_AAC_48K_STEREO = 1L shl 23
 
         /**
@@ -1598,6 +1518,15 @@ class AirPlayClient(
          * catplay 注释：AirPlay 推流最低 250ms 才稳定（clamp 32..2000）——兜底取 250。
          */
         const val AUDIO_LATENCY_FALLBACK_MS = 250L
+
+        /** 车机音量 ≤ 这个值（dB）视为静音位（AirPlay 里 -144 约等于全静音）。 */
+        private const val MUTE_THRESHOLD_DB = -100f
+
+        /** 检测到静音位时抬到的音量（dB，0=最大；-25 属于中等偏小，不至于炸响）。 */
+        private const val SAFE_VOLUME_DB = -25.0f
+
+        /** 解析 `volume: -12.345678` 这类文本参数。 */
+        private val VOLUME_REGEX = Regex("volume:\\s*(-?[0-9.]+)")
 
         /**
          * SETUP 里的 iPhone 能力清单（接收端按「车机支持 ∩ 提议」计算 enabledFeatures，
@@ -1624,6 +1553,9 @@ class AirPlayClient(
 
         /** 等车机打开 AirPlay 窗口的总时长（用户在车机上点手机图标的等待窗口）。 */
         private const val PAIRING_WINDOW_MILLIS = 120_000L
+
+        /** 配对重试期间调用 [retryTick] 的间隔（次）：每轮回 2s，10 次 ≈ 每 20s 重新公告一次。 */
+        private const val RETRY_TICK_ATTEMPTS = 10
 
         /**
          * 接收端明确回「没有这个接口」的 HTTP 状态。命中即判定为 pre-HomeKit 老车机，
@@ -1704,31 +1636,52 @@ class AirPlayClient(
      * 格式：优先 PCM 48k 立体声（bit15），车机只声明 44.1k 时退 bit11；采样率下发给
      * [AudioSender] 保持一致。
      */
-    fun runAudioStream(sharedSecret: ByteArray): AudioStreamInfo? {
-        // 按车机 /info 的实际声明协商（不写死某一台车机的 audioType/延迟/采样率）：
-        // 真 iPhone 会挑「媒体通道 + 双方都支持的格式」，各车机声明差异很大
-        // （奥迪 6 个 audioType 各有位图、DiPlay 另一套）。拿不到 /info 时用协议基线。
-        val negotiation = negotiateAudio()
+    fun runAudioStream(
+        sharedSecret: ByteArray,
+        profile: AudioProfile,
+        tuning: AudioTuning = AudioTuning.RAW_SPF,
+    ): AudioStreamInfo? {
+        // 档位由调用方按「车机 /info 声明的候选 + 本车机历史记忆」选定后传进来：
+        // 同一台车机上不同 audioType 档位的可用性完全不同（见 AudioProfile 注释），
+        // 单档失败就换下一档，而不是每次连接都盲试同一档。
+        val negotiation = profile
         log(
-            "AIRPLAY: 音频协商协商 → audioType=${negotiation.audioType} " +
-                "format=0x${negotiation.formatBit.toString(16)} ${negotiation.sampleRate}Hz " +
-                "latency=${negotiation.latencyMs}ms（来源=${negotiation.source}）",
+            "AIRPLAY: 音频协商 → audioType=${profile.audioType} " +
+                "format=0x${profile.formatBit.toString(16)} ${profile.sampleRate}Hz " +
+                "latency=${profile.latencyMs}ms（档位=${profile.label}，" +
+                "封装=${tuning.detail}）",
         )
         // 随机正 i64：BinaryPlist 按有符号整数编码，掩掉符号位避免负数
         val connectionId = (SecureRandom().nextLong() and Long.MAX_VALUE).coerceAtLeast(1L)
+        // spf 取值：AAC 一帧 1024 采样；PCM 与发送端每包 352 帧保持一致
+        val spfValue =
+            tuning.spf?.let {
+                if (profile.codec == AudioCodec.AAC_LC) it.toLong() else AudioSender.SAMPLES_PER_PACKET.toLong()
+            }
         val body =
             BinaryPlist.encode(
                 linkedMapOf(
                     "streams" to
                         listOf(
-                            linkedMapOf<String, Any?>(
-                                "type" to AUDIO_STREAM_TYPE,
-                                "streamConnectionID" to connectionId,
-                                "audioFormat" to negotiation.formatBit,
-                                "audioType" to negotiation.audioType,
-                                "audioLatencyMs" to negotiation.latencyMs,
-                                "supportsHighAccuracyTimestamps" to true,
-                            ),
+                            linkedMapOf<String, Any?>().apply {
+                                put("type", profile.streamType)
+                                put("streamConnectionID", connectionId)
+                                put("audioFormat", negotiation.formatBit)
+                                put("audioType", negotiation.audioType)
+                                put("audioLatencyMs", negotiation.latencyMs)
+                                // 与 catplay 发送端（StreamDescriptionAudio::new）逐字段对齐：
+                                // input=false（只下行，无麦克风上行）、
+                                // supportsRTPPacketRedundancy=false（我们不打包冗余帧）。
+                                // 缺这两个布尔时部分严格实现的接收端会按「未声明=不支持」处理，
+                                // 在音频通路初始化阶段就放弃该流。
+                                put("input", false)
+                                put("supportsRTPPacketRedundancy", false)
+                                put("supportsHighAccuracyTimestamps", tuning.highAccuracyTimestamps)
+                                // spf = 每包样本帧数：AAC 一帧 1024，PCM 走 352。
+                                // 2026-10-20 Honda 实测：不声明 spf 时车机照样收包并按 44.1k
+                                // 实时消费，但喇叭无声——「按固定 SPF 排播」的实现需要这个值。
+                                spfValue?.let { put("spf", it) }
+                            },
                         ),
                 ),
             )
@@ -1770,7 +1723,7 @@ class AirPlayClient(
             }
         val audio =
             streams.firstOrNull { entry ->
-                ((entry as? Map<*, *>)?.get("type") as? Long) == AUDIO_STREAM_TYPE
+                ((entry as? Map<*, *>)?.get("type") as? Long) == profile.streamType
             } as? Map<*, *> ?: run {
                 log("AIRPLAY: 音频流被拒绝（streams=$streams）")
                 return null
@@ -1787,12 +1740,23 @@ class AirPlayClient(
                 "DataStream-Output-Encryption-Key".toByteArray(Charsets.US_ASCII),
             )
         log(
-            "AIRPLAY: ✓ 音频流协商成功（type=100 ${negotiation.audioType} " +
+            "AIRPLAY: ✓ 音频流协商成功（type=${profile.streamType} ${negotiation.audioType} " +
                 "format=0x${negotiation.formatBit.toString(16)} ${negotiation.sampleRate}Hz " +
                 "latency=${negotiation.latencyMs}ms）" +
                 "dataPort=$dataPort controlPort=${portOf(audio["controlPort"])} connId=$connectionId" +
                 " 全字段=$audio",
         )
+        // 音频通路已建好，但「车机在收数据、喇叭没声」还剩一种很常见的原因：
+        // 接收端的 AirPlay 音量处于静音位（-144dB）——真 iPhone 会主动 SET_PARAMETER
+        // volume。这里先查一次（顺带把值记进日志），查到静音位就抬到 -25dB。
+        // B233 responds to volume GET with 501 and SET_PARAMETER with 456.
+        // Avoid sending unsupported volume commands on this receiver. The user
+        // can adjust output volume on the head unit. Other vehicles unchanged.
+        if (!endpoint.isBuickB233) {
+            probeAndFixVolume(host)
+        } else {
+            log("AUDIO T10: B233 skips unsupported AirPlay volume GET/SET (observed 501/456)")
+        }
         return AudioStreamInfo(
             streamConnectionId = connectionId,
             dataPort = dataPort,
@@ -1802,107 +1766,212 @@ class AirPlayClient(
         )
     }
 
-    /** 音频协商结果（audioType / 格式位 / 采样率 / 延迟）。 */
-    private class AudioNegotiation(
-        val audioType: String,
-        val formatBit: Long,
-        val sampleRate: Int,
-        val latencyMs: Long,
-        val source: String,
-    )
+    /**
+     * 查询并纠正接收端音量（AirPlay 的 `GET_PARAMETER`/`SET_PARAMETER` + `volume`）。
+     *
+     * 为什么需要（2026-10-20 Honda 实测）：AAC-LC 通路建好后车机**在实时消费样本**
+     * （`/feedback` 的 `sampleTime` 按 44.1k 走），但喇叭全静音。真 iPhone 在会话里
+     * 会主动下发 `SET_PARAMETER volume`；接收端的 AirPlay 增益若停留在静音位
+     * （-144dB），表现就正好是「数据在流、声音没有」。
+     *
+     * 这里只做两件事：① 把车机当前音量记进日志（这是判断「静音位」的直接证据）；
+     * ② 若确实处于静音位（≤[MUTE_THRESHOLD_DB]），抬到 [SAFE_VOLUME_DB]。
+     * 查询失败/车机不支持都不影响主链路。
+     */
+    private fun probeAndFixVolume(host: String) {
+        val url = "rtsp://$host:${endpoint.airPlayPort}/"
+        val volume: Float? =
+            try {
+                val (status, body) =
+                    request(
+                        "GET_PARAMETER",
+                        url,
+                        "volume".toByteArray(Charsets.US_ASCII),
+                        timeoutMillis = 4_000,
+                        contentType = "text/parameters",
+                    )
+                val text = body.toString(Charsets.UTF_8).trim()
+                log("AIRPLAY: 车机音量查询 $status body=${text.take(160)}")
+                VOLUME_REGEX
+                    .find(text)
+                    ?.groupValues
+                    ?.get(1)
+                    ?.toFloatOrNull()
+            } catch (error: Exception) {
+                log("AIRPLAY: 车机音量查询失败 - ${error.message}（忽略，不影响音频流）")
+                null
+            }
+        // 查得到且不在静音位：尊重车机当前音量，不再覆盖。
+        if (volume != null && volume > MUTE_THRESHOLD_DB) return
+        // 查不到（Honda 实测返回 501 Not Implemented）时也要下发一次：
+        // 原来的实现直接 return，等于整个会话从没设置过接收端音量——若车机 AirPlay
+        // 增益停在静音位，症状就是「数据在流、喇叭无声」，而我们连日志都拿不到。
+        try {
+            val payload = String.format(java.util.Locale.US, "volume: %.6f", SAFE_VOLUME_DB)
+            val (status, body) =
+                request(
+                    "SET_PARAMETER",
+                    url,
+                    payload.toByteArray(Charsets.US_ASCII),
+                    timeoutMillis = 4_000,
+                    contentType = "text/parameters",
+                )
+            log(
+                if (volume == null) {
+                    "AIRPLAY: 车机不支持音量查询 → 仍下发音量 $SAFE_VOLUME_DB dB（$status ${body.size}B）"
+                } else {
+                    "AIRPLAY: 车机音量在静音位（$volume dB）→ 已设为 $SAFE_VOLUME_DB dB（$status ${body.size}B）"
+                },
+            )
+        } catch (error: Exception) {
+            log("AIRPLAY: 设置车机音量失败 - ${error.message}")
+        }
+    }
 
     /**
-     * 按车机 `/info` 的 audioFormats / audioLatencies 协商音频参数。
+     * 按车机 `/info` 的 audioFormats / audioLatencies 生成**候选音频档位**（有序）。
      *
-     * 选择规则（对齐真 iPhone 行为，兼容任意车机）：
-     *  1. 只在 `type=100`（主音频）里选；
-     *  2. 优先 `audioType=media`（媒体通道；奥迪/DiPlay/catplay 真车均以此走媒体音频）；
-     *     没有 media 就退而取第一个「含双方可用 PCM 格式」的通道（compatibility 等）；
-     *  3. 格式优先 PCM 48k 立体声（bit15），其次 PCM 44.1k 立体声（bit11）；
-     *  4. 延迟取该 (type, audioType) 在 audioLatencies 里声明的 outputLatencyMicros，
+     * 与旧实现（只返回一个「协商结果」）的差别（2026-10-19 Honda HFT 实测）：
+     * 车机常常「接受某档位的 SETUP、给 dataPort、照收 UDP 包，但内部音频通路起不来」，
+     * 几秒后整条会话被拆。因此调用方必须能**换档重试**，这里返回全部合法档位。
+     *
+     * 规则：
+     *  1. 只取 `type=100`（主音频）；
+     *  2. 每个 `audioType` 档位按自己的 `audioOutputFormats` 位图匹配 PCM 格式
+     *     （48k 立体声 bit15 优先，其次 44.1k 立体声 bit11）；
+     *  3. 排序：默认 `media` 档优先（真 iPhone 媒体音频通路，奥迪实测唯一能出声的档）；
+     *     [preferCompat]=true 时反过来把非 media（compatibility 等）排前面——
+     *     部分车机 media 档只声明 44.1k 且其音频通路只吃 48k，只能用兼容档；
+     *  4. 延迟取该 (type, audioType) 在 audioLatencies 的 outputLatencyMicros，
      *     取不到用 [AUDIO_LATENCY_FALLBACK_MS]。
-     * 拿不到 /info 时回退协议基线（media + PCM48k + 250ms），与改动前行为一致。
+     * 拿不到 /info 时回退协议基线（media + PCM48k + 250ms），与改动前一致。
      */
-    private fun negotiateAudio(): AudioNegotiation {
-        val info = negotiatedInfo
-        if (info == null) {
-            return AudioNegotiation(
-                AUDIO_TYPE_MEDIA,
-                AUDIO_FORMAT_PCM_48K_STEREO,
-                48_000,
-                AUDIO_LATENCY_FALLBACK_MS,
-                "无 /info → 协议基线",
+    fun audioCandidates(preferCompat: Boolean = false): List<AudioProfile> {
+        val baseline =
+            listOf(
+                AudioProfile(AUDIO_TYPE_MEDIA, AUDIO_FORMAT_PCM_48K_STEREO, 48_000, AUDIO_LATENCY_FALLBACK_MS),
             )
-        }
-        val formats =
+        val info = negotiatedInfo ?: return baseline
+        val declared =
             (info["audioFormats"] as? List<*>)
                 ?.mapNotNull { it as? Map<*, *> }
                 .orEmpty()
-                .filter { ((it["type"] as? Number)?.toLong()) == AUDIO_STREAM_TYPE }
-        if (formats.isEmpty()) {
-            return AudioNegotiation(
-                AUDIO_TYPE_MEDIA,
-                AUDIO_FORMAT_PCM_48K_STEREO,
-                48_000,
-                AUDIO_LATENCY_FALLBACK_MS,
-                "/info 未声明 type=100 → 协议基线",
+        if (declared.isEmpty()) {
+            log("AIRPLAY: 车机 /info 未声明 audioFormats → 按协议基线尝试")
+            return baseline
+        }
+
+        // ---- 1) AAC-LC 通路：MainHighAudio(102) 优先，其次 type=100 ----
+        // 车机若在 102/media 上声明 AAC-LC，说明它有一条独立的高质量媒体音频通路
+        // （真 iPhone 媒体音频走这条）。往 100 推 PCM 的表现为：SETUP 回 200、给 dataPort、
+        // 但 controlPort=0、/feedback 里 sampleTime 恒 0，约 6.5s 后整条会话被拆。
+        val aac = mutableListOf<AudioProfile>()
+        val aacOptions =
+            listOf(
+                Triple(AUDIO_STREAM_TYPE_MAIN_HIGH, AUDIO_FORMAT_AAC_LC_44K_STEREO, 44_100),
+                Triple(AUDIO_STREAM_TYPE_MAIN_HIGH, AUDIO_FORMAT_AAC_48K_STEREO, 48_000),
+                Triple(AUDIO_STREAM_TYPE, AUDIO_FORMAT_AAC_LC_44K_STEREO, 44_100),
+                Triple(AUDIO_STREAM_TYPE, AUDIO_FORMAT_AAC_48K_STEREO, 48_000),
             )
+        aacOptions.forEach { (streamType, bit, rate) ->
+            declared
+                .filter { ((it["type"] as? Number)?.toLong()) == streamType }
+                .forEach { channel ->
+                    val output = (channel["audioOutputFormats"] as? Number)?.toLong() ?: 0L
+                    if ((output and bit) == 0L) return@forEach
+                    val audioType = (channel["audioType"] as? String)?.lowercase() ?: return@forEach
+                    // 媒体音频只走 media 档；compatibility/default 是提示音/兼容场景
+                    if (audioType != AUDIO_TYPE_MEDIA) return@forEach
+                    aac +=
+                        AudioProfile(
+                            audioType = audioType,
+                            formatBit = bit,
+                            sampleRate = rate,
+                            latencyMs = latencyFor(info, audioType, streamType),
+                            streamType = streamType,
+                            codec = AudioCodec.AAC_LC,
+                        )
+                }
         }
 
-        // 选格式：48k 立体声优先，其次 44.1k 立体声
-        data class Candidate(
-            val channel: Map<*, *>,
-            val audioType: String,
-            val bit: Long,
-            val sampleRate: Int,
-        )
-
-        fun candidatesFor(
-            bit: Long,
-            rate: Int,
-        ) = formats.mapNotNull { channel ->
-            val output = (channel["audioOutputFormats"] as? Number)?.toLong() ?: 0L
-            if ((output and bit) == 0L) return@mapNotNull null
-            val type = (channel["audioType"] as? String)?.lowercase() ?: return@mapNotNull null
-            Candidate(channel, type, bit, rate)
+        // ---- 2) PCM 通路（只存在于 type=100）----
+        val formats = declared.filter { ((it["type"] as? Number)?.toLong()) == AUDIO_STREAM_TYPE }
+        val pcm = mutableListOf<AudioProfile>()
+        // 只考虑「媒体类」档位：车机还会声明 telephony / speechRecognition / alert 等档，
+        // 它们位图里同样有 PCM48k，但把媒体流推进语音/提示音通路只会得到怪声或无声。
+        // media / compatibility / default 这三档是收发两端都当作媒体通路的档位。
+        val mediaTypes =
+            formats.filter { channel ->
+                val type = (channel["audioType"] as? String)?.lowercase()
+                type == AUDIO_TYPE_MEDIA || type == "compatibility" || type == "default"
+            }
+        val pool = mediaTypes.ifEmpty { formats }
+        // 外层按格式（48k → 44.1k），内层按车机声明顺序：同档位时 48k 自然排在前面
+        listOf(AUDIO_FORMAT_PCM_48K_STEREO to 48_000, AUDIO_FORMAT_PCM_44K_STEREO to 44_100)
+            .forEach { (bit, rate) ->
+                pool.forEach { channel ->
+                    val output = (channel["audioOutputFormats"] as? Number)?.toLong() ?: 0L
+                    if ((output and bit) == 0L) return@forEach
+                    val type = (channel["audioType"] as? String)?.lowercase() ?: return@forEach
+                    pcm += AudioProfile(type, bit, rate, latencyFor(info, type, AUDIO_STREAM_TYPE))
+                }
+            }
+        // 媒体档最优先；其余按 compatibility → default 的熟悉度排序（组内保持 48k 先）
+        val priority = { type: String ->
+            when {
+                type == AUDIO_TYPE_MEDIA && !preferCompat -> 0
+                type == "compatibility" && !preferCompat -> 1
+                type == "compatibility" && preferCompat -> 0
+                type == AUDIO_TYPE_MEDIA && preferCompat -> 2
+                else -> 3
+            }
         }
-
-        // media 通道优先（真 iPhone 的媒体音频通路）；格式 48k → 44.1k
-        val all =
-            candidatesFor(AUDIO_FORMAT_PCM_48K_STEREO, 48_000) +
-                candidatesFor(AUDIO_FORMAT_PCM_44K_STEREO, 44_100)
-        if (all.isEmpty()) {
+        // 「兼容档」= 强制走 PCM 旧通路（跳过 AAC）：AAC-LC 在某些车机上会被 SETUP 直接
+        // 拒掉，留一个人工入口，免得自动候选每次都先撞一次墙。
+        val ordered =
+            (if (preferCompat) emptyList() else aac.distinctBy { it.key }) +
+                pcm.sortedBy { priority(it.audioType) }
+        if (ordered.isEmpty()) {
             log(
-                "AIRPLAY: 车机未声明可用的 PCM 立体声格式" +
-                    "（type=100 共 ${formats.size} 档）→ 仍按基线尝试",
+                "AIRPLAY: 车机未声明可用的 AAC-LC / PCM 立体声格式" +
+                    "（共 ${declared.size} 档）→ 仍按基线尝试",
             )
-            return AudioNegotiation(
-                AUDIO_TYPE_MEDIA,
-                AUDIO_FORMAT_PCM_48K_STEREO,
-                48_000,
-                AUDIO_LATENCY_FALLBACK_MS,
-                "无可用格式 → 协议基线",
-            )
+            return baseline
         }
-        val chosen = all.firstOrNull { it.audioType == AUDIO_TYPE_MEDIA } ?: all.first()
-        // 延迟：同一 (type, audioType) 的 out 值
-        val latency =
+        log("AIRPLAY: 音频候选（按偏好）=${ordered.map { it.label }}")
+        return ordered.distinctBy { it.key }
+    }
+
+    /** 该 (type, audioType) 档位声明的输出延迟（ms）；无有效值用兜底。 */
+    private fun latencyFor(
+        info: Map<*, *>,
+        audioType: String,
+        streamType: Long = AUDIO_STREAM_TYPE,
+    ): Long {
+        val declaredMs =
             (info["audioLatencies"] as? List<*>)
                 ?.mapNotNull { it as? Map<*, *> }
                 ?.firstOrNull {
-                    ((it["type"] as? Number)?.toLong()) == AUDIO_STREAM_TYPE &&
-                        (it["audioType"] as? String)?.lowercase() == chosen.audioType
+                    ((it["type"] as? Number)?.toLong()) == streamType &&
+                        (it["audioType"] as? String)?.lowercase() == audioType
                 }?.let { (it["outputLatencyMicros"] as? Number)?.toLong() }
-                ?.let { it / 1000 }
                 ?.takeIf { it > 0 }
-                ?: AUDIO_LATENCY_FALLBACK_MS
-        return AudioNegotiation(
-            chosen.audioType,
-            chosen.bit,
-            chosen.sampleRate,
-            latency,
-            "车机 /info",
-        )
+                ?.let { it / 1000 }
+        // 下限 250ms：车机声明的 outputLatencyMicros 只是它自己的输出延迟（实测 35ms），
+        // 拿它当端到端缓冲会让 WiFi 抖动直接变成欠载。catplay 对 AirPlay 镜像同样是
+        // `max(声明值, 250ms)`。
+        return declaredMs?.coerceAtLeast(AUDIO_LATENCY_FALLBACK_MS) ?: AUDIO_LATENCY_FALLBACK_MS
+    }
+
+    /**
+     * 车机身份文本（音频档位记忆的键来源）：只用 /info 里稳定的 model + manufacturer，
+     * 蓝牙名/固件串会随重连变化，不能进键。
+     */
+    fun receiverIdentity(): String {
+        val info = negotiatedInfo ?: return "unknown"
+        val manufacturer = (info["manufacturer"] as? String).orEmpty().trim()
+        val model = (info["model"] as? String).orEmpty().trim()
+        return "$manufacturer $model".trim().ifBlank { "unknown" }
     }
 
     /**
@@ -1918,6 +1987,18 @@ class AirPlayClient(
     ): ScreenStreamInfo? {
         // 对照 catplay（真车验证）：streamConnectionID = 随机 u64（+1 保证非零）
         val connectionId = java.security.SecureRandom().nextLong() and Long.MAX_VALUE or 1L
+        val streamUuid =
+            displayUuid ?: java.util.UUID
+                .randomUUID()
+                .toString()
+        log(
+            "AIRPLAY: 主屏流 SETUP uuid=$streamUuid " +
+                if (displayUuid == null) {
+                    "（⚠️ /info 未提供 displayUuid，只能用随机值——车机可能收下流却不绑到任何屏）"
+                } else {
+                    "（来自 /info displays[].uuid）"
+                },
+        )
         val body =
             BinaryPlist.encode(
                 linkedMapOf(
@@ -1929,11 +2010,7 @@ class AirPlayClient(
                                 // 真实 iPhone / catplay 发送端：uuid 与 latencyMs 都必带。
                                 // uuid 必须是接收端 /info displays[] 声明的显示屏 UUID（真车会校验；
                                 // 随机值曾致 Audi 直接 400 拆会话）。latencyMs=25 为 catplay 实测值。
-                                "uuid" to (
-                                    displayUuid ?: java.util.UUID
-                                        .randomUUID()
-                                        .toString()
-                                ),
+                                "uuid" to streamUuid,
                                 "latencyMs" to SCREEN_LATENCY_MS,
                             ),
                         ),
@@ -1991,6 +2068,9 @@ class AirPlayClient(
             "AIRPLAY: ✓ 主屏流协商成功 dataPort=$dataPort connId=$connectionId " +
                 "加密=${if (cipher is StreamFrameCipher.ChaCha) "ChaCha20" else "AES-128-CTR（未配对会话）"}",
         )
+        // MIB3：屏幕流 SETUP 200 拿到 dataPort 后，真机此时在控制通道发 detect（Frida
+        // 时序：screen SETUP → phone detect on control → HU SYN on control）。见 armMib3VirtualLink。
+        armMib3VirtualLink()
         return ScreenStreamInfo(connectionId, dataPort, cipher)
     }
 
@@ -2031,7 +2111,8 @@ class AirPlayClient(
         }
         val host = receiverHost() ?: return
         try {
-            val socket = openCarTcp(resolveAddress(host), setup.eventPort, 5_000)
+            val socket = newVehicleSocket()
+            socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)
             socket.tcpNoDelay = true
             socket.soTimeout = 30_000
             log("EVENT: ✓ 已连接事件通道 $host:${setup.eventPort}（${if (sessionKey != null) "加密" else "明文"}）")
@@ -2053,11 +2134,11 @@ class AirPlayClient(
                 }
             registerEventCommandChannel(socket, cipher)
             Thread({
+                val input = socket.getInputStream()
                 val accumulator = RtspAccumulator()
                 var pending = ByteArray(0)
                 val buffer = ByteArray(8192)
                 try {
-                    val input = socket.getInputStream()
                     while (true) {
                         val count =
                             try {
@@ -2085,15 +2166,9 @@ class AirPlayClient(
                         var eventOtherLogged = 0
                         for (message in accumulator.offer(plain)) {
                             val firstLine = message.firstLine
-                            // (a) 反向 Events 通道的正常入向消息是车机请求。
-                            //     意外收到状态行时只诊断、不回包，避免回应答导致回声。
-                            if (firstLine.startsWith("RTSP/") || firstLine.startsWith("HTTP/")) {
-                                unexpectedEventResponseCount++
-                                if (unexpectedEventResponseCount <= 3) {
-                                    log("EVENT T40: unexpected response on reverse Events channel [$firstLine]; expected car-originated POST requests")
-                                }
-                                continue
-                            }
+                            // (a) 状态行（"RTSP/1.0 200 OK" 等）= 车机对**我们命令**的应答：
+                            //     静默跳过——不回、不记录（回应答会触发乒乓回声，见 respondEventRequest）
+                            if (firstLine.startsWith("RTSP/") || firstLine.startsWith("HTTP/")) continue
                             // (b) 请求判定：方法 token + "/"-开头路径。畸形行（如 "OK 200 OK"：
                             //     第 2 token 是数字）判为非请求 → 静默丢弃，不回不记
                             val tokens = firstLine.split(" ")
@@ -2109,16 +2184,41 @@ class AirPlayClient(
                                 }
                                 continue
                             }
-                            val command =
+                            var commandError: String? = null
+                            val parsed =
                                 try {
-                                    BinaryPlist.parse(message.body) as? Map<*, *>
-                                } catch (error: Exception) {
-                                    // Malformed event payload must never kill the event reader.
-                                    log("EVENT: 命令解析异常 - ${error.javaClass.simpleName}: ${error.message}")
+                                    val result = BinaryPlist.parseRecovered(message.body)
+                                    result.note?.let { note ->
+                                        log("EVENT: /command 容错解析成功——$note")
+                                    }
+                                    result.value
+                                } catch (error: Throwable) {
+                                    // 不能只 catch IllegalArgumentException：越界/长度异常若逃出
+                                    // 这里会直接打死事件读线程，车机会把整个会话拆掉。
+                                    commandError = "${error.javaClass.simpleName}: ${error.message}"
                                     null
                                 }
+                            val command = parsed as? Map<*, *>
                             if (command == null) {
-                                log("EVENT: 命令 plist 解析失败 [$firstLine] body=${message.body.size}B prefix=" + message.body.take(32).joinToString(" ") { "%02x".format(it) })
+                                // 车机每秒都会 POST 一条解不出来的 /command——按「体型指纹」
+                                // 去重，每种体型留一次全文（原因 + 报文头 + 完整 hex），其余只计数。
+                                badEventCommands++
+                                val signature =
+                                    message.body.size.toString() + ":" + hexPrefix(message.body, 8)
+                                if (badEventSignatures.add(signature) && badEventSignatures.size <= 4) {
+                                    log(
+                                        "EVENT: 命令无法识别 [$firstLine] body=${message.body.size}B " +
+                                            "原因=" + (commandError ?: "解析结果=${parsed?.javaClass?.simpleName}"),
+                                    )
+                                    log(
+                                        "EVENT: 命令报文头=" +
+                                            message.head.replace("\r\n", " | ").take(300),
+                                    )
+                                    log("EVENT: 命令报文体（${message.body.size}B）hex=" + hexDump(message.body))
+                                }
+                                if (badEventCommands % 120 == 0) {
+                                    log("EVENT: 累计 $badEventCommands 条 /command 解析失败（已静默，仅计数）")
+                                }
                                 continue
                             }
                             try {
@@ -2130,15 +2230,6 @@ class AirPlayClient(
                     }
                 } catch (error: IOException) {
                     log("EVENT: 读取结束 - ${error.message}")
-                } finally {
-                    // Do not let a retired reader unregister a newer event connection.
-                    synchronized(eventCommandLock) {
-                        if (eventCommandSocket === socket) {
-                            eventCommandSocket = null
-                            eventCommandCipher = null
-                        }
-                    }
-                    runCatching { socket.close() }
                 }
             }, "event-reader").apply {
                 isDaemon = true
@@ -2225,7 +2316,8 @@ class AirPlayClient(
                     continue
                 }
             try {
-                val newSocket = openCarTcp(address, target.airPlayPort, timeoutMillis)
+                val newSocket = newVehicleSocket()
+                newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
                 if (generation != endpointGeneration) {
                     // 连接途中端点已更新：丢弃这条旧连接，下一轮按新地址重连
                     runCatching { newSocket.close() }
@@ -2714,7 +2806,51 @@ class AirPlayClient(
         return BinaryPlist.encode(fields)
     }
 
+    private fun typeName(value: Any?): String =
+        when (value) {
+            null -> "null"
+            is ByteArray -> "data(${value.size}B)"
+            is List<*> -> "list(${value.size})"
+            is Map<*, *> -> "dict(${value.size})"
+            is String -> "str(${value.length})"
+            else -> value.javaClass.simpleName
+        }
+
+    /**
+     * `/info displays[].uuid` 统一字符串化。
+     *
+     * 三种编码都见过：字符串（奥迪 "0"/"1"、部分固件给 36 位 UUID）、
+     * **16 字节 UUID 类型**（bplist 0xB，`toString()` 会变成 `[B@1f2e3d4` 这种垃圾）、
+     * CFKeyedArchiver 的 UID（整数）。屏幕流 SETUP 里的 `uuid` 必须与接收端声明的
+     * **完全一致**，否则车机可能收下流却不往任何屏上绑（表现为「连上了没画面」）。
+     */
+    private fun uuidText(value: Any?): String? =
+        when (value) {
+            null -> null
+            is String -> value.takeIf { it.isNotBlank() }
+            is ByteArray ->
+                if (value.size == 16) {
+                    val hex = value.joinToString("") { "%02x".format(it) }
+                    "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-" +
+                        "${hex.substring(16, 20)}-${hex.substring(20)}"
+                } else {
+                    value.joinToString("") { "%02x".format(it) }
+                }
+            is Number -> value.toString()
+            else -> value.toString().takeIf { it.isNotBlank() }
+        }
+
     private fun logInfoSummary(root: Map<*, *>) {
+        // 顶层字段全量清单（键: 类型）——车机把能力藏在哪个键下一目了然，避免只认得
+        // Apple 官方那几个键（宝马 iD9 的 HID 声明可能就在我们没解析的键上）
+        log(
+            "AIRPLAY: /info 顶层字段(${root.size})=" +
+                root.entries.joinToString(" ") { (key, value) -> "$key:${typeName(value)}" },
+        )
+        // 任何名字里带 hid 的键都完整打印（设备清单 + 描述符是触摸通路的前提）
+        root.entries
+            .filter { (key, _) -> key.toString().contains("hid", ignoreCase = true) }
+            .forEach { (key, value) -> log("AIRPLAY: /info $key=$value") }
         val features = root["features"] as? Long
         log(
             "AIRPLAY: /info 摘要 name=${root["name"]} model=${root["model"]} " +
@@ -2722,10 +2858,13 @@ class AirPlayClient(
                 if (features != null) " features=0x${features.toString(16)}" else "",
         )
         (root["displays"] as? List<*>)?.forEachIndexed { index, display ->
+            log("AIRPLAY: /info displays[$index]=$display")
             if (display is Map<*, *>) {
                 log(
-                    "AIRPLAY: display[$index] uuid=${display["UUID"]} " +
-                        "${display["WidthPhysical"]}x${display["HeightPhysical"]}@${display["RefreshRate"]}Hz",
+                    "AIRPLAY: /info displays[$index] 键值=" +
+                        display.entries.joinToString(" ") { (key, value) ->
+                            "$key=${value.toString().take(80)}"
+                        },
                 )
             }
         }
@@ -2762,3 +2901,10 @@ class AirPlayClient(
         }
     }
 }
+
+/**
+ * 配对失败重试退避（纯函数，回放测试钉死）：403 = 真车「信任已建立、车机未就绪」
+ * 状态（真机 sysdiagnose：就绪窗约 18~20s，期间高频重试可能一直重置其状态机）；
+ * 其余失败（端口未开等）保持快速轮询等邀请。
+ */
+internal fun pairingRetryBackoffMs(failureMessage: String): Long = if (failureMessage.contains("403")) 5_000L else 500L

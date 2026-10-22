@@ -1,16 +1,14 @@
 package io.github.shaonialife.cardeck.video
 
 import android.media.MediaCodec
-import android.net.Network
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.view.Surface
 import io.github.shaonialife.cardeck.airplay.AirPlayCrypto
 import io.github.shaonialife.cardeck.airplay.BinaryPlist
 import io.github.shaonialife.cardeck.airplay.StreamFrameCipher
-import io.github.shaonialife.cardeck.net.CarPlayNetworkSockets
 import java.io.ByteArrayOutputStream
-import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -52,8 +50,8 @@ class VideoSender(
      * RECORD 后 10.2s 整轮被 reset，视频/feedback/事件通道全都健康）。
      */
     private val keepAliveWithStats: Boolean = false,
-    /** Physical car Wi-Fi, independent of the VPN default route. */
-    private val carWifiNetwork: Network? = null,
+    /** T24: explicit vehicle WiFi route for B233 video across VPN toggles. */
+    private val vehicleNetwork: android.net.Network? = null,
 ) {
     private val width: Int = (width / 2) * 2
     private val height: Int = (height / 2) * 2
@@ -97,13 +95,23 @@ class VideoSender(
         val existing = socket
         if (existing != null && !existing.isClosed) return true
         return try {
-            val client = CarPlayNetworkSockets.connectTcp(
-                carWifiNetwork,
-                InetAddress.getByName(host),
-                dataPort,
-                5_000,
-                log,
-            )
+            var scopedToVehicleWifi = false
+            val client =
+                vehicleNetwork?.let { network ->
+                    runCatching { network.socketFactory.createSocket() }
+                        .onSuccess { scopedToVehicleWifi = true }
+                        .onFailure { log("VIDEO T25: WiFi socket 绑定失败，退回系统默认路由 - ${it.message}") }
+                        .getOrNull()
+                } ?: Socket()
+            client.connect(InetSocketAddress(host, dataPort), 5_000)
+            if (vehicleNetwork != null) {
+                log(
+                    if (scopedToVehicleWifi)
+                        "VIDEO T25: 车机数据 TCP 已实际绑定 WiFi Network=$vehicleNetwork"
+                    else
+                        "VIDEO T25: 车机数据 TCP 走默认路由，未绑定车机 WiFi（VPN 切换仍可能断流）"
+                )
+            }
             client.tcpNoDelay = true
             socket = client
             log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
@@ -171,6 +179,26 @@ class VideoSender(
         inputSurface = null
         runCatching { socket?.close() }
         socket = null
+    }
+
+    /**
+     * 立即编码一个关键帧（车机 `/command` 的 `forceKeyFrame` 请求）。
+     *
+     * 车机解不出画面时会反复要 I 帧；我们本身每秒一个，但**要帧请求必须立即响应**——
+     * 否则车机可能一直卡在「等下一个 I 帧」的状态，表现就是「连上了但没画面」
+     * （宝马 iD9 2026-10-20 实测：会话刚起时收到一次 forceKeyFrame）。
+     */
+    fun requestKeyFrame(): Boolean {
+        val codec = encoder ?: return false
+        return try {
+            val params = android.os.Bundle()
+            params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            codec.setParameters(params)
+            true
+        } catch (error: Exception) {
+            log("VIDEO: 请求关键帧失败 - ${error.message}")
+            false
+        }
     }
 
     // ---- 编码输出 → 协议封装发送 ----

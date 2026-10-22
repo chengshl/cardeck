@@ -30,8 +30,20 @@ class Iap2SenderSession(
      * **邀请被接受后才发 0x4301**；若等到 0x4301 之后才广播则双方互等死锁。
      */
     private val onWifiCredentials: ((WifiConfiguration) -> Unit)? = null,
+    /**
+     * 0x4301 在 Phase 1 结束后才到达时的回调（车机打开 CarPlay 窗口的晚信号）。
+     *
+     * 保活泵此前把所有消息都当心跳只记长度：Audi MMI 9310 实测 0x4301 在
+     * Phase 1 结束后 **2 分 35 秒**才到（车机侧窗口刚开），被日志吞掉后我们
+     * 没有发起 AirPlay 连接，车机等 15 秒无人连入便拆掉整条 RFCOMM——
+     * 用户看到的就是「连上之后自动断开」。收到就必须交给主控热更新端点/重试配对。
+     */
     private val onEndpointUpdate: ((CarPlayEndpoint) -> Unit)? = null,
-    private val appContext: android.content.Context? = null,
+    /**
+     * 仅用于 MFi 挑战长度的按车机持久化记忆（[MfiLengthMemory]）。null = 只用进程内
+     * 内存表（单测/纯 JVM），不影响协议流程。
+     */
+    private val context: android.content.Context? = null,
 ) {
     /** 从 0x5703 + 0x4301 解析出的接收端信息。 */
     data class CarPlayEndpoint(
@@ -44,6 +56,17 @@ class Iap2SenderSession(
         val publicKey: String?,
         val sourceVersion: String?,
         val ipAddresses: List<String>,
+        /**
+         * `_airplay._tcp` TXT 的 features 位图（高 32 位已并入）。
+         *
+         * 关键位：bit38 `HK_PAIRING_AND_ENCRYPT` = 支持 HomeKit 配对/加密。
+         * null = 未知（只有 0x4301、没发现 mDNS）——按「需要配对」处理，保持旧行为。
+         * catplay 用它区分三个时代的接收端：pre-HomeKit（CarPlay 210.81，无该位，
+         * 只能 `et=NONE` 明文会话 + AES-CTR 屏幕流）/ 支持但可跳过（280 时代）/
+         * 强制配对（现代）。2026-10-19 奥迪 4xxx（4851）连不上与这条分类直接相关。
+         */
+        val advertisedFeatures: Long? = null,
+        val isBuickB233: Boolean = false,
     )
 
     private val parser = Iap2Csm.Parser()
@@ -71,6 +94,12 @@ class Iap2SenderSession(
     @Volatile
     private var wifi: WifiConfiguration? = null
 
+    /** 0x4301 原始体是否已记录（每轮会话一次，避免周期补发刷屏）。 */
+    private var startSessionRawLogged = false
+
+    /** 最近一次晚到 0x4301 的端点指纹（车机周期重发相同内容时不重复打详情）。 */
+    private var lastLateStartSessionSignature: Int? = null
+
     /**
      * 0x1D01 参数 6：车机声明「它可发送」的消息 ID 清单。
      * 用它判断 0x6800 (StartHID) / 0x4301 是否真的会来——声明里没有就不该盲等：
@@ -78,8 +107,17 @@ class Iap2SenderSession(
      */
     private var accessorySendIds: Set<Int> = emptySet()
 
+    /** 0x1D01 参数 7：车机声明「它可接收」的消息 ID 清单。 */
+    private var accessoryReceiveIds: Set<Int> = emptySet()
+
+    /** 识别帧是否真的带了接收清单（空清单与「未提供」必须区分）。 */
+    private var receiveListDeclared = false
+
     /** 车机是否声明会发某消息；null = 未提供清单（未知，按保守策略等待）。 */
     private fun accessoryDeclaresSend(messageId: Int): Boolean? = if (accessorySendIds.isEmpty()) null else messageId in accessorySendIds
+
+    /** 车机是否声明能收某消息；null = 未提供清单（未知，按保守策略继续）。 */
+    private fun accessoryDeclaresReceive(messageId: Int): Boolean? = if (!receiveListDeclared) null else messageId in accessoryReceiveIds
 
     private companion object {
         /** 等 StartHID 的窗口：xcertplay 会发（订阅后立即到），DiPlay 不发。 */
@@ -93,18 +131,23 @@ class Iap2SenderSession(
         const val START_SESSION_WAIT_NANOS = 3_000_000_000L
 
         /**
-         * MFi 挑战「被拒档位」进程级记忆：只记录**导致链路被拆**的挑战长度
-         * （观察到车机对某个长度不容忍；静默超时不记，属可重试的正常失败）。
-         * 2026-10-11 奥迪实测新增：车机在 32B 挑战后 ~0.4s 直接拆链
-         * （10-09 观察到的是「静默不断链」，两种行为都出现过）——若无记忆，
-         * 每次会话都从 32B 撞起、反复断链；有记忆则本次进程内后续会话直接
-         * 从下一档开始（DiPlay 在 32B 秒答，不受 32 被阴影观察影响；
-         * 若两档都被拒则清空重来，避免永久卡死）。
+         * 新协议车机（没有 0x5703，AP 信息只在 0x4301 里）的等待窗口。
+         * 这类车机必须先把热点信息给手机，手机才可能入网——窗口太短等于直接判死；
+         * BMW iD9 实测整个 bring-up 在 10 秒量级，给 8 秒。
          */
-        @Volatile
-        private var mfiRejectedLengths: Set<Int> = emptySet()
+        const val START_SESSION_WAIT_NEW_PROTOCOL_NANOS = 8_000_000_000L
 
-        /** 挑战档位（长度, 等待窗口）：顺序与窗口由 DiPlay/Audi 双端实测决定。 */
+        /** 0x4301 原始体日志上限（Audi 实测 261B，完整记录；异常大的只截前段）。 */
+        const val START_SESSION_RAW_LOG_BYTES = 1_024
+
+        /**
+         * 已知「静默过」的档位重试窗口。首次试探保留原窗口（可能是慢车机），
+         * 但已经失败过一次的档位没必要再等满 6 秒——真 iPhone 应答在 100ms 级。
+         */
+        const val MFI_SILENT_RETRY_WINDOW_MS = 1_500L
+
+        /** 挑战档位（长度, 首次试探窗口）：顺序与窗口由 DiPlay/Audi 双端实测决定。 */
+        private const val BUICK_START_SESSION_WAIT_NANOS = 30_000_000_000L
         private val MFI_ATTEMPTS = listOf(32 to 3_000L, 20 to 6_000L, 16 to 3_000L)
 
         /** 真车系接收端特征（0x1D01 name/model/manufacturer 子串，小写比对）。 */
@@ -142,6 +185,10 @@ class Iap2SenderSession(
         // ---- MFi（跳过校验：0xAA05 自报成功）----
         val identityText = identityText(identification)
         val legacyCar = LEGACY_RECEIVER_MARKERS.any { identityText.contains(it) }
+        val buickB233 = identityText.contains("buick") &&
+            identityText.contains("b233") &&
+            identityText.contains("saic general motors")
+        if (buickB233) log("iap2 B233: exact 32B MFi; 75B two-group 0x4300")
         if (legacyCar) {
             log("iap2 识别为真车系（$identityText）——MFi 首选 20B（真 iPhone 实录长度；32B 对真车处置不稳定）")
         }
@@ -155,17 +202,9 @@ class Iap2SenderSession(
         //    32B→20B 的会话全部卡死，20B→（记忆命中）的会话全部秒通。
         //  - 测试台 DiPlay（Carlinkit AuthV3 EC 身份）：**只接受精确 32B**，长度不符直接断链。
         // 全部无应答也不中止——我们不校验签名（0xAA05 自报），由 0x5702 是否应答判定放行。
-        // T41: Buick B233 successfully answered a 32B MFi challenge during its
-        // FIRST connection. Once the receiver later refuses the same challenge,
-        // it is an unhealthy/stale car session, not proof that 32B is unsupported.
-        // Do not poison the global rejected-length cache or try 20B/16B fallbacks:
-        // those fallbacks were followed by further RFCOMM resets and pairing churn.
-        val buickB233 = identityText.contains("buick") &&
-            identityText.contains("saic general motors") &&
-            identityText.contains("b233")
-        runMfiChallenge(deadline, prefer20First = legacyCar, buickStrict = buickB233)
+        runMfiChallenge(deadline, prefer20First = legacyCar, receiverKey = identityText, buickStrict = buickB233)
         send(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
-        log("iap2 tx=0xaa05 authentication-succeeded（自报；未验证车机证书/挑战签名，不能视为密码学认证通过）")
+        log("iap2 tx=0xaa05 authentication-succeeded（自报）")
 
         // ---- EA 会话启动（MFi 认证完成后）----
         // 奥迪 0x1D01 声明 de.audi.mmicconnectdatatransfer / com.audi.cpp.eadata0/1
@@ -181,179 +220,73 @@ class Iap2SenderSession(
         // ---- 订阅与 HID：0x6800 是可选步骤 ----
         // xcertplay 在订阅后发 StartHID；DiPlay 删掉了这一步（订阅完直接等 0x5702）。
         // 因此这里只短暂等待：收到 0x6800 就应答 0x6801，2 秒内没等到就直接继续。
-        // ---- Buick E5 T1: 先声明 CarPlay 可用，再请求热点配置 ----
-        // 独立实验分支；避免影响上游 Audi/DiPlay 默认路径。
-        val isBuickE5 = identityText.contains("buick", ignoreCase = true) ||
-            identityText.contains("general motors", ignoreCase = true) ||
-            identityText.contains("cadillac", ignoreCase = true)
-        if (isBuickE5) {
-            val mac = bluetoothMac.trim()
-            if (!Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$").matches(mac) ||
-                mac.equals("02:00:00:00:00:00", ignoreCase = true) ||
-                mac.equals("00:00:00:00:00:00", ignoreCase = true)
-            ) {
-                log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 mac=$mac")
-                throw IOException("Buick T10: 无有效蓝牙 MAC，避免占位地址污染配对")
-            }
-            log("iap2 Buick/GM T15: 使用真实蓝牙 MAC=$mac；恢复最多 2 秒监听 0x6800 StartHID")
-        }
-        if (isBuickE5) {
-            log("iap2 Buick/GM T15: 开始监听 0x6800（如收到则回应 0x6801；超时继续）")
-        }
         awaitOptionalHid(deadline)
-        if (isBuickE5) {
-            // T15: preserve T14 device update and availability messages; only restore optional HID wait.
-            log("iap2 Buick/GM T28: 恢复 T26 ACK 稳定顺序，保留 T19 会话解析与 T26 诊断")
-            send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
-            send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
-            val epochSeconds = System.currentTimeMillis() / 1000L
-            val timezoneMinutes =
-                java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000
-            send(
-                Iap2MessageIds.DEVICE_TIME_UPDATE,
-                Iap2Csm.param(0, u64Bytes(epochSeconds)) +
-                    Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
-                    Iap2Csm.u8(2, 0),
-            )
-            // T31: Restore the exact T18/T19 fire-and-forget UUID update before
-            // availability. T18 captured an actual 0x4301 after this ordering.
-            // T27 also stalled with 0x4e0c, so this is a controlled retest,
-            // NOT proof that 0x4e0c alone fixes Buick CarPlay.
-            send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
-            // T34: the current Buick diagnostic handshake consistently assigns seq108
-            // to 0x4e0c. Require the peer's cumulative ACK before advertising CarPlay.
-            // Fail closed if the sequence layout changes rather than sending 0x4300 blindly.
-            log("iap2 Buick/GM T34: waiting up to 3000ms for peer cumulative ACK108 before 0x4300")
-            if (!channel.awaitPeerAck(108, 3000L)) {
-                log("iap2 Buick/GM T34: ACK108 not observed; 0x4300 deliberately NOT sent")
-                throw IOException("Buick T34: ACK108 timeout before 0x4300")
-            }
-            // T37: ACK108 confirms link receipt, not completion of receiver-side UUID handling.
-            // Isolate the next 0x4300 by allowing 1500ms of processing time after ACK108.
-            // Keep the identity, 0x4300 bytes, and all other message ordering unchanged.
-            log("iap2 Buick/GM T37: ACK108 confirmed; waiting 1500ms after ACK before unchanged 0x4300")
-            Thread.sleep(1500L)
-            if (!channel.isAlive) throw IOException("Buick T37: link closed after ACK108 before 0x4300")
-            log("iap2 Buick/GM T37: post-ACK processing window complete; sending unchanged 75B 0x4300")
-            // T17: iPhone HCI 实录 0x4300 包含两个外层 group，总帧长 75B。
-            // group(0): u8(0,1) + string(1, 24 位设备标识)
-            // group(1): u8(0,1) + string(1, 本机蓝牙 MAC)
-            // 不复制 iPhone 唯一标识；本机 MAC 确定性派生，重连保持稳定。
-            val availabilityBody =
-                Iap2Csm.group(
-                    0,
-                    Iap2Csm.u8(0, 1),
-                    Iap2Csm.string(1, carPlayDeviceIdentifier()),
-                ) +
-                    Iap2Csm.group(
-                        1,
-                        Iap2Csm.u8(0, 1),
-                        Iap2Csm.string(1, bluetoothMac),
-                    )
-            log("iap2 Buick/GM T17: 0x4300 双参数结构，deviceId=${carPlayDeviceIdentifier()} bodyBytes=${availabilityBody.size} frameBytes=${availabilityBody.size + 6}")
-            val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
-            log("iap2 Buick/GM T10: 0x4300 参数字节数=${availabilityBody.size}，编码=${availabilityFrame.joinToString("") { "%02x".format(it) }}")
-            log("iap2 Buick/GM T10: 车机收到 0x4300 的链路 ACK 不等于 CarPlay 会话接受")
-            log("iap2 Buick/GM T20: 0x4300 发送与 ACK 为异步事件；不能将 send() 返回视为链路确认")
-            send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
-            log("iap2 Buick/GM T20: 0x4300 已交给链路发送队列（尚未确认 ACK）；以 LINK rx ack 及 0x4301 判断后续进展")
-        }
 
-        // Buick E5 T6: isolated protocol probe. The receiver advertises 0x4301 but not
-        // 0x5703 in its identification message. Avoid sending 0x5702, which the T2
-        // receiver repeatedly failed to acknowledge, and observe 0x4301 directly.
-        // This branch is intentionally diagnostic: no synthetic Wi-Fi credentials.
-        if (isBuickE5) {
-            log("iap2 Buick/GM T28: 前10秒每秒采样，后续每10秒采样；请在车机上点击连接/重试")
-            // T24: passive 90-second observation in 10-second slices. No extra
-            // iAP2 transmissions and no change to T23's ACK-clean ordering.
-            val observationStart = System.nanoTime()
-            val observationEnd = observationStart + 90_000_000_000L
-            var start: Iap2Csm.Frame? = null
-            var tick = 0
-            while (channel.isAlive && System.nanoTime() < observationEnd && start == null) {
-                // T26: observe first 10 seconds at 1s resolution, then every 10s.
-                val sliceNanos = if (tick < 10) 1_000_000_000L else 10_000_000_000L
-                val sliceEnd = minOf(observationEnd, System.nanoTime() + sliceNanos)
-                start = expectOrNull(Iap2MessageIds.CARPLAY_START_SESSION, sliceEnd)
-                tick++
-                val seen = pendingFrames.groupingBy { it.messageId }
-                    .eachCount().toSortedMap()
-                    .entries.joinToString(",") {
-                        "0x${it.key.toString(16).padStart(4, '0')}:${it.value}"
-                    }.ifEmpty { "none" }
-                val seconds = (System.nanoTime() - observationStart) / 1_000_000_000L
-                log("iap2 Buick/GM T29 WATCH: elapsed=${seconds}s tick=$tick linkAlive=${channel.isAlive} start4301=${start != null} pending=${pendingFrames.size} unexpectedIds=$seen rx=[${channel.rxDiagnostics()}]")
-            }
-            if (start == null) {
-                val elapsedStatus = if (!channel.isAlive) "link-closed-or-cancelled" else "timeout-90s"
-                val seen = pendingFrames.groupingBy { it.messageId }.eachCount()
-                    .toSortedMap().entries.joinToString(",") {
-                        "0x${it.key.toString(16).padStart(4, '0')}:${it.value}"
-                    }.ifEmpty { "none" }
-                log("iap2 Buick/GM T29 SUMMARY: result=$elapsedStatus startSession4301=false pendingFrames=${pendingFrames.size} unexpectedIds=$seen channelAlive=${channel.isAlive} rx=[${channel.rxDiagnostics()}]; ACK is link-only, TCP selftest is local-only")
-                throw IOException("Buick T28 诊断结束：0x4301 未到（未请求 0x5703）")
-            }
-            log("iap2 Buick/GM T18: 收到 0x4301，bodyBytes=${start.body.size}；保留链路并解析会话参数")
-            val params = Iap2Csm.parseParams(start.body)
-            // T20: 0x4301 的无线参数含热点密码，不再输出原始十六进制。
-            for (param in params) {
-                log("iap2 Buick/GM T20: 0x4301 param=0x${param.id.toString(16).padStart(4, '0')} bytes=${param.value.size} (raw redacted)")
-                if (param.id == 1) {
-                    for (nested in Iap2Csm.parseParams(param.value)) {
-                        log("iap2 Buick/GM T20: wireless subparam=0x${nested.id.toString(16).padStart(4, '0')} bytes=${nested.value.size} (raw redacted)")
-                    }
+        if (buickB233) return bringUpBuickB233(deadline)
+
+        // ---- WiFi 配置交换（两代协议）----
+        // 旧协议（0x5702 → 0x5703）：手机请求，车机回 AP 明文——Audi MIB3 走这条。
+        // 新协议（0x4300 → 0x4301）：**AP 信息由 0x4301 自带**（Addendum 新版的
+        // WirelessCarPlayParams），BMW iD9 走这条——它在 0x1D01 里既不声明能收 0x5702，
+        // 也不声明会发 0x5703。旧流程对这类车机会在 0x5703 上死等 10 秒后拆链
+        // （2026-10-19 BMW92438 实车日志：每轮都是「等待 0x5703 超时」）。
+        // 因此按车机声明的能力清单分派：不支持旧协议就直接跳到 0x4300/0x4301。
+        val declaresReceiveWifi =
+            accessoryDeclaresReceive(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)
+        val declaresSendWifi = accessoryDeclaresSend(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION)
+        val legacyWifiExchange = declaresReceiveWifi != false && declaresSendWifi != false
+        val wifiFromExchange: WifiConfiguration? =
+            if (!legacyWifiExchange) {
+                log(
+                    "iap2 车机未声明支持 0x5702/0x5703（收=${declaresReceiveWifi ?: "未知"} " +
+                        "发=${declaresSendWifi ?: "未知"}）——跳过旧协议，AP 信息由 0x4301 提供",
+                )
+                null
+            } else {
+                send(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)
+                val wifiConfiguration = expectOrNull(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION, deadline)
+                if (wifiConfiguration == null) {
+                    log("iap2 0x5703 未在窗口内到达——改走 0x4300/0x4301（新版协议自带 AP 信息）")
+                    null
+                } else {
+                    val parsed = parseWifiConfiguration(wifiConfiguration)
+                    log(
+                        "iap2 rx=0x5703 ssid=${parsed.ssid} channel=${parsed.channel} " +
+                            "security=${parsed.securityType} psk=${if (parsed.passphrase.isEmpty()) "(空)" else "***"}",
+                    )
+                    // 真车死锁解药（catplay CarPlayInviter 实证）：车机在 WiFi 网络上发现手机的
+                    // _carplay-ctrl._tcp 后主动发 GET /ctrl-int/1/connect 邀请，**邀请成功才发 0x4301**。
+                    // 因此这里必须立即通知主控绑 WiFi + 广播 ctrl（带真实蓝牙 MAC 作 TXT id）。
+                    onWifiCredentials?.invoke(parsed)
+                    parsed
                 }
             }
-            val endpoint = parseStartSession(start, WifiConfiguration("", "", 0, 0))
-            log("iap2 Buick/GM T19: parsed ssid=${endpoint.ssid} passwordPresent=${endpoint.passphrase.isNotEmpty()} port=${endpoint.airPlayPort} device=${endpoint.deviceIdentifier} srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()}")
-            if (endpoint.ssid.isBlank()) {
-                throw IOException("Buick T19: 0x4301 未包含有效 SSID，拒绝空热点进入后续配对")
-            }
-            log("iap2 Buick/GM T19: 使用 0x4301 无线子参数获取热点配置，继续 AirPlay 网络阶段")
-            return endpoint
-        }
 
-        // ---- WiFi 配置交换 ----
-        send(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)
-        val wifiConfiguration = expect(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION, deadline)
-        val wifi = parseWifiConfiguration(wifiConfiguration)
-        log(
-            "iap2 rx=0x5703 ssid=${wifi.ssid} channel=${wifi.channel} " +
-                "security=${wifi.securityType} psk=${if (wifi.passphrase.isEmpty()) "(空)" else "***"}",
+        // ---- 设备状态问候（对照真 iPhone 实录：0x4E0D/0x4E0A/0x4E09/0x4E0B → 0x4300）----
+        // Audi MIB3 实测：缺这批消息时，车机对 0x4300 只回链路 ACK、不出 0x4301。
+        send(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
+        send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
+        send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
+        val epochSeconds = System.currentTimeMillis() / 1000L
+        val timezoneMinutes =
+            java.util.TimeZone
+                .getDefault()
+                .getOffset(System.currentTimeMillis()) / 60_000
+        send(
+            Iap2MessageIds.DEVICE_TIME_UPDATE,
+            Iap2Csm.param(0, u64Bytes(epochSeconds)) +
+                Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
+                Iap2Csm.u8(2, 0),
         )
-        // 真车死锁解药（catplay CarPlayInviter 实证）：车机在 WiFi 网络上发现手机的
-        // _carplay-ctrl._tcp 后主动发 GET /ctrl-int/1/connect 邀请，**邀请成功才发 0x4301**。
-        // 因此这里必须立即通知主控绑 WiFi + 广播 ctrl（带真实蓝牙 MAC 作 TXT id）。
-        onWifiCredentials?.invoke(wifi)
+        send(
+            Iap2MessageIds.DEVICE_UUID_UPDATE,
+            Iap2Csm.string(0, deviceUuid()),
+        )
+        log(
+            "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c 设备状态问候" +
+                "（name=$deviceName mac=$bluetoothMac）",
+        )
 
-        if (!isBuickE5) {
-            // ---- 设备状态问候（对照真 iPhone 实录：0x4E0D/0x4E0A/0x4E09/0x4E0B → 0x4300）----
-            // Audi MIB3 实测：缺这批消息时，车机对 0x4300 只回链路 ACK、不出 0x4301。
-            send(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
-            send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
-            send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
-            val epochSeconds = System.currentTimeMillis() / 1000L
-            val timezoneMinutes =
-                java.util.TimeZone
-                    .getDefault()
-                    .getOffset(System.currentTimeMillis()) / 60_000
-            send(
-                Iap2MessageIds.DEVICE_TIME_UPDATE,
-                Iap2Csm.param(0, u64Bytes(epochSeconds)) +
-                    Iap2Csm.u16(1, timezoneMinutes and 0xFFFF) +
-                    Iap2Csm.u8(2, 0),
-            )
-            send(
-                Iap2MessageIds.DEVICE_UUID_UPDATE,
-                Iap2Csm.string(0, deviceUuid()),
-            )
-            log(
-                "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c 设备状态问候" +
-                    "（name=$deviceName mac=$bluetoothMac）",
-            )
-
-        }
         // ---- CarPlay 会话启动 ----
         // 两种对端形态：
         //  - 测试台 DiPlay/部分车厂：收 0x4300 后回 0x4301（含 AirPlay 端口/IP/公钥）
@@ -362,35 +295,54 @@ class Iap2SenderSession(
         //    超时返回无端点的 CarPlayEndpoint，由主控 mDNS 合成。
         // 0x4300 同样发后不管：2026-10-11 12:52 轮实测车机曾对它停止 ACK
         // （事件通道 SYN 洪水把它打懵的时段），链路看门狗险些再次自杀。
-        if (!isBuickE5) {
-            sendFireAndForget(
-                Iap2MessageIds.CARPLAY_AVAILABILITY,
-                Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
-            )
-        }
+        sendFireAndForget(
+            Iap2MessageIds.CARPLAY_AVAILABILITY,
+            Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
+        )
         // 车机声明里没有 0x4301 就直接跳过等待（Audi 实测每轮白等 10s）：
         // 真 iPhone 对这类车机也不等——AirPlay 端点经 mDNS/网关合成。
         val declaresStartSession = accessoryDeclaresSend(Iap2MessageIds.CARPLAY_START_SESSION)
-        val startSession =
-            if (declaresStartSession == false) {
-                log("iap2 车机未声明会发 0x4301——跳过等待（AirPlay 端点走 mDNS/网关）")
-                null
-            } else {
+        // 没拿到 0x5703（新协议车机）时，0x4301 是**唯一**的 AP 信息来源——窗口给足；
+        // 真有 0x5703 的旧协议车机保持 3 秒短窗口（应答都在毫秒级）。
+        val startSessionWindow =
+            if (wifiFromExchange == null) START_SESSION_WAIT_NEW_PROTOCOL_NANOS else START_SESSION_WAIT_NANOS
+        var startSession: Iap2Csm.Frame? = null
+        if (declaresStartSession == false) {
+            log("iap2 车机未声明会发 0x4301——跳过等待（AirPlay 端点走 mDNS/网关）")
+        } else {
+            // 车机可能只发 0x4301 而完全不回答 0x5702：发送后先等一轮，
+            // 若这段时间里 0x4301 先到了（新协议的正常顺序），直接采用。
+            startSession =
                 expectOrNull(
                     Iap2MessageIds.CARPLAY_START_SESSION,
-                    minOf(deadline, System.nanoTime() + START_SESSION_WAIT_NANOS),
+                    minOf(deadline, System.nanoTime() + startSessionWindow),
                 )
-            }
+        }
         val endpoint =
             if (startSession != null) {
-                parseStartSession(startSession, wifi)
+                parseStartSession(startSession, wifiFromExchange)
             } else {
-                log("iap2 0x4301 未到（该车机不发；AirPlay 端点走 mDNS _airplay._tcp）")
+                // 不能断言「该车机不发」：Audi MMI 9310 声明会发、也确实发，只是晚到
+                // 2 分 35 秒（2026-10-18 日志）。措辞必须保留「稍后可能补发」的预期，
+                // 否则排查时会被这句话误导成「这条路对本车不通」。
+                log(
+                    if (declaresStartSession == true) {
+                        "iap2 0x4301 在 ${startSessionWindow / 1_000_000_000}s 窗口内未到" +
+                            "（车机声明会发——可能稍后补发，保活期间收到会重新触发配对）——" +
+                            "先用 mDNS/网关"
+                    } else {
+                        "iap2 0x4301 未到（车机未声明会发；AirPlay 端点走 mDNS _airplay._tcp）"
+                    },
+                )
+                if (wifiFromExchange == null) {
+                    // 既没有 0x5703、也没有 0x4301 = 一点 AP 信息都没有，继续等只会空转。
+                    throw IOException("未拿到车机热点凭据：该车机既不支持 0x5703，0x4301 也未提供 AP 信息")
+                }
                 CarPlayEndpoint(
-                    ssid = wifi.ssid,
-                    passphrase = wifi.passphrase,
-                    channel = wifi.channel,
-                    securityType = wifi.securityType,
+                    ssid = wifiFromExchange.ssid,
+                    passphrase = wifiFromExchange.passphrase,
+                    channel = wifiFromExchange.channel,
+                    securityType = wifiFromExchange.securityType,
                     airPlayPort = 0,
                     deviceIdentifier = null,
                     publicKey = null,
@@ -399,6 +351,7 @@ class Iap2SenderSession(
                 )
             }
         if (startSession != null) {
+            logStartSessionRaw(startSession)
             log(
                 "iap2 rx=0x4301 airPlayPort=${endpoint.airPlayPort} " +
                     "device=${endpoint.deviceIdentifier} publicKey=${endpoint.publicKey?.take(16)}… " +
@@ -415,9 +368,207 @@ class Iap2SenderSession(
         )
         log("iap2 0x4e0d/0x4e0e/0x4300 —— Phase 1 完成：拿到热点凭据与（可能的）AirPlay 端点")
 
-        // 后续（Phase 2）：加入热点 → mDNS 解析 _airplay._tcp → AirPlay 主会话
-        this.wifi = wifi
+        // 后续（Phase 2）：加入热点 → mDNS 解析 _airplay._tcp → AirPlay 主会话。
+        // 0x5703 缺席时 AP 信息来自 0x4301（已并入 endpoint）——保活期车机重发
+        // 0x5703/0x4301 都要用它解析，不能留空。
+        this.wifi =
+            wifiFromExchange ?: WifiConfiguration(
+                ssid = endpoint.ssid,
+                passphrase = endpoint.passphrase,
+                channel = endpoint.channel,
+                securityType = endpoint.securityType,
+            )
         return endpoint
+    }
+
+    /**
+     * Buick E5 B233-specific bring-up, adapted from the tested Buick-E5 T17/T19/T37
+     * path. B233 advertises receive(0x4300) and send(0x4301), but does not advertise
+     * 0x5703: requesting 0x5702 stalls the generic upstream handshake.
+     * Keep its traffic on the BT control session; do not touch upstream virtual iAP2.
+     */
+    private fun bringUpBuickB233(deadline: Long): CarPlayEndpoint {
+        val mac = bluetoothMac.trim()
+        if (!Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$").matches(mac) ||
+            mac.equals("02:00:00:00:00:00", ignoreCase = true) ||
+            mac.equals("00:00:00:00:00:00", ignoreCase = true)
+        ) {
+            throw IOException("Buick B233: invalid local Bluetooth MAC, refusing 0x4300")
+        }
+
+        // Buick-E5 observed this order before successful 0x4301. Do not send 0x4e0d
+        // (B233 has not declared it), nor the unsupported 0x5702 request.
+        send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
+        send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
+        val now = System.currentTimeMillis()
+        send(
+            Iap2MessageIds.DEVICE_TIME_UPDATE,
+            Iap2Csm.param(0, u64Bytes(now / 1000L)) +
+                Iap2Csm.u16(1, (java.util.TimeZone.getDefault().getOffset(now) / 60_000) and 0xFFFF) +
+                Iap2Csm.u8(2, 0),
+        )
+        send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
+
+        // The latest outbound control frame here is 0x4e0c. Gate 0x4300 on its
+        // real peer ACK (not sendControl enqueue success, and not a fixed seq=108:
+        // StartHID/EA traffic may shift the sequence number).
+        log("iap2 Buick B233: waiting for peer ACK of 0x4e0c before 0x4300")
+        if (!channel.awaitLastControlAck(3_000L)) {
+            throw IOException("Buick B233: 0x4e0c peer ACK missing; 0x4300 not sent")
+        }
+        // T37 B233 observation: allow head unit a brief post-ACK processing window.
+        try {
+            Thread.sleep(1_500L)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("Buick B233: interrupted before 0x4300")
+        }
+        if (!channel.isAlive) throw IOException("Buick B233: iAP2 link closed before 0x4300")
+
+        // Captured iPhone-style shape: group(0) deviceId, group(1) real BT MAC.
+        // Derive a stable 24-character ID from this phone's MAC, never copy a real
+        // iPhone's private ID. Expected CSM frame size is 75 bytes.
+        val body =
+            Iap2Csm.group(
+                0,
+                Iap2Csm.u8(0, 1),
+                Iap2Csm.string(1, carPlayDeviceIdentifier()),
+            ) +
+                Iap2Csm.group(
+                    1,
+                    Iap2Csm.u8(0, 1),
+                    Iap2Csm.string(1, mac),
+                )
+        val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, body)
+        // Only the first 8 SHA-256 bytes: reproducible without exposing the
+        // device identifier/Bluetooth MAC in raw diagnostics.
+        val availabilityDigest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(availabilityFrame).take(8).joinToString("") { "%02x".format(it) }
+        log("iap2 Buick B233: sending 0x4300 two-group availability; frameBytes=" +
+            availabilityFrame.size)
+        log("iap2 B233 T21: 0x4300 frameSHA256prefix=$availabilityDigest " +
+            "preSend=${channel.controlAckSnapshot()} (脱敏校验指纹，便于成功/失败轮次比对)")
+        val availabilityStartedAt = System.nanoTime()
+        send(Iap2MessageIds.CARPLAY_AVAILABILITY, body)
+
+        // Never synthesize Wi-Fi credentials when B233 is silent. A missing 0x4301
+        // is an explicit bring-up failure, unlike generic mDNS-only Audi devices.
+        val waitUntil = minOf(deadline, System.nanoTime() + BUICK_START_SESSION_WAIT_NANOS)
+        val reidGate = B233ReidentificationGate()
+        val start = expectOrNull(Iap2MessageIds.CARPLAY_START_SESSION, waitUntil) { frame ->
+            if (frame.messageId != Iap2MessageIds.IDENTIFICATION_INFORMATION) {
+                false
+            } else {
+                val replayIdentity = identityText(frame)
+                if (reidGate.claim(frame.messageId, replayIdentity)) {
+                    log("iap2 B233 T20: 收到第二次 0x1d01，触发一次 iPhone 抓包同款重新识别/认证（限本轮一次）")
+                    replayBuickIdentification(frame, waitUntil, body)
+                } else {
+                    log("iap2 B233 T20: 重复/身份不匹配的 0x1d01，禁止再次认证")
+                }
+                true
+            }
+        }
+        if (start == null) {
+            val elapsedMillis = (System.nanoTime() - availabilityStartedAt) / 1_000_000L
+            val ackSnapshot = channel.controlAckSnapshot()
+            log("iap2 B233 T21: 0x4301 未到，elapsedMs=$elapsedMillis " +
+                "frameSHA256prefix=$availabilityDigest $ackSnapshot")
+            // The link engine typically closes an unacknowledged 0x4300 after
+            // ~20 seconds: it is not truthful to report that as a 30s 0x4301
+            // application-layer timeout.
+            throw IOException(
+                if (!channel.isAlive) {
+                    "Buick B233: iAP2 link closed while waiting 0x4301 after ${elapsedMillis}ms ($ackSnapshot)"
+                } else {
+                    "Buick B233: 0x4301 wait expired after ${elapsedMillis}ms ($ackSnapshot)"
+                },
+            )
+        }
+        log("iap2 B233 T21: 0x4301 arrived after " +
+            "${(System.nanoTime() - availabilityStartedAt) / 1_000_000L}ms; " +
+            "frameSHA256prefix=$availabilityDigest ${channel.controlAckSnapshot()}")
+        // Do not dump the raw body: wireless group contains the hotspot password.
+        for (param in Iap2Csm.parseParams(start.body)) {
+            log("iap2 Buick B233: rx 0x4301 param=0x" +
+                param.id.toString(16).padStart(4, '0') + " bytes=" + param.value.size + " (redacted)")
+        }
+        val endpoint = parseStartSession(start, null)
+        if (endpoint.ssid.isBlank()) {
+            throw IOException("Buick B233: 0x4301 missing Wi-Fi SSID")
+        }
+        val buickEndpoint = endpoint.copy(isBuickB233 = true)
+        wifi = WifiConfiguration(buickEndpoint.ssid, buickEndpoint.passphrase, buickEndpoint.channel, buickEndpoint.securityType)
+        log("iap2 Buick B233: 0x4301 accepted; ssidPresent=true passphrasePresent=" +
+            endpoint.passphrase.isNotEmpty() + " port=" + endpoint.airPlayPort +
+            " ipCount=" + endpoint.ipAddresses.size + " publicKeyPresent=" +
+            !endpoint.publicKey.isNullOrEmpty())
+        return buickEndpoint
+    }
+
+    /**
+     * T20 one-shot B233 path only. The iPhone 11:34 HCI capture proves that
+     * B233 sometimes sends a SECOND 0x1D01 after 0x4300, then accepts
+     * 0x1D02/0xAA00/0xAA02/0xAA05 plus a renewed 0x4300.
+     *
+     * A repeated 0x1D01 is an actual receiver event, NOT a local timeout.
+     * Do not invent a confirmation packet when no repeat arrived.
+     */
+    private fun replayBuickIdentification(
+        identification: Iap2Csm.Frame,
+        deadline: Long,
+        availabilityBody: ByteArray,
+    ) {
+        logIdentification(identification)
+        send(Iap2MessageIds.IDENTIFICATION_ACCEPTED)
+        send(Iap2MessageIds.MFI_REQUEST_CERTIFICATE)
+
+        // In the captured repeat B233 sends 0xAA06 (serial) rather than AA01.
+        // In other firmware revisions it may send the certificate itself.
+        // Never send a challenge without first observing one of these.
+        var authenticationReady = false
+        val readyDeadline = minOf(deadline, System.nanoTime() + 2_000_000_000L)
+        while (System.nanoTime() < readyDeadline && channel.isAlive) {
+            val remaining = ((readyDeadline - System.nanoTime()) / 1_000_000L).coerceAtLeast(1L)
+            val next = recvNewFrame(remaining) ?: continue
+            if (next.messageId == 0xAA06 || next.messageId == Iap2MessageIds.MFI_CERTIFICATE) {
+                log("iap2 B233 T20: 第二次 MFi 收到 0x${next.messageId.toString(16)}，进行32B challenge")
+                authenticationReady = true
+                break
+            }
+            // A start-session reply may race with renewed identification.
+            // Preserve it for the caller rather than swallowing it in MFi.
+            pendingFrames += next
+            if (next.messageId == Iap2MessageIds.CARPLAY_START_SESSION) return
+        }
+        if (!authenticationReady) {
+            log("iap2 B233 T20: 第二次识别未收到 MFi serial/certificate；不伪造成功，继续等待车机 0x4301")
+            return
+        }
+        val receiverKey = identityText(identification)
+        runMfiChallenge(deadline, receiverKey = receiverKey, buickStrict = true)
+        send(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
+
+        // iPhone repeat: 4e0c -> 4e0a -> 4e0b -> 4e09 -> 4300.
+        send(Iap2MessageIds.DEVICE_UUID_UPDATE, Iap2Csm.string(0, deviceUuid()))
+        send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, "zh-CN"))
+        val now = System.currentTimeMillis()
+        send(
+            Iap2MessageIds.DEVICE_TIME_UPDATE,
+            Iap2Csm.param(0, u64Bytes(now / 1000L)) +
+                Iap2Csm.u16(1, (java.util.TimeZone.getDefault().getOffset(now) / 60_000) and 0xFFFF) +
+                Iap2Csm.u8(2, 0),
+        )
+        send(Iap2MessageIds.DEVICE_INFORMATION_UPDATE, Iap2Csm.string(0, deviceName))
+        send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
+        log("iap2 B233 T20: 二次认证结束，重新发送同一75B 0x4300；等待车机 0x4301")
+    }
+
+    /** 24-hex stable device identifier from the phone's MAC, never an iPhone ID. */
+    private fun carPlayDeviceIdentifier(): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(("CarDeck-CarPlay:" + bluetoothMac.uppercase()).toByteArray())
+        return digest.take(12).joinToString("") { "%02X".format(it.toInt() and 0xFF) }
     }
 
     /**
@@ -437,8 +588,10 @@ class Iap2SenderSession(
                 if (!channel.isAlive) break
                 continue
             }
-            // A late 0x4301 carries real Wi-Fi/AirPlay endpoint data. Handle it
-            // before repetitive-message logging is throttled (the peer may retry it).
+            // 生命周期消息必须先于日志限流处理：0x4301 可能作为「车机刚打开 CarPlay
+            // 窗口」的晚信号在 Phase 1 之后才到。若跟着限流逻辑走，它要么被当成
+            // keep-alive 只记长度，要么因与上一条同 ID 被 continue 掉——两种都等于
+            // 丢弃（2026-10-18 Audi MMI 9310「连上后 15 秒自动断开」的根因）。
             if (frame.messageId == Iap2MessageIds.CARPLAY_START_SESSION) {
                 handleLateStartSession(frame)
             }
@@ -460,29 +613,49 @@ class Iap2SenderSession(
         log("SESSION 保活结束（链路断开）")
     }
 
-    /** Phase 1 can finish without 0x4301; an accessory may announce its
-     * endpoint only after Wi-Fi/mDNS invitation. Do not drop that late message.
-     * Never log its raw payload because it can contain the Wi-Fi passphrase. */
+    /**
+     * 保活期间收到 0x4301：解析成端点交给主控（配对窗口内热更新，或上一轮失败后重走）。
+     * 没有 0x5703 缓存时（新协议车机：BMW iD9 只有 0x4301）AP 信息直接从 0x4301 的
+     * 无线组解析——这正是这类车机唯一的凭据来源，不能像旧代码那样「无 0x5703 就忽略」。
+     */
     private fun handleLateStartSession(frame: Iap2Csm.Frame) {
-        runCatching {
-            val fallback = wifi ?: WifiConfiguration("", "", 0, 0)
-            val endpoint = parseStartSession(frame, fallback)
-            if (endpoint.ssid.isBlank()) {
-                log("iap2 晚到 0x4301 未提供有效 SSID，忽略本条端点更新")
-                return
-            }
-            if (wifi == null) {
-                wifi = WifiConfiguration(
-                    endpoint.ssid, endpoint.passphrase, endpoint.channel, endpoint.securityType,
+        logStartSessionRaw(frame)
+        val endpoint = parseStartSession(frame, wifi)
+        if (wifi == null && endpoint.ssid.isNotEmpty()) {
+            wifi =
+                WifiConfiguration(
+                    ssid = endpoint.ssid,
+                    passphrase = endpoint.passphrase,
+                    channel = endpoint.channel,
+                    securityType = endpoint.securityType,
                 )
-            }
-            // A repeated notification may still be needed by pairing retry logic.
-            onEndpointUpdate?.invoke(endpoint)
-            log("iap2 晚到 0x4301 已通知主控：port=${endpoint.airPlayPort} ipCount=${endpoint.ipAddresses.size}")
-        }.onFailure { error ->
-            // Malformed or unexpected peer data must not take down iAP2 keep-alive.
-            log("iap2 晚到 0x4301 处理失败：${error.javaClass.simpleName}")
+            log("iap2 0x4301 自带 AP 信息：ssid=${endpoint.ssid}——已缓存，供后续 0x5703/0x4301 复用")
         }
+        if (endpoint.ssid.isEmpty()) {
+            log("iap2 rx=0x4301（晚到）——无线组里没解析出 SSID，本条忽略")
+            return
+        }
+        // 车机可能周期性重发同一份 0x4301：详情只在端点变化时打，避免刷日志。
+        if (endpoint.hashCode() != lastLateStartSessionSignature) {
+            lastLateStartSessionSignature = endpoint.hashCode()
+            log(
+                "iap2 rx=0x4301（晚到，Phase 1 之后）airPlayPort=${endpoint.airPlayPort} " +
+                    "device=${endpoint.deviceIdentifier} publicKey=${endpoint.publicKey?.take(16)}… " +
+                    "srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses}" +
+                    "——交给主控热更新端点/重试配对",
+            )
+        }
+        onEndpointUpdate?.invoke(endpoint)
+    }
+
+    /** 0x4301 原始体只记一次：车机间端点字段差异（有无 IPv4/端口/公钥）只能靠它定谳。 */
+    private fun logStartSessionRaw(frame: Iap2Csm.Frame) {
+        if (startSessionRawLogged) return
+        startSessionRawLogged = true
+        val body = frame.body
+        val shown = if (body.size <= START_SESSION_RAW_LOG_BYTES) body else body.copyOf(START_SESSION_RAW_LOG_BYTES)
+        val truncated = if (body.size > shown.size) "（前 ${shown.size}/${body.size} 字节）" else ""
+        log("iap2 0x4301 原始体$truncated=" + shown.joinToString("") { "%02x".format(it) })
     }
 
     // ---- 帧收发 ----
@@ -495,39 +668,47 @@ class Iap2SenderSession(
      *  - **20B 次之**：真车 Audi MIB3 对 20B 秒答（catplay/extractor 真车实录同款）；
      *    对 32B 的处置两种都出现过——10-09 静默不断链、10-11 拆链。
      *  - **16B 兜底**：部分旧配件。
-     * 「导致拆链」的档位由 [mfiRejectedLengths] 跨会话记忆（避免反复撞同一堵墙）；
+     *
+     * 顺序**以按车机持久化的记忆为准**（[MfiLengthMemory]，基线只作冷启动与兜底）：
+     * 2026-10-19 奥迪 MMI 3315 实测 20B 静默 6 秒、32B 0.64 秒应答——只靠基线
+     * 「真车都 20B 优先」每次连接都白等 6 秒。记忆命中后直接把上次成功的长度排第一。
      * 全部无应答时不抛异常直接返回——我们跳过签名校验，由后续 0x5702 是否获得应答
      * 判定对端是否放行（真车实测无应答后 0xaa05 仍可推进）。
      */
     private fun runMfiChallenge(
         deadline: Long,
         prefer20First: Boolean = false,
+        receiverKey: String,
         buickStrict: Boolean = false,
     ) {
-        val ordered =
-            when {
-                buickStrict -> listOf(MFI_ATTEMPTS[0]) // 32B proven on first Buick B233 connection
-                prefer20First -> listOf(MFI_ATTEMPTS[1], MFI_ATTEMPTS[0], MFI_ATTEMPTS[2])
-                else -> MFI_ATTEMPTS
+        val baselineLengths =
+            if (prefer20First) {
+                listOf(MFI_ATTEMPTS[1].first, MFI_ATTEMPTS[0].first, MFI_ATTEMPTS[2].first)
+            } else {
+                MFI_ATTEMPTS.map { it.first }
             }
-        var attempts = if (buickStrict) ordered else ordered.filter { it.first !in mfiRejectedLengths }
-        if (buickStrict) log("iap2 Buick T41: 仅发一次已验证32B MFi challenge；拒绝时中止本轮，禁止20B/16B碰撞")
-        if (attempts.isEmpty()) {
-            // 所有档位都被拒过：清空重来，避免永久卡死
-            mfiRejectedLengths = emptySet()
-            attempts = ordered
-        } else if (attempts.size < ordered.size) {
+        val windowOf = MFI_ATTEMPTS.associate { it.first to it.second }
+        val memory = MfiLengthMemory.load(context, receiverKey)
+        val order = if (buickStrict) listOf(32) else MfiLengthMemory.orderAttempts(baselineLengths, memory)
+        if (!memory.isEmpty) {
             log(
-                "iap2 MFi 跳过被拒档位（本进程记忆：${mfiRejectedLengths.sorted().joinToString("B/")}B）" +
-                    "——从 ${attempts.first().first}B 开始",
+                "iap2 MFi 按车机记忆（$receiverKey）：${MfiLengthMemory.describe(memory)}" +
+                    " → 本轮顺序 ${order.joinToString("/")}B",
             )
         }
-        for ((position, attempt) in attempts.withIndex()) {
-            val size = attempt.first
+        for ((position, size) in order.withIndex()) {
+            // 已知「静默过」的档位缩短窗口：它已经失败过一次，没必要再等满。
+            val baseWindow = windowOf[size] ?: MFI_ATTEMPTS.last().second
+            val windowMillis =
+                if (size in memory.silent && size != memory.succeeded) {
+                    minOf(baseWindow, MFI_SILENT_RETRY_WINDOW_MS)
+                } else {
+                    baseWindow
+                }
             val challenge = ByteArray(size).also(random::nextBytes)
             send(Iap2MessageIds.MFI_REQUEST_CHALLENGE, Iap2Csm.param(0, challenge))
-            log("iap2 tx=0xaa02 challenge=${size}B（第 ${position + 1} 次）")
-            val window = minOf(System.nanoTime() + attempt.second * 1_000_000L, deadline)
+            log("iap2 tx=0xaa02 challenge=${size}B（第 ${position + 1} 次，窗口 ${windowMillis}ms）")
+            val window = minOf(System.nanoTime() + windowMillis * 1_000_000L, deadline)
             var gotResponse = false
             var gotFailure = false
             while (true) {
@@ -536,11 +717,9 @@ class Iap2SenderSession(
                 val frame = recvFrame(remaining)
                 if (frame == null) {
                     if (!channel.isAlive) {
-                        if (buickStrict) {
-                            throw IOException("Buick T41: MFi 32B challenge 后链路断开；不回退长度，不发送虚假0xaa05")
-                        }
-                        log("iap2 MFi 挑战期间链路断开（${size}B，对端不接受该长度）——记入本进程被拒档位")
-                        mfiRejectedLengths = mfiRejectedLengths + size
+                        log("iap2 MFi 挑战期间链路断开（${size}B，对端不接受该长度）——记入该车机被拒档位")
+                        MfiLengthMemory.recordRejected(context, receiverKey, size)
+                        if (buickStrict) throw IOException("Buick B233: MFi 32B challenge disconnected")
                         return
                     }
                     continue
@@ -564,16 +743,22 @@ class Iap2SenderSession(
                 }
                 if (gotResponse || gotFailure) break
             }
-            if (gotResponse) return
-            if (buickStrict) {
-                throw IOException("Buick T41: MFi 32B challenge 无有效响应；停止此轮，等待车机恢复（不盲发0xaa05）")
+            if (gotResponse) {
+                MfiLengthMemory.recordSuccess(context, receiverKey, size)
+                return
             }
-            if (position < attempts.size - 1) {
-                log("iap2 MFi ${size}B 无应答，改用 ${attempts[position + 1].first}B 重试")
+            if (gotFailure) {
+                MfiLengthMemory.recordRejected(context, receiverKey, size)
+            } else {
+                MfiLengthMemory.recordSilent(context, receiverKey, size)
+            }
+            if (position < order.size - 1) {
+                log("iap2 MFi ${size}B 无应答，改用 ${order[position + 1]}B 重试")
             } else {
                 log("iap2 MFi 挑战全部无应答——跳过校验直接发 0xaa05（由 0x5702 判定车机是否放行）")
             }
         }
+        if (buickStrict) throw IOException("Buick B233: 32B MFi authentication failed")
     }
 
     private fun send(
@@ -634,12 +819,13 @@ class Iap2SenderSession(
     private fun expectOrNull(
         messageId: Int,
         deadlineNanos: Long,
+        onUnexpected: ((Iap2Csm.Frame) -> Boolean)? = null,
     ): Iap2Csm.Frame? {
-        pendingFrames.firstOrNull { it.messageId == messageId }?.let {
-            pendingFrames.remove(it)
-            return it
-        }
         while (true) {
+            pendingFrames.firstOrNull { it.messageId == messageId }?.let {
+                pendingFrames.remove(it)
+                return it
+            }
             val remaining = (deadlineNanos - System.nanoTime()) / 1_000_000L
             if (remaining <= 0) return null
             val frame = recvNewFrame(remaining)
@@ -648,6 +834,7 @@ class Iap2SenderSession(
                 continue
             }
             if (frame.messageId == messageId) return frame
+            if (onUnexpected?.invoke(frame) == true) continue
             log(
                 "iap2 rx=0x${frame.messageId.toString(16).padStart(4, '0')} " +
                     "(${Iap2MessageIds.nameOf(frame.messageId)})，非预期，暂存待后续消费",
@@ -757,34 +944,88 @@ class Iap2SenderSession(
         )
     }
 
+    /**
+     * 解析 0x4301。AP 信息有两种来源：
+     *  - 已通过 0x5703 拿到（旧协议车机）→ 直接用；
+     *  - 车机只在 0x4301 的无线组里给（新协议车机，如 BMW iD9）→ 从组内解析。
+     *
+     * 新协议无线组与 CarPlay Addendum 的 AccessoryWiFiConfigurationInformation 同构
+     * （0/1=SSID/密码、2=信道、3=IP、4=安全类型），但个别实现从 1 起编号（本项目 0x5703
+     * 解析即 1/2/3/4）——两种都兼容：前两个「非 IP」的 NUL 结尾字符串依次当 SSID/密码，
+     * 单字节字段按取值范围归类。原始字节每次都打日志，真车实测后可直接校正。
+     */
     private fun parseStartSession(
         frame: Iap2Csm.Frame,
-        wifi: WifiConfiguration,
+        wifi: WifiConfiguration?,
     ): CarPlayEndpoint {
         val params = Iap2Csm.parseParams(frame.body).associateBy { it.id }
         val wirelessGroup = params[1]?.value
         val wireless = wirelessGroup?.let { Iap2Csm.parseParams(it) }
-        val wirelessParams = wireless?.associateBy { it.id }.orEmpty()
-        // Buick E5 T19: 0x4301 group(1) 的子参数 0/1 即热点 SSID/密码。
-        // 不依赖车机未声明支持的 0x5703；其他接收端仍保留原有 0x5703 配置。
-        val sessionSsid = wirelessParams[0]?.value?.asStringOrEmpty()?.takeIf { it.isNotBlank() }
-        val sessionPassphrase = wirelessParams[1]?.value?.asStringOrEmpty()
         val addresses =
             wireless
                 ?.filter { it.id == 3 }
                 ?.mapNotNull { param -> param.value.asStringOrEmpty()?.takeIf { it.isNotEmpty() } }
                 .orEmpty()
+        log(
+            "iap2 0x4301 顶层参数: " +
+                params.entries.joinToString(" ") { (id, param) -> "#$id(${param.value.size}B)" },
+        )
+        if (wireless != null) {
+            log(
+                "iap2 0x4301 无线组参数: " +
+                    wireless.joinToString(" ") { param ->
+                        "#${param.id}=" + param.value.joinToString("") { "%02x".format(it) }
+                    },
+            )
+        }
+        val fromSession = wireless?.let { parseWirelessAp(it) }
+        val ap = wifi ?: fromSession
+        if (wifi == null && fromSession != null) {
+            log(
+                "iap2 0x4301 自带 AP：ssid=${fromSession.ssid} channel=${fromSession.channel} " +
+                    "security=${fromSession.securityType} psk=${if (fromSession.passphrase.isEmpty()) "(空)" else "***"}",
+            )
+        }
         return CarPlayEndpoint(
-            ssid = sessionSsid ?: wifi.ssid,
-            passphrase = sessionPassphrase ?: wifi.passphrase,
-            channel = wifi.channel,
-            securityType = wifi.securityType,
+            ssid = ap?.ssid ?: "",
+            passphrase = ap?.passphrase ?: "",
+            channel = ap?.channel ?: 0,
+            securityType = ap?.securityType ?: 0,
             airPlayPort = params[2]?.value?.asU32() ?: 0,
             deviceIdentifier = params[3]?.value?.asStringOrEmpty(),
             publicKey = params[4]?.value?.asStringOrEmpty(),
             sourceVersion = params[5]?.value?.asStringOrEmpty(),
             ipAddresses = addresses,
         )
+    }
+
+    /**
+     * 从 0x4301 的无线组里解析 AP 信息（新协议车机的唯一凭据来源）。
+     *
+     * 只取「不像 IP 地址」的 NUL 结尾字符串：第一个当 SSID、第二个当密码；
+     * 单字节字段按取值范围归类（信道 1..196、安全类型 0..4），信道优先 id=2、
+     * 其次 id=4/id=3 中不是安全类型的那个。解析不出来返回 null（调用方会报错并留日志）。
+     */
+    private fun parseWirelessAp(group: List<Iap2Csm.Param>): WifiConfiguration? {
+        val ipv4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
+        val strings =
+            group
+                .sortedBy { it.id }
+                .mapNotNull { param -> param.value.asStringOrEmpty() }
+                .filter { it.isNotEmpty() && !ipv4.matches(it) && !it.contains(':') }
+        val ssid = strings.getOrNull(0)?.takeIf { it.length <= 32 } ?: return null
+        val passphrase = strings.getOrNull(1) ?: ""
+        val singles = group.filter { it.value.size == 1 }.associate { it.id to (it.value[0].toInt() and 0xFF) }
+        val security =
+            singles[4]?.takeIf { it in 0..4 }
+                ?: singles[3]?.takeIf { it in 0..4 }
+                ?: 0
+        val channel =
+            singles[2]?.takeIf { it in 1..196 }
+                ?: singles[4]?.takeIf { it in 1..196 && it != security }
+                ?: singles[3]?.takeIf { it in 1..196 && it != security }
+                ?: 0
+        return WifiConfiguration(ssid = ssid, passphrase = passphrase, channel = channel, securityType = security)
     }
 
     /**
@@ -832,7 +1073,40 @@ class Iap2SenderSession(
             )
         }
         if (receives != null) {
+            // 车机能否收 0x5702 决定要不要走旧协议——不接受就必须走 0x4300/0x4301
+            // （BMW iD9 的可收清单里没有 0x5702，旧流程因此每轮死等 0x5703 超时）。
+            accessoryReceiveIds = receives.toSet()
+            receiveListDeclared = true
             log("iap2 0x1d01 车机可收清单(${receives.size})=" + receives.joinToString(" ") { "0x%04x".format(it) })
+            // 车机画像（信号收口点）：身份 + 双清单 → era/wifiGen 一行判定，
+            // 依据随行——判错时从这里回溯是哪条信号误导（铁律：按能力不按品牌）
+            log(
+                ReceiverProfile.describe(
+                    ReceiverProfile.classify(
+                        ReceiverProfile.Signals(
+                            name = name,
+                            model = model,
+                            manufacturer = manufacturer,
+                            sendIds = sends?.toSet(),
+                            receiveIds = receives.toSet(),
+                        ),
+                    ),
+                ),
+            )
+            log(
+                "iap2 0x1d01 协议代际：请求 WiFi 配置(0x5702)=" +
+                    (
+                        accessoryDeclaresReceive(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)?.let {
+                            if (it) "可收" else "不收"
+                        } ?: "未知"
+                    ) +
+                    " 回 WiFi 配置(0x5703)=" +
+                    (
+                        accessoryDeclaresSend(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION)?.let {
+                            if (it) "会发" else "不发"
+                        } ?: "未知"
+                    ),
+            )
         }
         log("iap2 0x1d01 原始体=" + frame.body.joinToString("") { "%02x".format(it) })
     }
@@ -847,13 +1121,6 @@ class Iap2SenderSession(
             (value ushr (8 * (7 - index))).toByte()
         }
 
-    /** T17: 24 位大写十六进制 CarPlay 设备标识，不复用 iPhone 的私有标识。 */
-    private fun carPlayDeviceIdentifier(): String {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(("CarDeck-CarPlay:" + bluetoothMac.uppercase()).toByteArray())
-        return digest.take(12).joinToString("") { "%02X".format(it.toInt() and 0xFF) }
-    }
-
     /** 设备 UUID：由蓝牙 MAC 确定性派生，跨会话稳定（车机按它标识设备）。 */
     private fun deviceUuid(): String =
         java.util.UUID
@@ -861,7 +1128,16 @@ class Iap2SenderSession(
             .toString()
             .uppercase()
 
-    /** CSM strings are NUL-terminated; some OEMs pad the whole fixed-size field. */
+    /**
+     * NUL 结尾的 CSM 字符串。**必须去掉全部尾部 NUL，不能只去一个**：
+     * Audi MMI 3315 实测把无线组里的地址字段填充到定长（IPv6 后跟 22 个 NUL、
+     * IPv4 后跟 4 个），只去一个会得到 `"[IP]\u0000\u0000\u0000\u0000"`。
+     * 这种字符串 `contains('.')` 为真、`contains(':')` 为假，能通过所有「是不是
+     * IPv4」的判断，但交给 `InetSocketAddress` 就成了
+     * `Unable to resolve host "[IP]"`（NUL 在日志里不可见，极难看出）——
+     * 2026-10-18 实测：AirPlay 配对靠 mDNS 刷新端点侥幸成功，但视频数据端口与
+     * keepAlive 仍用带 NUL 的地址，双双失败，会话 10 秒后被车机拆掉。
+     */
     private fun ByteArray.asStringOrEmpty(): String? {
         if (isEmpty() || last() != 0.toByte()) return null
         var end = size

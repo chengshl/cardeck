@@ -36,6 +36,24 @@ class EndpointHostsTest {
     }
 
     @Test
+    fun buickB233PrefersHotspotGatewayAndRetainsIpv6Fallback() {
+        val ipv6Only = listOf("fe80::3c79:cdff:fe63:aec0")
+        assertEquals(
+            listOf("198.51.100.112", "fe80::3c79:cdff:fe63:aec0"),
+            EndpointHosts.withPreferredIpv4Gateway(ipv6Only, "198.51.100.112"),
+        )
+        assertEquals(ipv6Only, EndpointHosts.withPreferredIpv4Gateway(ipv6Only, null))
+        assertEquals(ipv6Only, EndpointHosts.withPreferredIpv4Gateway(ipv6Only, "fe80::1"))
+        assertEquals(
+            listOf("198.51.100.101", "fe80::3c79:cdff:fe63:aec0"),
+            EndpointHosts.withPreferredIpv4Gateway(
+                listOf("fe80::3c79:cdff:fe63:aec0", "198.51.100.101"),
+                "198.51.100.112",
+            ),
+        )
+    }
+
+    @Test
     fun duplicateScopedAndUnscopedAddressesCollapse() {
         val ordered = EndpointHosts.candidates(listOf("fe80::1", "fe80::1%wlan0", "FE80::1%3"))
         assertEquals(1, ordered.size)
@@ -45,30 +63,30 @@ class EndpointHostsTest {
     @Test
     fun ipv4NetworkFilterUses24Prefix() {
         assertTrue(EndpointHosts.isSameNetwork("192.0.2.1", "192.0.2.57"))
-        assertFalse(EndpointHosts.isSameNetwork("198.51.100.246", "192.0.2.57"))
+        assertFalse(EndpointHosts.isSameNetwork("203.0.113.246", "192.0.2.57"))
         // 拿不到本地 IPv4 时不设限（旧行为）
         assertTrue(EndpointHosts.isSameNetwork("192.0.2.1", null))
     }
 
     @Test
     fun linkLocalIpv6AlwaysAcceptedGlobalIpv6NeedsMatchingPrefix() {
-        assertTrue(EndpointHosts.isSameNetwork("fe80::1%wlan0", "203.0.113.2"))
+        assertTrue(EndpointHosts.isSameNetwork("fe80::1%wlan0", "198.18.0.2"))
         assertTrue(
             EndpointHosts.isSameNetwork(
                 "2001:db8:1:2::5",
-                "203.0.113.2",
+                "198.18.0.2",
                 listOf("2001:db8:1:2::99"),
             ),
         )
         assertFalse(
             EndpointHosts.isSameNetwork(
                 "2001:db8:9:9::5",
-                "203.0.113.2",
+                "198.18.0.2",
                 listOf("2001:db8:1:2::99"),
             ),
         )
         // 本地没有 IPv6 信息：拒绝全局 IPv6（宁可走网关兜底，也不误连家庭网络设备）
-        assertFalse(EndpointHosts.isSameNetwork("2001:db8:1:2::5", "203.0.113.2"))
+        assertFalse(EndpointHosts.isSameNetwork("2001:db8:1:2::5", "198.18.0.2"))
     }
 
     @Test

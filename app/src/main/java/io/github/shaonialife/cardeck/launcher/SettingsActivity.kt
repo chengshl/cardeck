@@ -131,9 +131,7 @@ class SettingsActivity :
         super.onResume()
         if (!VirtualLauncher.sessionAttached ||
             display?.displayId == android.view.Display.DEFAULT_DISPLAY
-        ) {
-            finish()
-        }
+        ) finish()
     }
 
     override fun onDestroy() {
@@ -165,10 +163,8 @@ class SettingsActivity :
                 }, 1_250)
             }.start()
     }
-
     companion object {
-        @Volatile
-        private var activeSessionActivity: java.lang.ref.WeakReference<SettingsActivity>? = null
+        @Volatile private var activeSessionActivity: java.lang.ref.WeakReference<SettingsActivity>? = null
 
         internal fun finishForSessionEnd(): java.util.concurrent.CountDownLatch? {
             val activity = activeSessionActivity?.get() ?: return null

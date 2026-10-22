@@ -17,6 +17,8 @@ import androidx.viewpager2.widget.ViewPager2
 import io.github.shaonialife.cardeck.R
 import io.github.shaonialife.cardeck.media.MediaSessionsState
 import io.github.shaonialife.cardeck.render.CARD_MARGIN_PX
+import io.github.shaonialife.cardeck.render.DASH_GAP_PX
+import io.github.shaonialife.cardeck.render.DASH_HANDLE_TOUCH_PX
 import io.github.shaonialife.cardeck.ui.WallpaperStore
 import io.github.shaonialife.cardeck.util.Bg
 
@@ -30,9 +32,6 @@ import io.github.shaonialife.cardeck.util.Bg
  * 用户可在设置页勾选要显示的应用，返回桌面（onResume）即时刷新。
  */
 class GridActivity : AppCompatActivity() {
-    /** T41: finish the car-only task before its trusted display disappears. */
-    @Volatile private var sessionFinishSignal: java.util.concurrent.CountDownLatch? = null
-
     /** 桌面格子：仪表盘页（第 0 页）/ 固定设置入口 / 普通应用。 */
     private sealed interface Cell {
         object Dashboard : Cell
@@ -43,6 +42,8 @@ class GridActivity : AppCompatActivity() {
             val entry: VirtualLauncher.AppEntry,
         ) : Cell
     }
+
+    @Volatile private var sessionFinishSignal: java.util.concurrent.CountDownLatch? = null
 
     private var pages: List<List<Cell>> = emptyList()
     private var pager: ViewPager2? = null
@@ -143,22 +144,25 @@ class GridActivity : AppCompatActivity() {
                     )
                 }.getOrNull() ?: return@run
             val margin = (CARD_MARGIN_PX * scale).toInt()
-            // 裁出音乐卡对应区域的壁纸切片（与卡片实际位置一致）：
-            //  横屏：右半（左缘=中线+半边距 8，与地图 tile 右缘形成 16px 中缝）
-            //  竖屏：下半（音乐卡在地图卡下方；顶 = 边距+tile 高+中缝）
+            // 裁出音乐卡对应区域的壁纸切片（与卡片实际位置一致，随分屏把手位置走）：
+            //  横屏：右侧（左缘=把手中心+半把手）；竖屏：下方（顶缘同式）
+            val musicStart = VirtualLauncher.dashMusicStartScreen()
             val cropX: Int
             val cropY: Int
             if (VirtualLauncher.dockAtBottom) {
                 cropX = margin
                 cropY =
-                    (margin * 2 + VirtualLauncher.mapTileHeight * scale)
-                        .toInt()
+                    (if (musicStart >= 0) musicStart else margin * 2 + (VirtualLauncher.mapTileHeight * scale).toInt())
                         .coerceAtMost(bitmap.height - 2)
             } else {
                 cropX =
-                    ((VirtualLauncher.dockWidthPx + VirtualLauncher.appAreaWidth / 2 + CARD_MARGIN_PX / 2) * scale)
-                        .toInt()
-                        .coerceAtMost(bitmap.width - 2)
+                    (
+                        if (musicStart >= 0) {
+                            musicStart + (VirtualLauncher.dockWidthPx * scale).toInt()
+                        } else {
+                            (VirtualLauncher.dockWidthPx + VirtualLauncher.appAreaWidth / 2 + CARD_MARGIN_PX / 2) * scale
+                        }.toInt()
+                    ).coerceAtMost(bitmap.width - 2)
                 cropY = margin.coerceAtMost(bitmap.height - 2)
             }
             val cropW = (bitmap.width - cropX - margin).coerceAtLeast(2)
@@ -317,7 +321,6 @@ class GridActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         activeSessionActivity = java.lang.ref.WeakReference(this)
         if (!VirtualLauncher.sessionAttached) {
-            // A stale shell am-start queued before detach must never show on the phone.
             finish()
             return
         }
@@ -392,7 +395,6 @@ class GridActivity : AppCompatActivity() {
         pager?.registerOnPageChangeCallback(
             object : ViewPager2.OnPageChangeCallback() {
                 override fun onPageSelected(position: Int) {
-                    if (!VirtualLauncher.sessionAttached || isFinishing || isDestroyed) return
                     updateDots(position)
                     // 用户滑动切换仪表盘/桌面：回写 launcher（含地图任务与 tile 布局）
                     if (position == 0 && !VirtualLauncher.dashboardMode) VirtualLauncher.showDashboard()
@@ -413,7 +415,6 @@ class GridActivity : AppCompatActivity() {
                 }
 
                 override fun onPageScrollStateChanged(state: Int) {
-                    if (!VirtualLauncher.sessionAttached || isFinishing || isDestroyed) return
                     if (state == androidx.viewpager2.widget.ViewPager2.SCROLL_STATE_IDLE) {
                         VirtualLauncher.setTileSlide(0f)
                         // 落定对账：仪表盘模式与所在页一致（含异常中断的对账恢复）
@@ -461,13 +462,10 @@ class GridActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // T41 second line of defense: Android may reparent an activity from a
-        // destroyed car virtual display onto display 0. Never leave the car
-        // launcher visible above the phone's CarDeck control interface.
         if (!VirtualLauncher.sessionAttached ||
             display?.displayId == android.view.Display.DEFAULT_DISPLAY
         ) {
-            VirtualLauncher.logSink?.invoke("LAUNCHER T41: GridActivity landed on phone/default display; finishing stale car task")
+            VirtualLauncher.logSink?.invoke("LAUNCHER T9: stale GridActivity on physical phone; finishing")
             finish()
             return
         }
@@ -557,7 +555,18 @@ class GridActivity : AppCompatActivity() {
             viewType: Int,
         ): RecyclerView.ViewHolder =
             if (viewType == 0) {
-                DashboardHolder(layoutInflater.inflate(R.layout.view_dashboard, parent, false))
+                // 仪表盘页 = 无边距容器：音乐卡面板 + 分屏拖拽把手（把手落在加宽的
+                // 中缝内、不被合成器叠画的地图 tile 遮挡，触摸走应用屏正常派发）
+                val container = android.widget.FrameLayout(parent.context)
+                container.layoutParams =
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                val panel = layoutInflater.inflate(R.layout.view_dashboard, container, false)
+                container.addView(panel)
+                container.addView(DashSplitHandle(parent.context))
+                DashboardHolder(container, panel)
             } else {
                 val grid = layoutInflater.inflate(R.layout.item_grid_page, parent, false) as GridLayout
                 grid.columnCount = COLUMNS
@@ -577,32 +586,29 @@ class GridActivity : AppCompatActivity() {
         }
     }
 
-    /** 仪表盘页 Holder：面板随页面创建（卡片边距/圆角/媒体控制/壁纸切片）。 */
+    /** 仪表盘页 Holder：无边距容器（音乐卡面板 + 分屏把手）随页面创建。 */
     private inner class DashboardHolder(
+        container: View,
         val panel: View,
-    ) : RecyclerView.ViewHolder(panel) {
+    ) : RecyclerView.ViewHolder(container) {
+        private var handle: DashSplitHandle? = null
+
         fun bind() {
             dashboardView = panel
             val scale = VirtualLauncher.gridScale()
             val cardMargin = (CARD_MARGIN_PX * scale).toInt()
             panel.layoutParams =
-                android.view.ViewGroup
-                    .MarginLayoutParams(
+                android.widget.FrameLayout
+                    .LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
                     ).apply {
                         if (VirtualLauncher.dockAtBottom) {
-                            // 竖屏：音乐卡在地图卡下方（地图上/音乐下），中缝 16
                             leftMargin = cardMargin
                             rightMargin = cardMargin
-                            topMargin = cardMargin * 2 + (VirtualLauncher.mapTileHeight * scale).toInt()
+                            topMargin = cardMargin
                             bottomMargin = cardMargin
                         } else {
-                            // 横屏：左缘 = 应用区中线 + 半边距（8）：与地图 tile 右缘
-                            // （中线-8）之间形成 16px 中缝。显式按中线算，勿引用
-                            // mapTileWidth（语义已变）
-                            leftMargin =
-                                ((VirtualLauncher.appAreaWidth / 2 + CARD_MARGIN_PX / 2) * scale).toInt()
                             topMargin = cardMargin
                             rightMargin = cardMargin
                             bottomMargin = cardMargin
@@ -656,9 +662,73 @@ class GridActivity : AppCompatActivity() {
             }
             // 全屏地图的退出走 dock 的 home 按钮（showDashboard 路由闸门会自动
             // setMapFullscreen(false)），仪表盘卡上不再放「全屏地图」按钮
+            bindSplitHandle(scale)
             applyDashCardChrome()
             renderMediaCard()
             refreshDashWallpaper()
+        }
+
+        /** 配置分屏把手（方向/尺寸/拖拽回调）并按当前分屏摆放面板与把手。 */
+        private fun bindSplitHandle(scale: Float) {
+            val child = (itemView as? android.widget.FrameLayout)?.getChildAt(1) as? DashSplitHandle
+            handle = child ?: return
+            val portrait = VirtualLauncher.dockAtBottom
+            // 触达条比视觉中缝宽（DASH_HANDLE_TOUCH_PX > DASH_GAP_PX）：两侧各溢出
+            // 一段压在卡片上扩大触控目标——地图侧溢出段被 tile 盖住不可见但可触摸
+            val thickness = (DASH_HANDLE_TOUCH_PX * scale).toInt()
+            child.layoutParams =
+                android.widget.FrameLayout
+                    .LayoutParams(
+                        if (portrait) ViewGroup.LayoutParams.MATCH_PARENT else thickness,
+                        if (portrait) thickness else ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+            child.configure(portrait) { centerScreen, final ->
+                if (final) {
+                    // commit 内部钳制并真实 resize 地图屏；notifyMapLayout 会触发
+                    // 壁纸切片重切。commit 返回钳后值，据此校正 margin 防漂移。
+                    layoutSplit(VirtualLauncher.commitDashSplitScreen(centerScreen), scale)
+                } else {
+                    layoutSplit(centerScreen, scale)
+                    VirtualLauncher.previewDashSplitScreen(centerScreen)
+                }
+            }
+            layoutSplit(VirtualLauncher.dashHandleCenterScreen(), scale)
+        }
+
+        /** 把手中心（应用屏像素）→ 音乐卡与把手的 margin。未 attach（<0）时兜底中线。 */
+        private fun layoutSplit(
+            centerScreen: Float,
+            scale: Float,
+        ) {
+            val portrait = VirtualLauncher.dockAtBottom
+            val center =
+                if (centerScreen >= 0) {
+                    centerScreen
+                } else {
+                    // 兜底：应用区中线（与旧版固定分屏一致）
+                    ((if (portrait) VirtualLauncher.appAreaHeight else VirtualLauncher.appAreaWidth) / 2f) * scale
+                }
+            // 音乐卡让位按视觉缝；把手按触达宽居中（比缝宽、压在两侧卡片上）
+            val halfGap = DASH_GAP_PX / 2f * scale
+            val halfTouch = DASH_HANDLE_TOUCH_PX / 2f * scale
+            (panel.layoutParams as? android.widget.FrameLayout.LayoutParams)?.let { lp ->
+                if (portrait) {
+                    lp.topMargin = (center + halfGap).toInt()
+                } else {
+                    lp.leftMargin = (center + halfGap).toInt()
+                }
+            }
+            handle?.let { h ->
+                (h.layoutParams as? android.widget.FrameLayout.LayoutParams)?.let { lp ->
+                    if (portrait) {
+                        lp.topMargin = (center - halfTouch).toInt()
+                    } else {
+                        lp.leftMargin = (center - halfTouch).toInt()
+                    }
+                }
+                h.requestLayout()
+            }
+            panel.requestLayout()
         }
     }
 
@@ -759,10 +829,8 @@ class GridActivity : AppCompatActivity() {
     override fun onBackPressed() = Unit // 桌面不退出
 
     companion object {
-        @Volatile
-        private var activeSessionActivity: java.lang.ref.WeakReference<GridActivity>? = null
+        @Volatile private var activeSessionActivity: java.lang.ref.WeakReference<GridActivity>? = null
 
-        /** Only the GridActivity of this CarPlay session is finished; MainActivity stays alive. */
         internal fun finishForSessionEnd(): java.util.concurrent.CountDownLatch? {
             val activity = activeSessionActivity?.get() ?: return null
             val signal = java.util.concurrent.CountDownLatch(1)
@@ -777,12 +845,12 @@ class GridActivity : AppCompatActivity() {
         private const val COLUMNS = 4 // CarPlay 规格：强制 4 列
 
         /** 横屏 CarPlay 规格行数（竖屏自适应时用作下限）。 */
-        private const val ROWS_MIN = 3
+        const val ROWS_MIN = 3
 
         /** 竖屏自适应行数上限（对齐 iPhone 竖屏主屏 4×6 的观感）。 */
-        private const val ROWS_MAX = 6
+        const val ROWS_MAX = 6
 
         /** 格子目标高宽比（高/宽）：竖屏加行的收敛目标。 */
-        private const val CELL_HEIGHT_RATIO = 1.25f
+        const val CELL_HEIGHT_RATIO = 1.25f
     }
 }

@@ -20,8 +20,9 @@ class Iap2LinkChannel(
     private val lock = Object()
     private val controls = LinkedBlockingQueue<ByteArray?>()
     private val readyLatch = CountDownLatch(1)
-    /** Latest cumulative peer ACK; updated on reader thread under lock. */
-    private var latestPeerAck: Int? = null
+    /** Track the last outbound control sequence and inbound cumulative peer ACK. */
+    private var lastOutboundControlSeq: Int? = null
+    private var lastPeerAck: Int? = null
 
     @Volatile
     private var terminated = false
@@ -35,21 +36,6 @@ class Iap2LinkChannel(
     private var rxFrameLogs = 0
     private var txFrameLogs = 0
 
-    /** T29: counters are never limited by RAW/LINK logging budgets. */
-    private var rxBytesTotal = 0L
-    private var rxReadCalls = 0L
-    private var rxFramesTotal = 0L
-    private var rxControlsDelivered = 0L
-    private var rxUnknownSessions = 0L
-    private var rxFrameLogsSuppressed = 0L
-
-    /** Snapshot only; no raw payload, credentials, or device identifiers. */
-    fun rxDiagnostics(): String = synchronized(lock) {
-        "bytes=$rxBytesTotal reads=$rxReadCalls frames=$rxFramesTotal " +
-            "controls=$rxControlsDelivered unknownSessions=$rxUnknownSessions " +
-            "frameLogsSuppressed=$rxFrameLogsSuppressed rawBudgetRemaining=$rxDumpBudget"
-    }
-
     val isAlive: Boolean get() = !terminated
 
     init {
@@ -60,19 +46,13 @@ class Iap2LinkChannel(
             )
         }
         engine.onUnknownSessionData = { sessionId, size ->
-            rxUnknownSessions++
             log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
         }
-        engine.onAcknowledgementProgress = { ack, before, after ->
-            latestPeerAck = ack
-            lock.notifyAll()
-            log("LINK T20-B ACK: peerAck=$ack pendingBefore=[$before] pendingAfter=[$after]")
-        }
-        engine.onLinkAckDiagnostic = { detail ->
-            log("LINK T36 ACK-DIAG: $detail")
-        }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
-            rxFramesTotal++
+            if ((control and 0x40) != 0) {
+                lastPeerAck = ack
+                lock.notifyAll()
+            }
             // 真车调试关键观测：车机在识别阶段是否回帧、回什么（静默分歧全靠它定位）
             if (rxFrameLogs < FRAME_LOG_LIMIT) {
                 rxFrameLogs++
@@ -80,11 +60,12 @@ class Iap2LinkChannel(
                     "LINK rx: ctl=0x${"%02x".format(control)} seq=$sequence ack=$ack " +
                         "session=$sessionId len=$size",
                 )
-            } else {
-                rxFrameLogsSuppressed++
             }
         }
         engine.onFrameSent = { control, sequence, ack, sessionId, size ->
+            if ((control and 0x40) != 0 && sessionId != 0 && size > 0) {
+                lastOutboundControlSeq = sequence
+            }
             if (txFrameLogs < FRAME_LOG_LIMIT) {
                 txFrameLogs++
                 log(
@@ -125,16 +106,23 @@ class Iap2LinkChannel(
         }
     }
 
-    /** T34: wait for a specific cumulative ACK, not merely sendControl() enqueue success. */
-    fun awaitPeerAck(sequence: Int, timeoutMillis: Long): Boolean {
+    /**
+     * Buick B233 needs a real peer ACK of the most recently transmitted
+     * iAP2 control frame before 0x4300. Unlike a hard-coded sequence (108),
+     * this also works when optional HID/EA traffic shifts outbound numbering.
+     * Call immediately after sending the target frame, with no other sender
+     * using this channel concurrently.
+     */
+    fun awaitLastControlAck(timeoutMillis: Long): Boolean {
         val deadline = System.nanoTime() + timeoutMillis * 1_000_000L
         synchronized(lock) {
             while (!terminated) {
-                if (latestPeerAck == sequence) return true
-                val remaining = (deadline - System.nanoTime()) / 1_000_000L
-                if (remaining <= 0) return false
+                val sent = lastOutboundControlSeq
+                if (sent != null && lastPeerAck == sent) return true
+                val millis = (deadline - System.nanoTime()) / 1_000_000L
+                if (millis <= 0) return false
                 try {
-                    lock.wait(remaining.coerceAtLeast(1L))
+                    lock.wait(millis.coerceAtLeast(1L))
                 } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                     return false
@@ -142,6 +130,15 @@ class Iap2LinkChannel(
             }
         }
         return false
+    }
+
+    /**
+     * T21 read-only B233 diagnostic. Snapshot is taken under the same lock
+     * as onFrameReceived/onFrameSent; it never dumps identifiers or credentials.
+     */
+    fun controlAckSnapshot(): String = synchronized(lock) {
+        "sentSeq=${lastOutboundControlSeq ?: "none"} " +
+            "peerAck=${lastPeerAck ?: "none"} alive=${!terminated}"
     }
 
     /** 取下一个控制载荷；超时或链路结束返回 null。 */
@@ -179,8 +176,6 @@ class Iap2LinkChannel(
                 if (count == 0) continue
                 synchronized(lock) {
                     if (terminated) return
-                    rxBytesTotal += count.toLong()
-                    rxReadCalls++
                     dumpInbound(buffer.copyOf(count))
                     engine.feed(buffer.copyOf(count), nowMillis())
                     processEventsLocked()
@@ -238,7 +233,6 @@ class Iap2LinkChannel(
         while (true) {
             when (val event = engine.pollEvent() ?: return) {
                 is Iap2LinkEngine.Event.Control -> {
-                    rxControlsDelivered++
                     if (!controls.offer(event.bytes)) {
                         engine.feedEof()
                         return
@@ -286,7 +280,6 @@ class Iap2LinkChannel(
 
     private fun finishLocked(failure: IOException?) {
         if (terminated) return
-        log("LINK T29 RX SUMMARY: ${rxDiagnostics()}")
         terminated = true
         controls.offer(POISON) // 哨兵：唤醒阻塞的接收方（LBQ 不接受 null）
         readyLatch.countDown()
@@ -305,8 +298,11 @@ class Iap2LinkChannel(
         const val PACER_POLL_MILLIS = 20L
 
         /** 原始字节转储预算：rx 需覆盖车机全部协商帧（Audi 实测约 140B），给 512B 余量。 */
-        const val RAW_DUMP_LIMIT = 512
-        const val RAW_DUMP_LIMIT_TX = 256
+        // 预算按字节计。曾为 512/256：一次完整 bring-up 都盖不住（0x1D01 单帧即 565B），
+        // 提取重放 fixture（tools/extract_car_fixtures.py）会缺尾部——提到 4096 覆盖
+        // 整个识别/MFi/凭据交换，长会话靠预算封顶防日志爆炸
+        const val RAW_DUMP_LIMIT = 4096
+        const val RAW_DUMP_LIMIT_TX = 4096
 
         /** 逐帧摘要日志上限（每方向每连接）。 */
         const val FRAME_LOG_LIMIT = 40

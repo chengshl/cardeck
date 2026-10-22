@@ -1,18 +1,5 @@
 # AGENTS.md — 给 AI 编码助手的项目指引
 
-## Buick-Test 分支约定（2026-10-22）
-
-- 基线为 Buick-E5 的 `7d33dce6384d9b3d618a6c2953db1048bf83aad0`，后续测试改动只在 Buick-Test 处理。
-- 入口地址和凭证通过「入口配置」管理；凭证使用 Android Keystore 加密保存在 noBackupFilesDir，不得写入源码、日志、URL 或发布附件。
-- 独立更新线由 `app/src/main/assets/config/update-channel.json` 描述，只读取 `buick-test-latest`；只发布 `CarDeck-Buick-Test.apk` 及校验文件，不写共享标签或旧分支别名。
-- 本分支继承的 E5 发布工作流必须保留分支守卫，禁止在 Buick-Test 手动触发共享更新发布。
-- Gateway 从入口配置页显式开启后，由独立 dataSync 前台服务实时上报新增软件日志；离开页面继续、断网有界缓存并重连，常驻通知和入口配置均可停止。仅恢复用户之前开启的状态，从可见 Activity 恢复，不从开机广播后台启动；强制停止后须重新打开 App。不得触发车辆指令。
-- GatewayProbe 协商 device_status_v1 与 logs_v1；软件日志走 DebugFileLog 统一出口，不轮询全量文件或采集其他应用 logcat。系统日志仅在手动点击时，经现有 Shizuku 权限读取有限 main/system 警告错误快照，先脱敏预览，再由确认按钮上传同一份快照；取消、预览过期、连接更换和重建后均不得自动上传或重试系统快照。系统采集不得写入软件日志通道。
-- 日志两端脱敏，隐藏入口凭证、常见密钥、地址和标识；客户端内存队列限 200 行、单批最多 8 行、单行最多 256 字符。仅服务端持久写入并 fsync 成功后确认；未确认的软件批次重连时可重试（极端 ACK 丢失时可能重复），系统批次断线后丢弃并重新确认。
-- 后续日志通过 hostPath 持久保存于共享盘 `<PRIVATE_CIFS_LOG_ROOT>`，按随机安装 UUID、北京时间日期及 app/system 来源隔离；16MiB 或整点滚动，JSONL 文件。无总容量上限，取消 100G 和空间压力提前淘汰方案；只清理超过七天的行，边界文件原子重写以保留年轻行。启动、写入及每分钟清理；独立 CronJob 在网关离线时补清理。目录归属标记、路径验证和单写锁必须保留，禁止递归清理或删除其他共享盘文件。
-- 存储配置独立于 App，位于 ConfigMap 挂载的 storage.json；启动须验证真实 CIFS 挂载，挂载/写入失败不得回退内存后假确认。Pod 重建不应丢已确认日志；设备在线状态/当前连接计数仍为内存，历史查询从文件恢复，默认最多返回 200 行。系统日志确认机制不变。涉及 Nginx 配置修改必须先展示具体改动并取得用户确认；本次目录位于现有网页映射之外，不修改 Nginx。
-- 正常校验证书、拒绝重定向；网络通过单个 socket 和 DNS 绑定，不得修改 CarPlay 的进程网络绑定。日志测试必须加入独立 CI 硬性检查。查询凭证与设备凭证隔离，查询接口仅集群内可达。更新说明优先中文。
-
 让一台未 root 的 Android 手机（荣耀 Magic7 Pro）扮演 **CarPlay 发送端（iPhone 角色）**：
 自绘车机桌面 → H.264 编码推流 → 奥迪车机 / DiPlay 测试台（Redmi K40 上的接收端）显示，
 车机触摸经 Shizuku（shell 权限）回注虚拟屏。协议链路：蓝牙 iAP2 → 车机热点 → mDNS →
@@ -282,6 +269,16 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   只允许单向转调 `DefaultMapPrefs`。
 - **会话生命周期钩子**：强制横屏覆盖（AppOrientationCompat）attach 时 applyAll、
   retireSession/onEnded 时 resetAll——新加系统级写入（settings/cmd）照此模式收口。
+- **暗幕/常亮必须由会话驱动，不能由 App 启动驱动**（2026-10-19 用户实测
+  「会话已断开、过一会儿仍然启动暗幕」）：`ScreenDimmer.attach` 原先在启动时就
+  `schedule()` 45 秒定时器，而车机侧断开走的是 `VideoSender.onEnded`——它**不经过
+  `retireSession`**，`VirtualLauncher` 仍挂着，定时器照常触发。现在自动暗幕的条件是
+  `enabled && sessionActive && attached`（纯函数 `shouldAutoDim`，有单测）：
+  会话开始（`VideoSender.start` 的 onSurfaceReady 里 `attach` 成功后才置位）才排程与
+  把屏幕超时改「永不」，`onEnded` / `retireSession` 与 `detach()` 都必须清零标记
+  （否则下次启动会沿用 true）。手动「假息屏」`enterDimNow` 走 `force` 路径不受限制。
+  **判断标准**：任何「会话期间才该生效」的 UI/系统副作用，都要同时挂在
+  「推流启动成功」与「onEnded」两端——只挂一端必然漏掉车机主动断开这条路径。
 - **取消连接必须全程可中断**：`sessionStarting` 互斥标志的复位依赖配对流程线程
   走到 finally——该线程可能阻塞在不可中断的等待（无超时 connect、mDNS 等待、
   BT 保活读循环），任何一处卡住都会让取消「无效」（英雄卡永久「正在连接」）。
@@ -351,6 +348,11 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   （独立 SDP 服务），声音走 WiFi 的 AirPlay，这些音频/通话配置文件可断。
   实现（`bt/BtProfiles`）：发 iAP2 连接前查目标地址的配置文件状态，有连接就先断开
   （配对成功回调里也断两次：立即 + 1.5s 后，车机侧重连常发生在两者之间）。
+  **断开只对「确认提供 iAP2 服务（SDP …caff）或用户选定目标」的设备做**（2026-10-20
+  收窄，`Iap2BluetoothClient.awaitIap2Service`）：自动模式候选=全部已配对设备，
+  耳机/手表没有该服务、连不上还白被断 HFP/A2DP（设备级断开兜底更会波及其它在线
+  设备）。SDP 探测先读系统 uuids 缓存、缺失再 fetchUuidsWithSdp 等 ACTION_UUID
+  （2.5s 窗），结论按地址缓存到客户端停止、start() 时重置。
   **注意 API 约束**：`BluetoothHeadset/A2dp/LeAudio.disconnect(BluetoothDevice)` 是
   **@SystemApi**（编译不可见，运行时只要 `BLUETOOTH_CONNECT`），只能反射调用；
   查询用公开的 `getProfileProxy` + `connectedDevices`（需主 Looper）。**不要**把这段
@@ -432,6 +434,13 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   无法读取）；② 视频/音频/keepAlive 的 host 一律取 `client.currentEndpoint`（配对期间
   mDNS 刷新过的真实连接地址），不要用解析阶段的 `effectiveEndpoint` 旧值。
   单测 `nulPaddedAddressesAreStrippedCompletely` 用真实填充宽度锁住这一行为。
+- **回退（应用侧 PUBLIC 屏）形态也必须建地图屏**（2026-10-20 华为 Mate30Pro/EMUI12
+  实测）：EMUI 对 shell 侧 `createVirtualDisplay` **静默返回 null**（不抛异常）——受信
+  创建整体失败落回退分支，而回退分支历史上只建 dock/app/appHi 三屏、无地图，仪表盘
+  永远没有地图 tile（日志特征：`三屏创建(回退)` + 每轮 `地图屏未创建`）。修复后回退
+  分支同样建地图屏；**resize 分流**：受信形态走 shell `svc.resizeDisplay`，回退形态
+  必须用应用侧 `VirtualDisplay.resize()`（shell 对他人创建的 display 无 resize 权限，
+  token 属主校验）。诊断约定：受信创建失败要逐屏留痕（哪块屏 -1），不能只留「回退」。
 - **UserService 虚拟屏跨版本残留：三层收口**（2026-10-16 定谳，「重启后检测到残留屏、
   点清理却释放 0/N」根因）：Shizuku 按「组件+进程名+版本(APK lastUpdateTime)」复用常驻
   shell 进程——重装 APK 起新进程，旧进程 `am force-stop` 杀不掉（实测）、Shizuku 也不
@@ -560,6 +569,46 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
     点「请求授权」无响应，在 Shizuku 里「停止」再「启动」后一次成功）。
   - 卡片文案要区分三种空：授权缺失（显示「未授予通知使用权」）、有会话但暂停、
     完全无会话（后两者都是「未在播放」）。
+- **仪表盘分屏拖拽（2026-10-22 落地）的四个跨会话结论**：
+  ① **视觉与触达分层**：中缝视觉宽（`DASH_GAP_PX=24`）与把手触达宽
+  （`DASH_HANDLE_TOUCH_PX=60`）是两个常量——把手/粘性路由域比缝宽、两侧压在
+  卡片上（地图侧溢出段被 tile 盖住**不可见但可触摸**：触摸路由与 GL 合成本就是
+  两层）。一体宽 44px 的首版被用户反馈「中缝太宽」。
+  ② **拖动中只改绘制矩形、松手才 resize**：composer `tileEdgeOverride` 只改 SPLIT
+  目标矩形（纹理整幅 UV 拉伸），commit 才走 `resizeMapDisplay`（真实 resize 触发
+  地图应用配置变更）。**限位钳制必须按比例域换算边界**——按位置域 [边距, 边距+可用]
+  钳等于允许比例 [0,1]，用户实测能拉到 0。
+  ③ **快拖防断流要粘性路由**：把手落后手指时坐标会越出命中域，TouchRouter 按坐标
+  逐帧改判会跨屏重注（掐断拖拽+误触地图）；按下命中把手条即整流固定路由应用屏
+  （`dashHandleHit` + `splitHandlePressed`，同 overlay 卡手势独占模式）。
+  ④ 车机虚拟屏持有焦点时，**`am start` 不带 `--display` 会落到聚焦的虚拟屏**
+  （用户车机画面闪出调试 UI 实测）——会话中启动手机侧 Activity 必须显式
+  `--display 0`；无线 adb 的**流式安装协议会静默挂起**（push 76MB/s 证明传输无碍），
+  大包改走 `adb push + pm install`。
+  几何推导集中在 `VirtualLauncher.dashSplitGeom` 纯函数（`DashSplitMathTest` 钉死
+  四方一致性），改分屏相关代码勿在四处重新裸算。
+- **真机 iPhone sysdiagnose 对照（2026-10-21，docs/PROTOCOL-NOTES.md §13）**：两车三份
+  抓包（iOS 18，`/usr/bin/log show --archive` 读 unified log）定了四条铁律：
+  ① **奥迪 MMI 3315_5GHz 首连 403 是车机固有状态**——真 iPhone 在 pair-verify 通过后
+  照样被 MFi 段 403 拒，车机 18~20s **自动重邀、第二次即成**；正确恢复 = 保持 BT、
+  原流程退避重试（已落地：`pairingForbidden` 禁断-BT-hack、禁明文降级、403 退避 5s）。
+  ② 探歌类车机**只认 iAP2 配供应链带出的入网**：手动/系统保存过车机热点 = 永远无
+  邀请无 mDNS（同 SSID 清理弹窗对此车是关键）；双频 SSID 必须用 0x5703 指定的那个。
+  ③ 该奥迪成功会话 **iAPChannel 协商 = 0**（真 iPhone 未启 WiFi 隧道）——「MIB3 必须
+  建隧道」结论存疑，动隧道前先真车 A/B。
+  ④ 两车成功路径全是 **IPv6 link-local :7000** + pair-verify + MFi（标准 MODERN 形态，
+  无特殊协议）；SETUP 应答可无 streamID（我们只读 dataPort 天然兼容）。
+- **车机画像（ReceiverProfile）：版本/能力信号统一收口**（2026-10-20）：`iap2/ReceiverProfile`
+  纯函数聚合三处信号——0x1D01 身份+收/发双清单、mDNS features/srcvers——产出
+  era（三时代）/wifiGen（新旧 WiFi 协议）判定，**依据随日志输出**（`PROFILE:` 行，
+  判错可回溯）。两个接线点：`Iap2SenderSession.logIdentification`（BT 侧）与
+  `SessionController.onCarPlayEndpoint` 端点诊断后（mDNS 侧）。硬约束：
+  ① **按能力分支，不按版本号/品牌硬编码**（srcvers 只做先验，清单与实测行为才是
+  分派依据——HID 描述符教训的推广）；② **「清单未声明」不等于「不支持」**：奥迪
+  稀疏清单（2+5 项）不列 0x57xx 但旧协议实测工作——wifiGen=NEW 要求清单完整
+  （合计 ≥10 项，iD9 形态）仍无 0x5703/0x5702，稀疏清单判 UNKNOWN 走旧协议
+  （0x5703 有超时兜底）；③ identityKey 存原文（与 0x1D01 逐字一致），持久化键的
+  清洗由 MfiLengthMemory.receiverKey 负责——后续 Memory 并表共用此键。
 - **协议差异以日志为准**：测试台（DiPlay）与真车（奥迪 MIB3）行为多处相反（MFi 挑战
   32B/20B、0x4301 有无、ctrl 邀请死锁等），细节见 `docs/PROTOCOL-NOTES.md` §9，
   改协议代码前先对照。
@@ -586,6 +635,31 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   因此凡是「车机屏黑但 app 显示已连接」都先核 `VIDEO: ✓ VideoConfig … flags=` 这行
   日志（会同时打印头部前 24 字节 hex）。新增屏幕流头字段时同理：先用 catplay
   `screen_frame_ext.rs` 对照，别只对着测试台验证。
+- **iAP2 协商：SYN|ACK 必须用新序号，且每条 SYN 都要回**（2026-10-19 BMW 87866
+  实车定谳，`docs/PROTOCOL-NOTES.md` §9h）：14 轮会话全部卡在链路层（`iap2 link
+  ready` 0 次），车机发 133 条 SYN、回 0 条 ACK。两个根因：① `sentSequence` 只在
+  发数据帧时自增，导致 SYN 与 SYN|ACK 同为 seq=99，对端按 `peerSeq+1` 校验后判重复
+  丢弃（catplay 用 `take_own_seq()`）；② 只有首次采纳时回显，而 BMW **每轮重试都用
+  新序号重开协商**，其余 SYN 只拿到裸 ACK 永远等不到回显。现状：每条**纯 SYN**
+  （`control and ACK == 0`）都回一帧 SYN|ACK，同一 SYN 的重发字节级幂等（不推进
+  序号）。两条踩坑：**裸 ACK 会与 SYN|ACK 撞号**（故主机路径只回 SYN|ACK，Audi
+  帧序随之从「裸 ACK+SYN|ACK」变为单帧，需复测）；**不能对所有带 SYN 位的帧都回**
+  （会与对端的 SYN|ACK 形成无限乒乓，单测曾因此空转 55 秒，只有 `jstack` 能看出）。
+- **车机如何识别我们的字段，一律不许"照 catplay 抄"**（2026-10-19 奥迪 0.1.7 回归
+  定谳，`docs/PROTOCOL-NOTES.md` §9i）：把 ctrl TXT 的 `srcvers` 从 `950.7.1` 改成
+  catplay 的 `566.25.21`、实例名 `sender` → `iPhone` 之后，同一台 Audi MMI 3315
+  从「0x4300 后 0.65s 下发 0x4301」变成**连 `GET /ctrl-int/1/connect` 都不发**，
+  `_airplay._tcp` 与 0x4301 双零、网关 `:7000` 空转 54s（`ECONNREFUSED`）。
+  iAP2 全通、车机还在发 0xAE00，极易误判成网络问题。已回退并加测试
+  `CarPlayCtrlAdvertiserTest` 钉死。**同一类字段**：`sourceVersion`、`deviceID`、
+  服务名、`model`、TXT `id`——改前必须真车 A/B 验证，且日志必须能直接看到取值。
+  配套：`_device-info._tcp` 已移除（Android `NsdServiceInfo` 不接受 port=0，
+  每次都报 `The port is missing`，属未验证收益的噪音）。
+- **0x4300/0x4E0E 的蓝牙标识必须在会话启动时就拿到真实 MAC**（2026-10-19 奥迪
+  0.1.7 日志）：整轮都是占位 `[MAC]`。根因是 `DeviceIdentity` 的 10 秒
+  静默窗口撞上「BT 会话在 Shizuku 刚就绪的同一毫秒构造」——首次失败后 10 秒内全返回
+  占位值。`BtSession` 现改为 `forceRetry = true` 并打印解析结果。奥迪会用它与 RFCOMM
+  对端核对，占位值导致静默丢弃。排查时**先看 `设备状态问候 … mac=` 这行**。
 - **AirPlay 会话级 SETUP 的 `deviceID` 必须是本机真实蓝牙 MAC**（2026-10-19
   WinPlay 实测）：接收端可以按「用户选中的 iPhone 蓝牙地址」过滤会话，对不上即回
   **403**，状态行是它特有的 `403 OK`（WinPlay 的 STATUS_TEXT 表没有 403，回退成
@@ -604,7 +678,24 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   `keepAliveSendStatsAsBody=true` 时 opcode=5 带 bplist 统计体），1s，**视频持续
   推流时也照发**——它不是视频流量的备份。只有 ①② 时现象是「推流正常、RECORD 后
   10.2s 整轮 reset」，日志里视频/feedback/事件通道全都健康，极易误判为网络问题。
+  **纠偏（2026-10-19 晚）**：三条心跳齐发时 MMI 3315 **仍**在 ~10s 被拆——该车的
+  10s 拆链另有主因（缺 WiFi 隧道，见下条）；心跳是必要条件，不是充分条件。
   keepAlive 帧不加密（catplay 只加密 opcode=VideoFrame），不消耗 ChaCha 帧 nonce。
+- **MIB3 需要第二条 iAP2 链路（WiFi 隧道），只回 ACK 会被 ~10s 拆链**（2026-10-19
+  定谳，当晚日志 + AADisplay Frida 对照）：AirPlay 会话建立后，手机必须在屏幕流
+  SETUP 成功后**主动经控制通道** POST /command（iAPSendMessage 信封）发一次 DETECT，
+  车机回 SYN（事件通道）→ 手机 SYN|ACK（控制通道）→ 链路 NORMAL 后重跑控制会话
+  （0x1D00→0x1D01→0x1D02+0xAA00→0xAA06→0xAA02 挑战【长度按车机记忆，隧道独立键，
+  冷启动 20B 优先；同车蓝牙/隧道偏好可能不同——3315 蓝牙认 32B 而 Frida 隧道 20B】
+  →0xAA03→0xAA05→突发
+  0x4E0C/0xA100/0x4E0A/0x4E0B/0x4E09/0xFFFA/0xFFF0→应答订阅 0x5000/0x4157/0x4154/
+  0x4170，0xFFFB 只链路 ACK）。实现：`airplay/VirtualIap2Link.kt`（三形态合一：
+  DiPlay 隧道/MIB3/旧回显），协议细节与 Frida 逐字节常量见 `docs/PROTOCOL-NOTES.md`
+  §12。硬约束：① 手机→车机链路帧**只能**走控制通道 POST（事件通道出站 MIB3 不读）；
+  ② DETECT 必须在屏幕 SETUP 之后发一次（早发被冲掉，之后车机 marker 一律忽略）；
+  ③ 回显 LSP 声明自己的 maxOutgoing=0x7F（原样回显对端表=自己限死在小窗口，突发
+  积压）；④ 0xFFFA/0xFFF0/0x4158/0x5001 用逐字节常量，**勿重新编码**；⑤ 参考仓库
+  `reference/AADisplay` 是 GPL-3.0：只看协议事实，代码不抄。
 - **MFi 挑战长度按车机持久化，不要全局写死某一档**（2026-10-19 奥迪 MMI 3315 实测）：
   20B 挑战在该车静默 **6.0 秒**无应答，32B 才在 0.64 秒回签名——只靠「真车都 20B
   优先」的基线，每次连接都白等 6 秒。而各接收端偏好相反：DiPlay 只认 32B（长度不符

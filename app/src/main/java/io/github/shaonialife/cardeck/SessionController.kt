@@ -3,8 +3,13 @@ package io.github.shaonialife.cardeck
 import android.content.Context
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
+import io.github.shaonialife.cardeck.airplay.PairVerifyClient
+import io.github.shaonialife.cardeck.audio.AudioProfile
+import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
+import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.bt.BtProfiles
+import io.github.shaonialife.cardeck.bt.B233PairingMonitor
 import io.github.shaonialife.cardeck.bt.BtSessionGate
 import io.github.shaonialife.cardeck.bt.Iap2BluetoothClient
 import io.github.shaonialife.cardeck.bt.Iap2BluetoothServer
@@ -12,20 +17,28 @@ import io.github.shaonialife.cardeck.bt.TargetDevicePrefs
 import io.github.shaonialife.cardeck.capture.HiddenDisplaySource
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
+import io.github.shaonialife.cardeck.iap2.ReceiverProfile
 import io.github.shaonialife.cardeck.input.ConsumerKeys
 import io.github.shaonialife.cardeck.input.TouchReports
 import io.github.shaonialife.cardeck.input.TouchRouter
 import io.github.shaonialife.cardeck.launcher.settings.AppOrientationCompat
 import io.github.shaonialife.cardeck.launcher.settings.DisplayPrefs
+import io.github.shaonialife.cardeck.net.AirPlayFeatures
 import io.github.shaonialife.cardeck.net.CarPlayCtrlAdvertiser
 import io.github.shaonialife.cardeck.net.CarPlayServiceBrowser
+import io.github.shaonialife.cardeck.net.EndpointHosts
 import io.github.shaonialife.cardeck.net.WifiCarPlayConnector
+import io.github.shaonialife.cardeck.net.WifiSavedNetworks
 import io.github.shaonialife.cardeck.service.CarPlayService
 import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
+import io.github.shaonialife.cardeck.ui.ScreenDimmer
 import io.github.shaonialife.cardeck.util.Bg
 import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.video.VideoSender
+import io.github.shaonialife.cardeck.video.SafeDiagnosticFrameSource
+import io.github.shaonialife.cardeck.video.SonyB233CrashGuard
+import io.github.shaonialife.cardeck.video.BuickTestVideoTouchMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -79,6 +92,19 @@ object SessionController {
     private const val ENDPOINT_RESOLVE_WAIT_MS = 3_000L
 
     /**
+     * 明文 SETUP 被拒后「加密升级」补配对的上限（catplay handle_setup_result 路径）。
+     * 只在实际被拒时才走到这里，正常车机零成本；不支持配对的接收端会在
+     * pair-setup 收到 404/405/455 后立刻放弃，不会等满这个窗口。
+     */
+    private const val PAIRING_UPGRADE_WINDOW_MS = 30_000L
+
+    /**
+     * 明文会话初始 SETUP 的重试窗口。pre-HomeKit 车机的 AirPlay 端口常在
+     * 「用户点车机上的手机图标」后才开放；端口晚开 1~2 秒不该让整轮失败。
+     */
+    private const val INITIAL_SETUP_WINDOW_MS = 30_000L
+
+    /**
      * 端点已到但手机还没切到车机热点时的等待上限。
      * 覆盖「自动加入（几秒）」与「用户手动加入（常见 10-30s）」两种路径；
      * 超时后明确提示并复位 sessionStarting，不留「永久正在连接」。
@@ -92,9 +118,16 @@ object SessionController {
      */
     private const val WIFI_BIND_WAIT_S = 15L
 
+    /**
+     * 等用户确认「连接车机热点」系统弹窗的上限（应用专属网络）。
+     * 系统确认框可能停留很久；用户取消连接时 [connectCancelled] 会即时退出。
+     */
+    private const val SPECIFIER_JOIN_TIMEOUT_MS = 120_000L
+
     /** Activity onCreate 时调用：登记 applicationContext 并创建会话对象（幂等）。 */
     fun ensure(context: Context) {
         appContext = context.applicationContext
+        B233PairingMonitor.start(context.applicationContext, ::appendLog)
         ensureSessionObjects(context.applicationContext)
         // 横屏兼容写入失败的原因（user build 限制 / Shizuku 故障）只有这里能落盘：
         // 车机侧设置面板的 toast 只给用户看，排查需要日志。
@@ -105,15 +138,20 @@ object SessionController {
 
     /** 追加一行日志：logcat + 文件 + 进程级缓冲 + 挂屏渲染（增量行直送）。任意线程可调。 */
     fun appendLog(message: String) {
-        android.util.Log.i("CarPlaySender", message)
+        // NUL 会写进日志文件：文本编辑器/文件管理器打不开（Read 工具也会判为二进制），
+        // 用户反馈日志时等于白导。0x4301 的定长地址字段曾原样打印出多个 NUL
+        // （2026-10-18 实测 216 个），这里替换成可见占位符——顺带让「字符串里有脏字节」
+        // 在日志上直接可见，而不是隐形成 InetSocketAddress 的解析失败。
+        val clean = if (message.indexOf('\u0000') >= 0) message.replace("\u0000", "␀") else message
+        android.util.Log.i("CarPlaySender", clean)
         appContext?.let {
             DebugFileLog
-                .append(it, message)
+                .append(it, clean)
         }
         if (!logEnabled) return
         val line =
             synchronized(logLock) {
-                val stamped = '[' + timestamp.format(Date()) + "] " + message + '\n'
+                val stamped = '[' + timestamp.format(Date()) + "] " + clean + '\n'
                 logBuilder.append(stamped)
                 if (logBuilder.length > 40_000) logBuilder.delete(0, logBuilder.length - 20_000)
                 stamped
@@ -158,6 +196,11 @@ object SessionController {
     @Volatile
     private var boundCarSsid: String? = null
 
+    /** 本次进程内已就「是否清除系统保存热点」询问过的 SSID（避免重试时重复弹窗）。 */
+    private val forgetPromptHandled =
+        java.util.concurrent.ConcurrentHashMap
+            .newKeySet<String>()
+
     /** WiFi 绑定互斥：auto-join 与端点交接两条路径可能同时绑定同一热点。 */
     private val wifiBindLock = Any()
 
@@ -195,6 +238,10 @@ object SessionController {
     @Volatile
     var currentHiddenSource: HiddenDisplaySource? = null
 
+    /** T28: EGL-only B233 Xperia crash-isolation video source; creates zero Android displays. */
+    @Volatile
+    private var currentDiagnosticSource: SafeDiagnosticFrameSource? = null
+
     /** 当前会话的共享密钥与接收端地址：投影授权晚于连接时，动态补启音频用。 */
     @Volatile
     var currentSharedSecret: ByteArray? = null
@@ -206,8 +253,44 @@ object SessionController {
     @Volatile
     var audioEnabledForSession: Boolean = false
 
+    /**
+     * 「开启声音（兼容档）」：候选里把非 media 档（compatibility 等）排前面。
+     * 2026-10-19 Honda HFT 实测——media 档只声明 44.1k，该车机音频通路只吃得下 48k，
+     * 走默认档会「上线几秒后整车机拆链」。
+     */
+    @Volatile
+    var audioPreferCompat: Boolean = false
+
+    /** 本轮真正用上的音频档位（拆链归因与记忆回写用；null = 本次没有音频）。 */
+    @Volatile
+    private var activeAudioProfile: AudioProfile? = null
+
+    /** 音频档位记忆的键（车机身份文本，见 [AirPlayClient.receiverIdentity]）。 */
+    @Volatile
+    private var activeAudioReceiverKey: String = ""
+
+    /** 音频通道真正开始推流的时刻（uptimeMillis）；0 = 未开始。 */
+    @Volatile
+    private var activeAudioStartedAt: Long = 0L
+
+    /**
+     * 音频「存活窗口」（ms）：超过它才认为该档位可用。
+     * 依据 2026-10-19 实测：拆链发生在音频起流后 6.5s；取 20s 留足车机音频通路初始化
+     * 与首个欠载周期的余量。
+     */
+    private const val AUDIO_PROFILE_PROBE_MS = 20_000L
+    /** Avoid B233's observed false-positive AAC success at ~20 seconds. */
+    private const val BUICK_AUDIO_PROFILE_PROBE_MS = 90_000L
+
     /** 会话建立互斥（端点交接 → 配对 → 推流全程只允许一条）。 */
     val sessionStarting = AtomicBoolean(false)
+
+    /**
+     * 交接流程已在跑、但 AirPlayClient 尚未创建时收到的晚到端点（0x4301）。
+     * 配对线程起步时取用一次后清空——此刻没有 client 可更新，丢了就白等到下一轮。
+     */
+    @Volatile
+    private var pendingEndpointUpdate: Iap2SenderSession.CarPlayEndpoint? = null
 
     /** 用户取消连接：配对线程在关键检查点看到后中止（mDNS/配对等待无法中途打断，粒度秒级）。 */
     @Volatile
@@ -266,7 +349,17 @@ object SessionController {
         if (bluetoothServer != null) return
         synchronized(this) {
             if (bluetoothServer != null) return
-            wifiConnector = WifiCarPlayConnector(context) { line -> appendLog(line) }
+            wifiConnector =
+                WifiCarPlayConnector(context) { line -> appendLog(line) }.also { connector ->
+                    // 应用专属网络被系统断开（车机熄火/离开范围）：明确告知用户，
+                    // 而不是让英雄卡在「已连接」与失败之间静默摇摆
+                    connector.onNetworkLost = { ssid ->
+                        boundCarSsid = null
+                        phaseHint = "车机热点已断开（$ssid）"
+                        uiHintSink?.invoke("车机热点 \"$ssid\" 已断开——请重新启动连接")
+                        appendLog(">>> 车机热点 \"$ssid\" 已断开——本次会话需重新连接")
+                    }
+                }
             val wifiCredentialHook: (Iap2SenderSession.WifiConfiguration) -> Unit =
                 { wifi -> onWifiCredentials(wifi) }
             // 目标车机动态读取：选择后下一轮连接尝试/下一次连入即生效，无需重启链路
@@ -279,7 +372,11 @@ object SessionController {
                     log = { line -> appendLog(line) },
                     onEndpoint = { endpoint -> onCarPlayEndpoint(endpoint, "车机回连") },
                     onWifiCredentials = wifiCredentialHook,
+                    onEndpointUpdate = { endpoint -> onLateEndpoint(endpoint, "车机回连") },
                     targetProvider = targetProvider,
+                    claimB233InboundRecovery = {
+                        bluetoothClient?.claimB233InboundRecovery() == true
+                    },
                 )
             bluetoothClient =
                 Iap2BluetoothClient(
@@ -287,6 +384,7 @@ object SessionController {
                     log = { line -> appendLog(line) },
                     onEndpoint = { endpoint -> onCarPlayEndpoint(endpoint, "主动连车机") },
                     onWifiCredentials = wifiCredentialHook,
+                    onEndpointUpdate = { endpoint -> onLateEndpoint(endpoint, "主动连车机") },
                     targetProvider = targetProvider,
                 )
             ctrlAdvertiser = CarPlayCtrlAdvertiser(context) { line -> appendLog(line) }
@@ -298,9 +396,15 @@ object SessionController {
                         // 手机双归属（连车机热点 + 自己开热点共享给电脑）时 mDNS 会跨网
                         // 发现电脑的 AirPlay 接收器（macOS 自带）——2026-10-11 实测把
                         // MacBook 当成车机连了 120s。非本网段一律不算车机。
+                        // 地址判定统一走 EndpointHosts：IPv4 按 /24 前缀，链路本地 IPv6
+                        // 天然只在本链路，全局 IPv6 按 /64 比对。旧实现只认 IPv4，会把
+                        // 只广播 fe80:: 的奥迪 4xxx 直接丢掉（2026-10-19）。
                         val ip = info.host?.hostAddress ?: return@CarPlayServiceBrowser false
-                        val prefix = wifiConnector?.localIpv4Address()?.substringBeforeLast('.')?.plus(".")
-                        ip.contains('.') && !ip.contains(':') && (prefix == null || ip.startsWith(prefix))
+                        EndpointHosts.isSameNetwork(
+                            ip,
+                            wifiConnector?.localIpv4Address(),
+                            wifiConnector?.localIpv6Addresses().orEmpty(),
+                        )
                     },
                 )
         }
@@ -322,6 +426,7 @@ object SessionController {
      * 幂等：已有会话时 BT 组件的 start() 自行短路，不会双开。
      */
     fun startConnection(context: Context) {
+        B233PairingMonitor.start(context.applicationContext, ::appendLog)
         connectCancelled = false
         phaseHint = "蓝牙就绪，等待车机回连…"
         when (
@@ -370,7 +475,11 @@ object SessionController {
 
     /** 「断开连接」（可在任意 Activity 实例上调用——操作的是真管线对象）。 */
     fun disconnect(context: Context) {
+        // The user's explicit disconnect cancels all in-flight pairing and auto-join work.
+        connectCancelled = true
+        sessionStarting.set(false)
         val hadProjection = CarPlayService.mediaProjection != null
+        pendingEndpointUpdate = null
         retireSession()
         // BT 控制会话只在这里（用户终态）退役，socket close 让保活读循环立刻退出：
         // 否则它阻塞到对端超时（实测 ~24s）才结束，用户取消后英雄卡持续转圈。
@@ -398,14 +507,19 @@ object SessionController {
     /** 会话结束/新周期开始前彻底退役上一代会话（旧管线泄漏会累积编码器/虚拟显示器，最终 dequeueBuffer -19）。 */
     @Synchronized
     fun retireSession() {
-        // T38: invalidate ownership first. Stopping video can asynchronously call onEnded;
-        // that callback must not mistake a deliberately retired sender for the current one.
+        // E5 T38 fix: revoke ownership BEFORE stop/close triggers onEnded.
         val retiredVideo = videoSender
         videoSender = null
         val retiredClient = currentClient
         currentClient = null
         retiredClient?.cancelled = true
+        // T28: finish EGL producer before stopping/releasing MediaCodec input Surface.
+        val retiredDiagnostic = currentDiagnosticSource
+        currentDiagnosticSource = null
+        retiredDiagnostic?.stop()
         retiredVideo?.stop()
+        // 暗幕/常亮随会话收掉（本方法在每轮配对起步也会执行，新一轮推流起来后会重新置位）
+        ScreenDimmer.setSessionActive(false)
         audioSender?.stop()
         audioSender = null
         currentSharedSecret = null
@@ -437,7 +551,11 @@ object SessionController {
                 appendLog("MODE: 投屏已就绪（当前无会话——下次连接时自动启用音频）")
                 return
             }
-        val secret = currentSharedSecret ?: return
+        val secret = currentSharedSecret
+        if (secret == null) {
+            appendLog("MODE: 明文会话（未配对）无共享密钥——不补启音频")
+            return
+        }
         if (audioSender?.isRunning == true) return
         appendLog("MODE: 会话进行中，动态补启音频通道…")
         startAudioChannel(context, client, secret, currentAudioHost)
@@ -485,13 +603,260 @@ object SessionController {
      * Shizuku 未就绪/连接失败时回退「系统 WLAN 手动加入」指引（密码可经「去连接」复制）。
      */
     private fun autoJoinCarWifi(wifi: Iap2SenderSession.WifiConfiguration) {
-        val ctx = appContext
-        val shizukuReady =
-            ctx != null &&
-                ShizukuGate
-                    .state(ctx) ==
-                ShizukuGate.State.READY
-        if (!shizukuReady) {
+        Bg.run("wifi-auto-join") {
+            val shellReady =
+                appContext?.let { ShizukuGate.state(it) == ShizukuGate.State.READY } == true
+            // 1) WLAN 开关。shell 不可用时跳过检查——requestNetwork 会以 Unavailable 反馈。
+            if (shellReady && shellWifiDisabled() && !waitForWifiEnabled()) return@run
+            if (connectCancelled) return@run
+            // 2) 首选应用专属网络（不影响 4G/5G、不会被系统切回、不需要 Shizuku）
+            when (val result = joinCarWifiSpecifier(wifi, shellReady)) {
+                is WifiCarPlayConnector.JoinResult.Joined -> Unit
+
+                WifiCarPlayConnector.JoinResult.Unsupported -> {
+                    appendLog("WIFI: 热点安全类型 ${wifi.securityType} 无法用应用专属网络表达——退回系统级加入")
+                    legacyJoinCarWifi(wifi, shellReady)
+                }
+
+                WifiCarPlayConnector.JoinResult.Unavailable -> promptSpecifierFailed(wifi, shellReady)
+            }
+        }
+    }
+
+    /**
+     * 用应用专属网络（`WifiNetworkSpecifier`）加入车机热点，成功后进程网络已绑定。
+     *
+     * 先清掉系统里保存的同名热点：旧版本用 `cmd wifi connect-network` 存过它，
+     * 只要还在系统配置里，系统就会自动全局连接——无互联网热点于是被当成默认网络，
+     * 部分 ROM 连带断掉移动数据，正是本次要解决的场景。
+     */
+    private fun joinCarWifiSpecifier(
+        wifi: Iap2SenderSession.WifiConfiguration,
+        shellReady: Boolean,
+    ): WifiCarPlayConnector.JoinResult {
+        val connector = wifiConnector ?: return WifiCarPlayConnector.JoinResult.Unavailable
+        // 已保存到系统配置里才询问是否清除：不擅自删用户网络（有的场景就是要用
+        // 车机流量/互联网，或用户希望系统自动连）。选择保留不影响本轮连接。
+        if (shellReady) {
+            promptForgetSavedNetworkIfAny(wifi.ssid)
+            if (connectCancelled) return WifiCarPlayConnector.JoinResult.Unavailable
+        }
+        phaseHint = "正在加入车机热点 ${wifi.ssid}…（不影响移动数据）"
+        appendLog(
+            ">>> 以应用专属网络加入 \"${wifi.ssid}\"（不保存为系统 WiFi，其它应用继续走 4G/5G）",
+        )
+        val result =
+            synchronized(wifiBindLock) {
+                val existing = connector.currentNetwork
+                if (boundCarSsid == wifi.ssid && existing != null) {
+                    appendLog("WIFI: 应用专属网络已在位——跳过重复加入")
+                    WifiCarPlayConnector.JoinResult.Joined(existing)
+                } else {
+                    connector.joinCarPlayNetwork(
+                        ssid = wifi.ssid,
+                        passphrase = wifi.passphrase,
+                        securityType = wifi.securityType,
+                        timeoutMillis = SPECIFIER_JOIN_TIMEOUT_MS,
+                        isCancelled = { connectCancelled },
+                    )
+                }
+            }
+        if (result is WifiCarPlayConnector.JoinResult.Joined) {
+            boundCarSsid = wifi.ssid
+            phaseHint = "已加入车机热点"
+            // 关键时机：bindProcessToNetwork 完成后再注册，车机才能看到 ctrl 广播
+            ctrlAdvertiser?.ensureForNetwork(wifi.ssid, force = true, network = connector.currentNetwork)
+            appendLog(">>> WiFi 已加入车机热点（应用专属网络），ctrl 广播已重新注册，等待车机 ctrl 邀请")
+        } else if (!connectCancelled) {
+            appendLog("WIFI: 应用专属网络加入未成功（${result.javaClass.simpleName}）")
+        }
+        return result
+    }
+
+    /**
+     * 系统里已保存同名热点时，询问用户是否清除（**不擅自删除**）。
+     *
+     * 为什么要问而不是直接删：保留也有正当用途——用户可能就想让系统自动连车机、
+     * 或车机热点确实带互联网（部分车型提供流量）。删除只影响「系统会不会全局
+     * 自动连它」，与本轮连接无关；选择「保留」时继续正常连接。
+     *
+     * 每个 SSID 每个进程只问一次：配对失败重试、端点交接重入都会再次走到这里，
+     * 重复弹窗会挡住连接（2026-10-18 实测）。用户的选择在本次进程内记忆。
+     *
+     * 阻塞直到用户选择（[JOIN_DIALOG_TIMEOUT_S] 超时按「保留」处理——不做破坏性动作）。
+     */
+    private fun promptForgetSavedNetworkIfAny(ssid: String) {
+        if (!forgetPromptHandled.add(ssid)) return
+        val ids = savedNetworkIds(ssid)
+        if (ids.isEmpty()) return
+        appendLog(
+            "WIFI: 系统里已保存热点 \"$ssid\"（netId=${ids.joinToString(",")}）" +
+                "——询问用户是否清除（保留也能正常连接）",
+        )
+        val forget =
+            askWifiJoinChoice(
+                DialogSpec(
+                    title = "已保存该车机热点",
+                    message =
+                        "系统里保存过 \"$ssid\"。保留会让手机在进入范围时自动连接它，" +
+                            "若该热点没有互联网，可能导致手机无法使用移动数据。\n\n" +
+                            "「清除」只是不再自动连接，不影响本次使用；" +
+                            "如果车机热点本身提供网络，选「保留」。",
+                    positive = "清除保存",
+                    negative = "保留",
+                ),
+            )
+        if (connectCancelled) return
+        when (forget) {
+            true -> {
+                ids.forEach { id ->
+                    val result = Shell.exec("cmd wifi forget-network $id", 5_000L)
+                    appendLog(
+                        "WIFI: 已按用户选择清除系统级保存的热点 \"$ssid\"（netId=$id ok=${result.ok}）",
+                    )
+                }
+            }
+
+            false -> appendLog("WIFI: 用户选择保留系统保存的 \"$ssid\"——继续以应用专属网络连接")
+
+            // 无人应答（UI 不在前台）：按「保留」处理，绝不在用户未确认时删网络
+            null -> appendLog("WIFI: 无人应答是否清除保存的网络——按保留处理（不改用户配置）")
+        }
+    }
+
+    /** 查系统已保存的、SSID 与目标完全一致的网络 id（`cmd wifi list-networks`）。 */
+    private fun savedNetworkIds(ssid: String): List<Int> {
+        val listing = Shell.exec("cmd wifi list-networks", 5_000L)
+        if (!listing.ok) {
+            appendLog("WIFI: 无法读取系统已保存网络（exit=${listing.exitCode}）——跳过检查")
+            return emptyList()
+        }
+        return WifiSavedNetworks.idsOf(listing.output, ssid)
+    }
+
+    /** WiFi 未开启时的引导与等待；true = 已开启可继续。 */
+    private fun waitForWifiEnabled(): Boolean {
+        val open =
+            askWifiJoinChoice(
+                DialogSpec(
+                    title = "WiFi 未开启",
+                    message = "连接车机热点需要打开手机 WLAN。是否打开 WLAN 设置？",
+                    positive = "打开 WLAN 设置",
+                    negative = "取消",
+                ),
+            )
+        if (connectCancelled) return false
+        when (open) {
+            true -> {
+                openWlanSettings()
+                uiHintSink?.invoke("请在 WLAN 设置中打开 WiFi 开关")
+            }
+
+            false -> {
+                phaseHint = "已取消——连接车机热点需要开启 WLAN"
+                appendLog("WIFI: 用户取消——自动加入中止（WiFi 未开启）")
+                return false
+            }
+
+            null -> {
+                phaseHint = "WiFi 未开启——连接车机热点需要开启 WLAN"
+                appendLog("WIFI: 弹窗无人应答——自动加入中止（WiFi 未开启）")
+                return false
+            }
+        }
+        var waited = 0
+        while (shellWifiDisabled() && waited < WLAN_WAIT_TIMEOUT_MS && !connectCancelled) {
+            if (waited == 0) {
+                phaseHint = "等待打开 WLAN（最长 120 秒，取消连接可中止）"
+                appendLog("WIFI: 等待用户打开 WLAN（最长 120 秒，取消连接可中止）")
+            }
+            Thread.sleep(2_000)
+            waited += 2_000
+        }
+        if (connectCancelled) {
+            phaseHint = "已取消连接"
+            return false
+        }
+        if (shellWifiDisabled()) {
+            phaseHint = "WiFi 未开启——无法连接车机热点"
+            appendLog("WIFI: 等待超时 WiFi 仍未开启——自动加入中止，请打开 WLAN 后重新连接")
+            return false
+        }
+        return true
+    }
+
+    /** 应用专属网络被系统拒绝/超时：让用户重试或转手动连接。 */
+    private fun promptSpecifierFailed(
+        wifi: Iap2SenderSession.WifiConfiguration,
+        shellReady: Boolean,
+    ) {
+        if (connectCancelled) return
+        val choice =
+            askWifiJoinChoice(
+                DialogSpec(
+                    title = "未能加入车机热点",
+                    message =
+                        "系统没有允许加入 \"${wifi.ssid}\"（可能点了拒绝，或热点不在范围内）。\n\n" +
+                            "「重试」会再次弹出系统确认框。也可以到 WLAN 设置手动连接——" +
+                            "手动连接会把热点保存为系统网络，可能影响移动数据。",
+                    positive = "重试",
+                    negative = "打开 WLAN 设置",
+                ),
+            )
+        if (connectCancelled) return
+        when (choice) {
+            true -> {
+                when (val retry = joinCarWifiSpecifier(wifi, shellReady)) {
+                    is WifiCarPlayConnector.JoinResult.Joined -> Unit
+                    WifiCarPlayConnector.JoinResult.Unsupported -> legacyJoinCarWifi(wifi, shellReady)
+                    WifiCarPlayConnector.JoinResult.Unavailable -> {
+                        phaseHint = "未能加入车机热点——请到 WLAN 设置手动连接"
+                        appendLog("WIFI: 重试仍未加入 \"${wifi.ssid}\"——请到系统 WLAN 手动连接")
+                    }
+                }
+            }
+
+            false -> manualJoinCarWifi(wifi)
+
+            null -> {
+                phaseHint = "未能加入车机热点——请重新连接"
+                appendLog("WIFI: 弹窗无人应答——自动加入中止")
+            }
+        }
+    }
+
+    /** 手动兜底：密码进剪贴板 + 跳 WLAN 设置，轮询用户是否连上。 */
+    private fun manualJoinCarWifi(wifi: Iap2SenderSession.WifiConfiguration) {
+        copyHotspotPsk(wifi.passphrase)
+        openWlanSettings()
+        phaseHint = "请在 WLAN 设置中连接 ${wifi.ssid}…"
+        appendLog(
+            "WIFI: 用户选择手动连接——等待 WLAN 连上 \"${wifi.ssid}\"（最长 120 秒）；" +
+                "注意：手动连接会把该热点保存为系统网络，若它没有互联网可能影响移动数据",
+        )
+        val manualDeadline = android.os.SystemClock.uptimeMillis() + WLAN_WAIT_TIMEOUT_MS
+        while (android.os.SystemClock.uptimeMillis() < manualDeadline) {
+            if (connectCancelled) return
+            Thread.sleep(5_000)
+            if (shellWifiStatus().second == wifi.ssid) {
+                bindCarWifiAndRegister(wifi.ssid)
+                return
+            }
+        }
+        phaseHint = "尚未连接 ${wifi.ssid}——自动加入已中止"
+        appendLog("WIFI: 手动连接等待超时——自动加入中止")
+    }
+
+    /**
+     * 旧路径（WEP 等 specifier 无法表达的安全类型）：`cmd wifi connect-network`
+     * 系统级保存并切换。注意这会保存热点为系统网络——无互联网时可能影响移动数据，
+     * 只作为兼容兜底。
+     */
+    private fun legacyJoinCarWifi(
+        wifi: Iap2SenderSession.WifiConfiguration,
+        shellReady: Boolean,
+    ) {
+        if (!shellReady) {
             phaseHint = "手机不在车机热点——请到 WLAN 设置加入 ${wifi.ssid}"
             appendLog(
                 ">>> 手机不在车机热点 \"${wifi.ssid}\" 且 Shizuku 未就绪（无法自动加入）——" +
@@ -499,152 +864,80 @@ object SessionController {
             )
             return
         }
-        Bg.run("wifi-auto-join") {
-            // WiFi 未开启：弹窗让用户「打开 WLAN 设置」（去系统页开开关）或「取消」；
-            // 选打开后等待开启（最长 120 秒，期间轮询开关状态，可取消）
-            if (shellWifiDisabled()) {
-                // 弹窗语义：positive「打开 WLAN 设置」→ 跳系统页开开关并等待；
-                // negative「取消」/无人应答 → 中止自动加入
-                val open =
-                    askWifiJoinChoice(
-                        DialogSpec(
-                            title = "WiFi 未开启",
-                            message = "连接车机热点需要打开手机 WLAN。是否打开 WLAN 设置？",
-                            positive = "打开 WLAN 设置",
-                            negative = "取消",
-                        ),
-                    )
-                if (connectCancelled) return@run
-                when (open) {
-                    true -> {
-                        openWlanSettings()
-                        uiHintSink?.invoke("请在 WLAN 设置中打开 WiFi 开关")
-                    }
-
-                    false -> {
-                        phaseHint = "已取消——连接车机热点需要开启 WLAN"
-                        appendLog("WIFI: 用户取消——自动加入中止（WiFi 未开启）")
-                        return@run
-                    }
-
-                    null -> {
-                        phaseHint = "WiFi 未开启——连接车机热点需要开启 WLAN"
-                        appendLog("WIFI: 弹窗无人应答——自动加入中止（WiFi 未开启）")
-                        return@run
-                    }
-                }
-                var waited = 0
-                while (shellWifiDisabled() && waited < WLAN_WAIT_TIMEOUT_MS && !connectCancelled) {
-                    if (waited == 0) {
-                        phaseHint = "等待打开 WLAN（最长 120 秒，取消连接可中止）"
-                        appendLog("WIFI: 等待用户打开 WLAN（最长 120 秒，取消连接可中止）")
-                    }
-                    Thread.sleep(2_000)
-                    waited += 2_000
-                }
-                if (connectCancelled) {
-                    phaseHint = "已取消连接"
-                    return@run
-                }
-                if (shellWifiDisabled()) {
-                    phaseHint = "WiFi 未开启——无法连接车机热点"
-                    appendLog("WIFI: 等待超时 WiFi 仍未开启——自动加入中止，请打开 WLAN 后重新连接")
-                    return@run
-                }
-            }
-
-            val current = shellWifiStatus().second
-            if (current == wifi.ssid) {
-                appendLog("WIFI: 手机已在车机热点 \"$current\"——直接绑定")
-                bindCarWifiAndRegister(wifi)
-                return@run
-            }
-            if (connectCancelled) return@run
-            // 确认弹窗：自动加入可能被系统切回原 WiFi（热点无互联网），让用户
-            // 显式选择「继续自动加入」或「直接去 WLAN 手动连接」
-            val choice =
-                askWifiJoinChoice(
-                    DialogSpec(
-                        title = "连接车机热点",
-                        message =
-                            "将自动加入 \"${wifi.ssid}\" 热点。由于系统限制（热点无互联网），" +
-                                "可能出现断连并自动切回原 WiFi。\n\n出现断连时，请到 WLAN 设置中主动连接 " +
-                                "\"${wifi.ssid}\"（手动连接不会被切回）。",
-                        positive = "继续自动加入",
-                        negative = "打开 WLAN 设置",
-                    ),
-                )
-            if (connectCancelled) return@run
-            if (choice == false) {
-                // 用户选手动：热点密码先进剪贴板（WLAN 页粘贴即可），再跳系统 WLAN
-                copyHotspotPsk(wifi.passphrase)
-                openWlanSettings()
-                phaseHint = "请在 WLAN 设置中连接 ${wifi.ssid}…"
-                appendLog("WIFI: 用户选择手动连接——等待 WLAN 连上 \"${wifi.ssid}\"（最长 120 秒）")
-                val manualDeadline = android.os.SystemClock.uptimeMillis() + WLAN_WAIT_TIMEOUT_MS
-                while (android.os.SystemClock.uptimeMillis() < manualDeadline) {
-                    if (connectCancelled) return@run
-                    Thread.sleep(5_000)
-                    if (shellWifiStatus().second == wifi.ssid) {
-                        bindCarWifiAndRegister(wifi)
-                        return@run
-                    }
-                }
-                phaseHint = "尚未连接 ${wifi.ssid}——自动加入已中止"
-                appendLog("WIFI: 手动连接等待超时——自动加入中止")
-                return@run
-            }
-            phaseHint = "正在自动加入车机热点 ${wifi.ssid}…"
-            appendLog(
-                ">>> 手机当前 WiFi: ${current ?: "未连接"}（非车机热点）——" +
-                    "经 Shizuku 自动切换到 \"${wifi.ssid}\"。注意：热点无互联网，系统可能自动切回原 WiFi；" +
-                    "若出现断连，请到 系统设置>WLAN 手动连接 \"${wifi.ssid}\"（手动连接不会被切回）",
-            )
-            if (connectCancelled) return@run
-            val security =
-                if (wifi.passphrase.isEmpty()) "open" else "wpa2 ${shellQuote(wifi.passphrase)}"
-            val result =
-                Shell
-                    .exec("cmd wifi connect-network ${shellQuote(wifi.ssid)} $security", 10_000L)
-            if (!result.ok) {
-                phaseHint = "自动加入热点失败——请到 WLAN 设置加入 ${wifi.ssid}"
-                appendLog(
-                    "WIFI: connect-network 失败（${result.output.take(80).ifEmpty { "exit=${result.exitCode}" }}）" +
-                        "——请到 系统设置>WLAN 手动加入（密码可点「去连接」复制）",
-                )
-                return@run
-            }
-            phaseHint = "正在加入车机热点 ${wifi.ssid}…若被切回原 WiFi，请在 WLAN 中手动连接"
-            appendLog("WIFI: connect-network 已发起（自动保存网络，等待切换…）")
-            // 系统切换是异步的（断开当前网/扫描/关联/DHCP，2-10 秒）：轮询 SSID 确认。
-            // 先查再睡（旧实现先睡 2.5s，每次都要白等一轮）；间隔 800ms 让绑定早发生。
-            repeat(20) {
-                if (connectCancelled) {
-                    appendLog("WIFI: 自动加入已取消（用户断开）")
-                    return@run
-                }
-                val ssid = shellWifiStatus().second
-                if (ssid == null) {
-                    // status 命令不可用（非 AOSP 系统）：退化为直接尝试绑定（无 SSID 校验）
-                    bindCarWifiAndRegister(wifi)
-                    return@run
-                }
-                if (ssid == wifi.ssid) {
-                    appendLog("WIFI: 已切到车机热点 ${wifi.ssid}")
-                    bindCarWifiAndRegister(wifi)
-                    return@run
-                }
-                Thread.sleep(800)
-            }
-            phaseHint = "未能在热点驻留——请到 WLAN 设置手动连接 ${wifi.ssid}"
-            uiHintSink?.invoke(
-                "未能在热点驻留——请到 WLAN 设置中主动连接 ${wifi.ssid}",
-            )
-            appendLog(
-                ">>> WiFi 自动加入超时（可能被系统切回原 WiFi）——" +
-                    "请到 系统设置>WLAN 手动连接 \"${wifi.ssid}\"（手动连接不会被自动切回）",
-            )
+        val current = shellWifiStatus().second
+        if (current == wifi.ssid) {
+            appendLog("WIFI: 手机已在车机热点 \"$current\"——直接绑定")
+            bindCarWifiAndRegister(wifi.ssid)
+            return
         }
+        if (connectCancelled) return
+        val choice =
+            askWifiJoinChoice(
+                DialogSpec(
+                    title = "连接车机热点",
+                    message =
+                        "将自动加入 \"${wifi.ssid}\" 热点。该热点无互联网，系统可能自动切回原 WiFi。" +
+                            "\n\n出现断连时，请到 WLAN 设置中主动连接 \"${wifi.ssid}\"（手动连接不会被切回）。",
+                    positive = "继续自动加入",
+                    negative = "打开 WLAN 设置",
+                ),
+            )
+        if (connectCancelled) return
+        if (choice == false) {
+            manualJoinCarWifi(wifi)
+            return
+        }
+        if (choice == null) {
+            phaseHint = "未能加入车机热点——请重新连接"
+            appendLog("WIFI: 弹窗无人应答——自动加入中止")
+            return
+        }
+        phaseHint = "正在自动加入车机热点 ${wifi.ssid}…"
+        appendLog(
+            ">>> 手机当前 WiFi: ${current ?: "未连接"}（非车机热点）——" +
+                "经 Shizuku 自动切换到 \"${wifi.ssid}\"",
+        )
+        if (connectCancelled) return
+        val security =
+            if (wifi.passphrase.isEmpty()) "open" else "wpa2 ${shellQuote(wifi.passphrase)}"
+        val result =
+            Shell
+                .exec("cmd wifi connect-network ${shellQuote(wifi.ssid)} $security", 10_000L)
+        if (!result.ok) {
+            phaseHint = "自动加入热点失败——请到 WLAN 设置加入 ${wifi.ssid}"
+            appendLog(
+                "WIFI: connect-network 失败（${result.output.take(80).ifEmpty { "exit=${result.exitCode}" }}）" +
+                    "——请到 系统设置>WLAN 手动加入（密码可点「去连接」复制）",
+            )
+            return
+        }
+        phaseHint = "正在加入车机热点 ${wifi.ssid}…若被切回原 WiFi，请在 WLAN 中手动连接"
+        appendLog("WIFI: connect-network 已发起（自动保存网络，等待切换…）")
+        // 系统切换是异步的（断开当前网/扫描/关联/DHCP，2-10 秒）：轮询 SSID 确认。
+        repeat(20) {
+            if (connectCancelled) {
+                appendLog("WIFI: 自动加入已取消（用户断开）")
+                return
+            }
+            val ssid = shellWifiStatus().second
+            if (ssid == null) {
+                // status 命令不可用（非 AOSP 系统）：退化为直接尝试绑定（无 SSID 校验）
+                bindCarWifiAndRegister(wifi.ssid)
+                return
+            }
+            if (ssid == wifi.ssid) {
+                appendLog("WIFI: 已切到车机热点 ${wifi.ssid}")
+                bindCarWifiAndRegister(wifi.ssid)
+                return
+            }
+            Thread.sleep(800)
+        }
+        phaseHint = "未能在热点驻留——请到 WLAN 设置手动连接 ${wifi.ssid}"
+        uiHintSink?.invoke("未能在热点驻留——请到 WLAN 设置中主动连接 ${wifi.ssid}")
+        appendLog(
+            ">>> WiFi 自动加入超时（可能被系统切回原 WiFi）——" +
+                "请到 系统设置>WLAN 手动连接 \"${wifi.ssid}\"（手动连接不会被自动切回）",
+        )
     }
 
     /**
@@ -661,11 +954,11 @@ object SessionController {
      *
      * @return 进程网络是否绑定成功
      */
-    private fun bindCarWifiAndRegister(wifi: Iap2SenderSession.WifiConfiguration): Boolean {
+    private fun bindCarWifiAndRegister(ssid: String): Boolean {
         var bound = false
         synchronized(wifiBindLock) {
             // 另一个路径已经绑定同一热点：别再走一遍 release+requestNetwork
-            if (boundCarSsid == wifi.ssid && wifiConnector?.currentNetwork != null) {
+            if (boundCarSsid == ssid && wifiConnector?.currentNetwork != null) {
                 bound = true
             } else {
                 val latch = java.util.concurrent.CountDownLatch(1)
@@ -681,18 +974,18 @@ object SessionController {
                 ) {
                     if (latch.await(200, java.util.concurrent.TimeUnit.MILLISECONDS)) break
                 }
-                if (bound) boundCarSsid = wifi.ssid
+                if (bound) boundCarSsid = ssid
             }
         }
         if (bound && !connectCancelled) {
             phaseHint = "已加入车机热点"
             // 关键时机：bindProcessToNetwork 完成后再注册，车机才能看到 ctrl 广播
-            ctrlAdvertiser?.ensureForNetwork(wifi.ssid, force = true, network = wifiConnector?.currentNetwork)
+            ctrlAdvertiser?.ensureForNetwork(ssid, force = true, network = wifiConnector?.currentNetwork)
             appendLog(">>> WiFi 已绑定车机热点，ctrl 广播已重新注册，等待车机 ctrl 邀请（随后才回 0x4301）")
         } else if (!connectCancelled) {
-            phaseHint = "手机不在车机热点——请到 WLAN 设置加入 ${wifi.ssid}"
+            phaseHint = "手机不在车机热点——请到 WLAN 设置加入 $ssid"
             appendLog(
-                ">>> 等待 ${WIFI_BIND_WAIT_S}s 仍未绑定到 \"${wifi.ssid}\"——" +
+                ">>> 等待 ${WIFI_BIND_WAIT_S}s 仍未绑定到 \"$ssid\"——" +
                     "请在 系统设置>WLAN 手动加入该热点后重新连接",
             )
         }
@@ -848,15 +1141,21 @@ object SessionController {
     fun startAudioChannel(
         context: Context,
         client: AirPlayClient,
-        sharedSecret: ByteArray,
+        sharedSecret: ByteArray?,
         host: String?,
     ): Boolean {
         if (!audioEnabledForSession) {
             appendLog("AUDIO: 本次连接未开启车机侧声音（「启动连接」弹窗选择）——仅推视频")
             return false
         }
+        if (sharedSecret == null) {
+            // 明文会话（et=NONE）没有共享密钥可派生 DataStream 输出密钥：
+            // 推出去的 RTP 车机无法解密。宁可不推，也不要制造「有包无声」的假象。
+            appendLog("AUDIO: 明文会话（未配对）无共享密钥——跳过音频通道")
+            return false
+        }
         if (host == null) {
-            appendLog("AUDIO: 无接收端 IPv4 地址，跳过音频通道")
+            appendLog("AUDIO: 无接收端可用地址，跳过音频通道")
             return false
         }
         val projection = CarPlayService.mediaProjection
@@ -868,7 +1167,140 @@ object SessionController {
             return false
         }
         return try {
-            val audio = client.runAudioStream(sharedSecret) ?: return false
+            // 车机身份 → 只用于「本车机哪些音频档位踩过雷」的持久化记忆。
+            val identity = client.receiverIdentity()
+            // T11 migration: T10 falsely rejected PCM based on a B233 virtual
+            // iAP2 0x5001 ACK watchdog timeout. Those profile conclusions are
+            // not evidence of bad audio. Clear only this receiver's stale
+            // memory once; never touch other car identities or user settings.
+            if (client.currentEndpoint.isBuickB233) {
+                val migration = context.applicationContext.getSharedPreferences(
+                    "b233_audio_t11_migration", Context.MODE_PRIVATE,
+                )
+                if (!migration.getBoolean("old_link_timeout_reclassified", false)) {
+                    AudioProfileMemory.reset(context.applicationContext, identity)
+                    migration.edit().putBoolean("old_link_timeout_reclassified", true).apply()
+                    appendLog("AUDIO T11: 已清除 B233 旧版的错误档位归因；其他车机记忆不变")
+                }
+            }
+            // T13: T9 AAC was tested before RECORD/sync and iAP2 fixes.
+            // T10 later forced PCM and polluted B233's profile memory.
+            // Clear only this receiver's stale conclusions once so that
+            // 102/media AAC-LC 48kHz gets a fair trial with the fixed stack.
+            if (client.currentEndpoint.isBuickB233) {
+                val trialPrefs = context.applicationContext.getSharedPreferences(
+                    "b233_audio_t13_migration", Context.MODE_PRIVATE,
+                )
+                if (!trialPrefs.getBoolean("aac48_first_trial", false)) {
+                    AudioProfileMemory.reset(context.applicationContext, identity)
+                    trialPrefs.edit().putBoolean("aac48_first_trial", true).apply()
+                    appendLog("AUDIO T13: 仅重置 B233 旧音频档位判断，准备重新验证 AAC-LC 48kHz")
+                }
+            }
+            // 音频封装参数已定案（见 AudioTuning），不再提供切换
+            val tuning = AudioTuning.RAW_SPF
+            var entry = AudioProfileMemory.load(context.applicationContext, identity)
+            if (entry.disabled) {
+                // 以前「全部档位都导致拆链」会自动退成只推视频，并要用户去弹窗里手点
+                // 「清除记忆」。现在音频通路已换成 AAC-LC 且实测能稳定跑满 147s，
+                // 旧结论不再可信：用户既然主动选了「开启声音」，就直接清记忆重试。
+                if (client.currentEndpoint.isBuickB233) {
+                    AudioProfileMemory.reset(context.applicationContext, identity)
+                } else {
+                    AudioProfileMemory.clearAll(context.applicationContext)
+                }
+                entry = AudioProfileMemory.load(context.applicationContext, identity)
+                appendLog("AUDIO: 本车机（$identity）有「全部档位拆链」的旧记忆，已重置并重试")
+            }
+            val candidates = client.audioCandidates(preferCompat = audioPreferCompat)
+            // T16: T13 ran once; its AAC RTCP/6011 ECONNREFUSED was
+            // permanently recorded as a rejected AAC profile by the old T10
+            // recovery, so T14 never actually exercised its AAC-RTP fix.
+            // Re-open only that B233 AAC-LC 48k media key ONCE after T14,
+            // without deleting PCM successes or other cars' compatibility
+            // history. A genuinely rejected AAC SETUP after this migration
+            // is still recorded normally by recordRejected below.
+            if (client.currentEndpoint.isBuickB233) {
+                val aac48MediaKeys =
+                    candidates.filter {
+                        it.streamType == 102L &&
+                            it.sampleRate == 48_000 &&
+                            it.audioType.equals("media", ignoreCase = true)
+                    }.map { it.key }.toSet()
+                val migration = context.applicationContext.getSharedPreferences(
+                    "b233_audio_t16_retrial", Context.MODE_PRIVATE,
+                )
+                val migrationKey = "aac_rtcp_${AudioProfileMemory.receiverKey(identity)}"
+                if (aac48MediaKeys.isNotEmpty() && !migration.getBoolean(migrationKey, false)) {
+                    val oldRejected = entry.rejected.intersect(aac48MediaKeys)
+                    AudioProfileMemory.reopenRejectedProfiles(
+                        context.applicationContext, identity, aac48MediaKeys,
+                    )
+                    entry = AudioProfileMemory.load(context.applicationContext, identity)
+                    migration.edit().putBoolean(migrationKey, true).apply()
+                    appendLog(
+                        "AUDIO T16: B233 清除旧 RTCP 误判的 AAC48 拒绝记忆=" +
+                            "$oldRejected；本轮重试 AAC，保留其他档位历史",
+                    )
+                }
+            }
+            // T13 follows upstream Honda PR #9: PCM SETUP success does not
+            // prove that the car will consume/accept that media stream.
+            // On B233, retry its advertised 102/media AAC-LC 48k before PCM.
+            // Other receivers retain upstream unchanged ordering.
+            val ordered =
+                if (client.currentEndpoint.isBuickB233) {
+                    AudioProfileMemory.orderForBuickB233(candidates, entry)
+                } else {
+                    AudioProfileMemory.order(candidates, entry)
+                }
+            if (client.currentEndpoint.isBuickB233) {
+                appendLog(
+                    "AUDIO T13: B233 AAC-LC 48kHz(type=102/media) 优先，PCM(type=100) 后备；" +
+                        "候选=${ordered.map { it.label }}",
+                )
+            }
+            if (ordered.isEmpty()) {
+                appendLog("AUDIO: 没有可用音频档位（候选=${candidates.map { it.label }}）——仅推视频")
+                return false
+            }
+            appendLog(
+                "AUDIO: 音频档位候选=${ordered.map { it.label }}" +
+                    "（本车机记忆：${AudioProfileMemory.describe(entry)}；" +
+                    "封装=${tuning.detail}）",
+            )
+            // SETUP 失败不会扰动会话（车机只是不接这条流的请求），所以本会话内就把候选
+            // 试完，不必等下一次连接。这一点对当前场景很关键：102/AAC-LC 与 100/PCM 是
+            // 两条完全不同的通路，前者不被接受时应当立刻退到后者，而不是让用户白连一次。
+            var chosen: AudioProfile? = null
+            var streamInfo: AirPlayClient.AudioStreamInfo? = null
+            for (candidate in ordered) {
+                val result = client.runAudioStream(sharedSecret, candidate, tuning)
+                if (result != null) {
+                    chosen = candidate
+                    streamInfo = result
+                    break
+                }
+                // SETUP 被拒不等于「车机不兼容」：可能只是资源仲裁/网络抖动，
+                // 不能据此把整台车机的音频判死（置 disabled 只认「拆链」证据）。
+                AudioProfileMemory.recordRejected(
+                    context.applicationContext,
+                    identity,
+                    candidate.key,
+                    ordered.map { it.key }.toSet(),
+                    markExhausted = false,
+                )
+                appendLog("AUDIO: 档位 ${candidate.label} 协商失败——本会话继续试下一档")
+            }
+            val profile = chosen
+            val audio = streamInfo
+            if (profile == null || audio == null) {
+                appendLog("AUDIO: 全部候选档位协商失败（共 ${ordered.size} 档）——本次仅推视频")
+                return false
+            }
+            activeAudioProfile = profile
+            activeAudioReceiverKey = identity
+            activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
             val sender =
                 AudioSender(
                     host = host,
@@ -877,11 +1309,71 @@ object SessionController {
                     log = { line -> appendLog(line) },
                     context = context.applicationContext,
                     sampleRate = audio.sampleRate,
-                    carWifiNetwork = wifiConnector?.currentNetwork,
+                    codec = profile.codec,
+                    streamType = profile.streamType,
+                    adtsFrames = tuning.adts,
+                    vehicleNetwork =
+                        if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
+                    // 同步包目标端口：车机在 SETUP 应答里下发。缺了它就没有 RTP↔NTP 锚点，
+                    // 接收端只能「按到达时刻猜」，严格的实现干脆不排播（2026-10-20 实测）。
+                    controlPort = audio.controlPort,
+                    deferSyncUntilRecord = client.currentEndpoint.isBuickB233,
+                    // T12: keep Sony media volume intact while isolating B233 zero capture.
+                    // Other cars retain existing no-local-speaker policy.
+                    mutePhoneOutput = !client.currentEndpoint.isBuickB233,
+                    verboseStartupDiagnostics = client.currentEndpoint.isBuickB233,
+                    onSyncPortRefused =
+                        if (client.currentEndpoint.isBuickB233) {
+                            { error ->
+                                Bg.run("b233-audio-refused") {
+                                    val active = audioSender
+                                    if (active != null && currentClient === client &&
+                                        activeAudioProfile?.key == profile.key
+                                    ) {
+                                        if (
+                                            AudioSender.keepRtpAfterSyncPortRefused(
+                                                client.currentEndpoint.isBuickB233,
+                                                profile.codec,
+                                            )
+                                        ) {
+                                            // RTCP controlPort=6011 is explicitly refused, but
+                                            // AAC dataPort=6000 did accept 49 packets and the
+                                            // /feedback stream clock advanced. The sync thread
+                                            // already exits on this IOException: keep RTP alive
+                                            // to test whether the B233 audio watchdog requires
+                                            // uninterrupted packets after SETUP + RECORD.
+                                            appendLog(
+                                                "AUDIO T14: B233 AAC RTCP端口拒绝（$error）；" +
+                                                    "仅停止同步包，继续 AAC RTP 推流以验证20秒拆链",
+                                            )
+                                        } else {
+                                            appendLog(
+                                                "AUDIO T10: B233 sync端口拒绝（$error）；" +
+                                                    "停止本次音频，保留视频会话",
+                                            )
+                                            audioSender = null
+                                            activeAudioProfile = null
+                                            activeAudioStartedAt = 0L
+                                            AudioProfileMemory.recordTransportFailure(
+                                                context.applicationContext, identity, profile.key,
+                                            )
+                                            active.stop()
+                                            uiHintSink?.invoke(
+                                                "B233 音频同步端口拒绝，已退回纯视频；下次尝试其他档位",
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            null
+                        },
                 )
             audioSender = sender
             if (!sender.start(projection)) {
                 audioSender = null
+                activeAudioProfile = null
+                activeAudioStartedAt = 0L
                 false
             } else {
                 true
@@ -889,21 +1381,119 @@ object SessionController {
         } catch (error: Exception) {
             appendLog("AUDIO: 通道启动异常 - ${error.message}")
             audioSender = null
+            activeAudioProfile = null
+            activeAudioStartedAt = 0L
             false
         }
     }
 
     /**
-     * 端点补全：0x4301 缺失/无 IPv4 时用 mDNS 解析车机 `_airplay._tcp` 合成端点
-     * （真 iPhone 同款发现路径，也是 Audi MIB3 唯一路径——它不发 0x4301）。
-     * 测试台端点自带 IPv4 与端口，本方法秒过、行为不变。
+     * 会话结束时的**音频拆链归因**（2026-10-19 Honda HFT / Alpine 实测新增）。
+     *
+     * 现象：选了「视频+音频」后会话能建立、视频也正常，但音频起流约 6s 后车机把整条
+     * AirPlay 会话拆掉（`EVENT: 读取结束 - Connection reset`），只推视频则稳定。
+     * 车机侧不会告诉我们「哪一档音频不兼容」，只能用存活时间反推：
+     *  - 音频起流后**没跑满** [AUDIO_PROFILE_PROBE_MS] 就整链被拆 → 判该档位不兼容，
+     *    记入本车机名单（全部档位都被判死则置 disabled，下次直接只推视频）；
+     *  - 跑满了 → 记为该档位可用，下次连接直接首选。
+     *
+     * 注意只在「确实起过音频」时归因；纯视频会话结束不做任何记忆改写。
+     */
+    private fun attributeAudioTeardown() {
+        val profile = activeAudioProfile ?: return
+        val startedAt = activeAudioStartedAt
+        val identity = activeAudioReceiverKey
+        val lived = if (startedAt > 0) android.os.SystemClock.uptimeMillis() - startedAt else -1L
+        // 本轮记忆很快失效：下次连接重新按最新记忆选档
+        activeAudioProfile = null
+        activeAudioStartedAt = 0L
+        if (startedAt == 0L || identity.isBlank()) return
+        val ctx = appContext?.applicationContext
+        val minimumStable =
+            if (currentClient?.currentEndpoint?.isBuickB233 == true) {
+                BUICK_AUDIO_PROFILE_PROBE_MS
+            } else {
+                AUDIO_PROFILE_PROBE_MS
+            }
+        if (lived >= minimumStable) {
+            AudioProfileMemory.recordWorking(ctx, identity, profile.key)
+            appendLog("AUDIO: 档位 ${profile.label} 存活 ${lived / 1000}s——记为本车机可用档位")
+            return
+        }
+        if (currentClient?.currentEndpoint?.isBuickB233 == true) {
+            // This specific failure was a non-ACKed 0x5001 CSM whose LOCAL
+            // 4s x 5 retransmit watchdog died at +20s; AUDIO ECONNREFUSED
+            // occurred afterwards. Don't label PCM/AAC incompatible based
+            // on this session-level failure. Explicit sync-port refusal is
+            // still handled and remembered by the onSyncPortRefused callback.
+            appendLog(
+                "AUDIO T11: B233 会话仅存活 ${lived / 1000}s；" +
+                    "未证明音频格式不兼容，不写入音频档位黑名单",
+            )
+            return
+        }
+        val allKeys = audioCandidateKeys(identity)
+        AudioProfileMemory.recordRejected(ctx, identity, profile.key, allKeys)
+        val after = AudioProfileMemory.load(ctx, identity)
+        appendLog(
+            "AUDIO: ⚠ 档位 ${profile.label} 起流 ${lived / 1000}s 后整条会话被车机拆掉——" +
+                "判定为本车机不兼容档位（已记入名单）。" +
+                if (after.disabled) {
+                    "全部档位均不兼容：下次连接将自动只推视频（车机侧无声音）。"
+                } else {
+                    "下次点「启动连接」会自动换用下一档；也可直接选「开启声音（兼容档）」。"
+                },
+        )
+        uiHintSink?.invoke(
+            if (after.disabled) {
+                "本车机音频不兼容，下次连接将自动只推视频"
+            } else {
+                "该音频档位导致断开，已记录；重连会自动换档"
+            },
+        )
+    }
+
+    /** 该车机上「所有可能用到的档位键」——用于判断是否已全部试穿。 */
+    private fun audioCandidateKeys(identity: String): Set<String> =
+        runCatching {
+            val client = currentClient ?: return@runCatching emptySet()
+            val preferred = client.audioCandidates(preferCompat = audioPreferCompat).map { it.key }
+            val alternate = client.audioCandidates(preferCompat = !audioPreferCompat).map { it.key }
+            (preferred + alternate).toSet()
+        }.getOrDefault(emptySet())
+
+    /**
+     * 端点补全：优先吸收 mDNS 解析出的地址，再决定是否等待/兜底。
+     *
+     * 关键（2026-10-19 奥迪 4851 实车日志）：0x4301 只给了
+     * `fe80::3ca8:64ff:fe7c:293e`（IPv6 链路本地），而 `_airplay._tcp` 解析出的是
+     * `[IP]:7000`——车机实际用 IPv4 通的。**不能因为 0x4301 带了 IPv6 就不看
+     * mDNS**：那样会把唯一验证过的 IPv4 路径丢掉。这里先做一次「零等待」缓存合并，
+     * 拿到 IPv4 就按 EndpointHosts 的优先级（IPv4 → IPv6）使用；缓存没命中才按需等。
      */
     private fun resolveEndpointHost(
         endpoint: Iap2SenderSession.CarPlayEndpoint,
         source: String,
     ): Iap2SenderSession.CarPlayEndpoint {
         var effective = endpoint
-        val needHost = !effective.ipAddresses.any { it.contains('.') && !it.contains(':') }
+        val cached = endpointBrowser?.awaitEndpoint(0)
+        if (cached != null) {
+            effective = mergeBrowserEndpoint(effective, cached, source, needPort = effective.airPlayPort <= 0)
+        }
+        // Prefer the real IPv4 gateway on B233 when 0x4301 only carries fe80::.
+        // Earlier Buick-E5 runs completed SETUP through IPv4 gateway; retain
+        // the original IPv6 as a fallback, never hard-code a gateway address.
+        if (effective.isBuickB233 && effective.ipAddresses.none(EndpointHosts::isIpv4)) {
+            val gateway = wifiConnector?.ipv4GatewayAddress()
+            val preferred = EndpointHosts.withPreferredIpv4Gateway(effective.ipAddresses, gateway)
+            if (preferred != EndpointHosts.candidates(effective.ipAddresses)) {
+                appendLog("AIRPLAY B233: 优先热点 IPv4 网关=$gateway:${effective.airPlayPort}，保留 IPv6 后备")
+                effective = effective.copy(ipAddresses = preferred)
+            } else {
+                appendLog("AIRPLAY B233: 未取得车机 IPv4 网关，继续尝试 0x4301 IPv6")
+            }
+        }
+        val needHost = !EndpointHosts.hasUsable(effective.ipAddresses)
         val needPort = effective.airPlayPort <= 0
         if (!needHost && !needPort) return effective
 
@@ -918,7 +1508,7 @@ object SessionController {
                 // mDNS 在部分网络/机型上不稳定（2026-10-11 实测车机 mDNS 时有时无）；
                 // 网关地址 + 默认端口 7000 直接连，AirPlay 端口是固定约定。
                 val gateway = wifiConnector?.gatewayAddress()
-                if (gateway != null && gateway.contains('.') && !gateway.contains(':')) {
+                if (gateway != null && EndpointHosts.candidates(listOf(gateway)).isNotEmpty()) {
                     appendLog(">>> [$source] mDNS 未发现，兜底使用网关地址 $gateway:7000（车机热点网关=车机）")
                     return effective.copy(
                         ipAddresses = listOf(gateway) + effective.ipAddresses,
@@ -928,9 +1518,26 @@ object SessionController {
                 appendLog(">>> [$source] mDNS 未发现车机 AirPlay 服务（车机可能尚未启动无线会话）")
                 return effective
             }
+        return mergeBrowserEndpoint(effective, info, source, needPort)
+    }
+
+    /**
+     * 把一次 mDNS 解析结果并入端点：地址**追加到最前**（EndpointHosts 会按
+     * IPv4 → 全局 IPv6 → 链路本地 IPv6 重排，顺序只影响同类型内部）。
+     * 其余字段只在缺失时补（0x4301 的权威值不覆盖）。
+     */
+    private fun mergeBrowserEndpoint(
+        endpoint: Iap2SenderSession.CarPlayEndpoint,
+        info: android.net.nsd.NsdServiceInfo,
+        source: String,
+        needPort: Boolean,
+    ): Iap2SenderSession.CarPlayEndpoint {
+        var result = endpoint
         val address = info.host?.hostAddress
-        var result = effective
-        if (address != null && address.contains('.') && !address.contains(':')) {
+        if (address != null &&
+            EndpointHosts.candidates(listOf(address)).isNotEmpty() &&
+            result.ipAddresses.none { EndpointHosts.stripScope(it) == EndpointHosts.stripScope(address) }
+        ) {
             result = result.copy(ipAddresses = listOf(address) + result.ipAddresses)
             appendLog(">>> [$source] mDNS 解析到车机地址 $address:${info.port}")
         }
@@ -939,30 +1546,188 @@ object SessionController {
         }
         // TXT 公钥兜底（pair-verify 校验用；0x4301 缺失时只能从这里拿）
         if (result.publicKey == null) {
-            val txtPk =
-                info.attributes["pk"]
-                    ?.toString(Charsets.UTF_8)
-                    ?.trimEnd { it.code == 0 }
-                    ?.takeIf { it.isNotEmpty() }
-            if (txtPk != null) result = result.copy(publicKey = txtPk)
+            txtValue(info, "pk")?.let { result = result.copy(publicKey = it) }
         }
         if (result.deviceIdentifier == null) {
-            val txtId =
-                info.attributes["deviceid"]
-                    ?.toString(Charsets.UTF_8)
-                    ?.trimEnd { it.code == 0 }
-                    ?.takeIf { it.isNotEmpty() }
-            if (txtId != null) result = result.copy(deviceIdentifier = txtId)
+            txtValue(info, "deviceid")?.let { result = result.copy(deviceIdentifier = it) }
         }
         if (result.sourceVersion == null) {
-            val txtVer =
-                info.attributes["srcvers"]
-                    ?.toString(Charsets.UTF_8)
-                    ?.trimEnd { it.code == 0 }
-                    ?.takeIf { it.isNotEmpty() }
-            if (txtVer != null) result = result.copy(sourceVersion = txtVer)
+            txtValue(info, "srcvers")?.let { result = result.copy(sourceVersion = it) }
+        }
+        if (result.advertisedFeatures == null) {
+            AirPlayFeatures.parse(txtValue(info, "features"))?.let {
+                result = result.copy(advertisedFeatures = it)
+            }
         }
         return result
+    }
+
+    /**
+     * Phase 1 之后车机补发 0x4301（CarPlay 窗口晚开）时的热更新入口。
+     *
+     * 三种归属：
+     *  - 正在推流：冗余端点，忽略（与 [onCarPlayEndpoint] 同一防护，避免拆掉健康会话）；
+     *  - 交接/配对进行中：热更新当前 AirPlayClient 的端点，配对循环下一轮即用新地址；
+     *    若 client 尚未创建（还在绑网/等邀请）先暂存，配对线程起步时并入；
+     *  - 上一轮已失败（无会话在跑）：按新端点重走一轮完整交接——Audi MMI 9310
+     *    实测 0x4301 在 120s 配对窗口耗尽后 28s 才到，旧实现把它当日志垃圾丢掉，
+     *    车机等 15s 无人连入即拆链，表现为「连上后自动断开」。
+     */
+    private fun onLateEndpoint(
+        endpoint: Iap2SenderSession.CarPlayEndpoint,
+        source: String,
+    ) {
+        if (connectCancelled) {
+            appendLog(">>> [$source] 0x4301 晚到（已取消连接）——忽略")
+            return
+        }
+        if (videoSender?.isRunning == true) {
+            appendLog(">>> [$source] 0x4301 晚到（推流中）——忽略冗余端点")
+            return
+        }
+        val client = currentClient
+        if (sessionStarting.get()) {
+            if (client != null && client.pairingInProgress) {
+                // 合并而非替换：0x4301 可能不带 IPv4（Audi MMI 9310 实测端点解析依赖
+                // mDNS/网关），直接替换会把已解析到的地址抹掉，配对循环反而连不上。
+                val merged = preferEndpoint(endpoint, client.currentEndpoint)
+                val changed = client.updateEndpoint(merged, "0x4301 晚到")
+                appendLog(
+                    if (changed) {
+                        ">>> [$source] 0x4301 晚到（配对进行中）——端点已热更新，下一轮重试用新地址"
+                    } else {
+                        ">>> [$source] 0x4301 晚到（配对进行中）——端点无变化，忽略"
+                    },
+                )
+            } else {
+                pendingEndpointUpdate = endpoint
+                appendLog(">>> [$source] 0x4301 晚到（交接尚未创建配对客户端）——暂存，配对起步时采用")
+            }
+            return
+        }
+        // 用户已断开（BT 组件已停）时不得用晚到消息复活会话
+        if (bluetoothClient?.isRunning != true && bluetoothServer?.isRunning != true) {
+            appendLog(">>> [$source] 0x4301 晚到（蓝牙链路已退役）——忽略")
+            return
+        }
+        appendLog(">>> [$source] 0x4301 晚到（上一轮已结束）——按新端点重走一轮连接")
+        onCarPlayEndpoint(endpoint, "$source/0x4301 晚到")
+    }
+
+    /** 把交接期间暂存的晚到端点并入新建的客户端（建 client 与收到 0x4301 的竞态窗口）。 */
+    private fun drainPendingEndpoint(client: AirPlayClient) {
+        val late = pendingEndpointUpdate ?: return
+        pendingEndpointUpdate = null
+        if (client.updateEndpoint(preferEndpoint(late, client.currentEndpoint), "交接期间晚到 0x4301")) {
+            appendLog("AIRPLAY: 交界窗口的 0x4301 端点已并入配对客户端")
+        }
+    }
+
+    /**
+     * 配对循环的端点刷新器（非阻塞）：只读浏览器缓存的 `_airplay._tcp`，
+     * 有则并入 IP/端口/公钥等字段。返回 null = 无新信息（配对循环继续用当前端点）。
+     */
+    private fun enrichEndpointFromBrowser(
+        endpoint: Iap2SenderSession.CarPlayEndpoint,
+        source: String,
+    ): Iap2SenderSession.CarPlayEndpoint? {
+        val info = endpointBrowser?.awaitEndpoint(0) ?: return null
+        var result = endpoint
+        val address = info.host?.hostAddress
+        if (address != null &&
+            EndpointHosts.candidates(listOf(address)).isNotEmpty() &&
+            result.ipAddresses.none { EndpointHosts.stripScope(it) == EndpointHosts.stripScope(address) }
+        ) {
+            result = result.copy(ipAddresses = listOf(address) + result.ipAddresses)
+        }
+        if (result.airPlayPort <= 0 && info.port > 0) {
+            result = result.copy(airPlayPort = info.port)
+        }
+        if (result.publicKey == null) {
+            txtValue(info, "pk")?.let { result = result.copy(publicKey = it) }
+        }
+        if (result.deviceIdentifier == null) {
+            txtValue(info, "deviceid")?.let { result = result.copy(deviceIdentifier = it) }
+        }
+        if (result.sourceVersion == null) {
+            txtValue(info, "srcvers")?.let { result = result.copy(sourceVersion = it) }
+        }
+        if (result.advertisedFeatures == null) {
+            AirPlayFeatures.parse(txtValue(info, "features"))?.let {
+                result = result.copy(advertisedFeatures = it)
+            }
+        }
+        if (result == endpoint) return null
+        appendLog(
+            ">>> [$source] 配对期间 mDNS 刷新端点 → " +
+                "${result.ipAddresses.firstOrNull()}:${result.airPlayPort}",
+        )
+        return result
+    }
+
+    private fun txtValue(
+        info: android.net.nsd.NsdServiceInfo,
+        key: String,
+    ): String? =
+        info.attributes[key]
+            ?.toString(Charsets.UTF_8)
+            ?.trimEnd { it.code == 0 }
+            ?.takeIf { it.isNotEmpty() }
+
+    /**
+     * 晚到端点优先：车机明确告知的端口/公钥优先于 mDNS 合成值，
+     * 但 IP 列表取并集（0x4301 可能不带 IPv4，Audi MMI 9310 实测即如此）。
+     */
+    private fun preferEndpoint(
+        late: Iap2SenderSession.CarPlayEndpoint,
+        fallback: Iap2SenderSession.CarPlayEndpoint,
+    ): Iap2SenderSession.CarPlayEndpoint =
+        late.copy(
+            airPlayPort = if (late.airPlayPort > 0) late.airPlayPort else fallback.airPlayPort,
+            ipAddresses = (late.ipAddresses + fallback.ipAddresses).distinct(),
+            publicKey = late.publicKey ?: fallback.publicKey,
+            deviceIdentifier = late.deviceIdentifier ?: fallback.deviceIdentifier,
+            sourceVersion = late.sourceVersion ?: fallback.sourceVersion,
+            advertisedFeatures = late.advertisedFeatures ?: fallback.advertisedFeatures,
+        )
+
+    /**
+     * 初始 SETUP（带重连重试）。
+     *
+     * 已配对路径：配对循环刚连通过，SETUP 一次即可（失败就是真失败，交给降级/收尾）。
+     * 明文会话路径：车机的 AirPlay 端口可能要到「用户点车机图标」后才开，
+     * catplay 同样是「收到邀请才连」；这里在 [INITIAL_SETUP_WINDOW_MS] 内每 2s
+     * 重连一次并重试 SETUP，避免端口晚开 1~2 秒就整轮失败。
+     */
+    private fun runInitialSetup(
+        client: AirPlayClient,
+        plainSession: Boolean,
+        noPairing: Boolean,
+    ): AirPlayClient.SetupInfo? {
+        val first = client.runSetup()
+        if (first != null || !plainSession) return first
+        val deadline = android.os.SystemClock.uptimeMillis() + INITIAL_SETUP_WINDOW_MS
+        var attempt = 1
+        while (android.os.SystemClock.uptimeMillis() < deadline && !connectCancelled) {
+            attempt++
+            appendLog("AIRPLAY: 明文 SETUP 第 ${attempt - 1} 次未通过——2s 后重连重试（车机 AirPlay 端口可能尚未开放）")
+            try {
+                Thread.sleep(2_000)
+            } catch (_: InterruptedException) {
+                return null
+            }
+            if (connectCancelled) return null
+            client.close()
+            if (!client.reconnect(2_000)) continue
+            val retried = client.runSetup()
+            if (retried != null) {
+                appendLog("AIRPLAY: ✓ 明文 SETUP 在第 $attempt 次尝试成功")
+                return retried
+            }
+            // 端口开了但 SETUP 仍被拒：TXT 判断可能错了，交给调用方的加密升级路径
+            if (!noPairing) return null
+        }
+        return null
     }
 
     /** BT 会话交接点：拿到 0x5703/0x4301 后两条路径流程一致——绑 WiFi → AirPlay 配对 → SETUP → 推流。 */
@@ -983,16 +1748,50 @@ object SessionController {
             appendLog(">>> [$source] 已有会话在处理中，忽略本次端点（等待上一轮结束）")
             return
         }
+        // 新一轮交接开始：清掉上一轮（可能中途失败）遗留的晚到端点暂存，
+        // 否则它会在本轮的 drain 阶段覆盖掉本会话刚解析出的端点。
+        pendingEndpointUpdate = null
         appendLog(
             ">>> [$source] 拿到接收端热点：SSID=${endpoint.ssid}；" +
                 "密码=${if (endpoint.passphrase.isEmpty()) "(空)" else "已获取"}",
         )
         phaseHint = "蓝牙已连上车机，解析热点地址…"
-        if (source.contains("主动连车机")) {
-            val currentSsid = shellWifiStatus().second
-            appendLog(">>> [Buick T19] 0x4301 SSID=${endpoint.ssid} 当前WiFi=$currentSsid port=${endpoint.airPlayPort} ips=${endpoint.ipAddresses}；优先复用已连接热点")
-        }
         ssidSink?.invoke(endpoint.ssid)
+        // B233 exposes the hotspot password in 0x4301 rather than 0x5703.
+        if (endpoint.passphrase.isNotEmpty()) lastWifiPsk = endpoint.passphrase
+        // 诊断（老车机排查必看）：地址是 IPv4 还是只有 IPv6、TXT features 是否声明配对能力。
+        // 奥迪 4xxx 两种「连不上」都源于这里——旧版日志里完全没有这两项。
+        val addresses = endpoint.ipAddresses
+        val hasIpv4 = addresses.any { EndpointHosts.isIpv4(it) }
+        val pairingFlag = AirPlayFeatures.supportsPairing(endpoint.advertisedFeatures)
+        appendLog(
+            ">>> [$source] 端点诊断：地址=${addresses.ifEmpty { listOf("(无)") }}" +
+                "（${if (hasIpv4) {
+                    "IPv4"
+                } else if (addresses.isEmpty()) {
+                    "无地址"
+                } else {
+                    "仅 IPv6"
+                }}）" +
+                " features=" + (endpoint.advertisedFeatures?.let { "0x${it.toString(16)}" } ?: "未知") +
+                " HomeKit配对=" +
+                when (pairingFlag) {
+                    true -> "声明支持"
+                    false -> "未声明（按 pre-HomeKit 明文会话处理）"
+                    null -> "未知（按需配对）"
+                },
+        )
+        // 车机画像（信号收口点）：mDNS 侧信号到达——era 判定 + 依据一行可解释
+        appendLog(
+            ReceiverProfile.describe(
+                ReceiverProfile.classify(
+                    ReceiverProfile.Signals(
+                        features = endpoint.advertisedFeatures,
+                        srcvers = endpoint.sourceVersion,
+                    ),
+                ),
+            ),
+        )
         // 先绑网络再解析端点：mDNS 组播跟随 bindProcessToNetwork 的网络，解析放前面
         // 只会拿到旧网络的结果（此前靠 resolveEndpointHost 内部重试掩盖，白等数秒）。
         // 绑定完成后再并行做三件事：ctrl 广播针对新网络重注册、后台发现 _airplay._tcp、
@@ -1008,11 +1807,13 @@ object SessionController {
             // 两者都发生在等邀请期间，不额外占用时间。
             ctrlAdvertiser?.ensureForNetwork(endpoint.ssid, force = true, network = wifiConnector?.currentNetwork)
             endpointBrowser?.resetCache()
-            endpointBrowser?.start(carWifiNetwork = wifiConnector?.currentNetwork)
-            // 0x4301 自带完整 IPv4+端口 = 接收端已明确告知「连这里」，无需等邀请
+            endpointBrowser?.start()
+            // 0x4301 自带完整地址+端口 = 接收端已明确告知「连这里」，无需等邀请
             // （DiPlay 测试台路径：本轮直接配对，省掉固定等待）。
+            // IPv6 也算地址：奥迪 4xxx 的 0x4301 常只给 fe80::（旧判据只看 IPv4，
+            // 会把这类端点当成「不完整」，白等 ctrl 邀请再退回网关兜底）。
             val endpointSelfContained =
-                endpoint.airPlayPort > 0 && endpoint.ipAddresses.any { it.contains('.') && !it.contains(':') }
+                endpoint.airPlayPort > 0 && EndpointHosts.hasUsable(endpoint.ipAddresses)
             Bg.run("airplay-pairing") {
                 try {
                     if (connectCancelled) {
@@ -1030,9 +1831,15 @@ object SessionController {
                     }
                     // 端点解析放在邀请之后：车机的 `_airplay._tcp` 常在受邀后才上线，
                     // 且这一步最长 3s——必须在后台线程做，不能占住网络回调线程。
-                    val effectiveEndpoint = resolveEndpointHost(endpoint, source)
-                    if (source.contains("主动连车机")) {
-                        appendLog(">>> [Buick T19] AirPlay 目标 port=${effectiveEndpoint.airPlayPort} ips=${effectiveEndpoint.ipAddresses}；准备尝试 TCP/RTSP 配对（网络绑定=${wifiConnector?.currentNetwork != null}）")
+                    var effectiveEndpoint = resolveEndpointHost(endpoint, source)
+                    // 交接流程起步期间车机补发的 0x4301（比 mDNS 合成更权威）在此并入。
+                    pendingEndpointUpdate?.let { late ->
+                        pendingEndpointUpdate = null
+                        effectiveEndpoint = preferEndpoint(late, effectiveEndpoint)
+                        appendLog(
+                            "AIRPLAY: 并入交接期间晚到的 0x4301 端点 → " +
+                                "${effectiveEndpoint.ipAddresses.firstOrNull()}:${effectiveEndpoint.airPlayPort}",
+                        )
                     }
                     if (connectCancelled) {
                         appendLog("AIRPLAY: 用户已取消——中止配对")
@@ -1045,9 +1852,43 @@ object SessionController {
                             effectiveEndpoint,
                             log = { line -> appendLog(line) },
                             context = context.applicationContext,
-                            carWifiNetwork = wifiConnector?.currentNetwork,
-                        )
+                            // T24: B233 AirPlay sockets are scoped to vehicle WiFi.
+                            // process-wide bind may return false under active VPN.
+                            vehicleNetwork =
+                                if (effectiveEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
+                            endpointRefresher = { current -> enrichEndpointFromBrowser(current, source) },
+                            retryTick = { attempt ->
+                                // 配对重试期间车机仍可能没探测到 ctrl（Bonjour 漏掉首次公告）：
+                                // 周期性强制重播一次，并把 mDNS 现状写进日志——否则排查时
+                                // 只看得到「端口未开」的重试刷屏，无法判断是车机没邀请还是
+                                // 地址不对（2026-10-19 奥迪 0.1.7 日志就缺这两条信息）。
+                                ctrlAdvertiser?.ensureForNetwork(
+                                    endpoint.ssid,
+                                    force = true,
+                                    network = wifiConnector?.currentNetwork,
+                                )
+                                val invites = ctrlAdvertiser?.inviteCount ?: 0
+                                val found = endpointBrowser?.awaitEndpoint(0)
+                                appendLog(
+                                    "AIRPLAY: 重试 #$attempt —— 已重新公告 ctrl；" +
+                                        "车机邀请=$invites 次，mDNS _airplay._tcp=" +
+                                        (found?.let { "${it.host?.hostAddress}:${it.port}" } ?: "未发现"),
+                                )
+                            },
+                        ).also { created ->
+                            // 车机媒体键（iAP2 0x6802 通路）：方向盘/面板的上一曲、下一曲。
+                            // 放在这里而不是调用点，保证重连重建 client 时也挂得上。
+                            created.onMediaKey = { keyCode ->
+                                dispatchMediaKey(keyCode)
+                                appendLog("EVENT: 车机媒体键（iAP2 0x6802）→ keyCode=$keyCode 已注入")
+                            }
+                        }
                     retireSession()
+                    if (connectCancelled) {
+                        appendLog("SESSION T7: 手动断开已生效，旧配对线程不能重新创建会话")
+                        sessionStarting.set(false)
+                        return@run
+                    }
                     // 会话静默降噪（2026-10-10）：从交接点起暂停其它接收端的出站连接探测
                     // （典型：连着 DiPlay 测试台时不再噪音式探测 Audi）。会话结束/断开时解除。
                     BtSessionGate.sessionActive = true
@@ -1055,23 +1896,53 @@ object SessionController {
                     phaseHint = "AirPlay 配对中…"
                     var client = newClient()
                     currentClient = client
-                    var keys = client.runPairing()
+                    drainPendingEndpoint(client)
+                    // pre-HomeKit 老车机（CarPlay 210.81 时代，奥迪 4xxx 固件）在
+                    // `_airplay._tcp` 里**不声明** HK_PAIRING_AND_ENCRYPT：它们只接受
+                    // 明文 SETUP（et=NONE）+ AES-CTR 屏幕流，走 pair-setup 必然失败。
+                    // catplay 的接收端分类 1 即此形态；旧实现会在这里空转 120s 配对窗口，
+                    // 用户看到的就是「连不上」。
+                    val noPairing =
+                        AirPlayFeatures.supportsPairing(client.currentEndpoint.advertisedFeatures) == false
+                    var keys: PairVerifyClient.ControlKeys? =
+                        if (noPairing) {
+                            client.skipPairing("TXT features 未声明 HK_PAIRING_AND_ENCRYPT")
+                            client.reconnect()
+                            null
+                        } else {
+                            client.runPairing()
+                        }
                     if (connectCancelled) {
                         retireSession()
                         appendLog("AIRPLAY: 用户已取消——中止配对")
                         sessionStarting.set(false)
                         return@run
                     }
-                    if (keys == null && !client.pairSetupRejected && client.attemptedPairing && !source.contains("主动连车机")) {
+                    // 配对失败后的兜底路径（纯函数决策，真机抓包场景由 PairingFallbackTest 钉死）
+                    val fallbackAfterFirstRound =
+                        pairingFallback(
+                            keysEstablished = keys != null,
+                            noPairing = noPairing,
+                            pairSetupRejected = client.pairSetupRejected,
+                            pairingForbidden = client.pairingForbidden,
+                            attemptedPairing = client.attemptedPairing,
+                            pairingUnsupported = client.pairingUnsupported,
+                        )
+                    if (fallbackAfterFirstRound.useBtRetireHack) {
                         // 第二阶段（仅测试台 DiPlay）：复现「BT 控制已结束」状态再试一次。
                         // 真车（Audi）绝不能断 BT——真无线 CarPlay 的 BT 控制通道全程保活，
                         // 断开会让车机拆掉整轮 AirPlay 窗口（实车实测）。
+                        // pairingForbidden（任意段 403，含 verify/认证段——2026-10-21 真机
+                        // sysdiagnose 定谳：首连被 403 是车机固有状态，它 18~20s 后自动
+                        // 重邀、第二次即成）时同样禁用：断 BT 会让车机整栈重建、恰好错过
+                        // 即将到来的重邀窗口。
                         // 门槛：仅当本轮真的连上过接收端 RTSP（attemptedPairing）才用此 hack；
                         // 端点未解析（无 IP）/端口未开时绝不值得断 BT（2026-10-11 踩过：
                         // mDNS 失败也触发 detach，白白拆掉车机窗口）。
                         detachActiveBtSessions()
                         client = newClient()
                         currentClient = client
+                        drainPendingEndpoint(client)
                         keys = client.runPairing()
                         if (connectCancelled) {
                             retireSession()
@@ -1080,43 +1951,94 @@ object SessionController {
                             return@run
                         }
                     }
-                    if (keys != null) {
-                        phaseHint = "配对完成，建立 CarPlay 会话…"
+                    // keys == null 时仍有合法路径：**catplay 的 et=NONE 明文会话**。
+                    //  - 接收端明确不支持配对（pre-HomeKit / TXT 无 HK_PAIRING_AND_ENCRYPT）；
+                    //  - 配对彻底失败但 RTSP 确实连上过（有些车只认明文会话，
+                    //    pair-setup/pair-verify 全拒——catplay 正是「先试明文、失败才配对」，
+                    //    我们反过来：优先配对（保住 DiPlay/已知车机），失败后降级明文兜底）。
+                    //  - **403 证据（pairingForbidden）除外**（真机抓包 2026-10-21 定谳，决策
+                    //    见 pairingFallback）：车机在等自身就绪、~20s 后重邀即成——明文必被
+                    //    拒且消耗重邀窗口，不降级。
+                    // hack 段可能已重跑拿到 keys：决策以重跑后的状态为准。
+                    val plainSession =
+                        pairingFallback(
+                            keysEstablished = keys != null,
+                            noPairing = noPairing,
+                            pairSetupRejected = client.pairSetupRejected,
+                            pairingForbidden = client.pairingForbidden,
+                            attemptedPairing = client.attemptedPairing,
+                            pairingUnsupported = client.pairingUnsupported,
+                        ).usePlainSession
+                    if (plainSession) {
+                        phaseHint = "建立明文会话…"
                         appendLog(
-                            "AIRPLAY: ✓ 配对完成 writeKey=" +
-                                keys.phoneWriteKey.joinToString("") { "%02x".format(it) }.take(16) + "… " +
-                                "readKey=" + keys.phoneReadKey.joinToString("") { "%02x".format(it) }.take(16) + "…",
+                            "AIRPLAY: 配对不可用（${if (client.pairingUnsupported) "接收端不支持" else "配对失败"}）" +
+                                "——改用 et=NONE 明文会话 + AES-CTR 屏幕流（catplay 接收端分类 1/2）",
                         )
-                        val setup = client.runSetup()
-                        if (setup != null) {
-                            // T44 controlled Buick B233 experiment: the real-iPhone Wi-Fi
-                            // handover retires the initial RFCOMM iAP2 transport after the
-                            // new wireless control link is ready. Audi keeps its existing
-                            // behavior; only the Buick-specific virtual MFi ACK invokes
-                            // this callback. Keep AirPlay/video and the virtual link alive.
-                            client.onVirtualIapAuthenticated = {
-                                Bg.run("buick-t44-rfcomm-handover") {
-                                    try {
-                                        Thread.sleep(1_800L)
-                                        val active = currentClient === client &&
-                                            videoSender?.isRunning == true &&
-                                            BtSessionGate.sessionActive &&
-                                            !connectCancelled
-                                        if (active) {
-                                            appendLog("BT-C T44: Buick Wi-Fi virtual iAP2 authenticated and video active; retiring original RFCOMM (AirPlay remains open)")
-                                            detachActiveBtSessions()
-                                        } else {
-                                            appendLog("BT-C T44: handover skipped (session retired/not streaming)")
-                                        }
-                                    } catch (_: InterruptedException) {
-                                        Thread.currentThread().interrupt()
-                                    }
-                                }
+                        // 配对循环结束时 socket 已关/状态机不可用：SETUP 前必须重连一次。
+                        // 失败不直接判死：车机 AirPlay 端口可能还没开，下面会按窗口重试。
+                        if (!client.reconnect()) {
+                            appendLog("AIRPLAY: 明文会话首次重连未成功——继续按窗口重试 SETUP")
+                        }
+                    }
+                    // keys 是 lambda 内的可变捕获变量：Kotlin 无法智能转换，先固化成不可变值。
+                    val pairedKeys = keys
+                    if (pairedKeys != null || plainSession) {
+                        phaseHint = if (pairedKeys != null) "配对完成，建立 CarPlay 会话…" else "建立明文会话…"
+                        if (pairedKeys != null) {
+                            appendLog(
+                                "AIRPLAY: ✓ 配对完成 writeKey=" +
+                                    pairedKeys.phoneWriteKey.joinToString("") { "%02x".format(it) }.take(16) + "… " +
+                                    "readKey=" + pairedKeys.phoneReadKey.joinToString("") { "%02x".format(it) }.take(16) + "…",
+                            )
+                        }
+                        // 已配对 → 共享密钥；明文会话 → null（流加密降级为 AES-CTR 零密钥）
+                        var sessionKey = pairedKeys?.sharedSecret
+                        var setup = runInitialSetup(client, plainSession, noPairing)
+                        if (setup == null && plainSession && noPairing) {
+                            // catplay 的「加密升级」路径：只有在**我们主动跳过配对**（TXT 未声明
+                            // HK_PAIRING_AND_ENCRYPT）且明文 SETUP 仍失败时才补做。
+                            // 反过来（配对先试过且失败）再试一次没有意义，只会多等 30s。
+                            val upgraded = client.retryWithPairing(PAIRING_UPGRADE_WINDOW_MS)
+                            if (upgraded != null) {
+                                sessionKey = upgraded.sharedSecret
+                                setup = client.runSetup()
                             }
-                            // 记录会话凭据：投影授权晚于连接时用于动态补启音频
-                            currentSharedSecret = keys.sharedSecret
-                            currentAudioHost = effectiveEndpoint.ipAddresses.firstOrNull { it.contains('.') }
-                            client.connectEventChannel(keys.sharedSecret, setup) { command ->
+                        }
+                        if (setup != null) {
+                            // T28: Xperia 1 V Android 15 system_server repeatedly crashed
+                            // in WindowContextListenerImpl on display-add. On B233, keep
+                            // AirPlay video alive with EGL only; NEVER create virtual displays.
+                            // Test-channel ONLY: restore hidden desktop/real touches.
+                            // Keep Sony/B233 crash risk detection to warn in diagnostics.
+                            val sonyB233CrashRisk = SonyB233CrashGuard.useDisplaylessDiagnostic(
+                                android.os.Build.MANUFACTURER,
+                                android.os.Build.MODEL,
+                                android.os.Build.VERSION.SDK_INT,
+                                client.currentEndpoint.isBuickB233,
+                            )
+                            val t28Displayless = BuickTestVideoTouchMode.useT28Displayless(sonyB233CrashRisk)
+                            if (sonyB233CrashRisk && !t28Displayless) {
+                                appendLog(
+                                    "BUICK-TEST WARNING: Sony Android 15/B233 虚拟屏和触摸实验模式已启用；" +
+                                        "绕过 T28 测试条纹，创建虚拟屏可能再次导致手机系统重启；请仅在测试环境使用"
+                                )
+                            }
+                            if (t28Displayless) {
+                                appendLog(
+                                    "SAFETY T28: Xperia XQ-DQ72 / Android 15 / B233：无虚拟屏诊断已自动启用；" +
+                                        "禁用 Shizuku 创建显示器、CarDeck 桌面和触摸注入；仅发送 EGL 测试画面"
+                                )
+                            }
+                            // 记录会话凭据：投影授权晚于连接时用于动态补启音频。
+                            // 用 client.currentEndpoint 而非 effectiveEndpoint：配对期间
+                            // mDNS 刷新过端点时，真正连上的是 client 里的地址（2026-10-18：
+                            // 0x4301 的定长 IP 字段带 NUL，mDNS 给的是干净地址，取旧值
+                            // 会让视频端口/keepAlive 用脏地址 → 一律解析失败）。
+                            currentSharedSecret = sessionKey
+                            currentAudioHost =
+                                client.activeHost ?: EndpointHosts.candidates(client.currentEndpoint.ipAddresses).firstOrNull()
+                            client.connectEventChannel(sessionKey, setup) { command ->
                                 when (command["type"]) {
                                     "hidSendReport" -> {
                                         val uuid = command["uuid"]?.toString()
@@ -1184,11 +2106,17 @@ object SessionController {
                                                 )
                                             }
                                             touchLogCount++
-                                            contacts.forEach {
-                                                TouchRouter.onContact(
-                                                    context.applicationContext,
-                                                    it,
-                                                )
+                                            if (t28Displayless) {
+                                                if (touchLogCount <= 30 || touchLogCount % 50 == 0) {
+                                                    appendLog("SAFETY T28: 触摸诊断仅记录，未注入 Android 显示器")
+                                                }
+                                            } else {
+                                                contacts.forEach {
+                                                    TouchRouter.onContact(
+                                                        context.applicationContext,
+                                                        it,
+                                                    )
+                                                }
                                             }
                                         } else if (report != null) {
                                             appendLog(
@@ -1211,26 +2139,73 @@ object SessionController {
                                         }
                                     }
 
-                                    "changeModes" -> {
-                                        // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
-                                        // 回 modesChanged 声明手机持有主屏/主音频
-                                        appendLog("EVENT: 车机请求 changeModes → 回 modesChanged 接管资源")
-                                        client.assertModes()
+                                    "forceKeyFrame" -> {
+                                        // 车机解不出画面时会要 I 帧。必须立即响应：
+                                        // 拖到下一个周期 I 帧（1s）车机可能一直卡在等帧状态。
+                                        val forced = videoSender?.requestKeyFrame() == true
+                                        appendLog(
+                                            "EVENT: 车机请求关键帧（forceKeyFrame）→ " +
+                                                if (forced) "已强制编码 I 帧" else "编码器未就绪，等周期 I 帧",
+                                        )
                                     }
 
-                                    else -> appendLog("EVENT: 命令 type=${command["type"]}")
+                                    "changeModes" -> {
+                                        // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
+                                        // T26: B233 video-only/A2DP should not take
+                                        // ownership of CarPlay main audio on reassert.
+                                        val claimAudio = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
+                                            client.currentEndpoint.isBuickB233,
+                                            audioEnabledForSession,
+                                        )
+                                        appendLog(
+                                            "EVENT T26: 车机请求 changeModes → 回 modesChanged；" +
+                                                if (claimAudio) "主屏+CarPlay音频" else "仅主屏，保留蓝牙A2DP"
+                                        )
+                                        client.assertModes(claimAudioResource = claimAudio)
+                                    }
+
+                                    else ->
+                                        appendLog(
+                                            // 未识别的命令必须带参数：车机的私有命令（如 requestUI）
+                                            // 到底要什么，全在 params 里——只打 type 等于没打。
+                                            "EVENT: 命令 type=${command["type"]} " +
+                                                command.entries
+                                                    .filter { it.key?.toString() != "type" }
+                                                    .joinToString(" ") { (key, value) ->
+                                                        "$key=" +
+                                                            when (value) {
+                                                                is ByteArray -> value.joinToString("") { "%02x".format(it) }
+                                                                else -> value.toString().take(240)
+                                                            }
+                                                    }.take(600),
+                                        )
                                 }
                             }
-                            // 资源声明（must）：真车对未声明资源的屏幕流 SETUP 直接 400
-                            client.assertModes()
+                            // T26: Always claim main screen; for B233 video-only
+                            // avoid claiming main audio while music runs via A2DP.
+                            // Audi/non-B233 and CarPlay-audio mode remain unchanged.
+                            val claimAudioForCarPlay = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
+                                client.currentEndpoint.isBuickB233,
+                                audioEnabledForSession,
+                            )
+                            appendLog(
+                                "AIRPLAY T26: resource experiment B233=" +
+                                    client.currentEndpoint.isBuickB233 +
+                                    " sessionAudio=$audioEnabledForSession " +
+                                    "claimCarPlayAudio=$claimAudioForCarPlay"
+                            )
+                            client.assertModes(claimAudioResource = claimAudioForCarPlay)
                             // HID 输入模式武装：/info hidDevices（奥迪字符串 "0"/"1"，触摸="1"）。
                             // display features=0x08（高保真触摸）已声明，缺这步车机不发 hidSendReport。
                             setup.hidDeviceUuids.forEach { uuid ->
                                 client.sendHidSetInputMode(uuid, mode = 0)
                             }
-                            val screen = client.runScreenStream(keys.sharedSecret, setup.displayUuid)
+                            val screen = client.runScreenStream(sessionKey, setup.displayUuid)
                             if (screen != null) {
-                                val host = effectiveEndpoint.ipAddresses.firstOrNull { it.contains('.') }
+                                // 地址取 client 真正连通的那个（配对期间可能被 mDNS 刷新过）：
+                                // 视频数据端口与 keepAlive 都按它建 socket；IPv6 端点也算
+                                // 可用地址（EndpointHosts 统一排序：IPv4 → 全局 IPv6 → 链路本地 IPv6）。
+                                val host = client.activeHost ?: EndpointHosts.candidates(client.currentEndpoint.ipAddresses).firstOrNull()
                                 // 心跳双保险（缺失任一都会被车机 ~10s 看门狗拆会话，2026-10-11 实测）：
                                 //   keepAlive UDP ping（车机 SETUP 返回的 keepAlivePort，10s 周期）
                                 //   + RTSP POST /feedback（1s 周期，catplay FEEDBACK_INTERVAL）
@@ -1240,7 +2215,7 @@ object SessionController {
                                 client.startFeedbackLoop()
                                 // iAP 隧道（type-130）：车机→手机的 iAP2 EA 数据（触摸 HID 载体）。
                                 // 建立失败不阻塞会话（触摸不可用但视频照常）。
-                                val tunnel = client.runIapTunnel(keys.sharedSecret)
+                                val tunnel = client.runIapTunnel(sessionKey)
                                 tunnel?.onIapMessage = { frame ->
                                     // 触摸证据采集：先全量记录，格式确认后接 TouchRouter
                                     if (frame.messageId != 0x0000) {
@@ -1280,23 +2255,53 @@ object SessionController {
                                         ((setup.displayWidth * scale).toInt().coerceAtLeast(320) / 2) * 2
                                     val streamH =
                                         ((setup.displayHeight * scale).toInt().coerceAtLeast(180) / 2) * 2
-                                    val fps =
+                                    val selectedFps =
                                         appContext
                                             ?.let {
                                                 DisplayPrefs
                                                     .fps(it)
                                             } ?: 30
+                                    val fps =
+                                        if (client.currentEndpoint.isBuickB233) {
+                                            minOf(selectedFps, setup.maxFps.coerceAtLeast(1))
+                                        } else {
+                                            selectedFps
+                                        }
+                                    if (fps != selectedFps) {
+                                        appendLog("DISPLAY T10: B233 fps=$selectedFps → $fps (车机 maxFPS=${setup.maxFps})")
+                                    }
                                     activeScalePercent = scalePct
                                     activeTargetFps = fps
                                     // 车机触摸在通告视图坐标系（如 1160×540），流已按比例
                                     // 缩放（如 1450×674）——注入前需映射，否则点击漂移
+                                    // B233 touch HID 0..3082/0..814 != AirPlay 1972x520.
+                                    // Read maxima from the actual advertised Digitizer HID descriptor.
+                                    val hidLogical =
+                                        if (client.currentEndpoint.isBuickB233) {
+                                            setup.hidDescriptors.values.asSequence()
+                                                .mapNotNull(TouchReports::logicalMaximaFromDescriptor)
+                                                .firstOrNull()
+                                        } else {
+                                            null
+                                        }
                                     TouchRouter
                                         .setCoordinateScale(
                                             setup.displayWidth,
                                             setup.displayHeight,
                                             streamW,
                                             streamH,
+                                            hidMaxX = hidLogical?.x,
+                                            hidMaxY = hidLogical?.y,
                                         )
+                                    if (client.currentEndpoint.isBuickB233) {
+                                        appendLog(
+                                            "TOUCH T8: B233 HID=${hidLogical?.x ?: "unknown"}x" +
+                                                "${hidLogical?.y ?: "unknown"} → " +
+                                                "CarPlay=${setup.displayWidth}x${setup.displayHeight} " +
+                                                "stream=${streamW}x$streamH " +
+                                                "normalized=${hidLogical != null}",
+                                        )
+                                    }
                                     appendLog(
                                         "DISPLAY: 流 ${setup.displayWidth}x${setup.displayHeight} → " +
                                             "${streamW}x$streamH（$scalePct%）@${fps}fps",
@@ -1312,41 +2317,54 @@ object SessionController {
                                         (420f * minOf(streamW, streamH) / 540f)
                                             .toInt()
                                             .coerceIn(120, 1680)
-                                    // The onEnded callback may arrive after a newer pairing has
-                                    // already replaced this sender. Never retire another session.
+                                    // T7: bind VideoSender.onEnded to the owning session.
                                     var owningSender: VideoSender? = null
                                     val createdSender =
                                         VideoSender(
                                             host = host,
                                             dataPort = screen.dataPort,
                                             frameCipher = screen.cipher,
-                                            keepAliveWithStats = setup.keepAliveSendStatsAsBody,
-                                            carWifiNetwork = wifiConnector?.currentNetwork,
                                             width = streamW,
                                             height = streamH,
                                             targetFps = fps,
                                             log = { line -> appendLog(line) },
+                                            vehicleNetwork =
+                                                if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
+                                            keepAliveWithStats = setup.keepAliveSendStatsAsBody,
                                             onEnded = {
-                                                if (videoSender === owningSender && currentClient === client) {
-                                                    appendLog("SESSION T42: 当前视频流已结束——尝试标准 TEARDOWN 后清理会话")
-                                                    try {
-                                                        // One last best-effort request over the encrypted
-                                                        // RTSP CONTROL channel. Close() previously dropped
-                                                        // the socket with no TEARDOWN, potentially leaving
-                                                        // Buick B233 in a stale streaming state. The call
-                                                        // is capped at 900ms and scoped to Buick by client.
-                                                        runCatching { client.tryTeardownBuickScreen(setup.displayUuid) }
-                                                            .onFailure { appendLog("AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.message}") }
-                                                        retireSession()
-                                                    } finally {
-                                                        // Preserve Bluetooth RFCOMM during pairing;
-                                                        // only lift the outgoing-probe gate here.
-                                                        BtSessionGate.sessionActive = false
-                                                        phaseHint = "CarPlay 已断开，等待车机重新握手…"
-                                                    }
-                                                    appendLog(">>> CarPlay 会话结束——旧会话已清理，蓝牙探测恢复")
+                                                // A deliberately retired or superseded stream cannot
+                                                // change the current session (E5 T38 race fix).
+                                                if (videoSender !== owningSender || currentClient !== client) {
+                                                    appendLog("SESSION T7: 忽略已退役视频流的迟到 onEnded")
                                                 } else {
-                                                    appendLog("SESSION T38: 忽略已退役视频流的迟到 onEnded（保护新会话）")
+                                                    appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
+                                                    BtSessionGate.sessionActive = false
+                                                    ScreenDimmer.setSessionActive(false)
+                                                    appContext?.let { ctx ->
+                                                        AppOrientationCompat.resetAllAsync(ctx, ::appendLog)
+                                                    }
+                                                    // T17: signal the B233 receiver's recovery
+                                                    // policy BEFORE retiring the audio sender.
+                                                    // Video-only sessions are not penalized.
+                                                    val b233AudioEnded =
+                                                        client.currentEndpoint.isBuickB233 &&
+                                                            audioSender?.isRunning == true
+                                                    attributeAudioTeardown()
+                                                    // B233: release naturally ended streams as well.
+                                                    if (client.currentEndpoint.isBuickB233) {
+                                                        retireSession()
+                                                        if (b233AudioEnded) {
+                                                            // Old iAP2 may remain alive after the
+                                                            // AirPlay receiver has killed video and
+                                                            // audio. Retire it and give the car time
+                                                            // to reopen its 0x4300/0x4301 slot;
+                                                            // preserve Wi-Fi and all other cars.
+                                                            bluetoothClient?.recoverAfterB233AudioTeardown()
+                                                            phaseHint = "音频异常断开；车机握手冷却后自动重试…"
+                                                        } else {
+                                                            phaseHint = "CarPlay 已断开，等待车机重新握手…"
+                                                        }
+                                                    }
                                                 }
                                             },
                                         )
@@ -1368,6 +2386,16 @@ object SessionController {
                                     val videoH = pendingVideoH
                                     val videoDensity = pendingVideoDensity
                                     videoSender?.start { surface ->
+                                        if (t28Displayless) {
+                                            // No DisplayManager.createVirtualDisplay() anywhere in
+                                            // this path. Preserve AirPlay RECORD, encoder and TCP.
+                                            val diagnostic = SafeDiagnosticFrameSource(::appendLog)
+                                            currentDiagnosticSource = diagnostic
+                                            check(diagnostic.start(surface, videoW, videoH)) {
+                                                "T28 EGL diagnostic source failed to start"
+                                            }
+                                            appendLog("SAFETY T28: 活动测试条纹已开始推流；虚拟屏数量=0；普通蓝牙 A2DP 未修改")
+                                        } else {
                                         // 唯一模式：隐形屏（双屏启动器：dock + 应用屏）
                                         val source =
                                             HiddenDisplaySource(
@@ -1385,20 +2413,45 @@ object SessionController {
                                         appendLog(
                                             "MODE: 隐形屏 ${if (ok) "已启动（高德车机版优先）display=${source.displayId}" else "启动失败（Shizuku 就绪？）"}",
                                         )
+                                        // 暗幕/常亮只在真正开始投屏后生效（见 ScreenDimmer.sessionActive）：
+                                        // 应用启动时只挂触摸探针，避免「会话早断了、手机过一会儿还是变暗」。
+                                        if (ok) ScreenDimmer.setSessionActive(true)
+                                        }
                                     }
                                 }
                                 // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。
                                 // 会话已激活（RECORD 完成）后再协商；失败不影响视频主链路。
-                                val audioStarted = startAudioChannel(context, client, keys.sharedSecret, host)
+                                val audioStarted = startAudioChannel(context, client, sessionKey, host)
                                 if (audioStarted) {
                                     // 流在 RECORD 之后加入：AirPlay 语义要求再发一次 RECORD
                                     // 把新流纳入已激活的会话。缺这一步时车机对 SETUP 回 200
                                     // 并给 dataPort，但不会真正播放（2026-10-17 奥迪实测：
                                     // 音频包持续发送、采集内容非零，车机无声）。
                                     appendLog("AUDIO: 音频流已加入——补发 RECORD 激活（流后加入会话）")
-                                    client.record()
+                                    val recorded = client.record()
+                                    if (client.currentEndpoint.isBuickB233) {
+                                        if (recorded) {
+                                            audioSender?.activateSyncAfterRecord()
+                                        } else {
+                                            appendLog("AUDIO T10: B233 音频 RECORD 未确认，停止音频并保留视频")
+                                            val failed = audioSender
+                                            audioSender = null
+                                            activeAudioProfile = null
+                                            activeAudioStartedAt = 0L
+                                            failed?.stop()
+                                        }
+                                    }
                                 }
                             }
+                        } else {
+                            // 会话级 SETUP 被拒（典型：接收端按设备过滤回 403，见
+                            // AirPlayClient.runSetup 的 deviceID 说明）。主动关闭控制通道：
+                            // 否则接收端要等约 45s 视频超时才拆 BT 链路，用户只看到
+                            // 「连上之后自动断开」，无从判断是会话建立失败。
+                            phaseHint = "接收端拒绝了会话建立（SETUP 未通过）"
+                            appendLog("AIRPLAY: 会话建立失败——主动关闭控制通道，本轮结束")
+                            uiHintSink?.invoke("接收端拒绝了会话建立（SETUP）——请查看日志中的 deviceID 提示")
+                            runCatching { client.close() }
                         }
                     }
                 } catch (error: Throwable) {
@@ -1411,12 +2464,23 @@ object SessionController {
                     // 推流活跃时保持关闭，由 VideoSender.onEnded（推流终止）负责解除。
                     if (videoSender?.isRunning != true) {
                         BtSessionGate.sessionActive = false
+                        // 收尾竞态：晚到 0x4301 若恰好在「配对已失败、互斥尚未释放」的
+                        // 窗口内到达，会被暂存但没人消费。此处补投一次——车机等 15s
+                        // 无人连入就拆链，错过这一投就是整轮失败（2026-10-18 分析）。
+                        val pending = pendingEndpointUpdate
+                        if (pending != null && !connectCancelled) {
+                            pendingEndpointUpdate = null
+                            appendLog(">>> 收尾时发现暂存的晚到 0x4301——立即按新端点重走一轮")
+                            Bg.run("late-endpoint-retry") {
+                                onCarPlayEndpoint(pending, "0x4301 晚到（本轮收尾补投）")
+                            }
+                        }
                     }
                 }
             }
         }
-        // 已绑定过网络（autoJoinCarWifi 的 bindCarWifiAndRegister 刚绑好并重注册过）
-        // 就不要再 bindCurrentWifi：它内部先 release() → bindProcessToNetwork(null)，
+        // 已绑定过网络（autoJoinCarWifi 刚绑好并重注册过）就不要再走一遍加入流程：
+        // WifiCarPlayConnector 内部先 release() → bindProcessToNetwork(null)，
         // 会把刚注册好的 ctrl mDNS 广播打断，再等系统重建绑定。
         val wifiConfig =
             Iap2SenderSession.WifiConfiguration(
@@ -1428,41 +2492,100 @@ object SessionController {
         if (boundCarSsid == endpoint.ssid && wifiConnector?.currentNetwork != null) {
             appendLog(">>> [$source] 已绑定车机热点 ${endpoint.ssid}，跳过重复绑定")
             continueWithNetwork(true)
-        } else {
-            // bindCurrentWifi 只按 TRANSPORT_WIFI 请求、**不校验 SSID**——切网途中会绑到
-            // 旧 WiFi 就继续（AirPlay 必然连不上、还白等一轮配对）。先等真实 SSID 变成
-            // 车机热点再绑；status 命令不可用（非 AOSP ROM）时才退化为原来的盲绑。
-            Bg.run("wifi-bind-wait") {
-                val deadline = android.os.SystemClock.uptimeMillis() + CAR_WIFI_BIND_WAIT_MS
-                var current = shellWifiStatus().second
-                var lastHintAt = android.os.SystemClock.uptimeMillis()
-                while (current != null &&
-                    current != endpoint.ssid &&
-                    android.os.SystemClock.uptimeMillis() < deadline &&
-                    !connectCancelled
-                ) {
-                    if (android.os.SystemClock.uptimeMillis() - lastHintAt > 5_000) {
-                        lastHintAt = android.os.SystemClock.uptimeMillis()
-                        phaseHint = "等待手机加入车机热点 ${endpoint.ssid}…"
-                        appendLog("WIFI: 等待切换到车机热点（当前 $current）…")
-                    }
-                    Thread.sleep(400)
-                    current = shellWifiStatus().second
-                }
+        } else if (endpoint.isBuickB233) {
+            // Buick E5 T48: this phone is normally *already* associated with the
+            // saved head-unit hotspot. WifiNetworkSpecifier requests an app-owned
+            // replacement Wi-Fi, which can detach the existing system connection
+            // and Android then labels it "connected via CarDeck / poor quality".
+            // Reuse the user's existing association. Never forget their SSID,
+            // disconnect Wi-Fi, or issue a competing NetworkSpecifier request.
+            // Keep Audi/BMW/DiPlay's upstream Wi-Fi joining logic unchanged.
+            Bg.run("wifi-b233-preserve-existing") {
+                val currentSsid = shellWifiStatus().second
                 if (connectCancelled) {
                     sessionStarting.set(false)
                     return@run
                 }
-                if (current != null && current != endpoint.ssid) {
-                    phaseHint = "手机不在车机热点——请到 WLAN 设置加入 ${endpoint.ssid}"
-                    appendLog(">>> [$source] 等待车机热点超时（当前 WiFi: $current）——请到 设置>WLAN 加入 \"${endpoint.ssid}\" 后重新连接")
-                    uiHintSink?.invoke("未连上车机热点 \"${endpoint.ssid}\"——请到 WLAN 设置中主动连接")
-                    sessionStarting.set(false)
-                    return@run
+                if (currentSsid == wifiConfig.ssid) {
+                    appendLog("WIFI B233: 已在系统 Wi-Fi \"${wifiConfig.ssid}\" 上，" +
+                        "只绑定现有网络；不调用 Specifier、不清除保存热点")
+                    continueWithNetwork(bindCarWifiAndRegister(wifiConfig.ssid))
+                } else {
+                    appendLog("WIFI B233: 当前 Wi-Fi=${currentSsid ?: "无法识别"}，" +
+                        "目标=${wifiConfig.ssid}；为避免强制切换网络，等待手动连接")
+                    waitForManualWifiThenContinue(wifiConfig) { bound ->
+                        continueWithNetwork(bound)
+                    }
                 }
-                continueWithNetwork(bindCarWifiAndRegister(wifiConfig))
+            }
+        } else {
+            // 端点先于 0x5703 到达（或上一轮换网失败）：同样走应用专属网络。
+            // 不能再用「按 TRANSPORT_WIFI 盲绑当前任意 WiFi」——切网途中会绑到旧网络，
+            // AirPlay 必然连不上，且会把无互联网热点留在系统默认网络里。
+            Bg.run("wifi-join-on-endpoint") {
+                while (!connectCancelled) {
+                    val shellReady =
+                        appContext?.let { ShizukuGate.state(it) == ShizukuGate.State.READY } == true
+                    when (val result = joinCarWifiSpecifier(wifiConfig, shellReady)) {
+                        is WifiCarPlayConnector.JoinResult.Joined -> {
+                            continueWithNetwork(true)
+                            return@run
+                        }
+
+                        WifiCarPlayConnector.JoinResult.Unsupported -> {
+                            // WEP 等无法用 specifier 表达：等用户在系统 WLAN 里连上后绑定
+                            waitForManualWifiThenContinue(wifiConfig) { bound ->
+                                continueWithNetwork(bound)
+                            }
+                            return@run
+                        }
+
+                        WifiCarPlayConnector.JoinResult.Unavailable -> {
+                            promptSpecifierFailed(wifiConfig, shellReady)
+                            // promptSpecifierFailed 内部可能已重试/转手动；两者都会
+                            // 通过 joinCarWifiSpecifier → continueWithNetwork 续上流程，
+                            // 这里只在彻底失败时结束本轮
+                            if (boundCarSsid == wifiConfig.ssid && wifiConnector?.currentNetwork != null) {
+                                continueWithNetwork(true)
+                            } else {
+                                sessionStarting.set(false)
+                            }
+                            return@run
+                        }
+                    }
+                }
+                sessionStarting.set(false)
             }
         }
+    }
+
+    /** specifier 不可用时的手动兜底：轮询系统 WLAN 是否连上目标热点，而后绑定。 */
+    private fun waitForManualWifiThenContinue(
+        wifi: Iap2SenderSession.WifiConfiguration,
+        onBound: (Boolean) -> Unit,
+    ) {
+        val deadline = android.os.SystemClock.uptimeMillis() + CAR_WIFI_BIND_WAIT_MS
+        var lastHintAt = android.os.SystemClock.uptimeMillis()
+        while (android.os.SystemClock.uptimeMillis() < deadline && !connectCancelled) {
+            val current = shellWifiStatus().second
+            if (current == wifi.ssid) {
+                onBound(bindCarWifiAndRegister(wifi.ssid))
+                return
+            }
+            if (android.os.SystemClock.uptimeMillis() - lastHintAt > 5_000) {
+                lastHintAt = android.os.SystemClock.uptimeMillis()
+                phaseHint = "等待手机加入车机热点 ${wifi.ssid}…"
+                appendLog("WIFI: 等待用户在系统 WLAN 中加入车机热点（当前 ${current ?: "未连接"}）…")
+                openWlanSettings()
+            }
+            Thread.sleep(1_000)
+        }
+        if (!connectCancelled) {
+            phaseHint = "手机不在车机热点——请到 WLAN 设置加入 ${wifi.ssid}"
+            appendLog(">>> 等待车机热点超时——请到 设置>WLAN 加入 \"${wifi.ssid}\" 后重新连接")
+            uiHintSink?.invoke("未连上车机热点 \"${wifi.ssid}\"——请到 WLAN 设置中主动连接")
+        }
+        onBound(false)
     }
 
     /** 触摸/隧道事件低频计数（迁移自 MainActivity 字段，保持日志节流行为一致）。 */
@@ -1475,4 +2598,33 @@ object SessionController {
 
     @Volatile
     private var iapEventMessageCount = 0
+}
+
+/** 配对失败后的兜底路径决策（纯函数，真机抓包场景由 PairingFallbackTest 钉死）。 */
+internal data class PairingFallback(
+    /** 「断 BT 复现控制结束再试」二段 hack（仅测试台 DiPlay 形态）。 */
+    val useBtRetireHack: Boolean,
+    /** et=NONE 明文会话降级（pre-HomeKit 老车机 / 配对全拒但 RTSP 连上过的兜底）。 */
+    val usePlainSession: Boolean,
+)
+
+/**
+ * 决策依据（2026-10-21 真机 sysdiagnose，docs/PROTOCOL-NOTES.md §13a）：
+ * 任意阶段 403 = 「iAP2 信任已建立的车机在等自身就绪」——首连被拒是车机固有状态，
+ * 它 18~20s 后自动重邀、第二次即成。此状态下断 BT（整栈重建 30~40s，恰好错过重邀
+ * 窗口）与明文降级（必被拒且空耗重邀窗口）都是反向操作，两条兜底一律禁用；
+ * 配对循环以 5s 退避在窗口内原地重试（见 pairingRetryBackoffMs）。
+ */
+internal fun pairingFallback(
+    keysEstablished: Boolean,
+    noPairing: Boolean,
+    pairSetupRejected: Boolean,
+    pairingForbidden: Boolean,
+    attemptedPairing: Boolean,
+    pairingUnsupported: Boolean,
+): PairingFallback {
+    if (keysEstablished) return PairingFallback(useBtRetireHack = false, usePlainSession = false)
+    val useBtRetireHack = !noPairing && !pairSetupRejected && !pairingForbidden && attemptedPairing
+    val usePlainSession = !pairingForbidden && (pairingUnsupported || attemptedPairing)
+    return PairingFallback(useBtRetireHack = useBtRetireHack, usePlainSession = usePlainSession)
 }

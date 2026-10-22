@@ -95,7 +95,7 @@ object DebugFileLog {
             }
         } catch (_: Throwable) {
         }
-        // Outside the file lock: consumers only redact and enqueue, never perform network I/O here.
+        // Never do network IO while holding the log file lock.
         listeners.forEach { listener -> runCatching { listener(message) } }
     }
 }

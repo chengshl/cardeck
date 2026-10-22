@@ -23,8 +23,8 @@
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
@@ -57,7 +57,6 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.CarPlaySender">
-
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.updatefiles"
@@ -67,6 +66,7 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/buick_update_paths" />
         </provider>
+
 
         <!-- 手机侧操作台自行处理旋转：它是有状态的工具界面（滚动位置、折叠卡、
              已填热点 SSID、正在显示的弹窗），系统重建会把它们全部丢掉。
@@ -90,12 +90,13 @@
             android:name="io.github.shaonialife.cardeck.PhoneSettingsActivity"
             android:exported="false" />
         <activity
+            android:name="io.github.shaonialife.cardeck.SettingsContentActivity"
+            android:exported="false" />
+
+        <activity
             android:name="io.github.shaonialife.cardeck.EntryConfigActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
-        <activity
-            android:name="io.github.shaonialife.cardeck.SettingsContentActivity"
-            android:exported="false" />
 
         <service
             android:name="io.github.shaonialife.cardeck.service.GatewayLogService"

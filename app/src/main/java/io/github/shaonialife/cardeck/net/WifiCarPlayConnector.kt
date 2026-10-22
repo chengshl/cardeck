@@ -52,39 +52,40 @@ class WifiCarPlayConnector(
 
     private val callback = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
 
+    /** T24: passive VPN/default-route observations, no routing changes. */
+    private val routeMonitor = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
+    private val lastDefaultRoute = AtomicReference<String?>(null)
+
+    private fun monitorDefaultRoute() {
+        val observer = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                log("WiFi T24: Android 默认网络切换 → $network（正在获取 capabilities）")
+            }
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val state =
+                    "network=$network vpn=${capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)} " +
+                        "wifi=${capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)} " +
+                        "cellular=${capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)}"
+                if (lastDefaultRoute.getAndSet(state) != state) {
+                    log("WiFi T24: Android 默认网络状态 → $state")
+                }
+            }
+
+            override fun onLost(network: Network) {
+                log("WiFi T24: Android 默认网络失效 → $network（不等于车机热点失效）")
+            }
+        }
+        if (!routeMonitor.compareAndSet(null, observer)) return
+        runCatching { connectivityManager.registerDefaultNetworkCallback(observer) }
+            .onFailure {
+                routeMonitor.compareAndSet(observer, null)
+                log("WiFi T24: 默认网络监听不可用 - ${it.message}")
+            }
+    }
+
     val currentNetwork: Network? get() = boundNetwork.get()
     private val boundNetwork = AtomicReference<Network?>(null)
-    /** Only undo a process-level binding if CarDeck itself successfully made it. */
-    private val processBoundByUs = AtomicBoolean(false)
-
-    /**
-     * An active VPN must keep its own default route. CarPlay can instead select
-     * the physical hotspot Network for individual TCP sockets and scoped NSD.
-     */
-    private fun selectCarWifi(network: Network, label: String): Boolean {
-        if (!CarPlayNetworkSockets.isPhysicalWifi(connectivityManager, network)) {
-            log("WiFi T47: ignored non-physical Wi-Fi network=$network ($label)")
-            return false
-        }
-        val vpnActive = CarPlayNetworkSockets.isVpnActive(connectivityManager)
-        val bound = if (!vpnActive) {
-            try {
-                connectivityManager.bindProcessToNetwork(network)
-            } catch (error: Exception) {
-                log("WiFi T47: process binding unavailable: ${error.message}")
-                false
-            }
-        } else false
-        processBoundByUs.set(bound)
-        boundNetwork.set(network)
-        val iface = connectivityManager.getLinkProperties(network)?.interfaceName ?: "?"
-        log(
-            "WiFi T47: car hotspot selected network=$network interface=$iface " +
-                "vpnActive=$vpnActive processBound=$bound " +
-                "(CarPlay uses physical Wi-Fi per socket; VPN remains enabled)",
-        )
-        return true
-    }
 
     /**
      * 应用专属网络被系统断开（热点关闭/离开范围）时回调。会话层据此提示用户；
@@ -104,6 +105,24 @@ class WifiCarPlayConnector(
                 .getLinkProperties(network)
                 ?.routes
                 ?.firstOrNull { it.isDefaultRoute }
+                ?.gateway
+                ?.hostAddress
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Physical B233 hotspot IPv4 default gateway, never hard-coded.
+     * Avoid confusing an IPv6 default gateway with an IPv4 candidate.
+     */
+    fun ipv4GatewayAddress(): String? {
+        val network = boundNetwork.get() ?: return null
+        return try {
+            connectivityManager
+                .getLinkProperties(network)
+                ?.routes
+                ?.firstOrNull { it.isDefaultRoute && it.gateway is java.net.Inet4Address }
                 ?.gateway
                 ?.hostAddress
         } catch (_: Exception) {
@@ -172,6 +191,7 @@ class WifiCarPlayConnector(
             buildSpecifier(ssid, passphrase, securityType)
                 ?: return JoinResult.Unsupported
         release()
+        monitorDefaultRoute()
         val request =
             NetworkRequest
                 .Builder()
@@ -184,9 +204,10 @@ class WifiCarPlayConnector(
         val newCallback =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    if (!selectCarWifi(network, "dedicated hotspot")) return
+                    val bound = connectivityManager.bindProcessToNetwork(network)
+                    boundNetwork.set(network)
                     result.set(network)
-                    log("WiFi: 已加入应用专属网络 \"$ssid\"（$network）——不影响其它应用联网")
+                    log("WiFi: 已加入应用专属网络 \"$ssid\"（$network bindProcessToNetwork=$bound）——不影响其它应用联网")
                     latch.countDown()
                 }
 
@@ -198,9 +219,7 @@ class WifiCarPlayConnector(
 
                 override fun onLost(network: Network) {
                     if (boundNetwork.compareAndSet(network, null)) {
-                        if (processBoundByUs.getAndSet(false)) {
-                            connectivityManager.bindProcessToNetwork(null)
-                        }
+                        connectivityManager.bindProcessToNetwork(null)
                         log("WiFi: 应用专属网络 \"$ssid\" 已断开（$network）")
                         onNetworkLost?.invoke(ssid)
                     }
@@ -289,11 +308,11 @@ class WifiCarPlayConnector(
      */
     fun bindCurrentWifi(onResult: (Boolean) -> Unit = {}) {
         release()
+        monitorDefaultRoute()
         val request =
             NetworkRequest
                 .Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
         // 网络回调线程与 Bg 看门狗线程并发读写——原子标志保证可见性与单次投递
@@ -303,8 +322,25 @@ class WifiCarPlayConnector(
         val newCallback =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    if (!selectCarWifi(network, "current Wi-Fi")) return
-                    log("WiFi: 已选定当前车机WiFi网络 $network（VPN 存在时不全局改路由）")
+                    boundNetwork.set(network)
+                    val bound = connectivityManager.bindProcessToNetwork(network)
+                    // T24: previously reported "WiFi bound" even when the OS
+                    // declined process binding (Android 15 / VPN path).  Keep
+                    // the usable Network handle for explicit WiFi-scoped
+                    // sockets; do NOT mark the process route as successful.
+                    val active = connectivityManager.activeNetwork
+                    val activeCaps = active?.let { connectivityManager.getNetworkCapabilities(it) }
+                    val vpnDefault = activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                    log(
+                        "WiFi T24: vehicleNetwork=$network processBound=$bound " +
+                            "defaultNetwork=$active defaultIsVpn=$vpnDefault " +
+                            "transportWifi=" +
+                            (connectivityManager.getNetworkCapabilities(network)
+                                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true),
+                    )
+                    if (!bound) {
+                        log("WiFi T24: 进程绑定被 Android 拒绝；B233 AirPlay 改走车机 WiFi 专属 socket，不能依赖默认网络")
+                    }
                     if (reported.compareAndSet(false, true)) onResult(true)
                 }
 
@@ -338,11 +374,14 @@ class WifiCarPlayConnector(
     }
 
     fun release() {
+        routeMonitor.getAndSet(null)?.let {
+            runCatching { connectivityManager.unregisterNetworkCallback(it) }
+        }
+        lastDefaultRoute.set(null)
         callback.getAndSet(null)?.let {
             runCatching { connectivityManager.unregisterNetworkCallback(it) }
         }
-        boundNetwork.getAndSet(null)
-        if (processBoundByUs.getAndSet(false)) {
+        if (boundNetwork.getAndSet(null) != null) {
             connectivityManager.bindProcessToNetwork(null)
         }
     }

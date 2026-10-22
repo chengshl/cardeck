@@ -1,10 +1,6 @@
 package io.github.shaonialife.cardeck.net
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.net.wifi.WifiManager
-import android.os.Build
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.SystemClock
@@ -13,8 +9,6 @@ import io.github.shaonialife.cardeck.util.DeviceIdentity
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.Inet4Address
-import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -34,6 +28,31 @@ class CarPlayCtrlAdvertiser(
 ) {
     companion object {
         const val SERVICE_TYPE = "_carplay-ctrl._tcp"
+
+        /**
+         * 发送端在 ctrl TXT 里自报的版本。
+         *
+         * **必须保持 950.7.1**：2026-10-19 奥迪 MMI 3315 实车对照定谳——改成 catplay 的
+         * 566.25.21（发送端 SDK 版本）后，车机**连 ctrl-int 探测都不再发**、0x4301 永不到达；
+         * 用 950.7.1 时同一台车 0.65 秒内就下发 0x4301。车机在 WiFi 上只看得到这个 TXT，
+         * 它显然是按「接收端/系统广播常见版本」来判断对方形态的。
+         */
+        private const val SENDER_SRCVERS = "950.7.1"
+
+        /**
+         * ctrl 服务实例名。同理保持 0.1.6 的 `sender`：改名为 `iPhone` 与上一条同时生效，
+         * 无法从单次日志区分归因，故一并回退到已验证可用的组合（2026-10-19）。
+         */
+        private const val SERVICE_NAME = "sender"
+
+        /** 测试可见：这两个值经真车验证，改动需先复测（见 CarPlayCtrlAdvertiserTest）。 */
+        internal fun advertisedSrcversForTest(): String = SENDER_SRCVERS
+
+        internal fun advertisedServiceNameForTest(): String = SERVICE_NAME
+
+        /** 测试可见：本类实际广播的服务类型全集（目前只有 ctrl；_device-info 已移除）。 */
+        internal fun advertisedServiceTypesForTest(): List<String> = listOf(SERVICE_TYPE)
+
         private const val TAG = "CTRL"
         private const val MAX_HEAD_BYTES = 16 * 1024
 
@@ -42,12 +61,6 @@ class CarPlayCtrlAdvertiser(
     }
 
     private var serverSocket: ServerSocket? = null
-    private var multicastLock: WifiManager.MulticastLock? = null
-    private var diagnosticDiscovery: NsdManager.DiscoveryListener? = null
-    @Volatile private var diagnosticResolveStarted = false
-
-    @Volatile private var tcpAcceptCount = 0
-    @Volatile private var httpRequestCount = 0
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
 
     @Volatile
@@ -85,30 +98,6 @@ class CarPlayCtrlAdvertiser(
 
     /** 本次注册时进程所处的网络（用于判断「绑定后是否需要重注册」）。 */
     private var registeredNetwork: android.net.Network? = null
-
-    /**
-     * T43: prefer the Wi-Fi Network explicitly bound for this car session.
-     * Modern multi-interface Android phones may use wlan1, not wlan0.
-     * T42 real Buick log: boundNetwork=144, interface=wlan1, while NSD
-     * selection returned null and advertised without setNetwork().
-     */
-    private fun wifiNetwork(): android.net.Network? {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        fun usable(network: android.net.Network?): Boolean {
-            if (network == null) return false
-            val caps = cm.getNetworkCapabilities(network)
-            val props = cm.getLinkProperties(network)
-            return CarPlayNetworkSockets.isPhysicalWifi(cm, network) &&
-                props?.linkAddresses?.any { it.address is Inet4Address } == true
-        }
-        val bound = cm.boundNetworkForProcess
-        if (usable(bound)) return bound
-        val prior = registeredNetwork
-        if (usable(prior)) return prior
-        val active = cm.activeNetwork
-        if (usable(active)) return active
-        return cm.allNetworks.firstOrNull { usable(it) }
-    }
 
     val port: Int get() = serverSocket?.localPort ?: -1
 
@@ -168,43 +157,12 @@ class CarPlayCtrlAdvertiser(
         return ok
     }
 
-    /** T9: record Wi-Fi visibility at the exact time the service is advertised. */
-    private fun logNetworkSnapshot() {
-        try {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val bound = cm.boundNetworkForProcess
-            log("$TAG T7: processBoundNetwork=${bound ?: "(none)"} activeNetwork=${cm.activeNetwork ?: "(none)"}")
-            for (network in cm.allNetworks) {
-                val caps = cm.getNetworkCapabilities(network) ?: continue
-                if (!CarPlayNetworkSockets.isPhysicalWifi(cm, network)) continue
-                val props = cm.getLinkProperties(network)
-                val ips = props?.linkAddresses?.joinToString(",") { it.address.hostAddress ?: "?" }
-                val gateway = props?.routes?.firstOrNull { it.isDefaultRoute }?.gateway?.hostAddress
-                log("$TAG T7: wifiNetwork=$network interface=${props?.interfaceName} ips=${ips ?: "?"} gateway=${gateway ?: "?"} bound=${network == bound}")
-            }
-        } catch (error: Exception) {
-            log("$TAG T7: network snapshot failed: ${error.javaClass.simpleName}: ${error.message}")
-        }
-    }
-
     @Synchronized
     fun start(): Boolean {
         if (registered) return true
         return try {
             val socket = ServerSocket(0)
             serverSocket = socket
-            // T30: enable local Wi-Fi multicast reception during NSD diagnosis.
-            // This does not prove outbound mDNS delivery or car discovery.
-            try {
-                val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                val lock = wifiManager.createMulticastLock("cardeck-carplay-ctrl-t30")
-                lock.setReferenceCounted(false)
-                lock.acquire()
-                multicastLock = lock
-                log("$TAG T30: Wi-Fi multicast lock acquired=${lock.isHeld} (local-only)")
-            } catch (error: Exception) {
-                log("$TAG T30: Wi-Fi multicast lock unavailable: ${error.javaClass.simpleName}: ${error.message}")
-            }
             // 占位 MAC 时强制重试一次（启动连接即发布广播时，Shizuku 可能还没就绪；
             // 广播内容错了车机就永远不会邀请我们）
             var mac = DeviceIdentity.bluetoothMac(context)
@@ -212,26 +170,15 @@ class CarPlayCtrlAdvertiser(
                 mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
                 log("$TAG: 蓝牙 MAC 解析为占位值，已强制重试${if (mac == DeviceIdentity.PLACEHOLDER_MAC) "（仍未成功——车机可能不会邀请，请确认 Shizuku 已启动）" else "成功"}")
             }
-            val serviceWifi = wifiNetwork()
-            registeredNetwork = serviceWifi
-            val cmForRoute = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            log("$TAG T47: NSD physicalHotspot=${serviceWifi ?: "(none)"} " +
-                "vpnActive=${CarPlayNetworkSockets.isVpnActive(cmForRoute)} " +
-                "defaultNetwork=${cmForRoute.activeNetwork ?: "(none)"}")
             val info =
                 NsdServiceInfo().apply {
-                    serviceName = "sender"
+                    serviceName = SERVICE_NAME
                     serviceType = SERVICE_TYPE
                     setPort(socket.localPort)
-                    // Android 13+: restrict this NSD advertisement to the confirmed car Wi-Fi.
-                    // Do not bind the entire process; Bluetooth and other sockets remain unaffected.
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null) {
-                        setNetwork(serviceWifi)
-                    }
                     // TXT id = 本机真实蓝牙 MAC（catplay CarPlayInviter 实证：车机按此
                     // 匹配待邀请的手机，占位值会导致车机永远不邀请 → 0x4301 永不到达）。
                     setAttribute("id", mac)
-                    setAttribute("srcvers", "950.7.1")
+                    setAttribute("srcvers", SENDER_SRCVERS)
                 }
             // 每次注册用全新 listener：unregisterService 是异步的，复用同一个 listener
             // 会撞上 "listener already in use"（真车实测 10-11 卡住 ctrl 广播）
@@ -241,175 +188,27 @@ class CarPlayCtrlAdvertiser(
             registered = true
             registeredAtMillis = SystemClock.uptimeMillis()
             registeredWithMac = mac
-            log("$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id=$mac")
-            log("$TAG T11: TXT id=$mac srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}")
-            val nsdInterface = serviceWifi?.let {
-                (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
-                    .getLinkProperties(it)?.interfaceName
-            } ?: "(none)"
-            log("$TAG T43: NSD network=${serviceWifi ?: "(none)"} interface=$nsdInterface explicit=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null} socketBound=0.0.0.0:${socket.localPort}")
-            logNetworkSnapshot()
+            // 车机在 WiFi 上唯一可见的手机身份就是这几个 TXT 字段：占位 MAC / 版本不符都会
+            // 直接导致「不发 ctrl 探测、0x4301 永不到达」，而此前日志完全看不到它们
+            // （2026-10-19 奥迪 0.1.7 排查时无法归因），故每次注册都打一行。
+            log(
+                "$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE " +
+                    "name=$SERVICE_NAME id=$mac srcvers=$SENDER_SRCVERS" +
+                    if (mac == DeviceIdentity.PLACEHOLDER_MAC) "（⚠ 占位 MAC：车机不会邀请）" else "",
+            )
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
                 // 占位 id 车机不会邀请：后台等 Shizuku/MAC 就绪后立刻重注册，
                 // 别让「广播提前到启动连接」反而把 TXT id 写错（2026-10-18）。
                 Bg.run("ctrl-mac-repair") { repairPlaceholderMac() }
             }
-            // T9: if CarDeck starts before Wi-Fi joins the car hotspot, the original
-            // NSD advertisement may not be tied to a car Wi-Fi network yet. Re-register when one arrives.
-            Bg.run("ctrl-wifi-watch") { watchWifiNetwork(socket) }
-            Bg.run("ctrl-t11-diag") { diagnoseControlService(socket, serviceWifi) }
-            Bg.run("ctrl-t12-nsd") { diagnoseNsdDiscovery(socket, serviceWifi) }
             Thread(::acceptLoop, "ctrl-accept").apply {
                 isDaemon = true
                 start()
             }
             true
         } catch (error: Exception) {
-            runCatching { multicastLock?.release() }
-            multicastLock = null
-            runCatching { serverSocket?.close() }
-            serverSocket = null
             log("$TAG: 启动失败 - ${error.message}")
             false
-        }
-    }
-
-    /**
-     * T11 diagnostics. A local TCP probe only proves that Android can reach
-     * its own listener over the selected Wi-Fi interface; it does NOT prove
-     * that the Buick receiver can discover mDNS or reach this phone.
-     */
-    private fun diagnoseControlService(ownerSocket: ServerSocket, network: android.net.Network?) {
-        try {
-            Thread.sleep(1_500)
-            if (!registered || serverSocket !== ownerSocket) return
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val wifi = network?.takeIf { CarPlayNetworkSockets.isPhysicalWifi(cm, it) } ?: wifiNetwork()
-            if (CarPlayNetworkSockets.isVpnActive(cm)) {
-                log("$TAG T47: VPN active; skipping explicit Wi-Fi loopback selftest " +
-                    "(Android may reject physical-network socket with EPERM; " +
-                    "this does not imply CarPlay TCP is unreachable)")
-                return
-            }
-            val ipv4 = wifi?.let { cm.getLinkProperties(it)?.linkAddresses
-                ?.map { address -> address.address }
-                ?.firstOrNull { address -> address is Inet4Address } }
-            if (wifi == null || ipv4 == null) {
-                log("$TAG T43: SELFTEST unavailable: no active car Wi-Fi IPv4 (wlan0/wlan1)")
-            } else {
-                try {
-                    wifi.socketFactory.createSocket().use { probe ->
-                        probe.connect(InetSocketAddress(ipv4, ownerSocket.localPort), 2_500)
-                        log("$TAG T11: SELFTEST TCP PASS via wifi=$wifi address=${ipv4.hostAddress} port=${ownerSocket.localPort} (local-only, not car reachability)")
-                    }
-                } catch (error: Exception) {
-                    log("$TAG T11: SELFTEST TCP FAIL via wifi=$wifi address=${ipv4.hostAddress} port=${ownerSocket.localPort}: ${error.javaClass.simpleName}: ${error.message}")
-                }
-            }
-            repeat(9) { index ->
-                Thread.sleep(10_000)
-                if (!registered || serverSocket !== ownerSocket) return
-                log("$TAG T11: WATCH elapsed=${(index + 1) * 10}s tcpAccepts=$tcpAcceptCount httpRequests=$httpRequestCount ctrlInvites=$inviteCount wifi=${wifiNetwork() ?: "(none)"} active=${cm.activeNetwork ?: "(none)"} listener=${ownerSocket.localPort}")
-            }
-            if (registered && serverSocket === ownerSocket) {
-                log("$TAG T11 SUMMARY: 90s tcpAccepts=$tcpAcceptCount httpRequests=$httpRequestCount ctrlInvites=$inviteCount (zero accepts means no inbound TCP observed; does not by itself prove mDNS failure)")
-            }
-        } catch (error: InterruptedException) {
-            Thread.currentThread().interrupt()
-        } catch (error: Exception) {
-            log("$TAG T11: diagnostic error: ${error.javaClass.simpleName}: ${error.message}")
-        }
-    }
-
-    /**
-     * T12: Android NSD discovery cross-check. Seeing our own record is only
-     * local DNS-SD evidence, NOT evidence the Buick received multicast.
-     */
-    private fun diagnoseNsdDiscovery(ownerSocket: ServerSocket, wifi: android.net.Network?) {
-        try {
-            Thread.sleep(2_500)
-            if (!registered || serverSocket !== ownerSocket) return
-            val listener = object : NsdManager.DiscoveryListener {
-                override fun onDiscoveryStarted(serviceType: String) {
-                    log("$TAG T12: NSD discovery started type=$serviceType wifi=$wifi (local observation only)")
-                }
-                override fun onServiceFound(service: NsdServiceInfo) {
-                    log("$TAG T12: NSD FOUND name=${service.serviceName} type=${service.serviceType} port=${service.port} network=${if (Build.VERSION.SDK_INT >= 33) service.network else "(API<33)"} (NOT proof of car discovery)")
-                    // Discovery port=0 is often unresolved; check the local SRV/TXT record.
-                    if (service.serviceName == "sender" && !diagnosticResolveStarted) {
-                        diagnosticResolveStarted = true
-                        try {
-                            nsdManager.resolveService(service, object : NsdManager.ResolveListener {
-                                override fun onServiceResolved(resolved: NsdServiceInfo) {
-                                    val txtId = resolved.attributes["id"]?.toString(Charsets.UTF_8) ?: "(missing)"
-                                    val txtVersion = resolved.attributes["srcvers"]?.toString(Charsets.UTF_8) ?: "(missing)"
-                                    log("$TAG T13: NSD RESOLVED host=${resolved.host?.hostAddress ?: "(none)"} port=${resolved.port} id=$txtId srcvers=$txtVersion network=${if (Build.VERSION.SDK_INT >= 33) resolved.network else "(API<33)"} (local-only)")
-                                    if (resolved.port != ownerSocket.localPort) log("$TAG T13: WARNING port mismatch resolved=${resolved.port} listener=${ownerSocket.localPort}")
-                                }
-                                override fun onResolveFailed(failed: NsdServiceInfo, errorCode: Int) {
-                                    log("$TAG T13: NSD RESOLVE FAILED code=$errorCode (local-only)")
-                                }
-                            })
-                        } catch (error: Exception) {
-                            log("$TAG T13: NSD RESOLVE exception ${error.javaClass.simpleName}: ${error.message}")
-                        }
-                    }
-                }
-                override fun onServiceLost(service: NsdServiceInfo) {
-                    log("$TAG T12: NSD LOST name=${service.serviceName}")
-                }
-                override fun onDiscoveryStopped(serviceType: String) {
-                    log("$TAG T12: NSD discovery stopped")
-                }
-                override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                    log("$TAG T12: NSD discovery START FAILED code=$errorCode")
-                }
-                override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
-                    log("$TAG T12: NSD discovery STOP FAILED code=$errorCode")
-                }
-            }
-            synchronized(this) {
-                if (!registered || serverSocket !== ownerSocket) return
-                diagnosticResolveStarted = false
-                diagnosticDiscovery = listener
-            }
-            try {
-                nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
-            } catch (error: Exception) {
-                log("$TAG T12: NSD discovery unavailable: ${error.javaClass.simpleName}: ${error.message}")
-                return
-            }
-            Thread.sleep(15_000)
-            runCatching { nsdManager.stopServiceDiscovery(listener) }
-            synchronized(this) { if (diagnosticDiscovery === listener) diagnosticDiscovery = null }
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-        } catch (error: Exception) {
-            log("$TAG T12: NSD diagnostic error: ${error.javaClass.simpleName}: ${error.message}")
-        }
-    }
-
-    /** T43: follow the active bound Wi-Fi interface, whether wlan0 or wlan1. */
-    private fun watchWifiNetwork(ownerSocket: ServerSocket) {
-        repeat(90) {
-            try {
-                Thread.sleep(2_000)
-            } catch (_: InterruptedException) {
-                return
-            }
-            if (!registered || serverSocket !== ownerSocket) return
-            val current = try {
-                wifiNetwork()
-            } catch (error: Exception) {
-                log("$TAG T9: Wi-Fi 查询失败: ${error.message}")
-                return@repeat
-            }
-            if (current != null && current != registeredNetwork) {
-                log("$TAG T43: 检测到绑定 Wi-Fi 网络切换 ${registeredNetwork ?: "(none)"} -> $current；重注册 mDNS")
-                ensureForNetwork(registeredSsid ?: "", force = true, network = current)
-                // ensureForNetwork replaces the socket; the new registration owns its watcher.
-                return
-            }
         }
     }
 
@@ -440,9 +239,6 @@ class CarPlayCtrlAdvertiser(
                 } catch (_: Exception) {
                     break
                 }
-            val isLocalProbe = client.inetAddress?.hostAddress == client.localAddress?.hostAddress
-            if (!isLocalProbe) tcpAcceptCount++
-            log("$TAG T11: TCP accepted from ${client.inetAddress?.hostAddress ?: "?"}:${client.port} to localPort=${client.localPort}")
             Bg.run("ctrl-client") { handleClient(client) }
         }
     }
@@ -457,7 +253,6 @@ class CarPlayCtrlAdvertiser(
                 log("$TAG: $peer 连入但无请求（EOF）")
                 return
             }
-            if (peer != client.localAddress?.hostAddress) httpRequestCount++
             val requestLine = head.lineSequence().firstOrNull() ?: ""
             val headers =
                 head
@@ -550,21 +345,11 @@ class CarPlayCtrlAdvertiser(
         registered = false
         registeredSsid = null
         registeredWithMac = null
-        tcpAcceptCount = 0
-        httpRequestCount = 0
         registeredNetwork = null
-        diagnosticDiscovery?.let { runCatching { nsdManager.stopServiceDiscovery(it) } }
-        diagnosticDiscovery = null
         activeListener?.let { runCatching { nsdManager.unregisterService(it) } }
         activeListener = null
         runCatching { serverSocket?.close() }
         serverSocket = null
-        multicastLock?.let { lock ->
-            runCatching { if (lock.isHeld) lock.release() }
-                .onFailure { log("$TAG T30: multicast lock release error: ${it.javaClass.simpleName}") }
-            log("$TAG T30: Wi-Fi multicast lock released")
-        }
-        multicastLock = null
         log("$TAG: 已停止")
     }
 
@@ -572,7 +357,7 @@ class CarPlayCtrlAdvertiser(
     private fun createListener(): NsdManager.RegistrationListener =
         object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-                log("$TAG: mDNS 注册回调 ${serviceInfo.serviceName} callbackNetwork=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) serviceInfo.network else "(API<33)"} callbackPort=${serviceInfo.port} listenerPort=$port（回调端口可能未填充）")
+                log("$TAG: mDNS 注册成功 ${serviceInfo.serviceName}")
             }
 
             override fun onRegistrationFailed(

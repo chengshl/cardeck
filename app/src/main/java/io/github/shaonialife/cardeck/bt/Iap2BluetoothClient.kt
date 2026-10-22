@@ -10,7 +10,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
-import io.github.shaonialife.cardeck.util.DeviceIdentity
 import io.github.shaonialife.cardeck.transport.Iap2LinkChannel
 import io.github.shaonialife.cardeck.transport.StreamDuplexStream
 import java.io.IOException
@@ -34,6 +33,8 @@ class Iap2BluetoothClient(
     private val onEndpoint: (Iap2SenderSession.CarPlayEndpoint) -> Unit = {},
     /** 0x5703 一到即触发（绑 WiFi + 广播 _carplay-ctrl），真车 0x4301 的前置条件。 */
     private val onWifiCredentials: (Iap2SenderSession.WifiConfiguration) -> Unit = {},
+    /** Phase 1 之后车机补发 0x4301（CarPlay 窗口晚开）时交给主控热更新端点。 */
+    private val onEndpointUpdate: (Iap2SenderSession.CarPlayEndpoint) -> Unit = {},
     /** 目标车机（动态读取：选择后无需重启链路，下一轮尝试即生效）。 */
     private val targetProvider: () -> TargetDevicePrefs.Target? = { null },
 ) {
@@ -50,10 +51,16 @@ class Iap2BluetoothClient(
 
         /** 「蓝牙已连接→已断开」日志节流（车机可能反复自动重连，避免刷屏）。 */
         private const val PROFILE_LOG_THROTTLE_MILLIS = 15_000L
+
+        /** SDP 服务探测等待窗（fetchUuidsWithSdp → ACTION_UUID 广播）。 */
+        private const val SDP_PROBE_TIMEOUT_MILLIS = 2_500L
     }
 
     private var thread: Thread? = null
     private val currentSocket = AtomicReference<BluetoothSocket?>(null)
+    // T17: B233 only. Avoid hammering a head unit that has just torn down an
+    // audio CarPlay session or silently ignored the 0x4300 request.
+    private val b233ReconnectPolicy = B233ReconnectPolicy()
 
     /**
      * 客户端线程世代号：start()/stop() 都会递增。卡在阻塞 connect() 里的线程被
@@ -73,6 +80,67 @@ class Iap2BluetoothClient(
 
     /** 目标设备不在已配对列表的提示节流（避免每 3 秒刷屏）。 */
     private var lastTargetMissingLogAt = 0L
+
+    /** 「无 iAP2 服务→跳过」日志去重（每地址一次即可，重复轮询不刷屏）。 */
+    private val skippedNoService = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** 「是否提供 iAP2 服务」结论缓存（地址→结论）：SDP 查询不便宜，勿每 3s 重查。 */
+    private val iap2ServiceCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * 设备是否提供配件端 iAP2 服务（…caff）：先读系统 uuids 缓存，缺失再
+     * `fetchUuidsWithSdp` 触发一次 SDP 查询并等 `ACTION_UUID` 广播（超时按无服务）。
+     * 结论缓存到客户端停止——车机固件升级换 UUID 的场景由重启 App 覆盖。
+     * 权限：start() 已校验 BLUETOOTH_CONNECT；uuids/fetchUuidsWithSdp 的
+     * SecurityException 由 runCatching 吸收（探测失败按无服务处理，不断音频）。
+     */
+    @SuppressLint("MissingPermission")
+    private fun awaitIap2Service(device: BluetoothDevice): Boolean {
+        iap2ServiceCache[device.address]?.let { return it }
+
+        fun cachedHas(): Boolean =
+            runCatching {
+                device.uuids?.any { it == ACCESSORY_IAP2_UUID } == true
+            }.getOrDefault(false)
+
+        if (cachedHas()) {
+            iap2ServiceCache[device.address] = true
+            return true
+        }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val receiver =
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(
+                    receiverContext: Context,
+                    intent: android.content.Intent,
+                ) {
+                    @Suppress("DEPRECATION")
+                    val hit = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                    if (hit?.address == device.address) latch.countDown()
+                }
+            }
+        val started =
+            runCatching {
+                ContextCompat.registerReceiver(
+                    context,
+                    receiver,
+                    android.content.IntentFilter(BluetoothDevice.ACTION_UUID),
+                    ContextCompat.RECEIVER_EXPORTED,
+                )
+                device.fetchUuidsWithSdp()
+            }.getOrDefault(false)
+        if (started) {
+            try {
+                latch.await(SDP_PROBE_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        runCatching { context.unregisterReceiver(receiver) }
+        val has = cachedHas()
+        iap2ServiceCache[device.address] = has
+        return has
+    }
 
     /** 「蓝牙已连接→已断开」日志节流时间戳。 */
     private var lastProfileLogAt = 0L
@@ -99,6 +167,10 @@ class Iap2BluetoothClient(
             log("BT-C: 蓝牙不可用或未开启")
             return false
         }
+        // 每轮启动重置 SDP 结论与跳过日志（新配对/换固件后重新探测）
+        iap2ServiceCache.clear()
+        skippedNoService.clear()
+        b233ReconnectPolicy.reset()
         running = true
         val myGeneration = generation.incrementAndGet()
         val target = targetProvider()
@@ -127,16 +199,8 @@ class Iap2BluetoothClient(
                 null
             } ?: return
         var lastFailureLogAt = 0L
-        // T39: retain Buick-specific Bluetooth profile safety, but remove T35's bounded retry cap.
-        val t35Buick = targetProvider()?.let {
-            it.name.contains("BUICK", ignoreCase = true) &&
-                it.address.equals("30:DF:17:9F:AE:4C", ignoreCase = true)
-        } == true
-        var t35Attempts = 0
+        var lastCooldownLogUntil = 0L
         while (running && generation.get() == myGeneration) {
-            // T35's two successful RFCOMM sessions used to stop this entire client.
-            // A Buick that only restarts CarPlay after head-unit reboot would then
-            // never see a new phone-initiated attempt. Keep retrying with backoff.
             // 静默降噪（2026-10-10 用户实测后启用）——会话期间完全静默，不产生任何连接尝试/日志：
             //  - inboundActive：接收端正在连我们（两条 RFCOMM 会互相踩；Audi 实测双会话混乱）
             //  - sessionActive：CarPlay 会话已建立（已拿到端点）——与其它接收端的连接尝试全部暂停
@@ -146,6 +210,23 @@ class Iap2BluetoothClient(
                 sleepQuietly(2_000)
                 continue
             }
+            // T17: B233 does not reliably clear its 0x4300/iAP2 state after a
+            // short audio teardown. Give the receiver time to release the
+            // previous CarPlay slot instead of immediately forcing RFCOMM
+            // reconnect + HFP/A2DP disconnect every three seconds.
+            val remainingB233 = b233ReconnectPolicy.remainingMs(
+                android.os.SystemClock.uptimeMillis(),
+            )
+            if (remainingB233 > 0L) {
+                val until = b233ReconnectPolicy.untilMs()
+                if (until != lastCooldownLogUntil) {
+                    lastCooldownLogUntil = until
+                    log("BT-C T17: B233 会话冷却剩余 ${(remainingB233 + 999) / 1000}s；" +
+                        "等待车机释放旧 CarPlay 会话（仅暂停自动重连）")
+                }
+                sleepQuietly(minOf(1_000L, remainingB233))
+                continue
+            }
             val candidates = candidateDevices(adapter)
             if (candidates.isEmpty()) {
                 log("BT-C: 没有已配对的蓝牙设备——请先在系统设置里与车机完成蓝牙配对")
@@ -153,6 +234,7 @@ class Iap2BluetoothClient(
                 continue
             }
             var connected: BluetoothSocket? = null
+            var connectedKnownBuick = false
             for (device in candidates) {
                 if (!running || generation.get() != myGeneration) return
                 val name =
@@ -162,74 +244,116 @@ class Iap2BluetoothClient(
                         null
                     } ?: device.address
                 runCatching { adapter.cancelDiscovery() }
+                // B233 receiver (B233) was verified with an outbound RFCOMM link
+                // in T1, but Android sometimes reports no accessory iAP2 UUID
+                // in its SDP cache. Bypass only this known receiver, never all
+                // paired devices (headphones/watch still require SDP).
+                val knownBuick = BuickB233Route.isKnownReceiver(name)
+                if (knownBuick) B233PairingMonitor.trackKnownReceiver(device.address)
+                if (targetProvider() == null && knownBuick &&
+                    skippedNoService.add("B233:" + device.address)
+                ) {
+                    log("BT-C: 自动识别 B233 receiver（B233）：SDP 可能缺少 iAP2 UUID，仍尝试主动连入")
+                }
+                // 自动模式（未选目标）先过 SDP 闸门：候选=全部已配对设备，耳机/手表
+                // 没有 iAP2 服务，连不上还白白被断 HFP/A2DP（设备级断开兜底更会波及
+                // 其它在线设备）——确认提供 …caff 才进入「断开+连接」流程。选定目标
+                // 的设备不过闸（用户显式指定，保持原路径与时序）。
+                if (targetProvider() == null && !knownBuick && !awaitIap2Service(device)) {
+                    if (skippedNoService.add(device.address)) {
+                        log("BT-C: 跳过「$name」（未发现 iAP2 服务——非 CarPlay 设备，保持其音频连接）")
+                    }
+                    continue
+                }
+                // T19: Android owns the SSP confirmation. A reconnect that
+                // disconnects the ACL link while the system prompt is visible
+                // can invalidate the pending user choice. This is B233-only
+                // and never calls setPairingConfirmation/creates a bond.
+                if (knownBuick &&
+                    B233PairingMonitor.isWaitingForConfirmation(
+                        android.os.SystemClock.elapsedRealtime(),
+                    )
+                ) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
+                        lastProfileLogAt = now
+                        log("BT-C T19: 检测到 B233 蓝牙系统确认待处理；暂停主动连接和 HFP/A2DP 断开，等待用户确认")
+                    }
+                    // Do not fall through to a different paired receiver.
+                    break
+                }
                 // 「只配对、不连接」：奥迪 MIB3 实测手机与车机处于蓝牙已连接状态
                 // （HFP/A2DP 在线）时，车机不开放无线 CarPlay 的 iAP2 服务窗口——
                 // 表现为每 3s 连接失败。iAP2 是独立的 SDP 直连服务，与这些配置文件
                 // 无关，断开后不影响 CarPlay 本身（声音走 WiFi 的 AirPlay）。
-                if (!t35Buick) run {
-                    val dropped = BtProfiles.disconnect(context, device)
-                    if (dropped.isNotEmpty()) {
-                        val now = android.os.SystemClock.uptimeMillis()
-                        if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
-                            lastProfileLogAt = now
-                            val left = BtProfiles.stillConnected(context, device.address)
-                            log(
-                                "BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString("/")}）——已断开" +
-                                    if (left.isEmpty()) "" else "（仍有 ${left.joinToString("/")} 在线）",
-                            )
-                            log("BT-C: 车机在「蓝牙已连接」状态下不接受 CarPlay——保持仅配对")
+                if (knownBuick) {
+                    // T22 B233-only A/B experiment:
+                    // keep HFP/A2DP/LE_AUDIO unchanged and observe whether the
+                    // previously unacknowledged 0x4300 (seq110) gets a peer ACK.
+                    // Audi MIB3 may REQUIRE the legacy disconnect path, so
+                    // retain the original branch for every non-B233 receiver.
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
+                        lastProfileLogAt = now
+                        val active = BtProfiles.connectedNames(context, device.address)
+                        log(
+                            "BT-C T22: B233 实验：保留 HFP/A2DP/LE 连接，不主动断开；" +
+                                "当前配置文件=${if (active.isEmpty()) "无" else active.joinToString("/")}",
+                        )
+                    }
+                } else {
+                    run {
+                        val dropped = BtProfiles.disconnect(context, device)
+                        if (dropped.isNotEmpty()) {
+                            val now = android.os.SystemClock.uptimeMillis()
+                            if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
+                                lastProfileLogAt = now
+                                val left = BtProfiles.stillConnected(context, device.address)
+                                log(
+                                    "BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString("/")}）——已断开" +
+                                        if (left.isEmpty()) "" else "（仍有 ${left.joinToString("/")} 在线）",
+                                )
+                                log("BT-C: 车机在「蓝牙已连接」状态下不接受 CarPlay——保持仅配对")
+                            }
                         }
                     }
+                }
+                if (BtSessionGate.inboundActive || BtSessionGate.sessionActive) {
+                    log("BT-C T18: 接收端反向 iAP2 会话占用中，取消本次主动连入")
+                    break
                 }
                 val socket = tryConnect(device)
                 if (socket != null) {
                     log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
                     connected = socket
+                    connectedKnownBuick = knownBuick
                     break
                 } else {
                     val now = android.os.SystemClock.uptimeMillis()
                     if (now - lastFailureLogAt > FAILURE_LOG_THROTTLE_MILLIS) {
                         lastFailureLogAt = now
-                        log("BT-C: 连接 $name 失败（车机未就绪或不在无线配对窗口），${if (t35Buick) "6" else "3"} 秒后重试…")
+                        log("BT-C: 连接 $name 失败（车机未就绪或不在无线配对窗口），3 秒后重试…")
                     }
                 }
             }
             if (connected == null) {
-                // Buick may temporarily withhold its accessory SDP service after
-                // tearing down an incomplete CarPlay session.
-                val quiet = if (t35Buick && t35Attempts >= 3) 30_000L else if (t35Buick) 9_000L else RETRY_DELAY_MILLIS
-                sleepQuietly(quiet)
+                sleepQuietly(RETRY_DELAY_MILLIS)
                 continue
             }
             if (generation.get() != myGeneration) {
                 // stop() 与 connect() 成功竞争：本线程已过期，不建会话
-                currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+                currentSocket.compareAndSet(connected, null)
+                runCatching { connected.close() }
                 return
             }
-            if (t35Buick) {
-                t35Attempts += 1
-                log("BT-C T39: Buick RFCOMM session #$t35Attempts start (no fixed retry cap; no HFP/A2DP disconnect)")
-            }
+            // Diagnostics only: resolve a random vehicle label after a real RFCOMM connection.
             val vehicleId = runCatching { GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address) }.getOrNull()
             try {
-                runSession(connected)
+                runSession(connected, connectedKnownBuick)
             } finally {
                 GatewayVehicleIdentity.clearIfActive(vehicleId)
             }
-            if (t35Buick) {
-                log("BT-C T39: Buick RFCOMM session #$t35Attempts ended; outbound reconnect remains enabled")
-            }
-            val retryDelay =
-                if (!t35Buick) RETRY_DELAY_MILLIS else when {
-                    t35Attempts <= 1 -> 6_000L
-                    t35Attempts == 2 -> 15_000L
-                    t35Attempts == 3 -> 30_000L
-                    else -> 120_000L // preserve receiver pairing; no aggressive MFi loop
-                }
-            if (t35Buick) {
-                log("BT-C T41: Buick RFCOMM session #$t35Attempts finished; cooldown=${retryDelay / 1000}s (stop button interrupts)")
-            }
-            sleepQuietly(retryDelay)
+            sleepQuietly(RETRY_DELAY_MILLIS)
         }
         log("BT-C: 客户端已停止")
     }
@@ -268,7 +392,18 @@ class Iap2BluetoothClient(
             bonded.filter { device ->
                 device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true
             }
-        return if (withService.isNotEmpty()) withService else bonded
+        // Known B233 first: otherwise another paired device with a visible
+        // UUID can make the candidates list omit Buick entirely.
+        val knownBuick = bonded.filter { device ->
+            BuickB233Route.isKnownReceiver(
+                runCatching { device.name }.getOrNull()
+            )
+        }
+        return if (withService.isNotEmpty() || knownBuick.isNotEmpty()) {
+            (knownBuick + withService).distinctBy { it.address }
+        } else {
+            bonded
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -292,7 +427,7 @@ class Iap2BluetoothClient(
         }
     }
 
-    private fun runSession(socket: BluetoothSocket) {
+    private fun runSession(socket: BluetoothSocket, knownBuick: Boolean) {
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
@@ -300,31 +435,63 @@ class Iap2BluetoothClient(
         val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
         activeChannel = channel
         try {
-            // T10: resolve the shared Bluetooth identity before session construction.
-            var mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
-            repeat(3) {
-                if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
-                    Thread.sleep(600)
-                    mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
-                }
-            }
-            log("BT-C T10: pre-session identity=" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) "unavailable" else mac)
-            channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)
+            channel.runSenderSession(
+                context, SESSION_TIMEOUT_MILLIS, log,
+                { endpoint ->
+                    if (knownBuick) b233ReconnectPolicy.onStartSessionAccepted()
+                    onEndpoint(endpoint)
+                },
+                onWifiCredentials,
+                onEndpointUpdate,
+            )
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")
-            // T39: an old T24/T25/T26/T28 diagnostic timeout must not
-            // permanently disable the Buick connector. The caller's backoff and
-            // BtSessionGate prevent overlap with a live incoming RFCOMM session.
-            if (error.message?.contains("Buick T") == true) {
-                log("BT-C T39: Buick 诊断结束；保留受控的主动重连（不重启车机）")
+            if (knownBuick &&
+                B233ReconnectPolicy.isUnansweredStartSession(error.message) &&
+                running
+            ) {
+                val backoff = b233ReconnectPolicy.onStartSessionTimeout(
+                    android.os.SystemClock.uptimeMillis(),
+                )
+                log("BT-C T17: B233 0x4300 无回应，下一轮等待 ${backoff / 1000}s " +
+                    "（连续超时阶梯退避，最长60s）")
+                if (backoff == 30_000L) {
+                    log("BT-C T18: B233 连续两次 0x4300 无 ACK；" +
+                        "已允许一次车机主动发起的 iAP2 反向握手（仍保留原有主动连接后备）")
+                }
             }
         } finally {
-            activeChannel = null
-            currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+            if (activeChannel === channel) activeChannel = null
+            // T17: an old session ending after stop/start MUST NOT close the
+            // socket already owned by a newer generation of the BT client.
+            currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
             channel.close()
-            log(if (running) "BT-C: 本轮会话结束（自动重连仍启用）" else "BT-C: 本轮会话结束（诊断模式已停止自动重连）")
+            log("BT-C: 本轮会话结束（客户端仍在运行，将自动重连）")
         }
+    }
+
+    /**
+     * T18: called by the inbound iAP2 listener only for the verified B233
+     * receiver after target-device filtering. One shot per client start.
+     * Gate is atomic so two concurrent inbound accepts cannot both proceed.
+     */
+    fun claimB233InboundRecovery(): Boolean =
+        b233ReconnectPolicy.claimInboundRecoveryAttempt()
+
+    /**
+     * T17 only called after an established B233 audio+video stream has
+     * unexpectedly ended. Keep the client's service alive, but close its
+     * retired RFCOMM session and defer new discovery while B233 resets.
+     * Explicit stop/start clears this cooldown immediately.
+     */
+    fun recoverAfterB233AudioTeardown() {
+        val cooldown = b233ReconnectPolicy.onAudioSessionEnded(
+            android.os.SystemClock.uptimeMillis(),
+        )
+        log("BT-C T17: B233 音频异常拆链，退役旧 iAP2 控制连接；" +
+            "自动重试冷却 ${cooldown / 1000}s（不重启 App、不删除配对）")
+        detachCurrentSession()
     }
 
     /** 主动结束当前 BT 控制会话（不影响重连循环）。供 AirPlay 配对前复现控制通道退役状态。 */

@@ -16,6 +16,8 @@ import java.net.DatagramSocket
  */
 class TimingServer(
     private val log: (String) -> Unit = {},
+    /** T24: B233 CarPlay WiFi route, independent of Android/VPN default. */
+    private val vehicleNetwork: android.net.Network? = null,
 ) {
     private var socket: DatagramSocket? = null
 
@@ -35,6 +37,11 @@ class TimingServer(
         if (port != 0 && running) return true
         return try {
             val s = DatagramSocket()
+            vehicleNetwork?.let { network ->
+                runCatching { network.bindSocket(s) }
+                    .onSuccess { log("TIMING T24: UDP socket 指定车机 WiFi Network=$network") }
+                    .onFailure { log("TIMING T24: 无法固定 UDP 到车机 WiFi - ${it.message}") }
+            }
             s.reuseAddress = true
             socket = s
             running = true

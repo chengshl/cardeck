@@ -40,6 +40,9 @@ object TouchRouter {
     /** 叠加卡片手势状态（卡片命中后独占触摸，不再注入应用）。 */
     private var overlayPressed = false
 
+    /** 分屏把手粘性路由状态（命中把手条后整条触摸流固定路由应用屏）。 */
+    private var splitHandlePressed = false
+
     /**
      * MOVE 注入节流：0 = 关闭；>0 时距上次注入不足该毫秒数的 move
      * 直接合并丢弃（down/up 边界事件与跨屏切换永不节流，最终位置由 up 携带）。
@@ -63,15 +66,28 @@ object TouchRouter {
     @Volatile
     private var coordScaleY = 1f
 
+    @Volatile private var normalizedCanvasW = 0
+    @Volatile private var normalizedCanvasH = 0
+
     /** 会话建立时设置：视图（车机通告 display）尺寸 → 流（编码/虚拟屏）尺寸。 */
     fun setCoordinateScale(
         viewW: Int,
         viewH: Int,
         streamW: Int,
         streamH: Int,
+        hidMaxX: Int? = null,
+        hidMaxY: Int? = null,
     ) {
-        coordScaleX = if (viewW > 0) streamW.toFloat() / viewW else 1f
-        coordScaleY = if (viewH > 0) streamH.toFloat() / viewH else 1f
+        // B233 explicitly opts into HID-axis normalization. Other receivers
+        // retain the upstream view-pixel mapping without any behavior change.
+        val normalize = hidMaxX != null && hidMaxY != null &&
+            hidMaxX > 0 && hidMaxY > 0 && streamW > 0 && streamH > 0
+        coordScaleX = if (normalize) streamW.toFloat() / hidMaxX!! else
+            if (viewW > 0) streamW.toFloat() / viewW else 1f
+        coordScaleY = if (normalize) streamH.toFloat() / hidMaxY!! else
+            if (viewH > 0) streamH.toFloat() / viewH else 1f
+        normalizedCanvasW = if (normalize) streamW else 0
+        normalizedCanvasH = if (normalize) streamH else 0
     }
 
     fun onContact(
@@ -80,8 +96,10 @@ object TouchRouter {
     ) {
         // 空闲槽占位（未按下且 0,0）忽略
         if (!contact.down && contact.xPixels == 0 && contact.yPixels == 0) return
-        val px = (contact.xPixels * coordScaleX).toInt().coerceAtLeast(0)
-        val py = (contact.yPixels * coordScaleY).toInt().coerceAtLeast(0)
+        val scaledX = (contact.xPixels * coordScaleX).toInt().coerceAtLeast(0)
+        val scaledY = (contact.yPixels * coordScaleY).toInt().coerceAtLeast(0)
+        val px = if (normalizedCanvasW > 0) scaledX.coerceAtMost(normalizedCanvasW - 1) else scaledX
+        val py = if (normalizedCanvasH > 0) scaledY.coerceAtMost(normalizedCanvasH - 1) else scaledY
 
         // 叠加卡片（「强制横屏未生效」提示）优先消费触摸：它画在应用区的黑边上，
         // 必须先于注入判定命中，否则触摸会穿透到下面的应用。
@@ -130,7 +148,27 @@ object TouchRouter {
         var localX = 0
         var localY = 0
         var routedToMap = false
-        if (launcher.dockAtBottom) {
+        // 分屏把手粘性路由：按下落在把手条内 → 整条触摸流固定路由应用屏（Grid 所在屏）
+        // 直至抬起。快拖时把手落后手指、坐标会越出把手条（甚至越过地图 tile 边缘），
+        // 按坐标逐帧改判会跨屏重注（pointerUp 应用屏 + pointerDown 地图屏），掐断拖拽
+        // 并给地图误触一下（2026-10-21 方案评审定谳）。模式同上方 overlay 卡手势独占。
+        val handlePin =
+            splitHandlePressed ||
+                (contact.down && !pressed && launcher.dashHandleHit(px.toFloat(), py.toFloat()))
+        if (handlePin) {
+            splitHandlePressed = contact.down
+            inDock = false
+            targetDisplay =
+                if (launcher.gridDisplayId >= 0) launcher.gridDisplayId else launcher.activeAppDisplayId()
+            if (launcher.dockAtBottom) {
+                localX = px
+                localY = py
+            } else {
+                val scale = launcher.gridScale().coerceAtLeast(1f)
+                localX = ((px - dockW) * scale).toInt()
+                localY = (py * scale).toInt()
+            }
+        } else if (launcher.dockAtBottom) {
             val appH = launcher.appHeightPx
             inDock = py >= appH
             // 地图 tile（应用区上半；全屏=应用区全部）。触摸/流坐标顶部起算：
@@ -268,10 +306,13 @@ object TouchRouter {
         pressed = false
         pressedDisplay = -1
         overlayPressed = false
+        splitHandlePressed = false
         cancelMapTileTap()
         tapDragSlot = -1
         coordScaleX = 1f
         coordScaleY = 1f
+        normalizedCanvasW = 0
+        normalizedCanvasH = 0
     }
 
     // ---- 仪表盘地图 tile「快速点按 → 全屏地图」检测 ----

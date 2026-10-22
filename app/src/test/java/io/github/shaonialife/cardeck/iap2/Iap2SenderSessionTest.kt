@@ -139,6 +139,44 @@ class Iap2SenderSessionTest {
         accessoryChannel.close()
     }
 
+
+    /**
+     * Buick B233 reports send(0x4301)/receive(0x4300) but never sends 0x5703.
+     * The protocol must not issue 0x5702, must use exactly one 32-byte MFi
+     * challenge, and must send the 75-byte two-group 0x4300 before 0x4301.
+     */
+    @Test
+    fun buickB233UsesCarPlayStartSessionWithout5703() {
+        val pair = InMemoryStreamPair()
+        val phoneChannel = Iap2LinkChannel(pair.sideA, name = "phone-b233")
+        val accessoryChannel = Iap2LinkChannel(pair.sideB, name = "accessory-b233")
+        val accessory = MockAccessory(accessoryChannel, buickB233 = true)
+        val accessoryThread = Thread({ accessory.run() }, "mock-b233")
+        accessoryThread.isDaemon = true
+        accessoryThread.start()
+        try {
+            val endpoint = Iap2SenderSession(
+                phoneChannel,
+                log = { line -> println("B233 PHONE $line") },
+                bluetoothMac = "3C:38:F4:5B:09:EA",
+                deviceName = "test-phone",
+            ).run(timeoutMillis = 15_000L)
+
+            assertEquals("MockAP", endpoint.ssid)
+            assertEquals("secret-passphrase", endpoint.passphrase)
+            assertEquals(36, endpoint.channel)
+            assertEquals(2, endpoint.securityType)
+            assertEquals(49152, endpoint.airPlayPort)
+            assertEquals("mock-device-id", endpoint.deviceIdentifier)
+            assertEquals(listOf("192.0.2.1", "fd00::1"), endpoint.ipAddresses)
+            assertNotNull(endpoint.publicKey)
+        } finally {
+            phoneChannel.close()
+            accessoryChannel.close()
+            accessoryThread.join(2_000)
+        }
+    }
+
     /** 按 DiPlay Iap2WirelessControlClient 的时序脚本化应答。 */
     private class MockAccessory(
         private val channel: Iap2LinkChannel,
@@ -151,6 +189,7 @@ class Iap2SenderSessionTest {
          * IPv4 后跟 5 个）。用于锁定「必须去掉全部尾部 NUL」这一行为。
          */
         private val padAddresses: Boolean = false,
+        private val buickB233: Boolean = false,
     ) {
         private val parser = Iap2Csm.Parser()
         private val pending = ArrayDeque<Iap2Csm.Frame>()
@@ -161,11 +200,16 @@ class Iap2SenderSessionTest {
             expect(Iap2MessageIds.START_IDENTIFICATION)
             send(
                 Iap2MessageIds.IDENTIFICATION_INFORMATION,
-                Iap2Csm.string(0, "MockCarPlay"),
-                Iap2Csm.string(1, "MU-1"),
-                Iap2Csm.string(2, "Mock Manufacturer"),
-                if (audiDeclarations) {
-                    Iap2Csm.u16List(6, intArrayOf(0x5703, 0xea03))
+                Iap2Csm.string(0, if (buickB233) "BUICK_" + "1234" else "MockCarPlay"),
+                Iap2Csm.string(1, if (buickB233) "B233" else "MU-1"),
+                Iap2Csm.string(2, if (buickB233) "Saic General Motors" else "Mock Manufacturer"),
+                when {
+                    buickB233 -> Iap2Csm.u16List(6, intArrayOf(0xaa06, 0x6800, 0x5000, 0x4301))
+                    audiDeclarations -> Iap2Csm.u16List(6, intArrayOf(0x5703, 0xea03))
+                    else -> ByteArray(0)
+                },
+                if (buickB233) {
+                    Iap2Csm.u16List(7, intArrayOf(0x6801, 0x5001, 0x4e09, 0x4e0a, 0x4e0b, 0x4e0c, 0x4300))
                 } else {
                     ByteArray(0)
                 },
@@ -174,12 +218,16 @@ class Iap2SenderSessionTest {
 
             expect(Iap2MessageIds.MFI_REQUEST_CERTIFICATE)
             send(Iap2MessageIds.MFI_CERTIFICATE, Iap2Csm.param(0, ByteArray(64) { it.toByte() }))
-            expect(Iap2MessageIds.MFI_REQUEST_CHALLENGE)
+            val mfiChallenge = expect(Iap2MessageIds.MFI_REQUEST_CHALLENGE)
+            if (buickB233) {
+                val params = Iap2Csm.parseParams(mfiChallenge.body).associateBy { it.id }
+                check(params[0]?.value?.size == 32) { "B233 requires 32B MFi challenge" }
+            }
             send(Iap2MessageIds.MFI_RESPONSE, Iap2Csm.param(0, ByteArray(70) { (it * 7).toByte() }))
             expect(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
 
             // 订阅 + StartHID（奥迪形态不发，发送端应直接跳过等待）
-            if (!audiDeclarations) {
+            if (!audiDeclarations && !buickB233) {
                 send(Iap2MessageIds.START_NOW_PLAYING_UPDATES)
                 send(Iap2MessageIds.START_POWER_UPDATES)
                 send(
@@ -190,6 +238,26 @@ class Iap2SenderSessionTest {
                     Iap2Csm.param(4, byteArrayOf(0x05, 0x0c)),
                 )
                 expect(Iap2MessageIds.DEVICE_HID_REPORT)
+            }
+
+            if (buickB233) {
+                // Any 0x5702 is an immediate assertion failure: no 0x5703 for B233.
+                expect(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE)
+                expect(Iap2MessageIds.DEVICE_INFORMATION_UPDATE)
+                expect(Iap2MessageIds.DEVICE_TIME_UPDATE)
+                expect(Iap2MessageIds.DEVICE_UUID_UPDATE)
+                val availability = expect(Iap2MessageIds.CARPLAY_AVAILABILITY)
+                check(Iap2Csm.encode(availability.messageId, availability.body).size == 75) {
+                    "B233 0x4300 must use the captured 75B two-group format"
+                }
+                val groups = Iap2Csm.parseParams(availability.body).associateBy { it.id }
+                check(groups.keys == setOf(0, 1)) { "B233 0x4300 must have groups 0 and 1" }
+                val device = Iap2Csm.parseParams(groups.getValue(0).value).associateBy { it.id }
+                val transport = Iap2Csm.parseParams(groups.getValue(1).value).associateBy { it.id }
+                check(device[1]?.value?.decodeToString()?.trimEnd('\u0000')?.matches(Regex("[0-9A-F]{24}")) == true)
+                check(transport[1]?.value?.decodeToString()?.trimEnd('\u0000') == "3C:38:F4:5B:09:EA")
+                sendStartSession()
+                return
             }
 
             // WiFi 配置
@@ -280,7 +348,7 @@ class Iap2SenderSessionTest {
             }
         }
 
-        private fun expect(messageId: Int) {
+        private fun expect(messageId: Int): Iap2Csm.Frame {
             println("MOCK expect 0x${messageId.toString(16)}")
             val frame =
                 recvFrame(10_000)
@@ -289,6 +357,7 @@ class Iap2SenderSessionTest {
                 "mock expected 0x${messageId.toString(16)} got 0x${frame.messageId.toString(16)}"
             }
             println("MOCK got 0x${frame.messageId.toString(16)}")
+            return frame
         }
 
         private fun recvFrame(timeoutMillis: Long): Iap2Csm.Frame? {
