@@ -52,6 +52,13 @@ def read_blobs():
 
 def main():
     hostnames, ipv4s, macs, paths = set(), set(), set(), set()
+    # This is the known public Catplay placeholder used by a current unit
+    # test, not an observed vehicle identifier. Do not rewrite active tests.
+    fixture = subprocess.check_output([
+        "git", "show",
+        "HEAD:app/src/test/java/io/github/shaonialife/cardeck/airplay/SessionSetupBodyTest.kt"
+    ]).decode("utf-8", "replace")
+    fixture_mac = MAC.findall(fixture)[0].lower()
     for path, content in read_blobs():
         if KEY.search(content):
             raise RuntimeError("Possible credential requires rotation and explicit handling before rewrite")
@@ -69,7 +76,7 @@ def main():
             ipv4s.add(address)
         if pathlib.PurePosixPath(path).suffix.lower() in (".md", ".txt", ".json", ".yml", ".yaml", ".properties"):
             macs.update(m for m in MAC.findall(content)
-                        if m.lower() not in ("00:00:00:00:00:00", "02:00:00:00:00:00"))
+                        if m.lower() not in ("00:00:00:00:00:00", "02:00:00:00:00:00", fixture_mac))
 
     # Each original /24 receives its own reserved benchmark /24 to retain
     # same-network vs cross-network semantics in old tests and examples.

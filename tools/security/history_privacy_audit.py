@@ -51,6 +51,22 @@ def report_refs() -> dict:
     return dict(groups)
 
 
+
+
+def public_test_fixture_mac() -> str | None:
+    """Known synthetic Catplay fallback used as a public test sentinel."""
+    fixture_path = "app/src/test/java/io/github/shaonialife/cardeck/airplay/SessionSetupBodyTest.kt"
+    for ref in ("HEAD", "refs/heads/main", "refs/remotes/origin/main"):
+        result = subprocess.run(["git", "show", f"{ref}:{fixture_path}"],
+                                capture_output=True, check=False)
+        if result.returncode == 0:
+            values = MAC.findall(result.stdout.decode("utf-8", "replace"))
+            return values[0].lower() if values else None
+    return None
+
+
+PUBLIC_PLACEHOLDER_MAC = public_test_fixture_mac()
+
 def audit_blob(path: str, raw: bytes) -> dict[str, int]:
     if b"\0" in raw[:8192] or pathlib.PurePosixPath(path).suffix.lower() in SKIP_EXTS:
         return {}
@@ -80,7 +96,7 @@ def audit_blob(path: str, raw: bytes) -> dict[str, int]:
     flag("non_documentation_ipv4", len(addresses))
     if pathlib.PurePosixPath(path).suffix.lower() in DOC_EXTS:
         flag("device_mac_in_document", sum(
-            m.lower() not in ("00:00:00:00:00:00", "02:00:00:00:00:00")
+            m.lower() not in ("00:00:00:00:00:00", "02:00:00:00:00:00", PUBLIC_PLACEHOLDER_MAC)
             for m in MAC.findall(value)
         ))
     return issues
