@@ -34,3 +34,16 @@ private-deploy/
 *.local.yaml
 *.local.yml
 *.local.json
+
+# Unpublished CarDeck diagnostics and device captures
+CarDeck-log-*.txt
+CarDeck-system-crash*.zip
+bugreport-*.zip
+bugreport_*.zip
+sysdiagnose-*
+*.pcap
+*.pcapng
+*.hprof
+*.har
+*.trace
+*.log

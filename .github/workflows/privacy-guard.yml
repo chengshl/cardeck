@@ -15,5 +15,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test repository privacy guard
+        run: python3 -m unittest discover -s tools/security -p 'test_public_repo_guard.py'
       - name: Check tracked files for private infrastructure and secrets
         run: python3 tools/security/public_repo_guard.py
+
+      - name: Warn when commit author email is not private
+        if: always()
+        shell: bash
+        run: |
+          author_email="$(git log -1 --format=%ae)"
+          if [[ -n "$author_email" && "$author_email" != *noreply.github.com ]]; then
+            echo "::warning::This commit exposes a non-noreply author email. Enable GitHub email privacy and set a no-reply Git author email; the address is intentionally not printed."
+          fi
