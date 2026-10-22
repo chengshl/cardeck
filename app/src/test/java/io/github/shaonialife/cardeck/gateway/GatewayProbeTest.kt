@@ -45,9 +45,15 @@ class GatewayProbeTest {
         server.shutdown()
     }
 
-    private fun start(replyTimeout: Long = 2_000, deviceInfo: GatewayDeviceInfo? = null, appLogs: GatewayLogBuffer? = null): GatewayProbe {
+    private fun start(
+        replyTimeout: Long = 2_000,
+        deviceInfo: GatewayDeviceInfo? = null,
+        appLogs: GatewayLogBuffer? = null,
+        vehicleProvider: () -> String? = { null },
+    ): GatewayProbe {
         return GatewayProbe(client, observer = { events.offer(it) }, heartbeatIntervalMs = 100,
-            replyTimeoutMs = replyTimeout, deviceInfo = deviceInfo, appLogs = appLogs).also {
+            replyTimeoutMs = replyTimeout, deviceInfo = deviceInfo, appLogs = appLogs,
+            vehicleProvider = vehicleProvider).also {
             probe = it
             it.start(EntryConfig(server.url("/ws/device").toString().replaceFirst("https://", "wss://"), "test-only-token"))
         }
@@ -55,11 +61,18 @@ class GatewayProbeTest {
 
     private val info = GatewayDeviceInfo("65bddcd6-0e81-4f98-b509-7aafc1ddc3f8", "test-build", 35)
 
-    private fun reportingGateway(acknowledge: Boolean, received: LinkedBlockingQueue<JSONObject>, logs: Boolean = false, logAck: Boolean = true) =
+    private fun reportingGateway(
+        acknowledge: Boolean, received: LinkedBlockingQueue<JSONObject>,
+        logs: Boolean = false, logAck: Boolean = true, vehicleScope: Boolean = false,
+    ) =
         MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
             private var reports = 0
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                val capabilities = if (logs) "[\"device_status_v1\",\"logs_v1\"]" else "[\"device_status_v1\"]"
+                val capabilities = when {
+                    logs && vehicleScope -> "[\"device_status_v1\",\"logs_v1\",\"vehicle_scope_v1\"]"
+                    logs -> "[\"device_status_v1\",\"logs_v1\"]"
+                    else -> "[\"device_status_v1\"]"
+                }
                 webSocket.send("""{"type":"hello","mode":"transport-test","capabilities":$capabilities}""")
             }
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -128,6 +141,30 @@ class GatewayProbeTest {
         assertEquals("已预览系统日志", systemMessage.getJSONArray("lines").getString(0))
         active.close()
         assertFalse(active.uploadConfirmedSystemLogs(listOf("已过期预览")))
+    }
+
+    @Test
+    fun vehicleMetadataIsSentOnlyWhenGatewayNegotiatesVehicleScope() {
+        val vehicle = "74a97cc7-51f6-4e10-acd7-e9d4c3a25130"
+        val receivedLegacy = LinkedBlockingQueue<JSONObject>()
+        val legacyBuffer = GatewayLogBuffer(LogRedactor(), vehicleProvider = { vehicle })
+        legacyBuffer.offer("older gateway must not receive optional vehicle field")
+        server.enqueue(reportingGateway(true, receivedLegacy, logs = true))
+        start(deviceInfo = info, appLogs = legacyBuffer, vehicleProvider = { vehicle })
+        assertEquals(1, awaitLogCount(app = 1).appLogLines)
+        assertFalse(receivedLegacy.first { it.optString("type") == "logs" }.has("vehicle_id"))
+        assertFalse(receivedLegacy.first { it.optString("type") == "status" }.has("vehicle_id"))
+        probe?.close()
+        probe = null
+
+        val receivedNew = LinkedBlockingQueue<JSONObject>()
+        val modernBuffer = GatewayLogBuffer(LogRedactor(), vehicleProvider = { vehicle })
+        modernBuffer.offer("new gateway vehicle labels")
+        server.enqueue(reportingGateway(true, receivedNew, logs = true, vehicleScope = true))
+        start(deviceInfo = info, appLogs = modernBuffer, vehicleProvider = { vehicle })
+        assertEquals(1, awaitLogCount(app = 1).appLogLines)
+        assertEquals(vehicle, receivedNew.first { it.optString("type") == "logs" }.getString("vehicle_id"))
+        assertEquals(vehicle, receivedNew.first { it.optString("type") == "status" }.getString("vehicle_id"))
     }
 
     @Test
