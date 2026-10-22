@@ -26,27 +26,50 @@ class BuickB233VirtualIap2LinkTest {
     }
 
     @Test
-    fun waitsForCarDetectAndEchoesOnceViaControl() {
-        val controlSent = ArrayList<ByteArray>()
+    fun stalledB233DetectTriggersBoundedSynOnlyBeforeHandshake() {
+        val sent = ArrayList<ByteArray>()
         val eventSent = ArrayList<ByteArray>()
         val link = VirtualIap2Link(
             log = {},
             sendEventIap = { eventSent.add(it); true },
-            sendControlIap = { controlSent.add(it) },
+            sendControlIap = { sent.add(it) },
             tunnelWriter = { null },
             alive = { false },
             isBuickB233 = true,
         )
-
         link.armBuickB233()
-        assertTrue("B233 must not send Audi proactive DETECT", controlSent.isEmpty())
-
+        assertTrue(sent.isEmpty())
         link.onCarBytes(Iap2LinkEngine.MARKER)
-        assertEquals(1, controlSent.size)
-        assertTrue(controlSent.first().contentEquals(Iap2LinkEngine.MARKER))
-
+        assertEquals(1, sent.size)
+        assertTrue(sent[0].contentEquals(Iap2LinkEngine.MARKER))
         link.onCarBytes(Iap2LinkEngine.MARKER)
-        assertEquals("repeated markers must not reset an active B233 handshake", 1, controlSent.size)
-        assertTrue("B233 must respond over CONTROL RTSP, not Events", eventSent.isEmpty())
+        assertEquals(1, sent.size)
+        link.onCarBytes(Iap2LinkEngine.MARKER)
+        assertEquals(2, sent.size)
+        val probe = sent[1]
+        assertTrue(probe.copyOfRange(0, 6).contentEquals(Iap2LinkEngine.MARKER))
+        assertTrue(probe.size > 14 && probe[6] == 0xFF.toByte() &&
+            probe[7] == 0x5A.toByte() && (probe[10].toInt() and 0x80) != 0)
+        repeat(30) { link.onCarBytes(Iap2LinkEngine.MARKER) }
+        assertEquals("no rapid retransmit storm", 2, sent.size)
+        assertTrue(eventSent.isEmpty())
+    }
+
+    @Test
+    fun establishedB233VirtualLinkIgnoresStrayDetect() {
+        val sent = ArrayList<ByteArray>()
+        val link = VirtualIap2Link(
+            log = {}, sendEventIap = { true },
+            sendControlIap = { sent.add(it) }, tunnelWriter = { null },
+            alive = { false }, isBuickB233 = true,
+        )
+        link.armBuickB233()
+        link.onCarBytes(Iap2LinkEngine.MARKER)
+        val peer = Iap2LinkEngine()
+        peer.start(0L)
+        link.onCarBytes(peer.takeOutput())
+        val count = sent.size
+        repeat(12) { link.onCarBytes(Iap2LinkEngine.MARKER) }
+        assertEquals("never reset NORMAL negotiated session", count, sent.size)
     }
 }

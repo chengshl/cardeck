@@ -449,13 +449,27 @@ class Iap2SenderSession(
         log("iap2 B233 T21: 0x4300 frameSHA256prefix=$availabilityDigest " +
             "preSend=${channel.controlAckSnapshot()} (脱敏校验指纹，便于成功/失败轮次比对)")
         val availabilityStartedAt = System.nanoTime()
+        val markersBeforeAvailability = channel.receivedMarkerCount()
         send(Iap2MessageIds.CARPLAY_AVAILABILITY, body)
 
         // Never synthesize Wi-Fi credentials when B233 is silent. A missing 0x4301
         // is an explicit bring-up failure, unlike generic mDNS-only Audi devices.
         val waitUntil = minOf(deadline, System.nanoTime() + BUICK_START_SESSION_WAIT_NANOS)
         val reidGate = B233ReidentificationGate()
-        val start = expectOrNull(Iap2MessageIds.CARPLAY_START_SESSION, waitUntil) { frame ->
+        var peerRestartedDuringAvailability = false
+        val start = expectOrNull(
+            Iap2MessageIds.CARPLAY_START_SESSION,
+            waitUntil,
+            pollIntervalMillis = 750L,
+            abortWait = {
+                if (channel.receivedMarkerCount() - markersBeforeAvailability >= 4L) {
+                    peerRestartedDuringAvailability = true
+                    true
+                } else {
+                    false
+                }
+            },
+            onUnexpected = { frame ->
             if (frame.messageId != Iap2MessageIds.IDENTIFICATION_INFORMATION) {
                 false
             } else {
@@ -467,9 +481,13 @@ class Iap2SenderSession(
                     log("iap2 B233 T20: 重复/身份不匹配的 0x1d01，禁止再次认证")
                 }
                 true
-            }
-        }
+            },
+        )
         if (start == null) {
+            if (peerRestartedDuringAvailability && channel.isAlive) {
+                log("iap2 B233 T30: 连续 BT DETECT marker，终止旧 0x4300 并保留重连退避")
+                throw IOException("Buick B233: peer restarted iAP2 while waiting 0x4301")
+            }
             val elapsedMillis = (System.nanoTime() - availabilityStartedAt) / 1_000_000L
             val ackSnapshot = channel.controlAckSnapshot()
             log("iap2 B233 T21: 0x4301 未到，elapsedMs=$elapsedMillis " +
@@ -820,15 +838,19 @@ class Iap2SenderSession(
         messageId: Int,
         deadlineNanos: Long,
         onUnexpected: ((Iap2Csm.Frame) -> Boolean)? = null,
+        pollIntervalMillis: Long = 0L,
+        abortWait: (() -> Boolean)? = null,
     ): Iap2Csm.Frame? {
         while (true) {
             pendingFrames.firstOrNull { it.messageId == messageId }?.let {
                 pendingFrames.remove(it)
                 return it
             }
+            if (abortWait?.invoke() == true) return null
             val remaining = (deadlineNanos - System.nanoTime()) / 1_000_000L
             if (remaining <= 0) return null
-            val frame = recvNewFrame(remaining)
+            val window = if (pollIntervalMillis > 0L) minOf(remaining, pollIntervalMillis) else remaining
+            val frame = recvNewFrame(window)
             if (frame == null) {
                 if (!channel.isAlive) return null
                 continue

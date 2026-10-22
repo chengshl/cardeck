@@ -17,6 +17,9 @@ class B233ReconnectPolicyTest {
                 "Buick B233: 0x4301 not received after 30001ms",
             ),
         )
+        assertEquals(true, B233ReconnectPolicy.isUnansweredStartSession(
+            "Buick B233: peer restarted iAP2 while waiting 0x4301",
+        ))
     }
 
     @Test fun t27DoesNotBackOffOnManualCancelOrOtherLinkFailures() {

@@ -65,6 +65,10 @@ class VirtualIap2Link(
     private var buickArmed = false
     private var buickCsmStarted = false
     private var buickMarkerAnswered = false
+    private var buickMarkerCount = 0
+    private var buickRecoveryRounds = 0
+    private var buickRecoveryRoundAtMs = 0L
+    private var buickRecoveryStopped = false
     private var buickBurstDelivered = false
     private var buickAcceptedReceiveIds: Set<Int> = emptySet()
     private var buickWaitingForMfiSequence = false
@@ -265,10 +269,38 @@ class VirtualIap2Link(
                     bytes[1] == 0x55.toByte()
             if (isMarker && tunnelWriter() == null) {
                 if (buickArmed) {
+                    buickMarkerCount++
                     if (!buickMarkerAnswered) {
                         buickMarkerAnswered = true
                         log("IAPLINK T48: B233 DETECT -> echo on CONTROL RTSP")
                         sendControlIap(Iap2LinkEngine.MARKER)
+                    } else if (!buickCsmStarted &&
+                        engine.state == Iap2LinkEngine.State.NEGOTIATING &&
+                        !buickRecoveryStopped &&
+                        buickMarkerCount >= BUICK_STALLED_MARKER_THRESHOLD
+                    ) {
+                        // T30: receiver re-detects without ever sending SYN.
+                        // Bound SYN probes, never renegotiate a NORMAL session.
+                        val now = nowMillis()
+                        if (buickRecoveryRounds == 0 ||
+                            now - buickRecoveryRoundAtMs >= BUICK_SYN_ROUND_MILLIS
+                        ) {
+                            if (buickRecoveryRounds >= BUICK_MAX_SYN_ROUNDS) {
+                                buickRecoveryStopped = true
+                                engine.stopNegotiationRetries()
+                                log("IAPLINK T30: B233 WiFi marker 无 SYN；已达恢复上限")
+                            } else {
+                                buickRecoveryRounds++
+                                buickRecoveryRoundAtMs = now
+                                log("IAPLINK T30: B233 WiFi marker #" + buickMarkerCount +
+                                    " marker+SYN round=" + buickRecoveryRounds + "/" + BUICK_MAX_SYN_ROUNDS)
+                                engine.initiate(now)
+                                drainLocked()
+                            }
+                        }
+                    } else if (buickMarkerCount <= 3 || buickMarkerCount % 20 == 0) {
+                        log("IAPLINK T30: B233 WiFi marker #" + buickMarkerCount +
+                            " state=" + engine.state + " csmStarted=" + buickCsmStarted)
                     }
                     return
                 }
@@ -964,6 +996,9 @@ class VirtualIap2Link(
          * 取 2 既能避开 MIB3 的一次探测重发，又不会让车机白等太久。
          */
         const val EVENT_LINK_MARKER_THRESHOLD = 2
+        const val BUICK_STALLED_MARKER_THRESHOLD = 3
+        const val BUICK_SYN_ROUND_MILLIS = 4_000L
+        const val BUICK_MAX_SYN_ROUNDS = 2
 
         /**
          * 控制通道协商：每轮多久无进展就重开下一轮，最多几轮。

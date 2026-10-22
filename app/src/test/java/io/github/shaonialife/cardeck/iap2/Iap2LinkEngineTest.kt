@@ -8,6 +8,24 @@ import org.junit.Test
 /** 两个链路引擎通过直接交换输出字节完成握手与数据往返（无线程、无 I/O）。 */
 class Iap2LinkEngineTest {
     @Test
+    fun countsFragmentedAndRepeatedDetectWithoutBreakingHandshake() {
+        val link = Iap2LinkEngine()
+        var count = 0
+        link.onMarkerReceived = { count++ }
+        link.start(0L)
+        link.takeOutput()
+        val m = Iap2LinkEngine.MARKER
+        link.feed(m.copyOfRange(0, 2), 1L)
+        link.feed(m.copyOfRange(2, 5), 2L)
+        assertEquals(0, count)
+        link.feed(m.copyOfRange(5, 6), 3L)
+        assertEquals(1, count)
+        link.feed(m + m, 4L)
+        assertEquals(3, count)
+        assertEquals(Iap2LinkEngine.State.NEGOTIATING, link.state)
+    }
+
+    @Test
     fun handshakeReachesNormalOnBothSides() {
         val phone = Iap2LinkEngine()
         val accessory = Iap2LinkEngine()

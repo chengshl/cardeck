@@ -23,6 +23,7 @@ class Iap2LinkChannel(
     /** Track the last outbound control sequence and inbound cumulative peer ACK. */
     private var lastOutboundControlSeq: Int? = null
     private var lastPeerAck: Int? = null
+    private var inboundMarkerCount = 0L
 
     @Volatile
     private var terminated = false
@@ -44,6 +45,14 @@ class Iap2LinkChannel(
                 "LINK: 采纳对端会话表 maxOutgoing=${sync.maxOutgoing} maxLen=${sync.maxLength} " +
                     "sessions=" + sync.sessions.joinToString { "${it.id}/k${it.kind}/v${it.version}" },
             )
+        }
+        engine.onMarkerReceived = {
+            inboundMarkerCount++
+            if (inboundMarkerCount <= 4L || inboundMarkerCount % 20L == 0L) {
+                log("LINK T30: BT DETECT marker #" + inboundMarkerCount +
+                    " state=" + engine.state)
+            }
+            lock.notifyAll()
         }
         engine.onUnknownSessionData = { sessionId, size ->
             log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
@@ -136,6 +145,8 @@ class Iap2LinkChannel(
      * T21 read-only B233 diagnostic. Snapshot is taken under the same lock
      * as onFrameReceived/onFrameSent; it never dumps identifiers or credentials.
      */
+    fun receivedMarkerCount(): Long = synchronized(lock) { inboundMarkerCount }
+
     fun controlAckSnapshot(): String = synchronized(lock) {
         "sentSeq=${lastOutboundControlSeq ?: "none"} " +
             "peerAck=${lastPeerAck ?: "none"} alive=${!terminated}"

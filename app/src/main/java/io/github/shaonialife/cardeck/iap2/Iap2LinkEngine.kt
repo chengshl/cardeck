@@ -152,6 +152,8 @@ class Iap2LinkEngine(
 
     /** 诊断：每个入向链路帧的摘要（control/seq/ack/sessionId/载荷长度），真车排查用。 */
     var onFrameReceived: ((control: Int, sequence: Int, ack: Int, sessionId: Int, size: Int) -> Unit)? = null
+    /** Full inbound FF55 DETECT marker, including fragmented reads. */
+    var onMarkerReceived: (() -> Unit)? = null
 
     /** 诊断：每个出向链路帧的摘要（仅链路层帧，用于对照真车协商时序）。 */
     var onFrameSent: ((control: Int, sequence: Int, ack: Int, sessionId: Int, size: Int) -> Unit)? = null
@@ -349,10 +351,18 @@ class Iap2LinkEngine(
     // ---- 接收解析 ----
 
     private fun parseAvailable(nowMillis: Long): Boolean {
-        // 丢弃帧头前的杂字节（含对端 marker FF55…）
+        // T30: preserve marker fragments, count complete DETECT on Bluetooth.
         while (receive.size >= 2 &&
             !(receive[0] == 0xFF.toByte() && receive[1] == 0x5A.toByte())
         ) {
+            if (receive[0] == 0xFF.toByte() && receive[1] == 0x55.toByte()) {
+                if (receive.size < MARKER.size) return false
+                if (MARKER.indices.all { receive[it] == MARKER[it] }) {
+                    receive.discard(MARKER.size)
+                    onMarkerReceived?.invoke()
+                    return true
+                }
+            }
             receive.discard(1)
         }
         if (receive.size < HEADER_BYTES) return false
