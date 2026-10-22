@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 DOC_RANGES = tuple(ipaddress.ip_network(net) for net in
-                   ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"))
+                   ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "198.18.0.0/15"))
 IP_PATTERN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 MAC_PATTERN = re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b")
 PRIVATE_DOMAIN = re.compile(r"[A-Za-z0-9.-]+\." + "once" + r"\." + "wiki\b", re.I)
@@ -86,6 +86,7 @@ def main() -> int:
         for issue in reasons(path, contents):
             violations.append((str(path), issue))
     for filename, issue in violations:
+        print(f"Public-tree finding: {filename}: {issue}")
         print(f"::error file={filename}::Public-tree privacy guard: {issue}")
     print(f"Public-tree privacy guard scanned {checked} text files; {len(violations)} finding(s).")
     return 1 if violations else 0
