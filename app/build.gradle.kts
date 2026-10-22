@@ -37,7 +37,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "io.github.shaonialife.cardeck"
+        applicationId = "io.github.buick.e5.cardeck"
         minSdk = 31
         targetSdk = 34
         versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
@@ -66,9 +66,9 @@ android {
             signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")
         }
         debug {
-            // **不要加 applicationIdSuffix**：本项目 debug 包就是日常使用的包——
-            // Shizuku 授权是按包名授予的，改包名会要求重新授权；AGENTS.md 里的
-            // `run-as io.github.shaonialife.cardeck` 调试链路也会一起失效。
+            // 不加 applicationIdSuffix：当前分支的 debug/release 使用同一包名。
+            // Buick 系列三个独立 applicationId 均需单独授予 Shizuku 等权限。
+            // Kotlin namespace 保持上游值，确保 AIDL/类名/反射逻辑不变。
             versionNameSuffix = "-debug"
         }
     }
