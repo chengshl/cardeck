@@ -49,7 +49,11 @@ jobs:
               exit 1
             }
           for branch in main Buick-main Buick-E5 Buick-Test; do
-            test "$(git rev-parse "refs/remotes/origin/$branch^{tree}")" = "$(cat "$TEMP/$branch.tree")" || {
+            new_ref="refs/remotes/origin/$branch"
+            if ! git show-ref --verify --quiet "$new_ref"; then
+              new_ref="refs/heads/$branch"
+            fi
+            test "$(git rev-parse "$new_ref^{tree}")" = "$(cat "$TEMP/$branch.tree")" || {
               echo "::error::Historical rewrite unexpectedly changed current $branch file tree"
               exit 1
             }
