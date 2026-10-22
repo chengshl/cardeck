@@ -47,6 +47,8 @@ async def verify():
             assert record['app_version'] == 'synthetic-test' and record['report_count'] == 1
             app_batch = dict(type='logs', source='app', batch_id=str(uuid.uuid4()), user_confirmed=False,
                 lines=['connection 192.0.2.10 user@example.com', 'Authorization: Bearer test-secret'])
+            testCarName = 'BUICK_' + '1234'
+            assert gateway.redact('BT-C: connected ' + testCarName) == 'BT-C: connected [车机蓝牙名]'
             await ws.send(json.dumps(app_batch))
             ack = json.loads(await ws.recv())
             assert ack['type'] == 'logs_ack' and ack['accepted_lines'] == 2

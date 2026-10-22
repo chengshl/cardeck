@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LogRedactorTest {
+    @Test fun masksVehicleBluetoothNameInDiagnosticLogs() {
+        val syntheticName = "BUICK_" + "1234"
+        val result = LogRedactor().line("BT-C: connected to $syntheticName")
+        assertFalse(result.contains(syntheticName))
+        assertTrue(result.contains("[车机蓝牙名]"))
+    }
+
     @org.junit.Test
     fun airplaySessionKeyFragmentsNeverLeaveTheDevice() {
         val redactor = LogRedactor()

@@ -208,6 +208,8 @@ class QueryTests(unittest.TestCase):
                     self.assertIn('隐藏', result)
             self.assertEqual(server.redact('connect https://example.invalid/a 192.0.2.1 AA:BB:CC:DD:EE:FF'),
                              'connect [地址] [IP] [MAC]')
+            bt_name = 'BUICK_' + '1234'
+            self.assertEqual(server.redact('connected ' + bt_name), 'connected [车机蓝牙名]')
             self.assertEqual(server.redact('one\x00two\nthree\x7f'), 'one two three ')
             self.assertEqual(len(server.redact('汉' * 300)), 256)
 
