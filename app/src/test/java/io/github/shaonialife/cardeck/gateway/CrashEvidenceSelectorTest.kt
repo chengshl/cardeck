@@ -86,6 +86,29 @@ class CrashEvidenceSelectorTest {
         assertTrue(found.any { it.contains("21:52:01.235") && it.contains("Process: system") })
     }
 
+    @Test fun keeps50PersistentStagesEvenIfShizukuIsAbsent() {
+        val trail = (1..50).map { "[事件轨迹] 2026-10-23 22:08:19 stage=STEP_" + it }
+        val found = CrashEvidenceSelector.select("SESSION_BEGIN", null, emptyMap(), false,
+            redact, criticalTrail = trail)
+        assertEquals(50, found.count { it.startsWith("[阶段事件]") })
+        assertTrue(found.any { it.contains("STEP_1") })
+        assertTrue(found.any { it.contains("STEP_50") })
+        assertTrue(found.any { it.contains("Shizuku未运行") })
+    }
+
+    @Test fun includesNewestNativeTombstoneIfAccessible() {
+        val native = """
+            2026-10-23 22:08:26 SYSTEM_TOMBSTONE (text, 310 bytes)
+            Process: init
+            signal 6 (SIGABRT)
+            Abort message: native service terminated
+        """.trimIndent()
+        val found = CrashEvidenceSelector.select(null, null,
+            mapOf("SYSTEM_TOMBSTONE" to native), true, redact)
+        assertEquals("SYSTEM_TOMBSTONE@2026-10-23 22:08:26", CrashEvidenceSelector.datedCrashId(found))
+        assertTrue(found.any { it.contains("SIGABRT") })
+    }
+
     @Test fun undatedDropBoxNotMislabelledAsNewDatedCrash() {
         val found = CrashEvidenceSelector.select(null, "", mapOf(
             "system_server_crash" to "at com.android.server.wm.RootWindowContainer.onDisplayAdded(Foo.java:1)"

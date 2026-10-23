@@ -10,6 +10,7 @@ internal object CrashEvidenceSelector {
     private val tags = listOf(
         "system_server_crash", "system_app_crash", "system_app_anr",
         "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG",
+        "SYSTEM_TOMBSTONE", "system_app_native_crash",
     )
     private val clue = Regex(
         "FATAL|Exception|ANR|Watchdog|system_server|rescue.?party|reboot|restart|" +
@@ -39,7 +40,7 @@ internal object CrashEvidenceSelector {
     /** Stable identity for one dated event, rather than a stack common to many events. */
     fun datedCrashId(preview: List<String>): String? =
         preview.firstNotNullOfOrNull { line ->
-            val match = Regex("""^\[DropBox:(system_server_crash|system_app_crash|system_app_anr)\]""").find(line)
+            val match = Regex("""^\[DropBox:(system_server_crash|system_app_crash|system_app_anr|system_app_native_crash|SYSTEM_TOMBSTONE)\]""").find(line)
             if (match != null && fullEventDate.containsMatchIn(line)) {
                 val timestamp = fullEventDate.find(line)?.value ?: return@firstNotNullOfOrNull null
                 match.groupValues[1] + "@" + timestamp
@@ -68,6 +69,7 @@ internal object CrashEvidenceSelector {
         shizukuAvailable: Boolean,
         redactor: LogRedactor,
         currentBootCrash: String? = null,
+        criticalTrail: List<String> = emptyList(),
     ): List<String> {
         val output = ArrayList<String>(MAX_LINES)
         fun add(source: String, line: String) {
@@ -88,8 +90,11 @@ internal object CrashEvidenceSelector {
             chosen.forEach { add("上轮App" + (index + 1), it) }
         }
 
+        // T52: all 50 persisted breadcrumb stages in exact recording order,
+        // including cross-process/possible-reboot boundaries. Never depend on Shizuku.
+        criticalTrail.takeLast(50).forEach { add("阶段事件", it) }
         if (!shizukuAvailable) {
-            add("取证状态", "Shizuku未运行或未授权：只有前次App记录；需重新启动Shizuku后补查系统证据")
+            add("取证状态", "Shizuku未运行或未授权：仅本地阶段事件与前次App；启动后可补查系统证据")
             return output
         }
 
@@ -100,7 +105,7 @@ internal object CrashEvidenceSelector {
         val currentInteresting = currentBoot.filter {
             keyFault.containsMatchIn(it) || stackFrame.containsMatchIn(it) ||
                 it.contains("AndroidRuntime", ignoreCase = true)
-        }.takeLast(48)
+        }.takeLast(32)
         currentInteresting.forEach { add("本次启动crash", it) }
 
         // Previous-boot logcat -L, never current-boot -b crash.
@@ -108,18 +113,20 @@ internal object CrashEvidenceSelector {
             .map { it.trim() }.filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }.toList()
         val bootInteresting = boot.filter {
             keyFault.containsMatchIn(it) || stackFrame.containsMatchIn(it)
-        }.takeLast(48)
+        }.takeLast(20)
         bootInteresting.forEach { add("上次启动crash", it) }
 
         var datedEvents = 0
         var unknownDates = 0
         val quotas = mapOf(
-            "system_server_crash" to 70,
-            "system_app_crash" to 70,
-            "system_app_anr" to 30,
-            "system_server_watchdog" to 18,
-            "SYSTEM_RESTART" to 12,
-            "SYSTEM_LAST_KMSG" to 12,
+            "system_server_crash" to 50,
+            "system_app_crash" to 34,
+            "system_app_anr" to 12,
+            "system_server_watchdog" to 12,
+            "SYSTEM_RESTART" to 10,
+            "SYSTEM_LAST_KMSG" to 10,
+            "SYSTEM_TOMBSTONE" to 16,
+            "system_app_native_crash" to 16,
         )
         // Newest dated event first: the previous 21:27 WindowContext stack must
         // not mask a 21:52 persistent system-process crash.

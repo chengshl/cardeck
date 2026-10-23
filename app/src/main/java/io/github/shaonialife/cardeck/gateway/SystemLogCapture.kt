@@ -2,6 +2,7 @@ package io.github.shaonialife.cardeck.gateway
 
 import android.content.Context
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.util.Bg
@@ -55,9 +56,10 @@ object SystemLogCapture {
      */
     fun recoveryPreview(context: Context, redactor: LogRedactor): List<String> {
         val previousApp = CrashEvidenceSelector.joinPriorSessions(DebugFileLog.readPriorSessions(context))
+        val criticalTrail = CriticalEventTrail.recentLines(context)
         val ready = ShizukuGate.state(context) == ShizukuGate.State.READY
         if (!ready) {
-            return CrashEvidenceSelector.select(previousApp, null, emptyMap(), false, redactor)
+            return CrashEvidenceSelector.select(previousApp, null, emptyMap(), false, redactor, criticalTrail = criticalTrail)
         }
 
         // Limit every shell command's stdout in the shell itself so even very
@@ -74,13 +76,14 @@ object SystemLogCapture {
         val tags = listOf(
             "system_server_crash", "system_app_crash", "system_app_anr",
             "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG",
+            "SYSTEM_TOMBSTONE", "system_app_native_crash",
         )
         val dropbox = linkedMapOf<String, String>()
         for (tag in tags) {
             if (ShizukuGate.state(context) != ShizukuGate.State.READY) break
             dropbox[tag] = read("dumpsys dropbox --print $tag 2>/dev/null | tail -c 96000")
         }
-        return CrashEvidenceSelector.select(previousApp, previousBoot, dropbox, true, redactor, currentBoot)
+        return CrashEvidenceSelector.select(previousApp, previousBoot, dropbox, true, redactor, currentBoot, criticalTrail)
     }
 
 }
