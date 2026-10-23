@@ -11,6 +11,7 @@ import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * CarPlay 主屏视频发送端（Phase 2-C2）。
@@ -52,6 +53,8 @@ class VideoSender(
     private val keepAliveWithStats: Boolean = false,
     /** T24: explicit vehicle WiFi route for B233 video across VPN toggles. */
     private val vehicleNetwork: android.net.Network? = null,
+    /** T32: Buick-only video TCP liveness safeguard. Zero means disabled. */
+    private val stalledStreamTimeoutMs: Long = 0L,
 ) {
     private val width: Int = (width / 2) * 2
     private val height: Int = (height / 2) * 2
@@ -59,6 +62,9 @@ class VideoSender(
     private var encoder: MediaCodec? = null
     private var inputSurface: Surface? = null
     private val running = AtomicBoolean(false)
+    /** Updated only after successful TCP video/config/stream-keepAlive writes. */
+    private val lastStreamWriteAt = AtomicLong(0L)
+    private val stallRecoveryIssued = AtomicBoolean(false)
     private var frameCounter = 0L
     private var configSent = false
 
@@ -72,7 +78,7 @@ class VideoSender(
     /** 两次 keepAlive 之间的帧数/字节数（统计体用，catplay ScreenSenderStats 同义）。 */
     private var framesSinceKeepAlive = 0
     private var bytesSinceKeepAlive = 0L
-    private var keepAliveCount = 0L
+    @Volatile private var keepAliveCount = 0L
 
     @Volatile
     private var framesSent = 0L
@@ -154,6 +160,8 @@ class VideoSender(
             encoder = codec
             inputSurface = surface
             running.set(true)
+            stallRecoveryIssued.set(false)
+            lastStreamWriteAt.set(android.os.SystemClock.uptimeMillis())
             lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
 
             onSurfaceReady(surface)
@@ -161,6 +169,12 @@ class VideoSender(
             Thread({ drainEncoder() }, "video-drain").apply {
                 isDaemon = true
                 start()
+            }
+            if (stalledStreamTimeoutMs > 0L) {
+                Thread({ watchStreamStall() }, "video-stall-t32").apply {
+                    isDaemon = true
+                    start()
+                }
             }
             true
         } catch (error: Exception) {
@@ -203,11 +217,43 @@ class VideoSender(
 
     // ---- 编码输出 → 协议封装发送 ----
 
-    private fun drainEncoder() {
-        val codec = encoder ?: return
-        val output = socket?.getOutputStream() ?: return
-        val bufferInfo = MediaCodec.BufferInfo()
+    /**
+     * Detect video data writer stalls even while AirPlay CONTROL reports
+     * RTSP 200 OK. Close only the video TCP; the existing owning-session
+     * onEnded callback releases resources and starts normal recovery.
+     */
+    private fun watchStreamStall() {
         try {
+            while (running.get()) {
+                Thread.sleep(2_000L)
+                val now = android.os.SystemClock.uptimeMillis()
+                val last = lastStreamWriteAt.get()
+                if (!VideoStreamStallPolicy.isStalled(now, last, stalledStreamTimeoutMs, running.get())) continue
+                if (!stallRecoveryIssued.compareAndSet(false, true)) return
+                log(
+                    "VIDEO T32: 视频 TCP ${now - last}ms 无成功写入，" +
+                        "lastFrames=$framesSent lastKeepAlive=$keepAliveCount；关闭视频数据口，交由既有会话恢复"
+                )
+                // socket.close() unblocks a blocked OutputStream write.
+                runCatching { socket?.close() }
+                return
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    private fun markStreamWriteSuccess() {
+        lastStreamWriteAt.set(android.os.SystemClock.uptimeMillis())
+    }
+
+    private fun drainEncoder() {
+        try {
+            // Keep even the first getOutputStream() inside try/finally.
+            val codec = encoder ?: throw java.io.IOException("encoder unavailable when video drain starts")
+            val output = socket?.getOutputStream()
+                ?: throw java.io.IOException("video socket unavailable when drain starts")
+            val bufferInfo = MediaCodec.BufferInfo()
             while (running.get()) {
                 val index =
                     try {
@@ -273,6 +319,7 @@ class VideoSender(
         val frame = buildKeepAliveFrame(keepAliveWithStats, frames, bytesPerSecond, framesPerSecond)
         output.write(frame)
         output.flush()
+        markStreamWriteSuccess()
         if (keepAliveCount <= 3 || keepAliveCount % 30 == 0L) {
             log(
                 "VIDEO: keepAlive #$keepAliveCount " +
@@ -322,6 +369,7 @@ class VideoSender(
         output.write(header)
         output.write(body)
         output.flush()
+        markStreamWriteSuccess()
         configSent = true
         log(
             "VIDEO: ✓ VideoConfig 已发送 avcC=${body.size}B（SPS ${sps.size}B/PPS ${pps.size}B，" +
@@ -380,6 +428,7 @@ class VideoSender(
         output.write(header)
         output.write(sealed)
         output.flush()
+        markStreamWriteSuccess()
         framesSent++
         framesSinceKeepAlive++
         bytesSinceKeepAlive += plain.size.toLong()

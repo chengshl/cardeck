@@ -2366,6 +2366,9 @@ object SessionController {
                                             vehicleNetwork =
                                                 if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                                             keepAliveWithStats = setup.keepAliveSendStatsAsBody,
+                                            // T32: control RTSP health alone cannot prove video writes work.
+                                            stalledStreamTimeoutMs =
+                                                if (client.currentEndpoint.isBuickB233) 15_000L else 0L,
                                             onEnded = {
                                                 // A deliberately retired or superseded stream cannot
                                                 // change the current session (E5 T38 race fix).
