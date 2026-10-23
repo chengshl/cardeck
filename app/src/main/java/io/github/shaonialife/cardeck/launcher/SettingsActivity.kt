@@ -2,6 +2,8 @@ package io.github.shaonialife.cardeck.launcher
 
 import android.os.Bundle
 import android.widget.LinearLayout
+import android.view.ViewGroup
+import io.github.shaonialife.cardeck.buick.BuickSettingsInsets
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
@@ -47,6 +49,31 @@ class SettingsActivity :
             return
         }
         setContentView(R.layout.activity_settings)
+        // T35: T34 expanded the left Dock to place home controls after the
+        // receiver's curved corner. The Settings Activity runs on the separate
+        // app display, so it needs ONLY the remaining right/top/bottom insets.
+        // Pad the content inside its existing opaque background; never shrink
+        // or stretch the AirPlay framebuffer, virtual display, or touch space.
+        VirtualLauncher.safeViewport?.let { safe ->
+            val uiWidth = resources.displayMetrics.widthPixels
+            val uiHeight = resources.displayMetrics.heightPixels
+            val insets = BuickSettingsInsets.forApp(
+                safe, VirtualLauncher.streamWidthPx, VirtualLauncher.streamHeightPx,
+                VirtualLauncher.appAreaWidth, uiWidth, uiHeight,
+            )
+            val content = findViewById<ViewGroup>(android.R.id.content)
+            val root = content.getChildAt(0)
+            root?.setPadding(
+                root.paddingLeft + insets.left,
+                root.paddingTop + insets.top,
+                root.paddingRight + insets.right,
+                root.paddingBottom + insets.bottom,
+            )
+            VirtualLauncher.logSink?.invoke(
+                "BUICK T35: 车机设置内容内边距 左${insets.left}/上${insets.top}/" +
+                    "右${insets.right}/下${insets.bottom}；保持视频1:1与原触摸映射",
+            )
+        }
         toastView = findViewById(R.id.settingsToast)
         findViewById<TextView>(R.id.btnBack).setOnClickListener { close() }
 
