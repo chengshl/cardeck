@@ -1,5 +1,7 @@
 package io.github.shaonialife.cardeck.launcher
 
+import io.github.shaonialife.cardeck.buick.BuickViewport
+
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -13,7 +15,12 @@ import android.view.Surface
 import io.github.shaonialife.cardeck.launcher.settings.AppOrientationCompat
 import io.github.shaonialife.cardeck.launcher.settings.DisplayPrefs
 import io.github.shaonialife.cardeck.media.NotificationAccess
+import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
+import io.github.shaonialife.cardeck.buick.BuickStandaloneFit
+import io.github.shaonialife.cardeck.ui.WallpaperStore
 import io.github.shaonialife.cardeck.render.CARD_MARGIN_PX
+import io.github.shaonialife.cardeck.render.DASH_GAP_PX
+import io.github.shaonialife.cardeck.render.DASH_HANDLE_TOUCH_PX
 import io.github.shaonialife.cardeck.render.DualDisplayComposer
 import io.github.shaonialife.cardeck.render.OverlayCard
 import io.github.shaonialife.cardeck.shizuku.CarInputClient
@@ -63,6 +70,59 @@ object VirtualLauncher {
     /** 超采样后的应用屏高度上限（px；控制 GPU/内存开销）。 */
     private const val SUPERSAMPLE_MAX_HEIGHT = 1620
 
+    // ---- 仪表盘分屏（拖拽把手）----
+    // 比例 = tile 主轴长占「可用长度」（应用区主轴 − 两端边距 − 把手宽）的比例。
+
+    /** 默认比例：0.5 恰使把手中心落在应用区正中（见 dashSplitGeom 注释）。 */
+    const val DASH_SPLIT_DEFAULT_FRACTION = 0.5f
+
+    /** 比例钳制域：任一卡最小占 20%，防拖成一条线（按钮/圆角全挤没）。 */
+    const val DASH_SPLIT_MIN_FRACTION = 0.2f
+
+    const val DASH_SPLIT_MAX_FRACTION = 0.8f
+
+    private const val PREF_KEY_DASH_SPLIT = "dashSplitFraction"
+
+    fun clampDashSplitFraction(fraction: Float): Float = fraction.coerceIn(DASH_SPLIT_MIN_FRACTION, DASH_SPLIT_MAX_FRACTION)
+
+    /** 分屏几何（应用区坐标系：横屏原点=dock 右缘，竖屏原点=流顶缘）。 */
+    data class DashSplitGeom(
+        val fraction: Float,
+        /** tile 主轴长（横=mapTileWidth、竖=mapTileHeight）。 */
+        val tileLen: Int,
+        /** tile 把手侧边缘（composer override 同语义）。 */
+        val tileEdge: Float,
+        /** 把手中心。 */
+        val splitCenter: Float,
+        /** 对侧卡（音乐卡）内容侧起始。 */
+        val otherStart: Float,
+    )
+
+    /**
+     * 分屏几何纯函数（单测钉死）：可用长度 = 主轴 − 边距×2 − 把手宽；
+     * tileLen = 比例×可用；把手中心 = 边距 + tileLen + 半把手（0.5 时恰在
+     * 应用区正中，与旧行为的中线分屏视觉一致）；音乐卡起始 = 边距 + tileLen + 把手宽。
+     */
+    fun dashSplitGeom(
+        appMainLen: Int,
+        fraction: Float,
+    ): DashSplitGeom {
+        val usable = (appMainLen - CARD_MARGIN_PX * 2 - DASH_GAP_PX.toInt()).coerceAtLeast(1)
+        val clamped = clampDashSplitFraction(fraction)
+        val tileLen = (clamped * usable).toInt()
+        val edge = CARD_MARGIN_PX + tileLen
+        return DashSplitGeom(
+            fraction = clamped,
+            tileLen = tileLen,
+            tileEdge = edge.toFloat(),
+            splitCenter = edge + DASH_GAP_PX / 2f,
+            otherStart = edge + DASH_GAP_PX,
+        )
+    }
+
+    /** 分屏主轴长度（应用区坐标系）：横=appAreaWidth、竖=appAreaHeight。 */
+    private fun splitMainLen(): Int = if (dockAtBottom) appAreaHeight else appAreaWidth
+
     val runningApps = LinkedHashSet<ComponentName>()
 
     private val runningAppsListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
@@ -96,7 +156,7 @@ object VirtualLauncher {
         iconCacheRef = fresh
     }
 
-    /** T41: only true while a CarPlay virtual desktop is valid. */
+    /** T9/T41: car-only launcher tasks must not remain on phone after display removal. */
     @Volatile
     var sessionAttached: Boolean = false
         private set
@@ -113,6 +173,50 @@ object VirtualLauncher {
     @Volatile
     var dockWidthPx: Int = 0
         private set
+
+    /** T33 active compositor viewport, source coordinates stay unchanged for input routing. */
+    @Volatile
+    var safeViewport: BuickViewport? = null
+        private set
+
+    /** Only standalone 3rd-party apps and fullscreen map use this fitted GL rect. */
+    @Volatile var standaloneFit: BuickViewport? = null
+        private set
+    @Volatile private var lastFullscreenMapPackage: String? = null
+
+    private fun resetStandaloneFit() {
+        standaloneFit = null
+        composer?.standaloneFit = null
+    }
+
+    private fun selectStandaloneFit(packageName: String) {
+        val ctx = appContextRef
+        val safe = safeViewport
+        val mode = if (ctx != null && safe != null && BuickVehiclePrefs.enabled(ctx)) {
+            BuickVehiclePrefs.standaloneModeFor(ctx, BuickVehiclePrefs.selected(ctx)?.key, packageName)
+        } else "full"
+        val rect = if (mode == "safe") {
+            BuickStandaloneFit.resolve(safe, dockWidthPx, streamWidthPx, streamHeightPx)
+        } else null
+        standaloneFit = rect
+        composer?.standaloneFit = rect
+        logSink?.invoke(
+            "BUICK T38: 独立应用 mode=$mode fit=${rect ?: "full"} " +
+                "背景就绪=${composer?.safeBackgroundBitmap != null} (不改变视频编码尺寸)"
+        )
+        if (rect != null && composer?.safeBackgroundBitmap == null && ctx != null) {
+            val bound = composer
+            val w = streamWidthPx
+            val h = streamHeightPx
+            Bg.run("buick-t38-backdrop-recover") {
+                val bg = runCatching { WallpaperStore.aspectFillCanvas(ctx, w, h) }.getOrNull()
+                if (bound != null && this.composer === bound) {
+                    bound.safeBackgroundBitmap = bg
+                    logSink?.invoke("BUICK T38: 背景补加载成功=${bg != null}")
+                }
+            }
+        }
+    }
 
     /** 竖屏车机（屏幕高>宽）：dock 改为底部横条。 */
     @Volatile
@@ -187,6 +291,28 @@ object VirtualLauncher {
     @Volatile
     var mapTileHeight: Int = 0
         private set
+
+    /** T36: top/bottom margins of the *dashboard map tile* in stream pixels. */
+    @Volatile
+    var mapTileTopPx: Int = CARD_MARGIN_PX
+        private set
+
+    @Volatile
+    var mapTileBottomPx: Int = CARD_MARGIN_PX
+        private set
+
+    /**
+     * 仪表盘分屏把手中心（流像素，顶部原点；横屏=x、竖屏=y）。<0 = 未 attach。
+     * 拖动中由 [previewDashSplit] 连续预览，松手 [commitDashSplit] 落定并派生
+     * [mapTileWidth]/[mapTileHeight]。几何推导全部经 [dashSplitGeom] 纯函数。
+     */
+    @Volatile
+    var dashSplitPos: Float = -1f
+        private set
+
+    /** 当前生效的分屏比例（attach 从偏好恢复，commit 写回）。 */
+    @Volatile
+    private var dashSplitFraction = DASH_SPLIT_DEFAULT_FRACTION
 
     /** 应用区尺寸（全屏形态的地图屏目标尺寸）。 */
     @Volatile
@@ -291,6 +417,9 @@ object VirtualLauncher {
     private var dockDisplay: VirtualDisplay? = null
     private var appDisplay: VirtualDisplay? = null
     private var appHiDisplay: VirtualDisplay? = null
+
+    /** 回退形态的地图屏句柄（受信形态经 shell 创建，无本进程句柄）。 */
+    private var mapDisplay: VirtualDisplay? = null
     private var composer: DualDisplayComposer? = null
 
     /** 当前活动应用屏 ID（TouchRouter 注入目标）。 */
@@ -341,13 +470,27 @@ object VirtualLauncher {
         totalHeight: Int,
         densityDpi: Int,
         log: (String) -> Unit,
+        viewport: BuickViewport? = null,
     ): Boolean {
         detach()
+        // T34: keep the full video canvas. Only Buick landscape home controls
+        // move inside the reported safe rectangle; never squash H.264 pixels.
+        safeViewport = viewport?.takeIf { totalWidth > totalHeight }
+        resetStandaloneFit()
+        lastFullscreenMapPackage = null
         // 新会话：「本次会话不再提示」等用户级决定作废
         LetterboxHintController.resetSession()
         val density = densityDpi / 160f
-        // dock 条物理宽度 = 48dp × 密度（密度随画布短边等比，见 DOCK_WIDTH_DP 注释）
-        val thicknessPx = (DOCK_WIDTH_DP * density).toInt().coerceAtLeast(80)
+        // dock 栏宽度缩放（「显示」面板 50%–100%，下次连接起效）：厚度像素与 dock 屏
+        // 密度**同乘**比例——内容 dp 布局不变、渲染进更少像素，整条 dock（图标/时钟/
+        // 文字）等比变窄；只缩厚度不缩密度会让内容溢出或留白。下限 80px 同乘缩放防
+        // 极端画布下压没。密度下限 120 防 ROM 拒绝异常密度。
+        val dockScale = DockPrefs.widthPercent(context) / 100f
+        val thicknessPx =
+            (DOCK_WIDTH_DP * density * dockScale)
+                .toInt()
+                .coerceAtLeast((80 * dockScale).toInt().coerceAtLeast(1))
+        val dockDensityDpi = (densityDpi * dockScale).toInt().coerceAtLeast(120)
         // 车机方向决定 dock 位置：横屏 → 左侧竖条；竖屏 → 底部横条（2026-10-11 用户要求）
         dockAtBottom = totalHeight > totalWidth
         streamWidthPx = totalWidth
@@ -359,28 +502,48 @@ object VirtualLauncher {
             appHeightPx = (totalHeight - thicknessPx).coerceAtLeast(200)
             appWidth = totalWidth
         } else {
-            dockWidthPx = thicknessPx
+            // The left unsafe wallpaper band is part of the dock virtual display.
+            // DockActivity moves only its controls to the right of this band.
+            val safeLeft = safeViewport?.left ?: 0
+            dockWidthPx = (thicknessPx + safeLeft).coerceAtMost(totalWidth - 400)
             dockHeightPx = totalHeight
             appHeightPx = totalHeight
-            appWidth = (totalWidth - thicknessPx).coerceAtLeast(200)
+            appWidth = totalWidth - dockWidthPx
         }
         appAreaWidth = appWidth
         appAreaHeight = appHeightPx
+        // Keep the map tile below the real receiver's upper curved-screen safe
+        // edge. T34 only moved GridActivity; the map is a separate GL layer.
+        val tileMargins = io.github.shaonialife.cardeck.buick.BuickMapTileMargins.resolve(
+            safeViewport, totalHeight, CARD_MARGIN_PX,
+        )
+        mapTileTopPx = if (dockAtBottom) CARD_MARGIN_PX else tileMargins.first
+        mapTileBottomPx = if (dockAtBottom) CARD_MARGIN_PX else tileMargins.second
         // 竖屏应用屏密度：窗口逻辑宽度目标 ≈ 手机竖屏宽度（LETTERBOX_TARGET_DP）。
         // 错用 dock 的 densityDpi（随画布分辨率等比、非手机密度）会把窗口压到 ~206dp——文字观感大一倍
         // （2026-10-14 竖屏实测：应用与桌面字号明显偏大的根因）。
         val appPortraitDensity =
             (appWidth / LETTERBOX_TARGET_DP * 160f).toInt().coerceIn(160, 640)
         // 地图屏：按应用区全尺寸创建，分屏/全屏间动态 resize（见 resizeMapDisplay）。
-        // tile 尺寸 = SPLIT 绘制矩形，边距统一用契约值 CARD_MARGIN_PX（勿再裸写数字）：
-        //  横屏：左半卡片（宽=应用区/2-24，即左右留 16、右缘收半边距 8；高=上下留 16）
-        //  竖屏：上半卡片（地图上/音乐下，各占应用区高一半，四周留 16、中缝 16）
+        // tile 尺寸 = SPLIT 绘制矩形，边距统一用契约值 CARD_MARGIN_PX（勿再裸写数字）。
+        // 分屏比例由用户拖动把手调整（持久化偏好）；几何推导集中在 [dashSplitGeom]
+        // 纯函数（单测钉死四方一致性）。tile 主轴长（横=宽、竖=高）=比例×可用长度。
+        dashSplitFraction =
+            context
+                .getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .getFloat(PREF_KEY_DASH_SPLIT, DASH_SPLIT_DEFAULT_FRACTION)
+                .let(::clampDashSplitFraction)
         if (dockAtBottom) {
+            val geom = dashSplitGeom(appHeightPx, dashSplitFraction)
             mapTileWidth = appWidth - CARD_MARGIN_PX * 2
-            mapTileHeight = (appHeightPx - CARD_MARGIN_PX * 3) / 2
+            mapTileHeight = geom.tileLen
+            dashSplitPos = geom.splitCenter
         } else {
-            mapTileWidth = appWidth / 2 - CARD_MARGIN_PX * 3 / 2
-            mapTileHeight = appHeightPx - CARD_MARGIN_PX * 2
+            val geom = dashSplitGeom(appWidth, dashSplitFraction)
+            mapTileWidth = geom.tileLen
+            mapTileHeight = (appHeightPx - mapTileTopPx - mapTileBottomPx).coerceAtLeast(160)
+            // 横屏应用区从 dock 右缘起（竖屏 x 原点即流原点，无偏移）
+            dashSplitPos = geom.splitCenter + dockWidthPx
         }
         // 横屏应用屏的密度选择（2026-10-11 实测标定）：
         // 竖屏锁定应用（如头条）在横屏屏上被系统 letterbox 成窄条窗口，窗口逻辑宽度
@@ -438,6 +601,9 @@ object VirtualLauncher {
         log("LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(shell)" else "应用屏(回退)"}")
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
+        // Wallpaper and decoded video always render at 1:1 native stream size.
+        composer.mapTileTopPx = mapTileTopPx
+        composer.mapTileBottomPx = mapTileBottomPx
         composer.targetFps =
             DisplayPrefs
                 .fps(context)
@@ -469,7 +635,7 @@ object VirtualLauncher {
                             "CarPlayDock",
                             dockWidthPx,
                             dockHeightPx,
-                            densityDpi,
+                            dockDensityDpi,
                             dockSurface,
                             false,
                         )
@@ -532,6 +698,16 @@ object VirtualLauncher {
                         }
                         viaService = true
                     } else {
+                        // 逐屏留痕：EMUI 等 ROM 对 shell 侧 createVirtualDisplay 是**静默
+                        // 返回 null**（不抛异常）——整体回退时不打这条，日志里只剩
+                        // 「回退」两个字，无法判断是哪块屏被拒（华为 Mate30Pro/EMUI12
+                        // 2026-10-20 实测定位）
+                        if (dockId < 0) {
+                            log("LAUNCHER: 受信屏 CarPlayDock 创建失败（createVirtualDisplay 返回 null——ROM 限制 shell 侧虚拟屏？）")
+                        }
+                        if (appId < 0) {
+                            log("LAUNCHER: 受信屏 CarPlayApp 创建失败（同上）")
+                        }
                         // 半成功：释放已建的
                         if (dockId >= 0) runCatching { svc!!.releaseDisplay(dockId) }
                         if (appId >= 0) runCatching { svc!!.releaseDisplay(appId) }
@@ -569,7 +745,7 @@ object VirtualLauncher {
                         "CarPlayDock",
                         dockWidthPx,
                         dockHeightPx,
-                        densityDpi,
+                        dockDensityDpi,
                         dockSurface,
                         DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
                             DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY,
@@ -605,6 +781,32 @@ object VirtualLauncher {
                     appHiDisplayW = appHiWidth
                     appHiDisplayH = appHiHeight
                 }
+                // 地图屏同样建（应用侧 PUBLIC）：地图启动走 shell `am start --display`，
+                // 不需要受信；resize 用应用侧公开 API（见 resizeMapDisplay）。
+                // 回退形态曾完全不建地图屏——受信创建在 EMUI12 上静默失败后，仪表盘
+                // 就永远没有地图 tile（2026-10-20 华为 Mate30Pro 实测）。
+                if (mapSurface != null) {
+                    mapDisplay =
+                        dm.createVirtualDisplay(
+                            "CarPlayMap",
+                            appWidth,
+                            appHeightPx,
+                            MAP_DISPLAY_DPI,
+                            mapSurface,
+                            DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
+                                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY,
+                            null,
+                            null,
+                        )
+                    val fallbackMapId = mapDisplay?.display?.displayId ?: -1
+                    if (fallbackMapId >= 0) {
+                        mapDisplayId = fallbackMapId
+                        mapDisplayW = appWidth
+                        mapDisplayH = appHeightPx
+                    } else {
+                        log("LAUNCHER: 地图屏（回退）创建失败——仪表盘无地图 tile")
+                    }
+                }
                 dockDisplayId = dockDisplay?.display?.displayId ?: -1
                 appDisplayId = appDisplay?.display?.displayId ?: -1
                 appDisplayW = appWidth
@@ -612,12 +814,29 @@ object VirtualLauncher {
                 log(
                     "LAUNCHER: 三屏创建(回退) dock=$dockDisplayId(${dockWidthPx}px) " +
                         "app=$appDisplayId(${appWidth}x$appHeightPx @${appNativeDensity}dpi) " +
-                        "appHi=$appHiDisplayId(${appHiWidth}x$appHiHeight @${appHiDensity}dpi scale=x$appScaleFactor)",
+                        "appHi=$appHiDisplayId(${appHiWidth}x$appHiHeight @${appHiDensity}dpi scale=x$appScaleFactor) " +
+                        "map=$mapDisplayId(${mapDisplayW}x$mapDisplayH)——受信屏不可用，已回退应用侧 PUBLIC 屏",
                 )
             }
             displaysCreated[0] = dockDisplayId >= 0 && appDisplayId >= 0
         }
         return try {
+            // T38: T37's background task could complete late or fail silently.
+            // Prepare the actual wallpaper before the GL consumer starts.
+            // Cache makes the normal path cheap; this runs only at session attach.
+            if (safeViewport != null) {
+                val backdrop = runCatching {
+                    WallpaperStore.aspectFillCanvas(context, totalWidth, totalHeight)
+                }.onFailure {
+                    log("BUICK T38: 安全区壁纸预加载异常：${it.javaClass.simpleName}")
+                }.getOrNull()
+                composer.safeBackgroundBitmap = backdrop
+                log(
+                    "BUICK T38: 安全区壁纸就绪=" + (backdrop != null) +
+                        " bitmap=" + (backdrop?.let { "${it.width}x${it.height}" } ?: "none") +
+                        " 视频尺寸=${totalWidth}x${totalHeight}",
+                )
+            }
             composer.start(
                 dockWidthPx,
                 dockHeightPx,
@@ -628,6 +847,8 @@ object VirtualLauncher {
                 appWidth,
                 appHeightPx,
             )
+            // 分屏把手位置推给合成器（覆盖默认中线公式；拖动时 previewDashSplit 持续更新）
+            composer.setTileEdgeOverride(dashSplitPos - DASH_GAP_PX / 2f)
             if (!displaysCreated[0]) {
                 log("LAUNCHER: 虚拟屏创建失败")
                 detach()
@@ -646,14 +867,18 @@ object VirtualLauncher {
                 "LAUNCHER: letterbox 宽高比=$LETTERBOX_ASPECT_RATIO " +
                     "appDensity=${appNativeDensity}dpi appHiDensity=${appHiDensity}dpi",
             )
-            // Enable before shell am-start: Grid/Dock onCreate reject stale launches
-            // after detach, but must accept legitimate activity starts in this session.
+            // Arm before launching the two car-only activities. A delayed am start
+            // must reject itself when detach has invalidated this session.
             sessionAttached = true
-            // 组件名取自运行时包名（不要硬编码）：改 applicationId 后自动跟随
+            // 自启组件必须写成「applicationId/绝对类名」：`am -n` 只认带斜杠的规范，
+            // 且相对类名按 applicationId 展开——.rd 调试包（applicationId 后缀）下
+            // `pkg/.launcher.DockActivity` 会指向不存在的类、纯类名直接被拒
+            // （Bad component name），两种写法都让 dock/grid 启动失败、车机黑屏
+            // 0fps（2026-10-21 .rd 包实测）。绝对类名取自 Class 引用，随重构自动跟随。
             val selfPkg = context.packageName
-            val dockOk = startOn(dockDisplayId, "$selfPkg/.launcher.DockActivity")
+            val dockOk = startOn(dockDisplayId, "$selfPkg/${DockActivity::class.java.name}")
             gridDisplayId = if (appHiDisplayId >= 0) appHiDisplayId else appDisplayId
-            val gridOk = startOn(gridDisplayId, "$selfPkg/.launcher.GridActivity")
+            val gridOk = startOn(gridDisplayId, "$selfPkg/${GridActivity::class.java.name}")
             appContextRef = context.applicationContext
             log("LAUNCHER: dock=$dockOk grid=$gridOk gridDisplay=$gridDisplayId")
             // 桌面在超采样屏时默认活动屏 = 超采样屏（启动即显示桌面）
@@ -675,24 +900,32 @@ object VirtualLauncher {
     private var displaysViaService = false
 
     fun detach() {
-        // T41: removing virtual displays while launcher activities are alive makes
-        // Android migrate/reparent their tasks to the PHYSICAL phone display.
-        // Kill those car-only activities first, then release the displays.
+        resetStandaloneFit()
+        lastFullscreenMapPackage = null
+        safeViewport = null
+        mapTileTopPx = CARD_MARGIN_PX
+        mapTileBottomPx = CARD_MARGIN_PX
+        // E5 T41: Activity tasks still alive while displays are released can be
+        // reparented by Android onto physical display 0. Finish tasks first.
         sessionAttached = false
         watchdogActive = false
         val settingsFinished = SettingsActivity.finishForSessionEnd()
         val gridFinished = GridActivity.finishForSessionEnd()
         val dockFinished = DockActivity.finishForSessionEnd()
         if (settingsFinished != null || gridFinished != null || dockFinished != null) {
-            logSink?.invoke("LAUNCHER T41: finish virtual tasks before display release settings=${settingsFinished != null} grid=${gridFinished != null} dock=${dockFinished != null}")
+            logSink?.invoke(
+                "LAUNCHER T9: finish car-only activities BEFORE release: " +
+                    "settings=${settingsFinished != null} grid=${gridFinished != null} dock=${dockFinished != null}",
+            )
         }
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
-            // No main-thread blocking: onDestroy is dispatched by main Looper.
+            // onDestroy runs on main: never block that same thread. Bounded wait
+            // here prevents release/reparent while the task is being finished.
             val doneSettings = settingsFinished?.await(500, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
             val doneGrid = gridFinished?.await(800, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
             val doneDock = dockFinished?.await(800, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
             if (!doneSettings || !doneGrid || !doneDock) {
-                logSink?.invoke("LAUNCHER T41: waiting for virtual-task finish timed out; releasing displays anyway")
+                logSink?.invoke("LAUNCHER T9: wait for car-only tasks timed out; proceeding to release")
             }
         }
         ScreenDimmer
@@ -741,6 +974,8 @@ object VirtualLauncher {
         appDisplay = null
         runCatching { appHiDisplay?.release() }
         appHiDisplay = null
+        runCatching { mapDisplay?.release() }
+        mapDisplay = null
         dockDisplayId = -1
         appDisplayId = -1
         appHiDisplayId = -1
@@ -748,6 +983,7 @@ object VirtualLauncher {
         mapDisplayId = -1
         mapTileWidth = 0
         mapTileHeight = 0
+        dashSplitPos = -1f
         mapDisplayW = 0
         mapDisplayH = 0
         appDisplayW = 0
@@ -785,24 +1021,19 @@ object VirtualLauncher {
         return result.ok && result.output.contains("Starting:", ignoreCase = true)
     }
 
-    /** 回桌面：GridActivity 任务带回前台（后台应用保留）；合成器切回桌面所在屏。 */
-    fun goGrid(): Boolean {
-        if (!sessionAttached || gridDisplayId < 0) return false
-        // T39: GridActivity pager callback runs on the UI thread and calls
-        // showDashboard/showDesktop -> goGrid -> Shell.exec(am start).
-        // Never wait up to 8 seconds for Shizuku on Android's main Looper.
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-            Bg.run("grid-return-t39") { goGrid() }
-            return true // queued; not a synchronous shell execution result
-        }
+    /** 回桌面：保持 Buick B233 会话保护，避免在 UI 主线程同步执行 Shell。 */
+    fun goGrid() {
+        if (!sessionAttached) return
+        resetStandaloneFit()
         val grid = if (gridDisplayId >= 0) gridDisplayId else appDisplayId
-        val pkg = appContextRef?.packageName ?: return false
-        val ok = startOn(grid, "$pkg/.launcher.GridActivity")
+        val pkg = appContextRef?.packageName ?: return
+        Bg.run("go-grid") {
+            // T9/T41: asynchronous shell must not resurrect car-only tasks after detach.
+            if (!sessionAttached) return@run
+            if (!startOn(grid, "$pkg/${GridActivity::class.java.name}")) Log.w(TAG, "回桌面失败")
+        }
         composer?.requestActiveApp(appHiDisplayId >= 0 && grid == appHiDisplayId)
-        // 桌面上的提示没有意义（顶层不是第三方应用），直接收起
         LetterboxHintController.clear()
-        if (!ok) Log.w(TAG, "回桌面失败")
-        return ok
     }
 
     // ---- 仪表盘（分屏）与 home 键模式循环 ----
@@ -851,7 +1082,6 @@ object VirtualLauncher {
         if (changed) notifyDashboard()
         if (dashboard) {
             Bg.run("dashboard-enter") {
-                if (!sessionAttached) return@run
                 ensureMapTask()
                 if (mapFullscreen) setMapFullscreen(false)
                 // 期间用户可能已点开普通应用（launchApp 会置 HIDDEN 并退出仪表盘）：
@@ -887,6 +1117,14 @@ object VirtualLauncher {
     fun setMapFullscreen(fullscreen: Boolean) {
         if (mapDisplayId < 0 || mapFullscreen == fullscreen) return
         mapFullscreen = fullscreen
+        if (fullscreen) {
+            val pkg = lastFullscreenMapPackage ?: appContextRef?.let {
+                defaultMapComponent(it)?.packageName
+            }
+            if (pkg != null) selectStandaloneFit(pkg) else resetStandaloneFit()
+        } else {
+            resetStandaloneFit()
+        }
         resizeMapDisplay(fullscreen)
         composer?.setTileLayout(
             if (fullscreen) {
@@ -909,6 +1147,114 @@ object VirtualLauncher {
     }
 
     /**
+     * 拖动中预览分屏位置：**只改合成器绘制矩形**（地图纹理整幅拉伸渲染，不动
+     * buffer、不动虚拟屏）——拖动流畅、不触发地图应用配置变更。松手才
+     * [commitDashSplit] 真实 resize。
+     *
+     * @param streamPos 把手中心（流像素，顶部原点；横屏 x / 竖屏 y），内部钳制
+     */
+    fun previewDashSplit(streamPos: Float) {
+        val clamped = clampDashSplitStream(streamPos) ?: return
+        composer?.setTileEdgeOverride(clamped - DASH_GAP_PX / 2f)
+    }
+
+    /**
+     * 松手落定：钳制 → 更新把手位置与 tile 派生尺寸 → 真实 resize 地图屏（含
+     * 消费端 buffer 同步）→ 持久化比例 → 通知（音乐卡壁纸切片重切）。
+     *
+     * @return 钳制后的把手中心（流像素）——UI 据此校正 margin，防显示与状态漂移
+     */
+    fun commitDashSplit(streamPos: Float): Float {
+        val clamped = clampDashSplitStream(streamPos) ?: return dashSplitPos
+        val geom =
+            dashSplitGeom(
+                splitMainLen(),
+                (clamped - splitMainOffset() - CARD_MARGIN_PX - DASH_GAP_PX / 2f) / splitUsableLen(),
+            )
+        dashSplitPos = clamped
+        dashSplitFraction = geom.fraction
+        if (dockAtBottom) mapTileHeight = geom.tileLen else mapTileWidth = geom.tileLen
+        composer?.setTileEdgeOverride(clamped - DASH_GAP_PX / 2f)
+        if (!mapFullscreen) resizeMapDisplay(false)
+        notifyMapLayout()
+        appContextRef
+            ?.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putFloat(PREF_KEY_DASH_SPLIT, dashSplitFraction)
+            ?.apply()
+        logSink?.invoke(
+            "LAUNCHER: 仪表盘分屏落定 ${if (dockAtBottom) "地图高" else "地图宽"}=" +
+                "${if (dockAtBottom) mapTileHeight else mapTileWidth}px（比例 " +
+                String.format("%.2f", dashSplitFraction) + "）",
+        )
+        return clamped
+    }
+
+    /** 当前把手中心换算到应用屏像素（GridActivity 布局用；未 attach 返回 -1）。 */
+    fun dashSplitScreenPos(): Float = if (dashSplitPos < 0) -1f else dashSplitPos * gridScale()
+
+    /** 把手中心·应用屏像素（应用区坐标系，已扣 dock 偏移；把手 DOWN 起点，<0=未 attach）。 */
+    fun dashHandleCenterScreen(): Float = if (dashSplitPos < 0) -1f else (dashSplitPos - splitMainOffset()) * gridScale()
+
+    /** 音乐卡内容侧起始·应用屏像素（横=左缘、竖=顶缘；<0=未 attach）。 */
+    fun dashMusicStartScreen(): Int =
+        if (dashSplitPos < 0) {
+            -1
+        } else {
+            ((dashSplitPos - splitMainOffset() + DASH_GAP_PX / 2f) * gridScale()).toInt()
+        }
+
+    /** [previewDashSplit] 的应用屏像素入参版（把手拖动直调，内部换回流像素）。 */
+    fun previewDashSplitScreen(centerScreen: Float) {
+        previewDashSplit(splitMainOffset() + centerScreen / gridScale().coerceAtLeast(1e-6f))
+    }
+
+    /** [commitDashSplit] 的应用屏像素入参版；返回钳制后的把手中心（应用屏像素）。 */
+    fun commitDashSplitScreen(centerScreen: Float): Float =
+        (
+            commitDashSplit(splitMainOffset() + centerScreen / gridScale().coerceAtLeast(1e-6f)) -
+                splitMainOffset()
+        ) * gridScale()
+
+    /**
+     * 触点是否落在分屏把手条内（流像素坐标）——TouchRouter 粘性路由判定用：
+     * 按下命中即整条触摸流固定路由应用屏（拖动中把手落后手指、坐标越界也不改投，
+     * 否则跨屏重注会掐断拖拽并误触地图，2026-10-21 方案评审定谳）。
+     */
+    fun dashHandleHit(
+        x: Float,
+        y: Float,
+    ): Boolean {
+        if (dashSplitPos < 0 || !dashboardMode || mapFullscreen) return false
+        val half = DASH_HANDLE_TOUCH_PX / 2f
+        return if (dockAtBottom) {
+            y in dashSplitPos - half..dashSplitPos + half
+        } else {
+            x in dashSplitPos - half..dashSplitPos + half
+        }
+    }
+
+    /** 流坐标把手中心 → 应用区坐标系偏移（横屏减 dock 宽；竖屏 y 原点即流原点）。 */
+    private fun splitMainOffset(): Float = if (dockAtBottom) 0f else dockWidthPx.toFloat()
+
+    /** 主轴可用长度 = 应用区主轴 − 两端边距 − 中缝宽（与 dashSplitGeom 同式）。 */
+    private fun splitUsableLen(): Int = (if (dockAtBottom) appAreaHeight else appAreaWidth) - CARD_MARGIN_PX * 2 - DASH_GAP_PX.toInt()
+
+    /**
+     * 钳制流坐标把手中心；未 attach 返回 null。
+     * 边界必须按**比例钳制域**（20%~80%）换算——按 [边距, 边距+可用] 钳等于允许
+     * 比例 [0,1]，卡片能被拉成一条线（2026-10-22 用户实测「拉到 0」根因）。
+     */
+    private fun clampDashSplitStream(streamPos: Float): Float? {
+        val usable = splitUsableLen()
+        if (usable <= 0) return null
+        val base = splitMainOffset() + CARD_MARGIN_PX + DASH_GAP_PX / 2f
+        val min = base + DASH_SPLIT_MIN_FRACTION * usable
+        val max = base + DASH_SPLIT_MAX_FRACTION * usable
+        return streamPos.coerceIn(min, max)
+    }
+
+    /**
      * resize 地图屏到目标布局尺寸（幂等：尺寸未变不调——每次 resize 都会触发屏上
      * 应用的配置变更/重布局，能免则免）。Shizuku 未绑定或调用失败时保持现尺寸，
      * 合成器整幅映射依旧成立（只是地图 UI 密度与可视区域暂不匹配）。
@@ -919,11 +1265,20 @@ object VirtualLauncher {
         val w = if (fullscreen) appAreaWidth else mapTileWidth
         val h = if (fullscreen) appAreaHeight else mapTileHeight
         if (w <= 0 || h <= 0 || (w == mapDisplayW && h == mapDisplayH)) return
-        val svc =
-            CarInputClient.service
-                ?: return
         runCatching {
-            if (svc.resizeDisplay(id, w, h, MAP_DISPLAY_DPI)) {
+            val applied =
+                if (displaysViaService) {
+                    // 受信形态：shell 侧 resize
+                    val svc = CarInputClient.service ?: return@runCatching
+                    svc.resizeDisplay(id, w, h, MAP_DISPLAY_DPI)
+                } else {
+                    // 回退形态：屏由本应用创建，直接用应用侧公开 API——shell 对
+                    // 他人创建的 display 没有 resize 权限（token 属主校验）
+                    val display = mapDisplay ?: return@runCatching
+                    display.resize(w, h, MAP_DISPLAY_DPI)
+                    true
+                }
+            if (applied) {
                 mapDisplayW = w
                 mapDisplayH = h
                 // 消费端 buffer 尺寸必须同步——否则新尺寸内容画进旧 buffer 左上区域
@@ -943,7 +1298,9 @@ object VirtualLauncher {
     private fun launchMapOnMapDisplay(component: ComponentName): Boolean {
         dashboardMode = false
         notifyDashboard()
+        lastFullscreenMapPackage = component.packageName
         setMapFullscreen(true)
+        selectStandaloneFit(component.packageName)
         val target =
             if (component.packageName == "com.autonavi.amapauto") {
                 "com.autonavi.amapauto/.MainMapActivity"
@@ -1014,7 +1371,6 @@ object VirtualLauncher {
      * 无任务=新启动。后台线程调用。
      */
     private fun ensureMapTask() {
-        if (!sessionAttached) return
         if (mapDisplayId < 0) {
             // 诊断（2026-10-18「重装后地图卡不渲染」）：此前静默 return，无法区分
             // 「没创建地图屏」与「地图屏已创建但没启动 app」
@@ -1130,6 +1486,7 @@ object VirtualLauncher {
             }
             // 合成器切到目标屏（超采样屏等其出帧再切；原生屏即时切换）
             composer?.requestActiveApp(targetDisplay == appHiDisplayId)
+            selectStandaloneFit(component.packageName)
             // 应用已在运行、被系统按旧配置带回前台的情况：启动后探测一次是否仍
             // letterbox（提示卡只对「应用横屏」名单内的应用生效，其它应用不计）
             val ctx = appContextRef
