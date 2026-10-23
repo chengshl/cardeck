@@ -934,6 +934,11 @@ class MainActivity : AppCompatActivity() {
             startActivity(android.content.Intent(this, PhoneSettingsActivity::class.java))
         }
 
+        // T33: Buick VCS settings are local and per anonymously identified car.
+        findViewById<LinearLayout>(R.id.btnBuickSettings).setOnClickListener {
+            startActivity(android.content.Intent(this, BuickSettingsActivity::class.java))
+        }
+
         // 启动即检查：常亮开 + 无悬浮窗权限 → 主动请求
         if (ScreenDimmer.enabled) {
             if (!android.provider.Settings.canDrawOverlays(this)) {

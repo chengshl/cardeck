@@ -90,6 +90,9 @@
             android:name="io.github.shaonialife.cardeck.PhoneSettingsActivity"
             android:exported="false" />
         <activity
+            android:name="io.github.shaonialife.cardeck.BuickSettingsActivity"
+            android:exported="false" />
+        <activity
             android:name="io.github.shaonialife.cardeck.SettingsContentActivity"
             android:exported="false" />
 

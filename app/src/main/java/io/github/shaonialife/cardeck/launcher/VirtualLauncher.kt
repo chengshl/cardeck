@@ -1,5 +1,7 @@
 package io.github.shaonialife.cardeck.launcher
 
+import io.github.shaonialife.cardeck.buick.BuickViewport
+
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -167,6 +169,10 @@ object VirtualLauncher {
     /** dock 在主合成画面中占据的像素宽度（TouchRouter 分流阈值；横屏=左侧竖条宽）。 */
     @Volatile
     var dockWidthPx: Int = 0
+
+    /** T33 active compositor viewport, source coordinates stay unchanged for input routing. */
+    @Volatile var safeViewport: BuickViewport? = null
+        private set
         private set
 
     /** 竖屏车机（屏幕高>宽）：dock 改为底部横条。 */
@@ -412,8 +418,10 @@ object VirtualLauncher {
         totalHeight: Int,
         densityDpi: Int,
         log: (String) -> Unit,
+        viewport: BuickViewport? = null,
     ): Boolean {
         detach()
+        safeViewport = viewport
         // 新会话：「本次会话不再提示」等用户级决定作废
         LetterboxHintController.resetSession()
         val density = densityDpi / 160f
@@ -527,6 +535,7 @@ object VirtualLauncher {
         log("LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(shell)" else "应用屏(回退)"}")
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
+        composer.safeViewport = viewport
         composer.targetFps =
             DisplayPrefs
                 .fps(context)
@@ -807,6 +816,7 @@ object VirtualLauncher {
     private var displaysViaService = false
 
     fun detach() {
+        safeViewport = null
         // E5 T41: Activity tasks still alive while displays are released can be
         // reparented by Android onto physical display 0. Finish tasks first.
         sessionAttached = false
