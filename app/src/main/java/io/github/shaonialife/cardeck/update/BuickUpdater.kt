@@ -14,6 +14,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
+import io.github.shaonialife.cardeck.SessionController
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -317,6 +318,10 @@ object BuickUpdater {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
+            // An APK replacement terminates the old process; onDestroy alone
+            // cannot guarantee the car receives a proper session retirement.
+            // This applies only to the app's own verified in-app updater.
+            SessionController.disconnect(activity.applicationContext)
             activity.startActivity(Intent.createChooser(intent, "选择安装程序"))
         } catch (e: Exception) {
             AlertDialog.Builder(activity).setTitle("无法打开安装窗口")

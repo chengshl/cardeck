@@ -18,6 +18,7 @@ import io.github.shaonialife.cardeck.capture.HiddenDisplaySource
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
 import io.github.shaonialife.cardeck.iap2.ReceiverProfile
+import io.github.shaonialife.cardeck.input.AirPlayHidCommand
 import io.github.shaonialife.cardeck.input.ConsumerKeys
 import io.github.shaonialife.cardeck.input.TouchReports
 import io.github.shaonialife.cardeck.input.TouchRouter
@@ -2028,11 +2029,39 @@ object SessionController {
                             currentSharedSecret = sessionKey
                             currentAudioHost =
                                 client.activeHost ?: EndpointHosts.candidates(client.currentEndpoint.ipAddresses).firstOrNull()
+                            // Small aggregate counters only: never log raw touch payloads.
+                            val eventTypeCounts = hashMapOf<String, Int>()
+                            var lastEventSummaryAt = android.os.SystemClock.elapsedRealtime()
+                            var hidReceivedCount = 0
                             client.connectEventChannel(sessionKey, setup) { command ->
-                                when (command["type"]) {
+                                val incomingType = command["type"]?.toString() ?: "missing"
+                                val summaryKey = when (incomingType) {
+                                    "hidSendReport", "iAPSendMessage", "changeModes" -> incomingType
+                                    else -> "other"
+                                }
+                                eventTypeCounts[summaryKey] = (eventTypeCounts[summaryKey] ?: 0) + 1
+                                val now = android.os.SystemClock.elapsedRealtime()
+                                if (now - lastEventSummaryAt >= 30_000L) {
+                                    val summary = eventTypeCounts.toSortedMap().entries.joinToString(" ") {
+                                        "${it.key}=${it.value}"
+                                    }
+                                    appendLog("TOUCH DIAG: event30s $summary")
+                                    eventTypeCounts.clear()
+                                    lastEventSummaryAt = now
+                                }
+                                when (incomingType) {
                                     "hidSendReport" -> {
-                                        val uuid = command["uuid"]?.toString()
-                                        val report = command["hidReport"] as? ByteArray
+                                        val hid = AirPlayHidCommand.parse(command)
+                                        val uuid = hid.uuid
+                                        val report = hid.report
+                                        hidReceivedCount++
+                                        if (hidReceivedCount <= 20 || hidReceivedCount % 100 == 0) {
+                                            appendLog(
+                                                "TOUCH DIAG: hidSendReport #$hidReceivedCount " +
+                                                    "layout=${hid.layout} bytes=${report?.size ?: 0} " +
+                                                    "uuidPresent=${uuid != null}"
+                                            )
+                                        }
                                         // 车机媒体键（Consumer Control）走 hidSendReport 通路，
                                         // 判定**以设备描述符为准**（不按 uuid、不按车机型号写死）：
                                         // 描述符声明了 Consumer 页(0x0C)的设备才当媒体键，报告字节是
@@ -2185,6 +2214,10 @@ object SessionController {
                                     "claimCarPlayAudio=$claimAudioForCarPlay"
                             )
                             client.assertModes(claimAudioResource = claimAudioForCarPlay)
+                            appendLog(
+                                "TOUCH DIAG: /info declaredHidCount=${setup.hidDeviceUuids.size} " +
+                                    "descriptorCount=${setup.hidDescriptors.size}; monitoring HID events"
+                            )
                             // HID 输入模式武装：/info hidDevices（奥迪字符串 "0"/"1"，触摸="1"）。
                             // display features=0x08（高保真触摸）已声明，缺这步车机不发 hidSendReport。
                             setup.hidDeviceUuids.forEach { uuid ->
