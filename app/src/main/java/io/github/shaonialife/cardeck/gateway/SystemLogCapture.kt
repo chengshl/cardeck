@@ -16,7 +16,7 @@ object SystemLogCapture {
         check(ShizukuGate.state(context) == ShizukuGate.State.READY)
         val binder = rikka.shizuku.Shizuku.getBinder() ?: error("unavailable")
         val process = IShizukuService.Stub.asInterface(binder).newProcess(
-            arrayOf("logcat", "-d", "-t", "120", "-b", "main", "-b", "system", "-v", "brief", "*:W"), null, null)
+            arrayOf("logcat", "-d", "-t", "320", "-b", "main", "-b", "system", "-v", "threadtime", "*:W"), null, null)
         val timer = Executors.newSingleThreadScheduledExecutor()
         val deadline = timer.schedule({ runCatching { process.destroy() } }, 8, TimeUnit.SECONDS)
         try {
@@ -30,7 +30,7 @@ object SystemLogCapture {
                         read += line.length
                         if (read > 65536) break
                         if (line.isNotBlank() && !line.startsWith("---------")) {
-                            if (lines.size == 64) lines.removeFirst()
+                            if (lines.size == 256) lines.removeFirst()
                             lines.addLast(redactor.line(line))
                         }
                     }
@@ -65,14 +65,14 @@ object SystemLogCapture {
         // Reads run on the caller's Bg thread, never on the UI thread.
         fun read(cmd: String): String {
             val result = runCatching { Shell.exec(cmd, timeoutMs = 6500L) }.getOrNull()
-            return if (result?.ok == true) result.output.takeLast(36_000) else ""
+            return if (result?.ok == true) result.output.takeLast(96000) else ""
         }
-        val previousBoot = read("logcat -L -d -b crash -v threadtime -v year -t 160 2>/dev/null | tail -c 36000")
+        val previousBoot = read("logcat -L -d -b crash -v threadtime -v year -t 300 2>/dev/null | tail -c 96000")
         val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
         val dropbox = linkedMapOf<String, String>()
         for (tag in tags) {
             if (ShizukuGate.state(context) != ShizukuGate.State.READY) break
-            dropbox[tag] = read("dumpsys dropbox --print $tag 2>/dev/null | tail -c 32000")
+            dropbox[tag] = read("dumpsys dropbox --print $tag 2>/dev/null | tail -c 96000")
         }
         return CrashEvidenceSelector.select(previousApp, previousBoot, dropbox, true, redactor)
     }

@@ -210,7 +210,11 @@ class EntryConfigActivity : AppCompatActivity() {
         }
         logStatus.text = if (snapshot.state == GatewayProbe.State.HEALTHY && snapshot.logsSupported) {
             getString(R.string.gateway_log_counts, snapshot.appLogLines, snapshot.systemLogLines, snapshot.droppedLogLines) +
-                if (snapshot.systemPending) "\n" + getString(R.string.gateway_system_pending) else ""
+                if (snapshot.systemPending && snapshot.systemUploadTotal > 0)
+                    "\n正在分批上传系统日志：${snapshot.systemUploadAcknowledged}/${snapshot.systemUploadTotal} 行（每批最多8行，服务器逐批确认）"
+                else if (snapshot.systemUploadTotal > 0)
+                    "\n本次已确认上传：${snapshot.systemUploadAcknowledged}/${snapshot.systemUploadTotal} 行"
+                else ""
         } else getString(if (snapshot.state == GatewayProbe.State.HEALTHY) R.string.gateway_log_unsupported else R.string.gateway_log_waiting)
         testRunning = GatewayLogRuntime.running
         refreshControls()
@@ -276,12 +280,13 @@ class EntryConfigActivity : AppCompatActivity() {
                 previewDialog = AlertDialog.Builder(this)
                     .setTitle(if (recovery) "重启崩溃取证 · 脱敏预览" else getString(R.string.gateway_system_preview_title))
                     .setMessage(
-                        if (recovery) "关键取证 ${lines.size} 行（上限64行，优先保留事件时间、异常首行与调用栈）。" +
+                        if (recovery) "关键取证 ${lines.size} 行（上限256行，优先保留事件时间、异常首行与调用栈）。" +
                             (if (eventId != null) "\n已识别崩溃事件：$eventId" else "\n未识别到带时间的崩溃事件，不能判定是新故障。") +
                             (if (sameStack) "\n注意：与上次提交的崩溃事件或堆栈相同，可能重复读取旧DropBox。" else "") +
                             "\n系统日志需要 Shizuku；历史记录可能重复。没有新记录不代表没有崩溃。" +
-                            "\n仅点击“确认上传”才会发送以下脱敏内容。"
-                        else getString(R.string.gateway_system_preview_help, lines.size)
+                            "\n点击“确认上传”后自动分成每批最多8行，逐批等待服务器确认；中断需重新取证和确认。"
+                        else getString(R.string.gateway_system_preview_help, lines.size) +
+                            "\n确认后按每批最多8行自动分批发送；中断需重新确认。"
                     )
                     .setView(scroll)
                     .setNegativeButton(R.string.gateway_system_cancel, null)

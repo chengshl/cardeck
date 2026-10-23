@@ -6,7 +6,7 @@ package io.github.shaonialife.cardeck.gateway
  */
 internal object CrashEvidenceSelector {
     private const val SESSION_BREAK = "=== CarDeck 前次进程分隔 ==="
-    private const val MAX_LINES = 64 // GatewayProbe.uploadConfirmedSystemLogs enforces this limit.
+    private const val MAX_LINES = 256 // GatewayProbe splits confirmed evidence into 8-line packets.
     private val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
     private val clue = Regex(
         "FATAL|Exception|ANR|Watchdog|system_server|rescue.?party|reboot|restart|" +
@@ -78,8 +78,8 @@ internal object CrashEvidenceSelector {
         for ((index, session) in sessions.withIndex()) {
             val clean = session.lineSequence().map { it.trim() }
                 .filter { it.isNotBlank() && !noise.containsMatchIn(it) }.toList()
-            val chosen = (clean.filter { clue.containsMatchIn(it) }.takeLast(2) +
-                clean.takeLast(2)).distinct().takeLast(4)
+            val chosen = (clean.filter { clue.containsMatchIn(it) }.takeLast(4) +
+                clean.takeLast(4)).distinct().takeLast(8)
             chosen.forEach { add("上轮App" + (index + 1), it) }
         }
 
@@ -93,16 +93,16 @@ internal object CrashEvidenceSelector {
             .map { it.trim() }.filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }.toList()
         val bootInteresting = boot.filter {
             keyFault.containsMatchIn(it) || stackFrame.containsMatchIn(it)
-        }.takeLast(12)
+        }.takeLast(48)
         bootInteresting.forEach { add("上次启动crash", it) }
 
         var datedEvents = 0
         var unknownDates = 0
         val quotas = mapOf(
-            "system_server_crash" to 24,
-            "system_server_watchdog" to 6,
-            "SYSTEM_RESTART" to 6,
-            "SYSTEM_LAST_KMSG" to 6,
+            "system_server_crash" to 112,
+            "system_server_watchdog" to 18,
+            "SYSTEM_RESTART" to 18,
+            "SYSTEM_LAST_KMSG" to 18,
         )
         for (tag in tags) {
             val (entry, hasDate) = latestEntry(dropboxByTag[tag].orEmpty(), tag)
@@ -113,11 +113,11 @@ internal object CrashEvidenceSelector {
             if (hasDate) chosen.add(0)
             // Original occurrence time, first exception/caused-by and stack outrank footers.
             entry.indices.filter { keyFault.containsMatchIn(entry[it]) }
-                .take(if (tag == "system_server_crash") 8 else 3).forEach { chosen.add(it) }
+                .take(if (tag == "system_server_crash") 40 else 10).forEach { chosen.add(it) }
             entry.indices.filter { stackFrame.containsMatchIn(entry[it]) }
-                .take(if (tag == "system_server_crash") 12 else 3).forEach { chosen.add(it) }
+                .take(if (tag == "system_server_crash") 80 else 10).forEach { chosen.add(it) }
             entry.indices.filter { !metadata.containsMatchIn(entry[it]) }
-                .take(if (tag == "system_server_crash") 6 else 5).forEach { chosen.add(it) }
+                .take(if (tag == "system_server_crash") 20 else 12).forEach { chosen.add(it) }
             chosen.toList().sorted().take(limit).forEach { add("DropBox:$tag", entry[it]) }
         }
         if (unknownDates > 0) {
