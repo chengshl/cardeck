@@ -248,7 +248,10 @@ class Iap2BluetoothClient(
                 // in T1, but Android sometimes reports no accessory iAP2 UUID
                 // in its SDP cache. Bypass only this known receiver, never all
                 // paired devices (headphones/watch still require SDP).
-                val knownBuick = BuickB233Route.isKnownReceiver(name)
+                val knownBuick = BuickB233Route.useB233Transport(
+                    name,
+                    ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
+                )
                 if (knownBuick) B233PairingMonitor.trackKnownReceiver(device.address)
                 if (targetProvider() == null && knownBuick &&
                     skippedNoService.add("B233:" + device.address)
@@ -395,8 +398,9 @@ class Iap2BluetoothClient(
         // Known B233 first: otherwise another paired device with a visible
         // UUID can make the candidates list omit Buick entirely.
         val knownBuick = bonded.filter { device ->
-            BuickB233Route.isKnownReceiver(
-                runCatching { device.name }.getOrNull()
+            BuickB233Route.useB233Transport(
+                runCatching { device.name }.getOrNull(),
+                ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
             )
         }
         return if (withService.isNotEmpty() || knownBuick.isNotEmpty()) {
@@ -438,7 +442,16 @@ class Iap2BluetoothClient(
             channel.runSenderSession(
                 context, SESSION_TIMEOUT_MILLIS, log,
                 { endpoint ->
-                    if (knownBuick) b233ReconnectPolicy.onStartSessionAccepted()
+                    // Only a completed B233 0x4301 exchange can teach the phone
+                    // this receiver's protocol. Bluetooth names alone never do.
+                    if (endpoint.isBuickB233) {
+                        if (ReceiverCompatibilityMemory.rememberB233(context, socket.remoteDevice?.address)) {
+                            log("BT-C: 已记录 B233 实车协议画像（仅本机；蓝牙改名后仍可识别）")
+                        }
+                    }
+                    if (knownBuick || endpoint.isBuickB233) {
+                        b233ReconnectPolicy.onStartSessionAccepted()
+                    }
                     onEndpoint(endpoint)
                 },
                 onWifiCredentials,

@@ -131,7 +131,10 @@ class Iap2BluetoothServer(
             // inbound link, but the app discarded it despite persistent
             // outbound 0x4300 non-ACK. Probe one reverse session after >=2
             // consecutive outbound failures; no default protocol change.
-            val isB233 = BuickB233Route.isKnownReceiver(peerName)
+            val isB233 = BuickB233Route.useB233Transport(
+                peerName,
+                ReceiverCompatibilityMemory.wasB233Observed(context, peerAddress),
+            )
             if (isB233 && !claimB233InboundRecovery()) {
                 log("BT: B233 receiver 入站 iAP2 暂不启用（须连续两次 0x4300 失败）")
                 runCatching { socket.close() }
@@ -161,7 +164,19 @@ class Iap2BluetoothServer(
         BtSessionGate.inboundActive = true
         val vehicleId = runCatching { GatewayVehicleIdentity.activate(context, socket.remoteDevice?.address) }.getOrNull()
         try {
-            channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpointUpdate)
+            channel.runSenderSession(
+                context, SESSION_TIMEOUT_MILLIS, log,
+                { endpoint ->
+                    if (endpoint.isBuickB233 &&
+                        ReceiverCompatibilityMemory.rememberB233(context, socket.remoteDevice?.address)
+                    ) {
+                        log("BT: 已记录 B233 实车协议画像（仅本机；蓝牙改名后仍可识别）")
+                    }
+                    onEndpoint(endpoint)
+                },
+                onWifiCredentials,
+                onEndpointUpdate,
+            )
         } catch (error: IOException) {
             log("SESSION 失败: ${error.message}")
         } finally {
