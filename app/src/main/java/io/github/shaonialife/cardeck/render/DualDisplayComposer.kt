@@ -1,6 +1,5 @@
 package io.github.shaonialife.cardeck.render
 
-import io.github.shaonialife.cardeck.buick.BuickViewport
 
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
@@ -80,9 +79,6 @@ class DualDisplayComposer(
      */
     @Volatile
     var targetFps: Int = 30
-
-    /** Optional physical-screen safe viewport. Applied to the complete video UI, not the RTSP canvas. */
-    @Volatile var safeViewport: BuickViewport? = null
 
     companion object {
         private const val TAG = "DualComposer"
@@ -546,12 +542,7 @@ class DualDisplayComposer(
             GLES20.glViewport(0, 0, outWidth, outHeight)
             GLES20.glClearColor(0.04f, 0.07f, 0.09f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-            // GL origin is bottom-left, /info viewArea origin is top-left.
-            // The full video stream keeps its negotiated width/height; the
-            // interactive compositor content is fitted within this viewport.
-            safeViewport?.let { rect ->
-                GLES20.glViewport(rect.left, outHeight - rect.top - rect.height, rect.width, rect.height)
-            }
+            // T34: leave GL viewport full-size to prevent letterboxing and skewed icons.
             // 只对有新帧的输入 updateTexImage；已有内容的输入沿用旧纹理（画面持久）。
             // 两块应用屏都持续消费（非活动屏也保持最新，切换时不闪旧帧）。
             if (dock.hasNewFrame) {

@@ -98,20 +98,10 @@ object TouchRouter {
         if (!contact.down && contact.xPixels == 0 && contact.yPixels == 0) return
         val scaledX = (contact.xPixels * coordScaleX).toInt().coerceAtLeast(0)
         val scaledY = (contact.yPixels * coordScaleY).toInt().coerceAtLeast(0)
-        val streamX = if (normalizedCanvasW > 0) scaledX.coerceAtMost(normalizedCanvasW - 1) else scaledX
-        val streamY = if (normalizedCanvasH > 0) scaledY.coerceAtMost(normalizedCanvasH - 1) else scaledY
-        // T33: inverse of the GL safe-area fit. Releasing an active gesture
-        // outside the rectangle clamps to its edge, avoiding a stuck pointer.
-        val viewport = VirtualLauncher.safeViewport
-        if (viewport != null && !viewport.contains(streamX, streamY) &&
-            !pressed && !overlayPressed && !splitHandlePressed) return
-        val mapped = viewport?.unmap(
-            streamX, streamY,
-            VirtualLauncher.streamWidthPx.coerceAtLeast(1),
-            VirtualLauncher.streamHeightPx.coerceAtLeast(1),
-        )
-        val px = mapped?.first ?: streamX
-        val py = mapped?.second ?: streamY
+        // T34: virtual displays are laid out at their real stream coordinates.
+        // No viewport inverse transform: native HID mapping remains 1:1.
+        val px = if (normalizedCanvasW > 0) scaledX.coerceAtMost(normalizedCanvasW - 1) else scaledX
+        val py = if (normalizedCanvasH > 0) scaledY.coerceAtMost(normalizedCanvasH - 1) else scaledY
 
         // 叠加卡片（「强制横屏未生效」提示）优先消费触摸：它画在应用区的黑边上，
         // 必须先于注入判定命中，否则触摸会穿透到下面的应用。

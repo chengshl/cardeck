@@ -1,6 +1,7 @@
 package io.github.shaonialife.cardeck
 
 import android.os.Bundle
+import android.content.res.ColorStateList
 import android.text.InputType
 import android.view.View
 import android.widget.ArrayAdapter
@@ -27,25 +28,39 @@ class BuickSettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val fg = getColor(R.color.m3_on_surface)
+        val secondary = getColor(R.color.m3_on_var)
+        val accent = getColor(R.color.m3_primary)
+        val surfaceHigh = getColor(R.color.m3_surface_high)
+        window.statusBarColor = android.graphics.Color.BLACK
+        window.navigationBarColor = android.graphics.Color.BLACK
         val dp = resources.displayMetrics.density
         fun px(v: Int) = (v * dp).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(px(20), px(20), px(20), px(32))
+            setBackgroundColor(getColor(R.color.m3_surface))
         }
-        val scroll = ScrollView(this)
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(getColor(R.color.m3_surface))
+            isFillViewport = true
+        }
         scroll.addView(root)
         setContentView(scroll)
 
         fun label(text: String, sp: Float = 14f): TextView = TextView(this).apply {
             this.text = text
             textSize = sp
+            setTextColor(if (sp < 14f) secondary else fg)
             setPadding(0, px(6), 0, px(8))
         }
         root.addView(label("别克设置", 24f))
         root.addView(label("曲面屏安全区域 · 仅在下次连接时应用，不修改蓝牙、音频或握手策略"))
         val switch = Switch(this).apply {
             text = "启用 CarPlay 安全区域适配"
+            setTextColor(fg)
+            thumbTintList = ColorStateList.valueOf(accent)
+            trackTintList = ColorStateList.valueOf(getColor(R.color.m3_sec_container))
             isChecked = BuickVehiclePrefs.enabled(this@BuickSettingsActivity)
             setOnCheckedChangeListener { _, on -> BuickVehiclePrefs.setEnabled(this@BuickSettingsActivity, on) }
         }
@@ -57,7 +72,23 @@ class BuickSettingsActivity : AppCompatActivity() {
         val spinner = Spinner(this)
         if (profiles.isNotEmpty()) {
             val choices = profiles.map { it.label + " · " + it.key.take(6) }
-            spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, choices)
+            spinner.adapter = object : ArrayAdapter<String>(
+                this, android.R.layout.simple_spinner_item, choices,
+            ) {
+                override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
+                    (super.getView(position, convertView, parent) as TextView).apply {
+                        setTextColor(fg)
+                        setBackgroundColor(surfaceHigh)
+                        setPadding(px(12), px(12), px(12), px(12))
+                    }
+
+                override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
+                    (super.getDropDownView(position, convertView, parent) as TextView).apply {
+                        setTextColor(fg)
+                        setBackgroundColor(surfaceHigh)
+                        setPadding(px(12), px(12), px(12), px(12))
+                    }
+            }
             val lastKey = BuickVehiclePrefs.selected(this)?.key
             val currentIndex = profiles.indexOfFirst { it.key == lastKey }.coerceAtLeast(0)
             spinner.setSelection(currentIndex)
@@ -77,6 +108,8 @@ class BuickSettingsActivity : AppCompatActivity() {
                 id = 51000 + i
                 tag = option.first
                 text = option.second
+                setTextColor(fg)
+                buttonTintList = ColorStateList.valueOf(accent)
             })
         }
         root.addView(modes)
@@ -88,12 +121,17 @@ class BuickSettingsActivity : AppCompatActivity() {
                 inputType = InputType.TYPE_CLASS_NUMBER
                 setSingleLine(true)
                 textSize = 15f
+                setTextColor(fg)
+                setHintTextColor(secondary)
+                backgroundTintList = ColorStateList.valueOf(accent)
                 marginRow.addView(this, LinearLayout.LayoutParams(0, px(56), 1f))
             }
         }
         root.addView(marginRow)
         val save = Button(this).apply {
             text = "保存当前车辆方案"
+            setTextColor(getColor(R.color.m3_on_primary))
+            backgroundTintList = ColorStateList.valueOf(accent)
             setOnClickListener {
                 val key = editingKey ?: return@setOnClickListener
                 val mode = (modes.findViewById<RadioButton>(modes.checkedRadioButtonId)?.tag as? String) ?: "auto"
@@ -110,7 +148,7 @@ class BuickSettingsActivity : AppCompatActivity() {
             }
         }
         root.addView(save)
-        root.addView(label("背景与视频流保持原始协商分辨率，只有界面内容按安全区缩放排布；边缘区域使用深色留白。触摸坐标同步校正。关闭总开关可完全恢复原版布局。", 12f))
+        root.addView(label("T34：壁纸和视频始终原尺寸全屏输出。别克主屏的 Dock、桌面图标及分页控件按安全区重新排布，不再拉伸图标或生成黑边；触摸沿用原始坐标。此设置下次连接生效。", 12f))
         if (profiles.isNotEmpty()) {
             spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit

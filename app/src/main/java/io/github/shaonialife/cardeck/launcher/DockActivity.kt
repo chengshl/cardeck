@@ -95,7 +95,9 @@ class DockActivity : AppCompatActivity() {
             return
         }
         val dm = resources.displayMetrics
-        barForm = dm.widthPixels > dm.heightPixels
+        // The expanded dock display may be wider than its functional rail.
+        // Derive bar/sidebar from the actual receiver orientation instead.
+        barForm = VirtualLauncher.dockAtBottom
         setContentView(if (barForm) R.layout.activity_dock_bar else R.layout.activity_dock_sidebar)
 
         clockView = findViewById(R.id.dockClock)
@@ -104,6 +106,27 @@ class DockActivity : AppCompatActivity() {
         batteryFill = findViewById(R.id.dockBatteryFill)
         appsContainer = findViewById(R.id.dockApps)
         wallpaperView = findViewById(R.id.dockWallpaper)
+        // T34: keep the dock wallpaper full-bleed, but shift only its actual
+        // controls out of the curved receiver's left/top unsafe strips.
+        if (!barForm) {
+            VirtualLauncher.safeViewport?.let { rect ->
+                val contentWidth = (VirtualLauncher.dockWidthPx - rect.left).coerceAtLeast(1)
+                val bottom = (VirtualLauncher.streamHeightPx - rect.top - rect.height).coerceAtLeast(0)
+                val params = findViewById<View>(R.id.dockContent).layoutParams as FrameLayout.LayoutParams
+                params.leftMargin = rect.left
+                params.topMargin = rect.top
+                params.width = contentWidth
+                params.height = (VirtualLauncher.streamHeightPx - rect.top - bottom).coerceAtLeast(1)
+                findViewById<View>(R.id.dockContent).layoutParams = params
+                val scrim = findViewById<View>(R.id.dockScrim)
+                val scrimParams = scrim.layoutParams as FrameLayout.LayoutParams
+                scrimParams.leftMargin = rect.left
+                scrimParams.topMargin = rect.top
+                scrimParams.width = contentWidth
+                scrimParams.height = params.height
+                scrim.layoutParams = scrimParams
+            }
+        }
         findViewById<ImageView>(R.id.dockHome).apply {
             setOnClickListener { Bg.run("dock-home") { VirtualLauncher.onHomePressed() } }
             // 图标随模式切换：仪表盘激活=房屋（点按回桌面）；否则=田字格（点按进仪表盘）。

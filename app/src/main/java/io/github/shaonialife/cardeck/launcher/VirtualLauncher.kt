@@ -422,7 +422,9 @@ object VirtualLauncher {
         viewport: BuickViewport? = null,
     ): Boolean {
         detach()
-        safeViewport = viewport
+        // T34: keep the full video canvas. Only Buick landscape home controls
+        // move inside the reported safe rectangle; never squash H.264 pixels.
+        safeViewport = viewport?.takeIf { totalWidth > totalHeight }
         // 新会话：「本次会话不再提示」等用户级决定作废
         LetterboxHintController.resetSession()
         val density = densityDpi / 160f
@@ -447,10 +449,13 @@ object VirtualLauncher {
             appHeightPx = (totalHeight - thicknessPx).coerceAtLeast(200)
             appWidth = totalWidth
         } else {
-            dockWidthPx = thicknessPx
+            // The left unsafe wallpaper band is part of the dock virtual display.
+            // DockActivity moves only its controls to the right of this band.
+            val safeLeft = safeViewport?.left ?: 0
+            dockWidthPx = (thicknessPx + safeLeft).coerceAtMost(totalWidth - 400)
             dockHeightPx = totalHeight
             appHeightPx = totalHeight
-            appWidth = (totalWidth - thicknessPx).coerceAtLeast(200)
+            appWidth = totalWidth - dockWidthPx
         }
         appAreaWidth = appWidth
         appAreaHeight = appHeightPx
@@ -536,7 +541,7 @@ object VirtualLauncher {
         log("LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(shell)" else "应用屏(回退)"}")
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
-        composer.safeViewport = viewport
+        // Wallpaper and decoded video always render at 1:1 native stream size.
         composer.targetFps =
             DisplayPrefs
                 .fps(context)
