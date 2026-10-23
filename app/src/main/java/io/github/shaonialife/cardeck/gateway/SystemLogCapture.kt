@@ -68,13 +68,19 @@ object SystemLogCapture {
             return if (result?.ok == true) result.output.takeLast(96000) else ""
         }
         val previousBoot = read("logcat -L -d -b crash -v threadtime -v year -t 300 2>/dev/null | tail -c 96000")
-        val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
+        // T51: current-boot crash buffer may contain a system-process crash while
+        // the old DropBox server-crash record is unrelated and much older.
+        val currentBoot = read("logcat -d -b crash -v threadtime -v year -t 250 2>/dev/null | tail -c 64000")
+        val tags = listOf(
+            "system_server_crash", "system_app_crash", "system_app_anr",
+            "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG",
+        )
         val dropbox = linkedMapOf<String, String>()
         for (tag in tags) {
             if (ShizukuGate.state(context) != ShizukuGate.State.READY) break
             dropbox[tag] = read("dumpsys dropbox --print $tag 2>/dev/null | tail -c 96000")
         }
-        return CrashEvidenceSelector.select(previousApp, previousBoot, dropbox, true, redactor)
+        return CrashEvidenceSelector.select(previousApp, previousBoot, dropbox, true, redactor, currentBoot)
     }
 
 }

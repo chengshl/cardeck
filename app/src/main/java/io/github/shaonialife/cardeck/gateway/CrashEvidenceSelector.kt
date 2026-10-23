@@ -7,7 +7,10 @@ package io.github.shaonialife.cardeck.gateway
 internal object CrashEvidenceSelector {
     private const val SESSION_BREAK = "=== CarDeck 前次进程分隔 ==="
     private const val MAX_LINES = 256 // GatewayProbe splits confirmed evidence into 8-line packets.
-    private val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
+    private val tags = listOf(
+        "system_server_crash", "system_app_crash", "system_app_anr",
+        "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG",
+    )
     private val clue = Regex(
         "FATAL|Exception|ANR|Watchdog|system_server|rescue.?party|reboot|restart|" +
             "tombstone|signal [0-9]+|WindowContextListenerImpl|DisplayManager|" +
@@ -35,11 +38,12 @@ internal object CrashEvidenceSelector {
 
     /** Stable identity for one dated event, rather than a stack common to many events. */
     fun datedCrashId(preview: List<String>): String? =
-        preview.firstOrNull {
-            it.startsWith("[DropBox:system_server_crash] ") && fullEventDate.containsMatchIn(it)
-        }?.let { line ->
-            val timestamp = fullEventDate.find(line)?.value ?: return@let null
-            "system_server_crash@" + timestamp
+        preview.firstNotNullOfOrNull { line ->
+            val match = Regex("""^\[DropBox:(system_server_crash|system_app_crash|system_app_anr)\]""").find(line)
+            if (match != null && fullEventDate.containsMatchIn(line)) {
+                val timestamp = fullEventDate.find(line)?.value ?: return@firstNotNullOfOrNull null
+                match.groupValues[1] + "@" + timestamp
+            } else null
         }
 
     private fun latestEntry(raw: String, tag: String): Pair<List<String>, Boolean> {
@@ -63,6 +67,7 @@ internal object CrashEvidenceSelector {
         dropboxByTag: Map<String, String>,
         shizukuAvailable: Boolean,
         redactor: LogRedactor,
+        currentBootCrash: String? = null,
     ): List<String> {
         val output = ArrayList<String>(MAX_LINES)
         fun add(source: String, line: String) {
@@ -88,6 +93,16 @@ internal object CrashEvidenceSelector {
             return output
         }
 
+        // Current crash buffer is separate from last-boot -L. These logs can
+        // reveal system_app_crash even if the DropBox record has been rotated.
+        val currentBoot = currentBootCrash.orEmpty().lineSequence()
+            .map { it.trim() }.filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }.toList()
+        val currentInteresting = currentBoot.filter {
+            keyFault.containsMatchIn(it) || stackFrame.containsMatchIn(it) ||
+                it.contains("AndroidRuntime", ignoreCase = true)
+        }.takeLast(48)
+        currentInteresting.forEach { add("本次启动crash", it) }
+
         // Previous-boot logcat -L, never current-boot -b crash.
         val boot = previousBootCrash.orEmpty().lineSequence()
             .map { it.trim() }.filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }.toList()
@@ -99,31 +114,39 @@ internal object CrashEvidenceSelector {
         var datedEvents = 0
         var unknownDates = 0
         val quotas = mapOf(
-            "system_server_crash" to 112,
+            "system_server_crash" to 70,
+            "system_app_crash" to 70,
+            "system_app_anr" to 30,
             "system_server_watchdog" to 18,
-            "SYSTEM_RESTART" to 18,
-            "SYSTEM_LAST_KMSG" to 18,
+            "SYSTEM_RESTART" to 12,
+            "SYSTEM_LAST_KMSG" to 12,
         )
-        for (tag in tags) {
+        // Newest dated event first: the previous 21:27 WindowContext stack must
+        // not mask a 21:52 persistent system-process crash.
+        val events = tags.mapNotNull { tag ->
             val (entry, hasDate) = latestEntry(dropboxByTag[tag].orEmpty(), tag)
-            if (entry.isEmpty()) continue
+            if (entry.isEmpty()) null else Triple(tag, entry, hasDate)
+        }.sortedByDescending { (_, entry, hasDate) ->
+            if (hasDate) fullEventDate.find(entry.firstOrNull().orEmpty())?.value.orEmpty() else ""
+        }
+        for ((tag, entry, hasDate) in events) {
             if (hasDate) datedEvents++ else unknownDates++
             val limit = quotas.getValue(tag)
             val chosen = linkedSetOf<Int>()
             if (hasDate) chosen.add(0)
             // Original occurrence time, first exception/caused-by and stack outrank footers.
             entry.indices.filter { keyFault.containsMatchIn(entry[it]) }
-                .take(if (tag == "system_server_crash") 40 else 10).forEach { chosen.add(it) }
+                .take(if (tag == "system_server_crash" || tag == "system_app_crash") 35 else 10).forEach { chosen.add(it) }
             entry.indices.filter { stackFrame.containsMatchIn(entry[it]) }
-                .take(if (tag == "system_server_crash") 80 else 10).forEach { chosen.add(it) }
+                .take(if (tag == "system_server_crash" || tag == "system_app_crash") 55 else 10).forEach { chosen.add(it) }
             entry.indices.filter { !metadata.containsMatchIn(entry[it]) }
-                .take(if (tag == "system_server_crash") 20 else 12).forEach { chosen.add(it) }
+                .take(if (tag == "system_server_crash" || tag == "system_app_crash") 15 else 12).forEach { chosen.add(it) }
             chosen.toList().sorted().take(limit).forEach { add("DropBox:$tag", entry[it]) }
         }
         if (unknownDates > 0) {
             add("取证状态", "有 " + unknownDates + " 类DropBox内容未识别到事件时间；可能是截断的旧记录，不能视为新崩溃")
         }
-        if (datedEvents == 0 && bootInteresting.isEmpty()) {
+        if (datedEvents == 0 && bootInteresting.isEmpty() && currentInteresting.isEmpty()) {
             add("取证状态", "系统未返回带时间的可识别崩溃事件；可能未保留或已轮转，不能据此判定无崩溃")
         }
         return output

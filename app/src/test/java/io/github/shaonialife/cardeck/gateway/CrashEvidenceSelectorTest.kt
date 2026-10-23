@@ -55,6 +55,37 @@ class CrashEvidenceSelectorTest {
         assertTrue(found.size <= 64)
     }
 
+    @Test fun newerSystemAppCrashIsNotHiddenByOldSystemServerCrash() {
+        val older = """
+            2026-10-23 21:27:41 system_server_crash (text, 2250 bytes)
+            java.lang.NullPointerException
+            at com.android.server.wm.RootWindowContainer.onDisplayAdded(RootWindowContainer.java:2898)
+        """.trimIndent()
+        val newer = """
+            2026-10-23 21:52:01 system_app_crash (text, 800 bytes)
+            Process: system
+            FATAL EXCEPTION: main
+            java.lang.IllegalStateException: SettingsProvider failed
+            at android.provider.SettingsState.init(SettingsState.java:380)
+        """.trimIndent()
+        val found = CrashEvidenceSelector.select(null, "", mapOf(
+            "system_server_crash" to older, "system_app_crash" to newer
+        ), true, redact)
+        assertEquals("system_app_crash@2026-10-23 21:52:01", CrashEvidenceSelector.datedCrashId(found))
+        assertTrue(found.any { it.contains("SettingsProvider failed") })
+        assertTrue(found.any { it.contains("RootWindowContainer") })
+        assertTrue(found.size <= 256)
+    }
+
+    @Test fun currentBootCrashBufferIsVisibleEvenWithoutDropBox() {
+        val live = "10-23 21:52:01.234 E AndroidRuntime: FATAL EXCEPTION: main\n" +
+            "10-23 21:52:01.235 E AndroidRuntime: Process: system\n" +
+            "10-23 21:52:01.236 E AndroidRuntime: java.lang.IllegalStateException: boot error"
+        val found = CrashEvidenceSelector.select(null, "", emptyMap(), true, redact, live)
+        assertTrue(found.any { it.contains("[本次启动crash]") && it.contains("FATAL EXCEPTION") })
+        assertTrue(found.any { it.contains("21:52:01.235") && it.contains("Process: system") })
+    }
+
     @Test fun undatedDropBoxNotMislabelledAsNewDatedCrash() {
         val found = CrashEvidenceSelector.select(null, "", mapOf(
             "system_server_crash" to "at com.android.server.wm.RootWindowContainer.onDisplayAdded(Foo.java:1)"
