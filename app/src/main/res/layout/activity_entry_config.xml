@@ -43,9 +43,33 @@
             android:orientation="vertical"
             android:padding="24dp">
 
+            <Button
+                android:id="@+id/saveDiagnosticBundle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
+                android:text="导出完整诊断包 · App / 操作轨迹 / 崩溃 / 系统" />
+
+            <Button
+                android:id="@+id/saveAppLogsLocally"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
+                android:layout_marginTop="8dp"
+                android:text="仅保存 App 历史日志到本地" />
+
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="完整诊断包包含最多50条跨重启操作轨迹、App 历史、系统崩溃与当前系统告警（若 Shizuku 可用）。无须配置 Gateway；点击保存不会上传，文件位于下载/CarDeck。"
+                android:textColor="#B0BEBE"
+                android:textSize="12sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
                 android:labelFor="@id/entryAddress"
                 android:text="@string/entry_address_label"
                 android:textColor="#EDF3F3"
@@ -153,7 +177,14 @@
                 android:layout_height="wrap_content"
                 android:minHeight="52dp"
                 android:layout_marginTop="8dp"
-                android:text="@string/gateway_system_preview" />
+                android:text="系统诊断与崩溃取证 · 保存本地或在线上传" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="统一预览系统告警、当前及上次启动的崩溃记录和前次 App 阶段事件。无 Shizuku 时仍可预览本地取证；保存本地无需联网，在线上传需再次确认。"
+                android:textColor="#B0BEBE"
+                android:textSize="12sp" />
 
             <TextView
                 android:layout_width="match_parent"

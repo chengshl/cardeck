@@ -44,6 +44,8 @@ class GatewayProbe(
         val systemLogLines: Int = 0,
         val droppedLogLines: Long = 0,
         val systemPending: Boolean = false,
+        val systemUploadTotal: Int = 0,
+        val systemUploadAcknowledged: Int = 0,
     )
 
     private val timer = Executors.newSingleThreadScheduledExecutor { task ->
@@ -66,6 +68,8 @@ class GatewayProbe(
     private var vehicleSupported = false
     private var appLogLines = 0
     private var systemLogLines = 0
+    private var systemUploadTotal = 0
+    private var systemUploadAcknowledged = 0
     private data class LogBatch(
         val source: String,
         val lines: List<String>,
@@ -191,7 +195,10 @@ class GatewayProbe(
                             return
                         }
                         logDeadline?.cancel(false)
-                        if (pending.source == "app") appLogLines += pending.lines.size else systemLogLines += pending.lines.size
+                        if (pending.source == "app") appLogLines += pending.lines.size else {
+                            systemLogLines += pending.lines.size
+                            systemUploadAcknowledged += pending.lines.size
+                        }
                         pendingLog = null
                         if (heartbeatCount > 0) publishHealthy()
                     }
@@ -227,13 +234,16 @@ class GatewayProbe(
         reportsSupported = reportsSupported, reportCount = reportCount,
         logsSupported = logsSupported, appLogLines = appLogLines, systemLogLines = systemLogLines,
         droppedLogLines = appLogs?.dropped ?: 0,
-        systemPending = systemBatches.isNotEmpty() || pendingLog?.source == "system"))
+        systemPending = systemBatches.isNotEmpty() || pendingLog?.source == "system",
+        systemUploadTotal = systemUploadTotal, systemUploadAcknowledged = systemUploadAcknowledged))
 
-    /** Call only from the positive action of the exact redacted preview, never during capture. */
+    /** One explicit consent for a bounded full preview; each server packet stays <=8 lines. */
     @Synchronized
     fun uploadConfirmedSystemLogs(preview: List<String>): Boolean {
         if (stopped || !registered || !logsSupported || heartbeatCount == 0 || systemBatches.isNotEmpty() || pendingLog?.source == "system") return false
-        if (preview.isEmpty() || preview.size > 64 || preview.any { it.isBlank() || it.length > 256 }) return false
+        if (preview.isEmpty() || preview.size > 256 || preview.any { it.isBlank() || it.length > 256 }) return false
+        systemUploadTotal = preview.size
+        systemUploadAcknowledged = 0
         val confirmedVehicle = vehicleProvider()
         preview.chunked(8).forEach { systemBatches.addLast(LogBatch("system", it.toList(), vehicleId = confirmedVehicle)) }
         publishHealthy()

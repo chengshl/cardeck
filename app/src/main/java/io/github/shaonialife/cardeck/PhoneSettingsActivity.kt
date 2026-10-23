@@ -10,13 +10,12 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import io.github.shaonialife.cardeck.update.BuickUpdater
 import io.github.shaonialife.cardeck.launcher.settings.SettingsMenus
 import io.github.shaonialife.cardeck.launcher.settings.SettingsToastHost
 
 /**
  * 手机侧「车机设置」二级菜单页（M3 暗色）：
- * 列出五个设置入口，点击进入内容 Fragment——与车机 SettingsActivity 双栏共用同一套面板。
+ * 仅列出通用 SettingsMenus 面板，别克专属日志与更新移至 BuickMenuActivity。
  */
 class PhoneSettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,7 +26,6 @@ class PhoneSettingsActivity : AppCompatActivity() {
         val list = findViewById<RecyclerView>(R.id.menuList)
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = MenuAdapter()
-        if (BuickUpdater.autoEnabled(this)) BuickUpdater.check(this, silent = true)
     }
 
     private inner class MenuAdapter : RecyclerView.Adapter<MenuHolder>() {
@@ -39,37 +37,13 @@ class PhoneSettingsActivity : AppCompatActivity() {
             return MenuHolder(view)
         }
 
-        override fun getItemCount() = SettingsMenus.ALL.size + 2
+        override fun getItemCount() = SettingsMenus.ALL.size
 
         override fun onBindViewHolder(
             holder: MenuHolder,
             position: Int,
         ) {
             holder.itemView.setOnLongClickListener(null)
-            if (position == SettingsMenus.ALL.size) {
-                holder.icon.setImageResource(android.R.drawable.ic_menu_manage)
-                holder.title.text = "入口配置"
-                holder.desc.text = "设置服务地址和入口凭证"
-                holder.itemView.setOnClickListener {
-                    startActivity(Intent(this@PhoneSettingsActivity, EntryConfigActivity::class.java))
-                }
-                return
-            }
-            if (position == SettingsMenus.ALL.size + 1) {
-                holder.icon.setImageResource(android.R.drawable.stat_sys_download)
-                holder.title.text = "在线更新（Buick-E5）"
-                holder.desc.text = "仅检查当前分支；长按切换自动检查"
-                holder.itemView.setOnClickListener { BuickUpdater.check(this@PhoneSettingsActivity) }
-                holder.itemView.setOnLongClickListener {
-                    val enabled = !BuickUpdater.autoEnabled(this@PhoneSettingsActivity)
-                    BuickUpdater.setAutoEnabled(this@PhoneSettingsActivity, enabled)
-                    android.widget.Toast.makeText(this@PhoneSettingsActivity,
-                        if (enabled) "自动检查更新已开启" else "自动检查更新已关闭",
-                        android.widget.Toast.LENGTH_SHORT).show()
-                    true
-                }
-                return
-            }
             val item = SettingsMenus.ALL[position]
             holder.icon.setImageResource(item.iconRes)
             holder.title.text = item.title
