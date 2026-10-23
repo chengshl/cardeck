@@ -43,7 +43,6 @@ import io.github.shaonialife.cardeck.ui.ScreenDimmer
 import io.github.shaonialife.cardeck.util.Bg
 import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.video.VideoSender
-import io.github.shaonialife.cardeck.video.SafeDiagnosticFrameSource
 import io.github.shaonialife.cardeck.video.SonyB233CrashGuard
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -243,10 +242,6 @@ object SessionController {
 
     @Volatile
     var currentHiddenSource: HiddenDisplaySource? = null
-
-    /** T28: EGL-only B233 Xperia crash-isolation video source; creates zero Android displays. */
-    @Volatile
-    private var currentDiagnosticSource: SafeDiagnosticFrameSource? = null
 
     /** 当前会话的共享密钥与接收端地址：投影授权晚于连接时，动态补启音频用。 */
     @Volatile
@@ -523,10 +518,6 @@ object SessionController {
         val retiredClient = currentClient
         currentClient = null
         retiredClient?.cancelled = true
-        // T28: finish EGL producer before stopping/releasing MediaCodec input Surface.
-        val retiredDiagnostic = currentDiagnosticSource
-        currentDiagnosticSource = null
-        retiredDiagnostic?.stop()
         retiredVideo?.stop()
         // 暗幕/常亮随会话收掉（本方法在每轮配对起步也会执行，新一轮推流起来后会重新置位）
         ScreenDimmer.setSessionActive(false)
@@ -2024,27 +2015,18 @@ object SessionController {
                             }
                         }
                         if (setup != null) {
-                            // T40: restore real Android virtual displays and HID in Buick-main,
-                            // while keeping the old T28 safe EGL-only path one switch away.
+                            // T44: Real virtual desktop + HID is the only Buick-main display path.
+                            // Retired T28 preferences must not silently replace the user's video.
                             val sonyB233CrashRisk = SonyB233CrashGuard.useDisplaylessDiagnostic(
                                 android.os.Build.MANUFACTURER,
                                 android.os.Build.MODEL,
                                 android.os.Build.VERSION.SDK_INT,
                                 client.currentEndpoint.isBuickB233,
                             )
-                            val restoreDesktop = io.github.shaonialife.cardeck.video.BuickMainDisplayMode.enabled(context)
-                            val t28Displayless = io.github.shaonialife.cardeck.video.BuickMainDisplayMode.useT28Displayless(
-                                sonyB233CrashRisk, restoreDesktop,
-                            )
-                            if (sonyB233CrashRisk && restoreDesktop) {
+                            if (sonyB233CrashRisk) {
                                 appendLog(
-                                    "BUICK-MAIN T40 WARNING: Xperia Android15/B233 已启用真实虚拟屏及触摸；" +
-                                        "历史上可能导致手机系统重启。发生故障可在手机别克设置中关闭真实桌面与触摸开关"
-                                )
-                            }
-                            if (t28Displayless) {
-                                appendLog(
-                                    "SAFETY T28: 用户关闭真实桌面与触摸，Xperia/B233 使用无虚拟屏 EGL 测试画面"
+                                    "BUICK-MAIN: Xperia Android15/B233 使用真实虚拟屏及触摸；" +
+                                        "出现手机系统重启请停车后使用别克设置中的日志上传保留证据",
                                 )
                             }
                             // 记录会话凭据：投影授权晚于连接时用于动态补启音频。
@@ -2151,17 +2133,11 @@ object SessionController {
                                                 )
                                             }
                                             touchLogCount++
-                                            if (t28Displayless) {
-                                                if (touchLogCount <= 30 || touchLogCount % 50 == 0) {
-                                                    appendLog("SAFETY T28: 触摸诊断仅记录，未注入 Android 显示器")
-                                                }
-                                            } else {
-                                                contacts.forEach {
-                                                    TouchRouter.onContact(
-                                                        context.applicationContext,
-                                                        it,
-                                                    )
-                                                }
+                                            contacts.forEach {
+                                                TouchRouter.onContact(
+                                                    context.applicationContext,
+                                                    it,
+                                                )
                                             }
                                         } else if (report != null) {
                                             appendLog(
@@ -2464,16 +2440,6 @@ object SessionController {
                                     val videoH = pendingVideoH
                                     val videoDensity = pendingVideoDensity
                                     videoSender?.start { surface ->
-                                        if (t28Displayless) {
-                                            // No DisplayManager.createVirtualDisplay() anywhere in
-                                            // this path. Preserve AirPlay RECORD, encoder and TCP.
-                                            val diagnostic = SafeDiagnosticFrameSource(::appendLog)
-                                            currentDiagnosticSource = diagnostic
-                                            check(diagnostic.start(surface, videoW, videoH)) {
-                                                "T28 EGL diagnostic source failed to start"
-                                            }
-                                            appendLog("SAFETY T28: 活动测试条纹已开始推流；虚拟屏数量=0；普通蓝牙 A2DP 未修改")
-                                        } else {
                                         // 唯一模式：隐形屏（双屏启动器：dock + 应用屏）
                                         val source =
                                             HiddenDisplaySource(
@@ -2495,7 +2461,6 @@ object SessionController {
                                         // 暗幕/常亮只在真正开始投屏后生效（见 ScreenDimmer.sessionActive）：
                                         // 应用启动时只挂触摸探针，避免「会话早断了、手机过一会儿还是变暗」。
                                         if (ok) ScreenDimmer.setSessionActive(true)
-                                        }
                                     }
                                 }
                                 // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。
