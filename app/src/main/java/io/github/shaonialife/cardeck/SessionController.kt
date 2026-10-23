@@ -1,5 +1,10 @@
 package io.github.shaonialife.cardeck
 
+import io.github.shaonialife.cardeck.buick.BuickInsets
+import io.github.shaonialife.cardeck.buick.BuickSafeAreaGeometry
+import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
+import io.github.shaonialife.cardeck.buick.BuickViewport
+
 import android.content.Context
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
@@ -2261,6 +2266,7 @@ object SessionController {
                                 var pendingVideoW = 0
                                 var pendingVideoH = 0
                                 var pendingVideoDensity = 0
+                                var pendingSafeViewport: BuickViewport? = null
                                 if (host != null) {
                                     // 「显示」偏好：流画布/虚拟屏按车机分辨率百分比生成。
                                     // 只在会话建立时生效——编码器与虚拟屏尺寸此时定型；
@@ -2278,6 +2284,36 @@ object SessionController {
                                         ((setup.displayWidth * scale).toInt().coerceAtLeast(320) / 2) * 2
                                     val streamH =
                                         ((setup.displayHeight * scale).toInt().coerceAtLeast(180) / 2) * 2
+                                    // T33: learn actual receiver metadata after AirPlay /info.
+                                    // Never persist raw receiver ID; profiles are salted local hashes.
+                                    // Receiver-reported safeArea is preferred over any model hardcode.
+                                    val gmReceiver = client.currentEndpoint.isBuickB233 ||
+                                        (setup.receiverManufacturer?.contains("Saic General Motors", ignoreCase = true) == true)
+                                    if (gmReceiver) {
+                                        val observed = BuickVehiclePrefs.observe(
+                                            context,
+                                            setup.receiverDeviceId,
+                                            setup.receiverModel,
+                                            setup.displayWidth,
+                                            setup.displayHeight,
+                                            setup.receiverSafeArea,
+                                        )
+                                        if (BuickVehiclePrefs.enabled(context)) {
+                                            pendingSafeViewport = BuickSafeAreaGeometry.resolve(
+                                                setup.receiverSafeArea,
+                                                setup.displayWidth, setup.displayHeight,
+                                                streamW, streamH,
+                                                observed?.mode ?: "auto",
+                                                observed?.manual ?: BuickInsets.ZERO,
+                                            )
+                                        }
+                                        appendLog(
+                                            "BUICK T33: 车辆画像=" + (if (observed != null) "已本地记录" else "缺少有效车辆标识") +
+                                                " safeArea=" + (setup.receiverSafeArea?.insets?.toString() ?: "无") +
+                                                " 布局=" + (pendingSafeViewport?.toString() ?: "原始全屏") +
+                                                " 总开关=" + BuickVehiclePrefs.enabled(context),
+                                        )
+                                    }
                                     val selectedFps =
                                         appContext
                                             ?.let {
@@ -2424,6 +2460,7 @@ object SessionController {
                                             HiddenDisplaySource(
                                                 context.applicationContext,
                                                 log = { line -> appendLog(line) },
+                                                safeViewport = pendingSafeViewport,
                                             )
                                         currentHiddenSource = source
                                         val ok =

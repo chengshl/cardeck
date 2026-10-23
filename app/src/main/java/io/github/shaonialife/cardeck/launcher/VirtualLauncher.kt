@@ -1,5 +1,7 @@
 package io.github.shaonialife.cardeck.launcher
 
+import io.github.shaonialife.cardeck.buick.BuickViewport
+
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -13,6 +15,9 @@ import android.view.Surface
 import io.github.shaonialife.cardeck.launcher.settings.AppOrientationCompat
 import io.github.shaonialife.cardeck.launcher.settings.DisplayPrefs
 import io.github.shaonialife.cardeck.media.NotificationAccess
+import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
+import io.github.shaonialife.cardeck.buick.BuickStandaloneFit
+import io.github.shaonialife.cardeck.ui.WallpaperStore
 import io.github.shaonialife.cardeck.render.CARD_MARGIN_PX
 import io.github.shaonialife.cardeck.render.DASH_GAP_PX
 import io.github.shaonialife.cardeck.render.DASH_HANDLE_TOUCH_PX
@@ -169,6 +174,50 @@ object VirtualLauncher {
     var dockWidthPx: Int = 0
         private set
 
+    /** T33 active compositor viewport, source coordinates stay unchanged for input routing. */
+    @Volatile
+    var safeViewport: BuickViewport? = null
+        private set
+
+    /** Only standalone 3rd-party apps and fullscreen map use this fitted GL rect. */
+    @Volatile var standaloneFit: BuickViewport? = null
+        private set
+    @Volatile private var lastFullscreenMapPackage: String? = null
+
+    private fun resetStandaloneFit() {
+        standaloneFit = null
+        composer?.standaloneFit = null
+    }
+
+    private fun selectStandaloneFit(packageName: String) {
+        val ctx = appContextRef
+        val safe = safeViewport
+        val mode = if (ctx != null && safe != null && BuickVehiclePrefs.enabled(ctx)) {
+            BuickVehiclePrefs.standaloneModeFor(ctx, BuickVehiclePrefs.selected(ctx)?.key, packageName)
+        } else "full"
+        val rect = if (mode == "safe") {
+            BuickStandaloneFit.resolve(safe, dockWidthPx, streamWidthPx, streamHeightPx)
+        } else null
+        standaloneFit = rect
+        composer?.standaloneFit = rect
+        logSink?.invoke(
+            "BUICK T38: 独立应用 mode=$mode fit=${rect ?: "full"} " +
+                "背景就绪=${composer?.safeBackgroundBitmap != null} (不改变视频编码尺寸)"
+        )
+        if (rect != null && composer?.safeBackgroundBitmap == null && ctx != null) {
+            val bound = composer
+            val w = streamWidthPx
+            val h = streamHeightPx
+            Bg.run("buick-t38-backdrop-recover") {
+                val bg = runCatching { WallpaperStore.aspectFillCanvas(ctx, w, h) }.getOrNull()
+                if (bound != null && this.composer === bound) {
+                    bound.safeBackgroundBitmap = bg
+                    logSink?.invoke("BUICK T38: 背景补加载成功=${bg != null}")
+                }
+            }
+        }
+    }
+
     /** 竖屏车机（屏幕高>宽）：dock 改为底部横条。 */
     @Volatile
     var dockAtBottom: Boolean = false
@@ -241,6 +290,15 @@ object VirtualLauncher {
 
     @Volatile
     var mapTileHeight: Int = 0
+        private set
+
+    /** T36: top/bottom margins of the *dashboard map tile* in stream pixels. */
+    @Volatile
+    var mapTileTopPx: Int = CARD_MARGIN_PX
+        private set
+
+    @Volatile
+    var mapTileBottomPx: Int = CARD_MARGIN_PX
         private set
 
     /**
@@ -412,8 +470,14 @@ object VirtualLauncher {
         totalHeight: Int,
         densityDpi: Int,
         log: (String) -> Unit,
+        viewport: BuickViewport? = null,
     ): Boolean {
         detach()
+        // T34: keep the full video canvas. Only Buick landscape home controls
+        // move inside the reported safe rectangle; never squash H.264 pixels.
+        safeViewport = viewport?.takeIf { totalWidth > totalHeight }
+        resetStandaloneFit()
+        lastFullscreenMapPackage = null
         // 新会话：「本次会话不再提示」等用户级决定作废
         LetterboxHintController.resetSession()
         val density = densityDpi / 160f
@@ -438,13 +502,23 @@ object VirtualLauncher {
             appHeightPx = (totalHeight - thicknessPx).coerceAtLeast(200)
             appWidth = totalWidth
         } else {
-            dockWidthPx = thicknessPx
+            // The left unsafe wallpaper band is part of the dock virtual display.
+            // DockActivity moves only its controls to the right of this band.
+            val safeLeft = safeViewport?.left ?: 0
+            dockWidthPx = (thicknessPx + safeLeft).coerceAtMost(totalWidth - 400)
             dockHeightPx = totalHeight
             appHeightPx = totalHeight
-            appWidth = (totalWidth - thicknessPx).coerceAtLeast(200)
+            appWidth = totalWidth - dockWidthPx
         }
         appAreaWidth = appWidth
         appAreaHeight = appHeightPx
+        // Keep the map tile below the real receiver's upper curved-screen safe
+        // edge. T34 only moved GridActivity; the map is a separate GL layer.
+        val tileMargins = io.github.shaonialife.cardeck.buick.BuickMapTileMargins.resolve(
+            safeViewport, totalHeight, CARD_MARGIN_PX,
+        )
+        mapTileTopPx = if (dockAtBottom) CARD_MARGIN_PX else tileMargins.first
+        mapTileBottomPx = if (dockAtBottom) CARD_MARGIN_PX else tileMargins.second
         // 竖屏应用屏密度：窗口逻辑宽度目标 ≈ 手机竖屏宽度（LETTERBOX_TARGET_DP）。
         // 错用 dock 的 densityDpi（随画布分辨率等比、非手机密度）会把窗口压到 ~206dp——文字观感大一倍
         // （2026-10-14 竖屏实测：应用与桌面字号明显偏大的根因）。
@@ -467,7 +541,7 @@ object VirtualLauncher {
         } else {
             val geom = dashSplitGeom(appWidth, dashSplitFraction)
             mapTileWidth = geom.tileLen
-            mapTileHeight = appHeightPx - CARD_MARGIN_PX * 2
+            mapTileHeight = (appHeightPx - mapTileTopPx - mapTileBottomPx).coerceAtLeast(160)
             // 横屏应用区从 dock 右缘起（竖屏 x 原点即流原点，无偏移）
             dashSplitPos = geom.splitCenter + dockWidthPx
         }
@@ -527,6 +601,9 @@ object VirtualLauncher {
         log("LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(shell)" else "应用屏(回退)"}")
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
+        // Wallpaper and decoded video always render at 1:1 native stream size.
+        composer.mapTileTopPx = mapTileTopPx
+        composer.mapTileBottomPx = mapTileBottomPx
         composer.targetFps =
             DisplayPrefs
                 .fps(context)
@@ -744,6 +821,22 @@ object VirtualLauncher {
             displaysCreated[0] = dockDisplayId >= 0 && appDisplayId >= 0
         }
         return try {
+            // T38: T37's background task could complete late or fail silently.
+            // Prepare the actual wallpaper before the GL consumer starts.
+            // Cache makes the normal path cheap; this runs only at session attach.
+            if (safeViewport != null) {
+                val backdrop = runCatching {
+                    WallpaperStore.aspectFillCanvas(context, totalWidth, totalHeight)
+                }.onFailure {
+                    log("BUICK T38: 安全区壁纸预加载异常：${it.javaClass.simpleName}")
+                }.getOrNull()
+                composer.safeBackgroundBitmap = backdrop
+                log(
+                    "BUICK T38: 安全区壁纸就绪=" + (backdrop != null) +
+                        " bitmap=" + (backdrop?.let { "${it.width}x${it.height}" } ?: "none") +
+                        " 视频尺寸=${totalWidth}x${totalHeight}",
+                )
+            }
             composer.start(
                 dockWidthPx,
                 dockHeightPx,
@@ -807,6 +900,11 @@ object VirtualLauncher {
     private var displaysViaService = false
 
     fun detach() {
+        resetStandaloneFit()
+        lastFullscreenMapPackage = null
+        safeViewport = null
+        mapTileTopPx = CARD_MARGIN_PX
+        mapTileBottomPx = CARD_MARGIN_PX
         // E5 T41: Activity tasks still alive while displays are released can be
         // reparented by Android onto physical display 0. Finish tasks first.
         sessionAttached = false
@@ -926,6 +1024,7 @@ object VirtualLauncher {
     /** 回桌面：保持 Buick B233 会话保护，避免在 UI 主线程同步执行 Shell。 */
     fun goGrid() {
         if (!sessionAttached) return
+        resetStandaloneFit()
         val grid = if (gridDisplayId >= 0) gridDisplayId else appDisplayId
         val pkg = appContextRef?.packageName ?: return
         Bg.run("go-grid") {
@@ -1018,6 +1117,14 @@ object VirtualLauncher {
     fun setMapFullscreen(fullscreen: Boolean) {
         if (mapDisplayId < 0 || mapFullscreen == fullscreen) return
         mapFullscreen = fullscreen
+        if (fullscreen) {
+            val pkg = lastFullscreenMapPackage ?: appContextRef?.let {
+                defaultMapComponent(it)?.packageName
+            }
+            if (pkg != null) selectStandaloneFit(pkg) else resetStandaloneFit()
+        } else {
+            resetStandaloneFit()
+        }
         resizeMapDisplay(fullscreen)
         composer?.setTileLayout(
             if (fullscreen) {
@@ -1191,7 +1298,9 @@ object VirtualLauncher {
     private fun launchMapOnMapDisplay(component: ComponentName): Boolean {
         dashboardMode = false
         notifyDashboard()
+        lastFullscreenMapPackage = component.packageName
         setMapFullscreen(true)
+        selectStandaloneFit(component.packageName)
         val target =
             if (component.packageName == "com.autonavi.amapauto") {
                 "com.autonavi.amapauto/.MainMapActivity"
@@ -1377,6 +1486,7 @@ object VirtualLauncher {
             }
             // 合成器切到目标屏（超采样屏等其出帧再切；原生屏即时切换）
             composer?.requestActiveApp(targetDisplay == appHiDisplayId)
+            selectStandaloneFit(component.packageName)
             // 应用已在运行、被系统按旧配置带回前台的情况：启动后探测一次是否仍
             // letterbox（提示卡只对「应用横屏」名单内的应用生效，其它应用不计）
             val ctx = appContextRef

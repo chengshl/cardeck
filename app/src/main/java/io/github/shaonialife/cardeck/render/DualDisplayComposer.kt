@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.render
 
+
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
 import android.opengl.EGLConfig
@@ -78,6 +79,14 @@ class DualDisplayComposer(
      */
     @Volatile
     var targetFps: Int = 30
+
+    /** T36: map tile safe edges. Fullscreen/video canvas are left unmodified. */
+    @Volatile var mapTileTopPx: Int = CARD_MARGIN_PX
+    @Volatile var mapTileBottomPx: Int = CARD_MARGIN_PX
+
+    /** Standalone fullscreen application only; null retains original presentation. */
+    @Volatile var standaloneFit: io.github.shaonialife.cardeck.buick.BuickViewport? = null
+    @Volatile var safeBackgroundBitmap: android.graphics.Bitmap? = null
 
     companion object {
         private const val TAG = "DualComposer"
@@ -429,11 +438,12 @@ class DualDisplayComposer(
             top: Float,
             right: Float,
             bottom: Float,
+            textureId: Int = overlayTexture,
         ) {
             GLES20.glUseProgram(overlayProgram)
             GLES20.glUniform1i(ouTexture, 0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexture)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
             GLES20.glEnable(GLES20.GL_BLEND)
             GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
             GLES20.glUniformMatrix4fv(ouSTMatrix, 1, false, IDENTITY_ST, 0)
@@ -465,6 +475,57 @@ class DualDisplayComposer(
             // 恢复主着色器状态（后续帧继续用 OES 程序）
             GLES20.glUseProgram(program)
             GLES20.glUniform1i(uTexture, 0)
+        }
+
+        var fittedWallpaperTexture = 0
+        var fittedWallpaperUploaded: android.graphics.Bitmap? = null
+        var fittedWallpaperState = ""
+        fun drawFittedWallpaper() {
+            val bitmap = safeBackgroundBitmap
+            if (bitmap == null) {
+                if (fittedWallpaperState != "missing") {
+                    fittedWallpaperState = "missing"
+                    VirtualLauncher.logSink?.invoke(
+                        "BUICK T38: 安全区背景缺失，GL 使用深色清屏；检查壁纸解码"
+                    )
+                }
+                return
+            }
+            if (bitmap !== fittedWallpaperUploaded || fittedWallpaperTexture == 0) {
+                if (fittedWallpaperTexture == 0) {
+                    val ids = IntArray(1)
+                    GLES20.glGenTextures(1, ids, 0)
+                    fittedWallpaperTexture = ids[0]
+                }
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fittedWallpaperTexture)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+                val error = GLES20.glGetError()
+                if (error != GLES20.GL_NO_ERROR) {
+                    if (fittedWallpaperState != "upload_error_$error") {
+                        fittedWallpaperState = "upload_error_$error"
+                        VirtualLauncher.logSink?.invoke(
+                            "BUICK T38: 背景纹理上传失败 glError=$error " +
+                                "bitmap=${bitmap.width}x${bitmap.height}"
+                        )
+                    }
+                    return
+                }
+                fittedWallpaperUploaded = bitmap
+                if (fittedWallpaperState != "ready") {
+                    fittedWallpaperState = "ready"
+                    VirtualLauncher.logSink?.invoke(
+                        "BUICK T38: 安全区背景纹理已上传 ${bitmap.width}x${bitmap.height}"
+                    )
+                }
+            }
+            drawOverlay(
+                OverlayCard(bitmap, 0f, 0f, outWidth.toFloat(), outHeight.toFloat()),
+                0f, 0f, outWidth.toFloat(), outHeight.toFloat(), fittedWallpaperTexture,
+            )
         }
 
         /** [u0]/[u1]：横向纹理采样区间（地图分屏时采样缓冲中央带区用）。 */
@@ -541,6 +602,7 @@ class DualDisplayComposer(
             GLES20.glViewport(0, 0, outWidth, outHeight)
             GLES20.glClearColor(0.04f, 0.07f, 0.09f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            // T34: leave GL viewport full-size to prevent letterboxing and skewed icons.
             // 只对有新帧的输入 updateTexImage；已有内容的输入沿用旧纹理（画面持久）。
             // 两块应用屏都持续消费（非活动屏也保持最新，切换时不闪旧帧）。
             if (dock.hasNewFrame) {
@@ -572,6 +634,8 @@ class DualDisplayComposer(
                 }
             }
             val activeInput = if (activeAppHi) hi else app
+            val fitted = if (!dockAtBottom) standaloneFit else null
+            if (fitted != null) drawFittedWallpaper()
             if (dockAtBottom) {
                 // 竖屏：dock 横条贴底（GL 坐标 y=0 为底边），app 在其余区域；
                 // 仪表盘时地图卡叠在应用区上半（地图上/音乐下），全屏盖满应用区。
@@ -621,7 +685,19 @@ class DualDisplayComposer(
                     }
                 }
             } else {
-                if (activeInput?.hasContent == true) {
+                val mapLayoutNow = tileLayout
+                if (activeInput?.hasContent == true && mapLayoutNow != TileLayout.FULLSCREEN) {
+                    if (fitted != null) {
+                        drawInput(
+                            activeInput, fitted.left.toFloat(), (fitted.left + fitted.width).toFloat(),
+                            (outHeight - fitted.top - fitted.height).toFloat(),
+                            (outHeight - fitted.top).toFloat(),
+                        )
+                    } else {
+                        drawInput(activeInput, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat())
+                    }
+                } else if (activeInput?.hasContent == true && mapLayoutNow == TileLayout.FULLSCREEN &&
+                    fitted == null) {
                     drawInput(activeInput, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat())
                 }
                 // 地图层叠在应用区之上（HIDDEN 不画）：
@@ -632,7 +708,15 @@ class DualDisplayComposer(
                 val layout = tileLayout
                 if (map?.hasContent == true && layout != TileLayout.HIDDEN) {
                     if (layout == TileLayout.FULLSCREEN) {
-                        drawInput(map!!, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat())
+                        if (fitted != null) {
+                            drawInput(
+                                map!!, fitted.left.toFloat(), (fitted.left + fitted.width).toFloat(),
+                                (outHeight - fitted.top - fitted.height).toFloat(),
+                                (outHeight - fitted.top).toFloat(),
+                            )
+                        } else {
+                            drawInput(map!!, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat())
+                        }
                     } else {
                         // 卡片形态：四周留边 + 圆角（与音乐卡一致）。
                         // 分屏把手拖动期间 tileEdgeOverride（tile 右缘 x）替代公式值：
@@ -651,8 +735,8 @@ class DualDisplayComposer(
                             map!!,
                             dockW + CARD_MARGIN_PX - slide,
                             x1 - slide,
-                            CARD_MARGIN_PX.toFloat(),
-                            (outHeight - CARD_MARGIN_PX).toFloat(),
+                            mapTileBottomPx.toFloat(),
+                            (outHeight - mapTileTopPx).toFloat(),
                             cornerRadius = TILE_CORNER_RADIUS,
                         )
                     }
@@ -718,6 +802,11 @@ class DualDisplayComposer(
             if (overlayTexture != 0) {
                 runCatching { GLES20.glDeleteTextures(1, intArrayOf(overlayTexture), 0) }
                 overlayTexture = 0
+            }
+            if (fittedWallpaperTexture != 0) {
+                runCatching { GLES20.glDeleteTextures(1, intArrayOf(fittedWallpaperTexture), 0) }
+                fittedWallpaperTexture = 0
+                fittedWallpaperUploaded = null
             }
             runCatching { dock.surface.release() }
             runCatching { app.surface.release() }

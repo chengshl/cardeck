@@ -326,6 +326,29 @@ class GridActivity : AppCompatActivity() {
         }
         setContentView(R.layout.activity_grid)
 
+        // T34: wallpaper remains full-canvas. Only the interactive ViewPager
+        // and its page indicators stay clear of the receiver's curved edges.
+        val rect = VirtualLauncher.safeViewport
+        if (rect != null) {
+            val scale = VirtualLauncher.gridScale()
+            val right = ((VirtualLauncher.streamWidthPx - rect.left - rect.width) * scale).toInt().coerceAtLeast(0)
+            val top = (rect.top * scale).toInt().coerceAtLeast(0)
+            val bottom = ((VirtualLauncher.streamHeightPx - rect.top - rect.height) * scale).toInt().coerceAtLeast(0)
+            findViewById<View>(R.id.gridPager).apply {
+                val params = layoutParams as android.widget.FrameLayout.LayoutParams
+                params.rightMargin = right
+                params.topMargin = top
+                params.bottomMargin = bottom
+                layoutParams = params
+            }
+            findViewById<View>(R.id.dotsRow).apply {
+                val params = layoutParams as android.widget.FrameLayout.LayoutParams
+                params.rightMargin = right
+                params.bottomMargin = bottom
+                layoutParams = params
+            }
+        }
+
         // 格子尺寸/行数按屏幕动态计算（布局关系在 XML，尺寸测量在代码）
         computeCellMetrics()
         // 虚拟屏重建竞态：dm 短暂为 0 时 cell/icon 尺寸会算出 0，首帧绑定即崩
@@ -487,8 +510,17 @@ class GridActivity : AppCompatActivity() {
         val density = dm.density
         val chromeHorizontalPx = (2 * 10 * density).toInt() // item_grid_page 左右 padding
         val chromeVerticalPx = ((8 + 26 + 16) * density).toInt() // 上/下 padding + 页点区
-        val usableW = dm.widthPixels - chromeHorizontalPx
-        val usableH = dm.heightPixels - chromeVerticalPx
+        val rect = VirtualLauncher.safeViewport
+        val scale = VirtualLauncher.gridScale()
+        val safeRight = rect?.let {
+            ((VirtualLauncher.streamWidthPx - it.left - it.width) * scale).toInt().coerceAtLeast(0)
+        } ?: 0
+        val safeTop = rect?.let { (it.top * scale).toInt().coerceAtLeast(0) } ?: 0
+        val safeBottom = rect?.let {
+            ((VirtualLauncher.streamHeightPx - it.top - it.height) * scale).toInt().coerceAtLeast(0)
+        } ?: 0
+        val usableW = dm.widthPixels - chromeHorizontalPx - safeRight
+        val usableH = dm.heightPixels - chromeVerticalPx - safeTop - safeBottom
         if (usableW <= 0 || usableH <= 0) {
             cellWidthPx = 0
             cellHeightPx = 0

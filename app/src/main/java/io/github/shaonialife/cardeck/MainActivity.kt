@@ -933,6 +933,10 @@ class MainActivity : AppCompatActivity() {
         findViewById<LinearLayout>(R.id.btnCarSettings).setOnClickListener {
             startActivity(android.content.Intent(this, PhoneSettingsActivity::class.java))
         }
+        // Buick local vehicle profiles, isolated from general settings.
+        findViewById<LinearLayout>(R.id.btnBuickSettings).setOnClickListener {
+            startActivity(android.content.Intent(this, BuickSettingsActivity::class.java))
+        }
 
         // 启动即检查：常亮开 + 无悬浮窗权限 → 主动请求
         if (ScreenDimmer.enabled) {

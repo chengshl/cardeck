@@ -2,6 +2,13 @@ package io.github.shaonialife.cardeck.launcher
 
 import android.os.Bundle
 import android.widget.LinearLayout
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.view.View
+import android.view.ViewGroup
+import io.github.shaonialife.cardeck.buick.BuickSettingsInsets
+import io.github.shaonialife.cardeck.ui.WallpaperStore
+import io.github.shaonialife.cardeck.util.Bg
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
@@ -47,11 +54,81 @@ class SettingsActivity :
             return
         }
         setContentView(R.layout.activity_settings)
+        // T35: T34 expanded the left Dock to place home controls after the
+        // receiver's curved corner. The Settings Activity runs on the separate
+        // app display, so it needs ONLY the remaining right/top/bottom insets.
+        // Pad the content inside its existing opaque background; never shrink
+        // or stretch the AirPlay framebuffer, virtual display, or touch space.
+        VirtualLauncher.safeViewport?.let { safe ->
+            val uiWidth = resources.displayMetrics.widthPixels
+            val uiHeight = resources.displayMetrics.heightPixels
+            val insets = BuickSettingsInsets.forApp(
+                safe, VirtualLauncher.streamWidthPx, VirtualLauncher.streamHeightPx,
+                VirtualLauncher.appAreaWidth, uiWidth, uiHeight,
+            )
+            val content = findViewById<FrameLayout>(android.R.id.content)
+            val root = content.getChildAt(0)
+            // T36: T35 padded an opaque BLACK root, inadvertently turning the
+            // entire unsafe right edge into a conspicuous black rectangle.
+            // Use actual view margins instead and paint the matching wallpaper
+            // slice BEHIND it. App content still avoids the curved corners.
+            if (root != null && (insets.right > 0 || insets.top > 0 || insets.bottom > 0)) {
+                val params = root.layoutParams as FrameLayout.LayoutParams
+                params.topMargin = insets.top
+                params.rightMargin = insets.right
+                params.bottomMargin = insets.bottom
+                root.layoutParams = params
+                showReceiverSafeBorderWallpaper(content)
+            }
+            VirtualLauncher.logSink?.invoke(
+                "BUICK T36: 设置安全边距 左${insets.left}/上${insets.top}/" +
+                    "右${insets.right}/下${insets.bottom}；边缘使用连续壁纸而非黑色底",
+            )
+        }
         toastView = findViewById(R.id.settingsToast)
         findViewById<TextView>(R.id.btnBack).setOnClickListener { close() }
 
         collectMenus()
         if (savedInstanceState == null) showMenu(0) else restoreCurrentMenu()
+    }
+
+    /**
+     * Only the safe-border strip is visible; the setting panel remains opaque
+     * and readable. Use the same full-stream aspectFill bitmap as the Dock and
+     * Grid so no black letterbox or wallpaper mismatch appears on the right.
+     * Do not add touch overlays or alter the existing display geometry.
+     */
+    private fun showReceiverSafeBorderWallpaper(parent: FrameLayout) {
+        val streamW = VirtualLauncher.streamWidthPx
+        val streamH = VirtualLauncher.streamHeightPx
+        val dockW = VirtualLauncher.dockWidthPx
+        val appW = streamW - dockW
+        if (streamW <= 0 || streamH <= 0 || dockW < 0 || appW <= 0) return
+        val backdrop = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_XY
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        parent.addView(
+            backdrop, 0,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        Bg.run("buick-settings-wallpaper") {
+            val image = runCatching {
+                val full = WallpaperStore.aspectFillCanvas(this@SettingsActivity, streamW, streamH)
+                    ?: return@runCatching null
+                android.graphics.Bitmap.createBitmap(full, dockW, 0, appW, streamH)
+            }.getOrNull()
+            if (image != null) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) backdrop.setImageBitmap(image)
+                }
+            } else {
+                VirtualLauncher.logSink?.invoke("BUICK T36: 设置页安全边缘壁纸生成失败")
+            }
+        }
     }
 
     /** 从 XML 菜单条目收集（按 id 顺序即菜单顺序）。 */

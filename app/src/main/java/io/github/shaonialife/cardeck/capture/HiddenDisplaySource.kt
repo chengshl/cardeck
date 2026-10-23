@@ -1,5 +1,7 @@
 package io.github.shaonialife.cardeck.capture
 
+import io.github.shaonialife.cardeck.buick.BuickViewport
+
 import android.content.Context
 import android.view.Surface
 import io.github.shaonialife.cardeck.launcher.VirtualLauncher
@@ -17,6 +19,7 @@ import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 class HiddenDisplaySource(
     private val context: Context,
     private val log: (String) -> Unit = {},
+    private val safeViewport: BuickViewport? = null,
 ) : ScreenSource {
     override val name: String = "隐形屏"
 
@@ -61,6 +64,7 @@ class HiddenDisplaySource(
                 height,
                 densityDpi,
                 log,
+                safeViewport,
             )
         displayId =
             if (ok) VirtualLauncher.appDisplayId else -1
