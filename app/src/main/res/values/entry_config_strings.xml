@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="entry_title">入口配置</string>
-    <string name="entry_address_label">服务地址</string>
+    <string name="entry_title">日志管理 · 本地保存 / 在线上传</string>
+    <string name="entry_address_label">日志网关地址</string>
     <string name="entry_address_hint">填写完整的 wss:// 服务地址与路径</string>
-    <string name="entry_token_label">入口凭证</string>
-    <string name="entry_token_hint">请输入入口凭证</string>
+    <string name="entry_token_label">日志上传凭证</string>
+    <string name="entry_token_hint">请输入日志上传凭证</string>
     <string name="entry_token_kept">已保存；留空保留原凭证</string>
     <string name="entry_help">配置保存后可在此修改。服务地址不包含凭证；更换服务地址时需重新填写凭证。</string>
     <string name="entry_save">保存配置</string>
     <string name="entry_clear">清空配置</string>
     <string name="entry_loading">正在读取配置…</string>
-    <string name="entry_unconfigured">尚未配置入口</string>
-    <string name="entry_configured">已保存入口配置</string>
+    <string name="entry_unconfigured">尚未配置日志上传</string>
+    <string name="entry_configured">已保存日志上传配置</string>
     <string name="entry_saved">配置已保存</string>
     <string name="entry_load_failed">配置读取失败，请清空后重新配置。</string>
     <string name="entry_save_failed">操作失败，原配置未确认变更，请重试。</string>
     <string name="entry_invalid_address">请输入完整的 wss:// 地址和路径，不含凭证或查询参数。</string>
     <string name="entry_invalid_token">请输入有效凭证，不包含空格或换行。</string>
-    <string name="entry_changed_address_token">更换服务地址后，请重新填写该入口的凭证。</string>
+    <string name="entry_changed_address_token">更换日志网关地址后，请重新填写上传凭证。</string>
     <string name="gateway_test">连接并开启软件日志上报</string>
     <string name="gateway_disconnect">断开并停止上报</string>
     <string name="gateway_test_help">开启后实时上传新增的软件运行日志及心跳摘要，离开页面仍继续；断网自动重连。保持开启时，下次打开应用会恢复上报；手动停止后不再自动恢复。系统日志须单独预览并确认。</string>
@@ -36,21 +36,21 @@
     <string name="gateway_system_preview_title">确认上传这份系统日志？</string>
     <string name="gateway_system_preview_help">最近 main/system 缓冲区中的警告与错误，脱敏后共 %1$d 行。请检查下方全部内容；只上传这份预览，不持续采集。取消不会上传。</string>
     <string name="gateway_system_confirm">确认上传这份日志</string>
-    <string name="gateway_system_cancel">取消，不上传</string>
+    <string name="gateway_system_cancel">取消</string>
     <string name="gateway_system_pending">系统日志正在上传，等待服务端逐批确认…</string>
     <string name="gateway_system_expired">连接已变化、预览已过期或上传未完成，请重新预览确认。</string>
     <string name="gateway_reports">状态已上报 · 服务端已确认 %1$d 次</string>
     <string name="gateway_reports_unsupported">当前服务端仅支持心跳，尚未上报状态</string>
     <string name="gateway_idle">尚未测试连接</string>
     <string name="gateway_save_first">请先保存当前地址和凭证，再进行连接测试。</string>
-    <string name="gateway_connecting">正在连接入口…</string>
+    <string name="gateway_connecting">正在连接日志网关…</string>
     <string name="gateway_connected">已连接，正在验证心跳…</string>
     <string name="gateway_healthy">心跳正常 · 已确认 %1$d 次 · 往返 %2$d 毫秒</string>
-    <string name="gateway_auth_failed">鉴权失败，请检查入口凭证。</string>
+    <string name="gateway_auth_failed">鉴权失败，请检查日志上传凭证。</string>
     <string name="gateway_disconnected">测试连接已断开</string>
     <string name="gateway_network_failed">连接已中断或网络不可用，请确认网络后重新测试。</string>
     <string name="gateway_tls_failed">安全连接验证失败，请检查服务证书和设备时间。</string>
-    <string name="gateway_handshake_failed">入口连接失败（HTTP %1$d），请检查服务地址和网关状态。</string>
-    <string name="gateway_protocol_failed">入口响应与测试协议不匹配，请检查服务地址。</string>
+    <string name="gateway_handshake_failed">日志网关连接失败（HTTP %1$d），请检查服务地址和网关状态。</string>
+    <string name="gateway_protocol_failed">日志网关响应与测试协议不匹配，请检查服务地址。</string>
     <string name="gateway_heartbeat_failed">心跳应答超时，测试连接已断开。</string>
 </resources>

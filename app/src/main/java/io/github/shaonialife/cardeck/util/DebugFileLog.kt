@@ -61,6 +61,47 @@ object DebugFileLog {
         return if (markerAt < 0) text else text.substring(markerAt + SESSION_MARKER.length)
     }
 
+    /**
+     * Previous process session (not the current one). Useful for evidence
+     * after an OS restart: onCreate has already appended a NEW start marker,
+     * but main_debug.log itself survives process/phone restarts.
+     * Empty result means evidence is unavailable, never imply there was no crash.
+     */
+    internal fun previousSessionSlice(text: String): String {
+        val latest = text.lastIndexOf(SESSION_MARKER)
+        if (latest < 0) return ""
+        val before = text.substring(0, latest)
+        val older = before.lastIndexOf(SESSION_MARKER)
+        return if (older < 0) before else before.substring(older + SESSION_MARKER.length)
+    }
+
+    fun readPreviousSession(context: Context): String? =
+        runCatching {
+            previousSessionSlice(File(context.filesDir, "main_debug.log").readText(Charsets.UTF_8))
+        }.getOrNull()
+
+    /** Three most recent *completed* process sessions, oldest first. */
+    internal fun priorSessionSlices(text: String, limit: Int = 3): List<String> {
+        if (limit <= 0) return emptyList()
+        val starts = ArrayList<Int>()
+        var from = 0
+        while (true) {
+            val i = text.indexOf(SESSION_MARKER, from)
+            if (i < 0) break
+            starts += i
+            from = i + SESSION_MARKER.length
+        }
+        if (starts.size < 2) return emptyList()
+        return (0 until starts.lastIndex).map { i ->
+            text.substring(starts[i] + SESSION_MARKER.length, starts[i + 1])
+        }.filter { it.isNotBlank() }.takeLast(limit)
+    }
+
+    fun readPriorSessions(context: Context): List<String> =
+        runCatching {
+            priorSessionSlices(File(context.filesDir, "main_debug.log").readText(Charsets.UTF_8))
+        }.getOrDefault(emptyList())
+
     fun append(
         context: Context,
         message: String,

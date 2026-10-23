@@ -6,6 +6,7 @@ import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
 import io.github.shaonialife.cardeck.buick.BuickViewport
 
 import android.content.Context
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
 import io.github.shaonialife.cardeck.airplay.PairVerifyClient
@@ -432,6 +433,7 @@ object SessionController {
      * 幂等：已有会话时 BT 组件的 start() 自行短路，不会双开。
      */
     fun startConnection(context: Context) {
+        CriticalEventTrail.mark(context, "CONNECTION_REQUESTED")
         B233PairingMonitor.start(context.applicationContext, ::appendLog)
         connectCancelled = false
         phaseHint = "蓝牙就绪，等待车机回连…"
@@ -481,6 +483,7 @@ object SessionController {
 
     /** 「断开连接」（可在任意 Activity 实例上调用——操作的是真管线对象）。 */
     fun disconnect(context: Context) {
+        CriticalEventTrail.mark(context, "CONNECTION_DISCONNECT_REQUESTED")
         // The user's explicit disconnect cancels all in-flight pairing and auto-join work.
         connectCancelled = true
         sessionStarting.set(false)

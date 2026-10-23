@@ -144,6 +144,31 @@ class GatewayProbeTest {
     }
 
     @Test
+    fun longConfirmedEvidenceUploadsInAckedEightLineBatches() {
+        val received = LinkedBlockingQueue<JSONObject>()
+        val buffer = GatewayLogBuffer(LogRedactor())
+        server.enqueue(reportingGateway(true, received, logs = true))
+        val active = start(deviceInfo = info, appLogs = buffer)
+        await(GatewayProbe.State.HEALTHY)
+        val lines = (1..145).map { "预览行 $it [20:19:53.527]" }
+        assertTrue(active.uploadConfirmedSystemLogs(lines))
+        assertFalse(active.uploadConfirmedSystemLogs(listOf("不得并发提交")))
+        val finished = awaitLogCount(system = lines.size)
+        assertEquals(lines.size, finished.systemUploadTotal)
+        assertEquals(lines.size, finished.systemUploadAcknowledged)
+        assertFalse(finished.systemPending)
+        val batches = received.filter { it.optString("type") == "logs" && it.optString("source") == "system" }
+        assertEquals(19, batches.size) // 18 packets of 8 lines and a final 1-line packet
+        assertTrue(batches.all { it.getJSONArray("lines").length() in 1..8 })
+        assertTrue(batches.all { it.getBoolean("user_confirmed") })
+        assertEquals(lines, batches.flatMap { m ->
+            val a = m.getJSONArray("lines")
+            (0 until a.length()).map { a.getString(it) }
+        })
+        assertFalse(active.uploadConfirmedSystemLogs((1..257).map { "过长 $it" }))
+    }
+
+    @Test
     fun legacyLogGatewayDoesNotReceiveVehicleMetadata() {
         val vehicle = "74a97cc7-51f6-4e10-acd7-e9d4c3a25130"
         val received = LinkedBlockingQueue<JSONObject>()

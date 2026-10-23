@@ -936,7 +936,7 @@ class MainActivity : AppCompatActivity() {
 
         // T33: Buick VCS settings are local and per anonymously identified car.
         findViewById<LinearLayout>(R.id.btnBuickSettings).setOnClickListener {
-            startActivity(android.content.Intent(this, BuickSettingsActivity::class.java))
+            startActivity(android.content.Intent(this, BuickMenuActivity::class.java))
         }
 
         // 启动即检查：常亮开 + 无悬浮窗权限 → 主动请求
