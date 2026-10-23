@@ -706,7 +706,10 @@ class Iap2SenderSession(
                 MFI_ATTEMPTS.map { it.first }
             }
         val windowOf = MFI_ATTEMPTS.associate { it.first to it.second }
-        // Forced experiments must not persist their 32B MFi outcome as the\n        // receiver's normal protocol preference after the switch is disabled.\n        val memoryContext = if (forceBuickE5) null else context\n        val memory = MfiLengthMemory.load(memoryContext, receiverKey)
+        // Forced experiments must not persist their 32B MFi outcome as the
+        // receiver's normal protocol preference after the switch is disabled.
+        val memoryContext = if (forceBuickE5) null else context
+        val memory = MfiLengthMemory.load(memoryContext, receiverKey)
         val order = if (buickStrict) listOf(32) else MfiLengthMemory.orderAttempts(baselineLengths, memory)
         if (!memory.isEmpty) {
             log(
