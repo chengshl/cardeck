@@ -15,9 +15,9 @@ import javax.crypto.spec.GCMParameterSpec
 
 /** 私有配置文件与业务代码分离；凭证经 Android Keystore 加密且不进入备份。后台线程调用。 */
 object EntryConfigStore {
-    private const val KEY_ALIAS = "cardeck.Buick-main.entry"
+    private const val KEY_ALIAS = "cardeck.Buick-Test.entry"
 
-    private fun file(context: Context) = AtomicFile(File(context.noBackupFilesDir, "buick-main-entry.json"))
+    private fun file(context: Context) = AtomicFile(File(context.noBackupFilesDir, "buick-test-entry.json"))
 
     @Synchronized
     fun load(context: Context): EntryConfig? {

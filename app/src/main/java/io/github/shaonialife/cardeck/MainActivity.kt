@@ -225,9 +225,40 @@ class MainActivity : AppCompatActivity() {
         java.util.concurrent.atomic
             .AtomicBoolean(false)
 
-    /** Buick-main: keep Test's connection path but always select video-only. */
+    /**
+     * 「启动连接」前的音频选择弹窗：
+     * 音频与视频同时推流会显著增加负载（实测 48k 立体声 PCM ≈1.5Mbps + 视频 ≈4Mbps），
+     * 测试台出现画面卡顿与断连；真车链路能力未知。因此默认不推音频，需用户显式开启。
+     *
+     * 三个选项竖排（横排会挤爆窄屏）：推荐项「仅视频」放第一位并用实心强调
+     * ——与正文「以看视频为主时建议暂不开启」一致；取消在最下。
+     */
     private fun showAudioChoiceDialog() {
-        beginWithAudio(enabled = false)
+        // 默认档 = 高质量媒体通路（type=102 + AAC-LC，真 iPhone 走这条）；
+        // 「兼容档」= 强制只走 PCM 旧通路（type=100），AAC 被车机直接拒掉时的人工退路。
+        // 按钮竖排每个约 36dp：横屏屏高只有 ~300dp，再多一个「取消」就会顶出屏幕，
+        // 因此横屏省略「取消」（弹窗默认可返回键/点外部关闭）。
+        val landscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val actions =
+            buildList {
+                add(
+                    DarkMessageDialog.Action(
+                        "仅视频（更流畅）",
+                        DarkMessageDialog.Emphasis.PRIMARY,
+                    ) { beginWithAudio(enabled = false) },
+                )
+                add(DarkMessageDialog.Action("开启声音") { beginWithAudio(enabled = true) })
+                if (!landscape) add(DarkMessageDialog.Action("取消") {})
+            }
+        DarkMessageDialog.show(
+            activity = this,
+            title = "是否在车机侧播放声音？",
+            message =
+                "开启后手机媒体/导航声音投到车机播放、手机本机静音（不开启则车上无声）。\n" +
+                    "音视频同时传会增加负载，以看视频为主时可先不开启。\n" +
+                    "开启声音需要「投屏」权限，会一并申请。",
+            actions = actions,
+        )
     }
 
     /** 「取消连接」确认弹窗（防误触）：中止当前连接尝试并断开蓝牙/WiFi 链路。 */
@@ -370,7 +401,7 @@ class MainActivity : AppCompatActivity() {
             title = "断开连接？",
             message =
                 "将停止车机推流并关闭保活服务，车机画面会立即中断。\n\n" +
-                    "普通蓝牙 A2DP 音源不受 CarPlay 视频连接的控制。",
+                    "注意：投屏授权会随服务停止失效，下次如需车机侧声音请重新授权。",
             actions =
                 listOf(
                     DarkMessageDialog.Action("取消") {},
@@ -465,13 +496,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun beginWithAudio(enabled: Boolean) {
-        // Buick-main: no CarPlay audio authorization or negotiation is reachable
-        // from this app. Leave Test's session, protocol, display and codec logic intact.
-        SessionController.audioEnabledForSession = false
+        SessionController.audioEnabledForSession = enabled
+        // 声音只剩一个模式：通路协商（AAC-LC 优先，不行自动退 PCM）在会话内自动完成，
+        // 不再有「兼容档」这种人工分支。
         SessionController.audioPreferCompat = false
-        pendingStartAfterProjection.set(false)
-        log("MODE: Buick-main 仅视频；音频继续使用普通蓝牙 A2DP")
-        startConnectionNow()
+        if (!enabled) {
+            log("MODE: 本次连接仅推视频（未开启车机侧声音）")
+            startConnectionNow()
+            return
+        }
+        if (CarPlayService.mediaProjection != null) {
+            log("MODE: 已选择开启声音（投屏权限已就绪）")
+            startConnectionNow()
+            return
+        }
+        // 开启声音需要投屏权限（播放捕获的授权来源）：先申请，授权完成后再启动连接
+        log("MODE: 开启声音需要投屏权限——先后申请（音频捕获依赖），授权后自动开始连接")
+        pendingStartAfterProjection.set(true)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+        projectionLauncher.launch(manager.createScreenCaptureIntent())
     }
 
     /** 「启动连接」主体（权限检查留在这里；会话启动交给 [SessionController]，幂等不双开）。 */
@@ -789,9 +837,16 @@ class MainActivity : AppCompatActivity() {
         // 目标车机选择：配对了多台车机时指定唯一目标（只向它发请求/只接受它连入）
         btnPickTarget.setOnClickListener { showTargetPicker() }
 
-        // Buick-main: the optional audio authorization control is disabled.
-        btnAudio.isEnabled = false
-        btnAudio.isClickable = false
+        // 车机侧声音授权（原「申请投屏权限」）：RECORD_AUDIO + MediaProjection 一起请求
+        btnAudio.setOnClickListener {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+            projectionLauncher.launch(manager.createScreenCaptureIntent())
+        }
 
         // ---- 车机显示 ----
         findViewById<LinearLayout>(R.id.rowDim).setOnClickListener {
@@ -1125,7 +1180,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (bondedCount > 0) ready++
-        // Buick-main: no optional projection authorization is counted.
+        if (CarPlayService.mediaProjection != null) ready++
 
         btBadge.visibility = if (bondedCount >= 0) View.VISIBLE else View.GONE
         if (bondedCount >= 0) {
@@ -1180,7 +1235,7 @@ class MainActivity : AppCompatActivity() {
             btnAudio.setTextColor(getColor(R.color.m3_primary))
             audioDesc.text = "需要「投屏」权限，可选 · 关闭时车机无声音"
         }
-        readyCount.text = "$ready/3"
+        readyCount.text = "$ready/4"
     }
 
     /**
