@@ -23,6 +23,8 @@ internal object BuickVehiclePrefs {
         val reported: BuickSafeArea?,
         val mode: String,
         val manual: BuickInsets,
+        /** Default for a standalone app or fullscreen map, independent of the home/Dock mode. */
+        val standaloneMode: String,
         val lastSeen: Long,
     )
 
@@ -107,8 +109,47 @@ internal object BuickVehiclePrefs {
                 p.getInt("${key}_manual_left", 0), p.getInt("${key}_manual_top", 0),
                 p.getInt("${key}_manual_right", 0), p.getInt("${key}_manual_bottom", 0),
             ),
+            p.getString("${key}_standalone_mode", "full").let { if (it == "safe") "safe" else "full" },
             p.getLong("${key}_last", 0L),
         )
+    }
+
+    /** "full" keeps the legacy immersive behaviour; "safe" preserves all app pixels. */
+    fun setStandaloneMode(context: Context, key: String, mode: String) {
+        require(mode == "full" || mode == "safe")
+        if (get(context, key) == null) return
+        prefs(context).edit().putString("${key}_standalone_mode", mode).apply()
+    }
+
+    private fun packageKey(context: Context, key: String, packageName: String): String {
+        val p = prefs(context)
+        val salt = p.getString(SALT, null).orEmpty()
+        val bytes = MessageDigest.getInstance("SHA-256")
+            .digest(("CarDeck/Buick/app/v1/" + salt + "/" + key + "/" + packageName)
+                .toByteArray(Charsets.UTF_8))
+        return key + "_app_" + bytes.take(12).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    /** Local-only app override; null means follow that vehicle's default. */
+    fun appOverride(context: Context, key: String, packageName: String): String? {
+        if (get(context, key) == null || packageName.isBlank()) return null
+        return prefs(context).getString(packageKey(context, key, packageName), null)
+            ?.takeIf { it == "full" || it == "safe" }
+    }
+
+    fun setAppOverride(context: Context, key: String, packageName: String, mode: String?) {
+        require(mode == null || mode == "full" || mode == "safe")
+        if (get(context, key) == null || packageName.isBlank()) return
+        val edit = prefs(context).edit()
+        val prefKey = packageKey(context, key, packageName)
+        if (mode == null) edit.remove(prefKey) else edit.putString(prefKey, mode)
+        edit.apply()
+    }
+
+    fun standaloneModeFor(context: Context, key: String?, packageName: String): String {
+        if (key == null) return "full"
+        return appOverride(context, key, packageName)
+            ?: get(context, key)?.standaloneMode ?: "full"
     }
 
     fun save(context: Context, key: String, mode: String, custom: BuickInsets) {

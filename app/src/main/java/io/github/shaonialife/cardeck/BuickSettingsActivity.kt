@@ -25,6 +25,10 @@ class BuickSettingsActivity : AppCompatActivity() {
     private lateinit var details: TextView
     private lateinit var modes: RadioGroup
     private lateinit var marginInputs: List<EditText>
+    private lateinit var standaloneModes: RadioGroup
+    private lateinit var appModes: Spinner
+    private lateinit var appPicker: Spinner
+    private val appChoices = mutableListOf<Pair<String, String>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -128,6 +132,78 @@ class BuickSettingsActivity : AppCompatActivity() {
             }
         }
         root.addView(marginRow)
+        root.addView(label("单独打开 App 的显示模式", 19f))
+        root.addView(label("只影响单独打开的应用及全屏地图，不改变主页、Dock、仪表盘地图卡片。"))
+        standaloneModes = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+            addView(RadioButton(this@BuickSettingsActivity).apply {
+                id = 52001
+                tag = "safe"
+                text = "安全区域 · 完整保留界面，等比例缩小，边缘使用壁纸"
+                setTextColor(fg)
+                buttonTintList = ColorStateList.valueOf(accent)
+            })
+            addView(RadioButton(this@BuickSettingsActivity).apply {
+                id = 52002
+                tag = "full"
+                text = "全铺满 · 适合视频，允许边缘内容被车机裁切"
+                setTextColor(fg)
+                buttonTintList = ColorStateList.valueOf(accent)
+            })
+        }
+        root.addView(standaloneModes)
+        root.addView(label("个别 App 单独设置（可覆盖当前车辆默认方案）", 17f))
+        val launchIntent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+            addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+        }
+        val installed = packageManager.queryIntentActivities(launchIntent, 0)
+            .mapNotNull { info ->
+                val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
+                if (pkg == packageName) null else pkg to info.loadLabel(packageManager).toString()
+            }
+            .distinctBy { it.first }
+            .sortedBy { it.second.lowercase() }
+        appChoices.addAll(installed)
+        appPicker = Spinner(this)
+        appPicker.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item,
+            appChoices.map { "${it.second} · ${it.first}" },
+        )
+        root.addView(appPicker)
+        appModes = Spinner(this)
+        appModes.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item,
+            listOf("跟随车辆默认", "安全区域", "全铺满"),
+        )
+        root.addView(appModes)
+        val perAppSave = Button(this).apply {
+            text = "保存该 App 显示方式"
+            setTextColor(getColor(R.color.m3_on_primary))
+            backgroundTintList = ColorStateList.valueOf(accent)
+            setOnClickListener {
+                val key = editingKey ?: return@setOnClickListener
+                val pkg = appChoices.getOrNull(appPicker.selectedItemPosition)?.first ?: return@setOnClickListener
+                val mode = when (appModes.selectedItemPosition) {
+                    1 -> "safe"
+                    2 -> "full"
+                    else -> null
+                }
+                BuickVehiclePrefs.setAppOverride(this@BuickSettingsActivity, key, pkg, mode)
+                android.widget.Toast.makeText(
+                    this@BuickSettingsActivity, "已保存该 App 的模式，重新打开该 App 时生效",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+        root.addView(perAppSave)
+        appPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                refreshAppOverride()
+            }
+        }
+        if (appChoices.isEmpty()) perAppSave.isEnabled = false
+
         val save = Button(this).apply {
             text = "保存当前车辆方案"
             setTextColor(getColor(R.color.m3_on_primary))
@@ -144,11 +220,13 @@ class BuickSettingsActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 BuickVehiclePrefs.save(this@BuickSettingsActivity, key, mode, custom)
+                val standalone = if (standaloneModes.checkedRadioButtonId == 52001) "safe" else "full"
+                BuickVehiclePrefs.setStandaloneMode(this@BuickSettingsActivity, key, standalone)
                 android.widget.Toast.makeText(this@BuickSettingsActivity, "已保存，下次连接该车后生效", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
         root.addView(save)
-        root.addView(label("T34：壁纸和视频始终原尺寸全屏输出。别克主屏的 Dock、桌面图标及分页控件按安全区重新排布，不再拉伸图标或生成黑边；触摸沿用原始坐标。此设置下次连接生效。", 12f))
+        root.addView(label("主页安全区与独立 App 显示分别配置。安全模式保持比例、同步触摸；全铺满不会拉伸视频，但屏幕角落可能裁切按钮。单独 App 设置在下次打开时生效。", 12f))
         if (profiles.isNotEmpty()) {
             spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
@@ -173,9 +251,23 @@ class BuickSettingsActivity : AppCompatActivity() {
             val option = modes.getChildAt(i) as RadioButton
             if (option.tag == profile.mode) modes.check(option.id)
         }
+        standaloneModes.check(if (profile.standaloneMode == "safe") 52001 else 52002)
+        refreshAppOverride()
         val v = profile.manual
         listOf(v.left, v.top, v.right, v.bottom).forEachIndexed { i, value ->
             marginInputs[i].setText(value.toString())
         }
+    }
+
+    private fun refreshAppOverride() {
+        if (!::appModes.isInitialized || !::appPicker.isInitialized) return
+        val key = editingKey ?: return
+        val pkg = appChoices.getOrNull(appPicker.selectedItemPosition)?.first ?: return
+        val value = BuickVehiclePrefs.appOverride(this, key, pkg)
+        appModes.setSelection(when (value) {
+            "safe" -> 1
+            "full" -> 2
+            else -> 0
+        })
     }
 }
