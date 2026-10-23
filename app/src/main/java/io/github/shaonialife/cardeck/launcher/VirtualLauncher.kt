@@ -200,7 +200,22 @@ object VirtualLauncher {
         } else null
         standaloneFit = rect
         composer?.standaloneFit = rect
-        logSink?.invoke("BUICK T37: 独立应用显示 mode=$mode fit=${rect ?: "full"} (不改变主页/视频编码尺寸)")
+        logSink?.invoke(
+            "BUICK T38: 独立应用 mode=$mode fit=${rect ?: "full"} " +
+                "背景就绪=${composer?.safeBackgroundBitmap != null} (不改变视频编码尺寸)"
+        )
+        if (rect != null && composer?.safeBackgroundBitmap == null && ctx != null) {
+            val bound = composer
+            val w = streamWidthPx
+            val h = streamHeightPx
+            Bg.run("buick-t38-backdrop-recover") {
+                val bg = runCatching { WallpaperStore.aspectFillCanvas(ctx, w, h) }.getOrNull()
+                if (bound != null && this.composer === bound) {
+                    bound.safeBackgroundBitmap = bg
+                    logSink?.invoke("BUICK T38: 背景补加载成功=${bg != null}")
+                }
+            }
+        }
     }
 
     /** 竖屏车机（屏幕高>宽）：dock 改为底部横条。 */
@@ -806,6 +821,22 @@ object VirtualLauncher {
             displaysCreated[0] = dockDisplayId >= 0 && appDisplayId >= 0
         }
         return try {
+            // T38: T37's background task could complete late or fail silently.
+            // Prepare the actual wallpaper before the GL consumer starts.
+            // Cache makes the normal path cheap; this runs only at session attach.
+            if (safeViewport != null) {
+                val backdrop = runCatching {
+                    WallpaperStore.aspectFillCanvas(context, totalWidth, totalHeight)
+                }.onFailure {
+                    log("BUICK T38: 安全区壁纸预加载异常：${it.javaClass.simpleName}")
+                }.getOrNull()
+                composer.safeBackgroundBitmap = backdrop
+                log(
+                    "BUICK T38: 安全区壁纸就绪=" + (backdrop != null) +
+                        " bitmap=" + (backdrop?.let { "${it.width}x${it.height}" } ?: "none") +
+                        " 视频尺寸=${totalWidth}x${totalHeight}",
+                )
+            }
             composer.start(
                 dockWidthPx,
                 dockHeightPx,
@@ -818,14 +849,6 @@ object VirtualLauncher {
             )
             // 分屏把手位置推给合成器（覆盖默认中线公式；拖动时 previewDashSplit 持续更新）
             composer.setTileEdgeOverride(dashSplitPos - DASH_GAP_PX / 2f)
-            if (safeViewport != null) {
-                // Generate the same full-canvas wallpaper in the background;
-                // GL reuses it only in fitted standalone mode.
-                Bg.run("buick-safe-app-wallpaper") {
-                    val bg = WallpaperStore.aspectFillCanvas(context, totalWidth, totalHeight)
-                    if (this.composer === composer) composer.safeBackgroundBitmap = bg
-                }
-            }
             if (!displaysCreated[0]) {
                 log("LAUNCHER: 虚拟屏创建失败")
                 detach()

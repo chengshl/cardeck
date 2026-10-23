@@ -479,8 +479,18 @@ class DualDisplayComposer(
 
         var fittedWallpaperTexture = 0
         var fittedWallpaperUploaded: android.graphics.Bitmap? = null
+        var fittedWallpaperState = ""
         fun drawFittedWallpaper() {
-            val bitmap = safeBackgroundBitmap ?: return
+            val bitmap = safeBackgroundBitmap
+            if (bitmap == null) {
+                if (fittedWallpaperState != "missing") {
+                    fittedWallpaperState = "missing"
+                    VirtualLauncher.logSink?.invoke(
+                        "BUICK T38: 安全区背景缺失，GL 使用深色清屏；检查壁纸解码"
+                    )
+                }
+                return
+            }
             if (bitmap !== fittedWallpaperUploaded || fittedWallpaperTexture == 0) {
                 if (fittedWallpaperTexture == 0) {
                     val ids = IntArray(1)
@@ -493,7 +503,24 @@ class DualDisplayComposer(
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
                 android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+                val error = GLES20.glGetError()
+                if (error != GLES20.GL_NO_ERROR) {
+                    if (fittedWallpaperState != "upload_error_$error") {
+                        fittedWallpaperState = "upload_error_$error"
+                        VirtualLauncher.logSink?.invoke(
+                            "BUICK T38: 背景纹理上传失败 glError=$error " +
+                                "bitmap=${bitmap.width}x${bitmap.height}"
+                        )
+                    }
+                    return
+                }
                 fittedWallpaperUploaded = bitmap
+                if (fittedWallpaperState != "ready") {
+                    fittedWallpaperState = "ready"
+                    VirtualLauncher.logSink?.invoke(
+                        "BUICK T38: 安全区背景纹理已上传 ${bitmap.width}x${bitmap.height}"
+                    )
+                }
             }
             drawOverlay(
                 OverlayCard(bitmap, 0f, 0f, outWidth.toFloat(), outHeight.toFloat()),
@@ -775,6 +802,11 @@ class DualDisplayComposer(
             if (overlayTexture != 0) {
                 runCatching { GLES20.glDeleteTextures(1, intArrayOf(overlayTexture), 0) }
                 overlayTexture = 0
+            }
+            if (fittedWallpaperTexture != 0) {
+                runCatching { GLES20.glDeleteTextures(1, intArrayOf(fittedWallpaperTexture), 0) }
+                fittedWallpaperTexture = 0
+                fittedWallpaperUploaded = null
             }
             runCatching { dock.surface.release() }
             runCatching { app.surface.release() }
