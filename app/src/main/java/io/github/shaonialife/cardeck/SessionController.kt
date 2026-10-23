@@ -2452,7 +2452,9 @@ object SessionController {
                                                 context.applicationContext,
                                                 log = { line -> appendLog(line) },
                                                 safeViewport = pendingSafeViewport,
-                                                safeTwoScreenMode = sonyB233CrashRisk,
+                                                // T55: remove ineffective Sony/B233 two-display restriction.
+                                                // Keep crash breadcrumbs; restore optional AppHi/Map screens.
+                                                safeTwoScreenMode = false,
                                             )
                                         currentHiddenSource = source
                                         val ok =
