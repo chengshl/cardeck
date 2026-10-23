@@ -169,10 +169,11 @@ object VirtualLauncher {
     /** dock 在主合成画面中占据的像素宽度（TouchRouter 分流阈值；横屏=左侧竖条宽）。 */
     @Volatile
     var dockWidthPx: Int = 0
+        private set
 
     /** T33 active compositor viewport, source coordinates stay unchanged for input routing. */
-    @Volatile var safeViewport: BuickViewport? = null
-        private set
+    @Volatile
+    var safeViewport: BuickViewport? = null
         private set
 
     /** 竖屏车机（屏幕高>宽）：dock 改为底部横条。 */
