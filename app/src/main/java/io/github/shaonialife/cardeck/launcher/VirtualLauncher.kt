@@ -24,6 +24,7 @@ import io.github.shaonialife.cardeck.render.DASH_HANDLE_TOUCH_PX
 import io.github.shaonialife.cardeck.render.DualDisplayComposer
 import io.github.shaonialife.cardeck.render.OverlayCard
 import io.github.shaonialife.cardeck.shizuku.CarInputClient
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.ui.ScreenDimmer
@@ -474,7 +475,9 @@ object VirtualLauncher {
         viewport: BuickViewport? = null,
         safeTwoScreenMode: Boolean = false,
     ): Boolean {
+        CriticalEventTrail.mark(context, "LAUNCHER_ATTACH_ENTER")
         detach()
+        CriticalEventTrail.mark(context, "LAUNCHER_DETACH_RETURNED")
         safeTwoScreenSession = safeTwoScreenMode
         if (safeTwoScreenMode) {
             DisplayCrashTrail.mark(context, "SESSION_BEGIN_TWO_SCREEN")
@@ -605,6 +608,7 @@ object VirtualLauncher {
             }
         }
         val useTrusted = svc != null
+        CriticalEventTrail.mark(context, if (useTrusted) "TRUSTED_SERVICE_AVAILABLE" else "TRUSTED_SERVICE_UNAVAILABLE")
         if (safeTwoScreenMode) {
             // Read-only preflight. Reaping existing virtual screens when the ROM's
             // system_server is unstable can crash the entire phone. Never do so here.
@@ -648,6 +652,7 @@ object VirtualLauncher {
                     // 残留清理：进程重启/上轮会话遗留的同名虚拟屏不释放会一直占位
                     // （新宽度/新 surface 不生效——2026-10-11 dock 改宽后视觉无变化的根因）
                     val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+                    CriticalEventTrail.mark(context, "DISPLAY_CALLBACK_ENTER")
                     if (!safeTwoScreenMode) {
                         dm.displays
                             .filter {
@@ -886,6 +891,7 @@ object VirtualLauncher {
                         " 视频尺寸=${totalWidth}x${totalHeight}",
                 )
             }
+            CriticalEventTrail.mark(context, "COMPOSER_START_BEGIN")
             composer.start(
                 dockWidthPx,
                 dockHeightPx,
@@ -896,6 +902,7 @@ object VirtualLauncher {
                 if (safeTwoScreenMode) 0 else appWidth,
                 if (safeTwoScreenMode) 0 else appHeightPx,
             )
+            CriticalEventTrail.mark(context, "COMPOSER_START_RETURNED")
             // 分屏把手位置推给合成器（覆盖默认中线公式；拖动时 previewDashSplit 持续更新）
             composer.setTileEdgeOverride(dashSplitPos - DASH_GAP_PX / 2f)
             if (!displaysCreated[0]) {
@@ -909,9 +916,13 @@ object VirtualLauncher {
             // 而合成器按整幅映射、触摸按未旋转坐标换算 —— 表现为「分辨率变了 +
             // 点击漂移、点不到目标」，退回桌面也仍是旋转态（2026-10-18 实测）。
             // 缩在 letterbox 里（见下方 aspectRatio）才是车机该有的形态。
+            CriticalEventTrail.mark(context, "ORIENTATION_POLICY_BEGIN")
             applyIgnoreOrientationRequest(appDisplayId, appHiDisplayId, mapDisplayId)
+            CriticalEventTrail.mark(context, "ORIENTATION_POLICY_DONE")
             // 放宽竖屏应用的 letterbox 窗口（默认窄条 → 手机宽度）；断开时还原（detach）
+            CriticalEventTrail.mark(context, "LETTERBOX_COMMAND_BEGIN")
             Shell.exec("cmd window set-letterbox-style --aspectRatio $LETTERBOX_ASPECT_RATIO")
+            CriticalEventTrail.mark(context, "LETTERBOX_COMMAND_DONE")
             log(
                 "LAUNCHER: letterbox 宽高比=$LETTERBOX_ASPECT_RATIO " +
                     "appDensity=${appNativeDensity}dpi appHiDensity=${appHiDensity}dpi",
@@ -934,10 +945,13 @@ object VirtualLauncher {
             if (safeTwoScreenMode) DisplayCrashTrail.mark(context, "AFTER_LAUNCH_DOCK_GRID")
             // 桌面在超采样屏时默认活动屏 = 超采样屏（启动即显示桌面）
             if (appHiDisplayId >= 0) composer.requestActiveApp(true)
+            CriticalEventTrail.mark(context, "SHIZUKU_HEALER_BEGIN")
             startShizukuHealer()
             // 暗幕组件就绪（常亮+暗幕功能；主界面开关控制启停）
+            CriticalEventTrail.mark(context, "SCREEN_DIMMER_ATTACH_BEGIN")
             ScreenDimmer
                 .attach(context)
+            CriticalEventTrail.mark(context, "SCREEN_DIMMER_ATTACH_DONE")
             if (safeTwoScreenMode && dockOk && gridOk) DisplayCrashTrail.mark(context, "SESSION_RUNNING")
             dockOk && gridOk
         } catch (error: IllegalStateException) {
@@ -952,6 +966,7 @@ object VirtualLauncher {
     private var displaysViaService = false
 
     fun detach() {
+        appContextRef?.let { CriticalEventTrail.mark(it, "LAUNCHER_DETACH_BEGIN") }
         val wasProtected = safeTwoScreenSession
         val crashContext = if (wasProtected) appContextRef else null
         if (wasProtected && crashContext != null) DisplayCrashTrail.mark(crashContext, "BEFORE_SESSION_DETACH")

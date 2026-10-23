@@ -39,6 +39,7 @@ import io.github.shaonialife.cardeck.net.WifiSavedNetworks
 import io.github.shaonialife.cardeck.service.CarPlayService
 import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.ui.ScreenDimmer
 import io.github.shaonialife.cardeck.util.Bg
 import io.github.shaonialife.cardeck.util.DebugFileLog
@@ -2425,7 +2426,9 @@ object SessionController {
                                     owningSender = createdSender
                                     videoSender = createdSender
                                     // 先连端口（车机看门狗），编码器等 RECORD 后再启动
+                                    CriticalEventTrail.mark(context, "VIDEO_PORT_OPEN_BEGIN")
                                     videoSender?.openDataPort()
+                                    CriticalEventTrail.mark(context, "VIDEO_PORT_OPEN_RETURNED")
                                 }
                                 // 先 RECORD 激活会话并起视频，再协商音频（2026-10-17 奥迪定谳）：
                                 // 车机在「屏幕流 SETUP 之后」有约 2s 看门狗，等不到 RECORD/数据流即
@@ -2434,11 +2437,14 @@ object SessionController {
                                 // 返回同一毫秒、且 5 次实测全部复现。故顺序改为：
                                 //   屏幕 SETUP → 连数据端口 → RECORD → 起编码器（出帧）→ 音频 SETUP
                                 // 音频 SETUP 失败只丢声音，视频会话保持。
+                                CriticalEventTrail.mark(context, "AIRPLAY_RECORD_BEGIN")
                                 client.record()
+                                CriticalEventTrail.mark(context, "AIRPLAY_RECORD_RETURNED")
                                 if (host != null) {
                                     val videoW = pendingVideoW
                                     val videoH = pendingVideoH
                                     val videoDensity = pendingVideoDensity
+                                    CriticalEventTrail.mark(context, "VIDEO_SENDER_START_BEGIN")
                                     videoSender?.start { surface ->
                                         // 唯一模式：隐形屏（双屏启动器：dock + 应用屏）
                                         val source =

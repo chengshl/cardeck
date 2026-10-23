@@ -47,6 +47,7 @@ import io.github.shaonialife.cardeck.ui.SignalWavesView
 import io.github.shaonialife.cardeck.ui.WallpaperStore
 import io.github.shaonialife.cardeck.util.Bg
 import io.github.shaonialife.cardeck.util.LogExporter
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import java.util.Locale
 
 /**
@@ -477,6 +478,7 @@ class MainActivity : AppCompatActivity() {
 
     /** 「启动连接」主体（权限检查留在这里；会话启动交给 [SessionController]，幂等不双开）。 */
     private fun startConnectionNow() {
+        CriticalEventTrail.mark(this, "CONNECTION_REQUESTED")
         runOnUiThread {
             // 兜底守卫：授权回调等延迟路径也可能走到这里，Shizuku 中途停掉时同样要拦住
             val gate = ShizukuGate.state(this)
