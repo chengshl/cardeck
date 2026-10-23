@@ -147,21 +147,9 @@ class BuickSettingsActivity : AppCompatActivity() {
             return control
         }
 
-        root.addView(label("别克设置", 24f))
-        root.addView(label("桌面与触摸", 19f))
-        addStateCard(
-            title = "真实桌面与车机触摸",
-            initiallyEnabled = io.github.shaonialife.cardeck.video.BuickMainDisplayMode.enabled(this),
-        ) { on ->
-            io.github.shaonialife.cardeck.video.BuickMainDisplayMode.setEnabled(this, on)
-        }
-        root.addView(label(
-            "开启：创建车机桌面虚拟屏，允许触摸注入。Sony Xperia 1 V / Android 15 曾在此过程中触发系统重启；" +
-                "如复现，可关闭本开关退回 T28 安全诊断画面。更改后需重新连接。",
-            12f,
-        ))
+        root.addView(label("显示与安全区", 24f))
         root.addView(label("曲面屏安全区域", 19f))
-        root.addView(label("安全区仅在下次连接时应用，与上面的真实桌面开关相互独立。"))
+        root.addView(label("安全区域设置在下次连接车机时生效；真实桌面和触摸始终启用。"))
         addStateCard(
             title = "CarPlay 曲面屏安全区域",
             initiallyEnabled = BuickVehiclePrefs.enabled(this),
