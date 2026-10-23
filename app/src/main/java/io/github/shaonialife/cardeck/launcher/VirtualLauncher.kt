@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.launcher
 
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.buick.BuickViewport
 
 import android.annotation.SuppressLint
@@ -24,7 +25,6 @@ import io.github.shaonialife.cardeck.render.DASH_HANDLE_TOUCH_PX
 import io.github.shaonialife.cardeck.render.DualDisplayComposer
 import io.github.shaonialife.cardeck.render.OverlayCard
 import io.github.shaonialife.cardeck.shizuku.CarInputClient
-import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.ui.ScreenDimmer
@@ -422,7 +422,6 @@ object VirtualLauncher {
     /** 回退形态的地图屏句柄（受信形态经 shell 创建，无本进程句柄）。 */
     private var mapDisplay: VirtualDisplay? = null
     private var composer: DualDisplayComposer? = null
-    @Volatile private var safeTwoScreenSession: Boolean = false
 
     /** 当前活动应用屏 ID（TouchRouter 注入目标）。 */
     fun activeAppDisplayId(): Int = if (composer?.isActiveAppHi() == true && appHiDisplayId >= 0) appHiDisplayId else appDisplayId
@@ -473,16 +472,10 @@ object VirtualLauncher {
         densityDpi: Int,
         log: (String) -> Unit,
         viewport: BuickViewport? = null,
-        safeTwoScreenMode: Boolean = false,
     ): Boolean {
         CriticalEventTrail.mark(context, "LAUNCHER_ATTACH_ENTER")
         detach()
         CriticalEventTrail.mark(context, "LAUNCHER_DETACH_RETURNED")
-        safeTwoScreenSession = safeTwoScreenMode
-        if (safeTwoScreenMode) {
-            DisplayCrashTrail.mark(context, "SESSION_BEGIN_TWO_SCREEN")
-            log("LAUNCHER T49: Sony/B233 稳定模式——仅 Dock + App，停用超采样屏及地图屏")
-        }
         // T34: keep the full video canvas. Only Buick landscape home controls
         // move inside the reported safe rectangle; never squash H.264 pixels.
         safeViewport = viewport?.takeIf { totalWidth > totalHeight }
@@ -608,30 +601,6 @@ object VirtualLauncher {
             }
         }
         val useTrusted = svc != null
-        CriticalEventTrail.mark(context, if (useTrusted) "TRUSTED_SERVICE_AVAILABLE" else "TRUSTED_SERVICE_UNAVAILABLE")
-        if (safeTwoScreenMode) {
-            // Read-only preflight. Reaping existing virtual screens when the ROM's
-            // system_server is unstable can crash the entire phone. Never do so here.
-            if (!useTrusted) {
-                log("LAUNCHER T49: Shizuku UserService 未绑定；稳定模式禁止回退 PUBLIC 创建屏")
-                DisplayCrashTrail.mark(context, "BLOCKED_NO_TRUSTED_SERVICE")
-                return false
-            }
-            val existing = runCatching {
-                (context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).displays
-                    .filter { it.name in setOf("CarPlayDock", "CarPlayApp", "CarPlayAppHi", "CarPlayMap") }
-            }.getOrElse {
-                log("LAUNCHER T49: 残留屏只读检测失败；为安全不继续建屏")
-                DisplayCrashTrail.mark(context, "BLOCKED_STALE_CHECK_FAILED")
-                return false
-            }
-            if (existing.isNotEmpty()) {
-                log("LAUNCHER T49: 检测到残留虚拟屏 ${existing.joinToString { it.name + "#" + it.displayId }}；未自动释放，已阻止本次建屏（请停车后检查）")
-                DisplayCrashTrail.mark(context, "BLOCKED_RESIDUAL_DISPLAYS")
-                return false
-            }
-            log("LAUNCHER T49: 残留屏检查通过；即将创建2块虚拟屏")
-        }
         log("LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(shell)" else "应用屏(回退)"}")
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
@@ -644,6 +613,7 @@ object VirtualLauncher {
         this.composer = composer
         val displaysCreated = arrayOf(false)
         composer.onSurfacesReady = { dockSurface, appSurface, appHiSurface, mapSurface ->
+            CriticalEventTrail.mark(context, "DISPLAY_SURFACES_READY")
             // 优先：Shizuku shell 创建受信虚拟屏（VIRTUAL_DISPLAY_FLAG_TRUSTED）——
             // 允许第三方应用的新任务落在该屏；解决「应用内跳转的任务被重定向到手机主屏」。
             var viaService = false
@@ -652,22 +622,19 @@ object VirtualLauncher {
                     // 残留清理：进程重启/上轮会话遗留的同名虚拟屏不释放会一直占位
                     // （新宽度/新 surface 不生效——2026-10-11 dock 改宽后视觉无变化的根因）
                     val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-                    CriticalEventTrail.mark(context, "DISPLAY_CALLBACK_ENTER")
-                    if (!safeTwoScreenMode) {
-                        dm.displays
-                            .filter {
-                                it.name == "CarPlayDock" ||
-                                    it.name == "CarPlayApp" ||
-                                    it.name == "CarPlayAppHi" ||
-                                    it.name == "CarPlayMap"
-                            }.forEach { stale ->
-                                runCatching { svc!!.releaseDisplay(stale.displayId) }
-                                    .onSuccess { log("LAUNCHER: 已释放残留虚拟屏 ${stale.name}#${stale.displayId}") }
-                            }
-                        Thread.sleep(150) // Legacy recovery; never used on Sony/B233.
-                    }
+                    dm.displays
+                        .filter {
+                            it.name == "CarPlayDock" ||
+                                it.name == "CarPlayApp" ||
+                                it.name == "CarPlayAppHi" ||
+                                it.name == "CarPlayMap"
+                        }.forEach { stale ->
+                            runCatching { svc!!.releaseDisplay(stale.displayId) }
+                                .onSuccess { log("LAUNCHER: 已释放残留虚拟屏 ${stale.name}#${stale.displayId}") }
+                        }
+                    Thread.sleep(150) // 等系统完成注销
                     // dock 屏不声明受信：只承载自有 DockActivity，杜绝第三方任务逃逸上来
-                    if (safeTwoScreenMode) DisplayCrashTrail.mark(context, "BEFORE_CREATE_DOCK")
+                    CriticalEventTrail.mark(context, "CREATE_DOCK_BEGIN")
                     val dockId =
                         svc!!.createDisplay(
                             "CarPlayDock",
@@ -677,24 +644,21 @@ object VirtualLauncher {
                             dockSurface,
                             false,
                         )
-                    if (safeTwoScreenMode) DisplayCrashTrail.mark(context, if (dockId >= 0) "AFTER_CREATE_DOCK_OK" else "AFTER_CREATE_DOCK_FAILED")
+                    CriticalEventTrail.mark(context, if (dockId >= 0) "CREATE_DOCK_OK" else "CREATE_DOCK_FAILED")
+                    CriticalEventTrail.mark(context, "CREATE_APP_BEGIN")
                     val appId =
-                        if (!safeTwoScreenMode || dockId >= 0) {
-                            if (safeTwoScreenMode) DisplayCrashTrail.mark(context, "BEFORE_CREATE_APP")
-                            svc!!.createDisplay(
-                                "CarPlayApp",
-                                appWidth,
-                                appHeightPx,
-                                appNativeDensity,
-                                appSurface,
-                                true,
-                            ).also { id ->
-                                if (safeTwoScreenMode) DisplayCrashTrail.mark(context, if (id >= 0) "AFTER_CREATE_APP_OK" else "AFTER_CREATE_APP_FAILED")
-                            }
-                        } else -1
+                        svc!!.createDisplay(
+                            "CarPlayApp",
+                            appWidth,
+                            appHeightPx,
+                            appNativeDensity,
+                            appSurface,
+                            true,
+                        )
+                    CriticalEventTrail.mark(context, if (appId >= 0) "CREATE_APP_OK" else "CREATE_APP_FAILED")
                     // 超采样屏（竖屏车机无、应用侧回退时也无）
                     val appHiId =
-                        if (appHiSurface != null && !safeTwoScreenMode) {
+                        if (appHiSurface != null) {
                             svc!!.createDisplay(
                                 "CarPlayAppHi",
                                 appHiWidth,
@@ -708,7 +672,7 @@ object VirtualLauncher {
                         }
                     // 地图屏（横竖屏都创建；按应用区全尺寸创建，分屏/全屏间动态 resize）
                     val mapId =
-                        if (mapSurface != null && !safeTwoScreenMode) {
+                        if (mapSurface != null) {
                             svc!!.createDisplay(
                                 "CarPlayMap",
                                 appWidth,
@@ -741,7 +705,7 @@ object VirtualLauncher {
                             log("LAUNCHER: 地图屏创建失败——仪表盘无地图 tile")
                         }
                         viaService = true
-                        if (safeTwoScreenMode) DisplayCrashTrail.mark(context, "TWO_SCREENS_READY")
+                        CriticalEventTrail.mark(context, "TRUSTED_DISPLAYS_READY")
                     } else {
                         // 逐屏留痕：EMUI 等 ROM 对 shell 侧 createVirtualDisplay 是**静默
                         // 返回 null**（不抛异常）——整体回退时不打这条，日志里只剩
@@ -754,20 +718,12 @@ object VirtualLauncher {
                             log("LAUNCHER: 受信屏 CarPlayApp 创建失败（同上）")
                         }
                         // 半成功：释放已建的
-                        if (safeTwoScreenMode) {
-                            log("LAUNCHER T49: 建屏部分失败；避免自动释放引发系统崩溃，停止会话并保留阶段记录")
-                            DisplayCrashTrail.mark(context, "PARTIAL_CREATE_FAILED")
-                        } else {
-                            if (dockId >= 0) runCatching { svc!!.releaseDisplay(dockId) }
-                            if (appId >= 0) runCatching { svc!!.releaseDisplay(appId) }
-                            if (appHiId >= 0) runCatching { svc!!.releaseDisplay(appHiId) }
-                            if (mapId >= 0) runCatching { svc!!.releaseDisplay(mapId) }
-                        }
+                        if (dockId >= 0) runCatching { svc!!.releaseDisplay(dockId) }
+                        if (appId >= 0) runCatching { svc!!.releaseDisplay(appId) }
+                        if (appHiId >= 0) runCatching { svc!!.releaseDisplay(appHiId) }
+                        if (mapId >= 0) runCatching { svc!!.releaseDisplay(mapId) }
                     }
-                }.onFailure {
-                    log("LAUNCHER: 受信屏创建异常 ${it.javaClass.simpleName}")
-                    if (safeTwoScreenMode) DisplayCrashTrail.mark(context, "CREATE_EXCEPTION")
-                }
+                }.onFailure { log("LAUNCHER: 受信屏创建异常 ${it.message}") }
             }
             if (viaService) {
                 displaysViaService = true
@@ -790,8 +746,8 @@ object VirtualLauncher {
                 // 覆盖写入是异步的（probe 内部会 awaitPending 等它排空）；
                 // 应用若已在运行且此前被当成竖窗恢复，这里就能发现并给出提示。
                 LetterboxHintController.scheduleProbe(context, "会话建立")
-            } else if (!safeTwoScreenMode) {
-                // 回退：应用侧 PUBLIC 屏（Sony/B233 稳定模式不允许此路径）
+            } else {
+                // 回退：应用侧 PUBLIC 屏（应用内跳转任务会逃逸到手机主屏，尽量可用的降级形态）
                 val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
                 dockDisplay =
                     dm.createVirtualDisplay(
@@ -872,7 +828,6 @@ object VirtualLauncher {
                 )
             }
             displaysCreated[0] = dockDisplayId >= 0 && appDisplayId >= 0
-            if (safeTwoScreenMode && !displaysCreated[0]) DisplayCrashTrail.mark(context, "SCREEN_CREATE_INCOMPLETE")
         }
         return try {
             // T38: T37's background task could complete late or fail silently.
@@ -891,18 +846,16 @@ object VirtualLauncher {
                         " 视频尺寸=${totalWidth}x${totalHeight}",
                 )
             }
-            CriticalEventTrail.mark(context, "COMPOSER_START_BEGIN")
             composer.start(
                 dockWidthPx,
                 dockHeightPx,
                 appWidth,
                 appHeightPx,
-                if (landscapeApp && !safeTwoScreenMode) appHiWidth else 0,
-                if (landscapeApp && !safeTwoScreenMode) appHiHeight else 0,
-                if (safeTwoScreenMode) 0 else appWidth,
-                if (safeTwoScreenMode) 0 else appHeightPx,
+                if (landscapeApp) appHiWidth else 0,
+                if (landscapeApp) appHiHeight else 0,
+                appWidth,
+                appHeightPx,
             )
-            CriticalEventTrail.mark(context, "COMPOSER_START_RETURNED")
             // 分屏把手位置推给合成器（覆盖默认中线公式；拖动时 previewDashSplit 持续更新）
             composer.setTileEdgeOverride(dashSplitPos - DASH_GAP_PX / 2f)
             if (!displaysCreated[0]) {
@@ -916,13 +869,9 @@ object VirtualLauncher {
             // 而合成器按整幅映射、触摸按未旋转坐标换算 —— 表现为「分辨率变了 +
             // 点击漂移、点不到目标」，退回桌面也仍是旋转态（2026-10-18 实测）。
             // 缩在 letterbox 里（见下方 aspectRatio）才是车机该有的形态。
-            CriticalEventTrail.mark(context, "ORIENTATION_POLICY_BEGIN")
             applyIgnoreOrientationRequest(appDisplayId, appHiDisplayId, mapDisplayId)
-            CriticalEventTrail.mark(context, "ORIENTATION_POLICY_DONE")
             // 放宽竖屏应用的 letterbox 窗口（默认窄条 → 手机宽度）；断开时还原（detach）
-            CriticalEventTrail.mark(context, "LETTERBOX_COMMAND_BEGIN")
             Shell.exec("cmd window set-letterbox-style --aspectRatio $LETTERBOX_ASPECT_RATIO")
-            CriticalEventTrail.mark(context, "LETTERBOX_COMMAND_DONE")
             log(
                 "LAUNCHER: letterbox 宽高比=$LETTERBOX_ASPECT_RATIO " +
                     "appDensity=${appNativeDensity}dpi appHiDensity=${appHiDensity}dpi",
@@ -930,7 +879,6 @@ object VirtualLauncher {
             // Arm before launching the two car-only activities. A delayed am start
             // must reject itself when detach has invalidated this session.
             sessionAttached = true
-            if (safeTwoScreenMode) DisplayCrashTrail.mark(context, "BEFORE_LAUNCH_DOCK_GRID")
             // 自启组件必须写成「applicationId/绝对类名」：`am -n` 只认带斜杠的规范，
             // 且相对类名按 applicationId 展开——.rd 调试包（applicationId 后缀）下
             // `pkg/.launcher.DockActivity` 会指向不存在的类、纯类名直接被拒
@@ -942,17 +890,12 @@ object VirtualLauncher {
             val gridOk = startOn(gridDisplayId, "$selfPkg/${GridActivity::class.java.name}")
             appContextRef = context.applicationContext
             log("LAUNCHER: dock=$dockOk grid=$gridOk gridDisplay=$gridDisplayId")
-            if (safeTwoScreenMode) DisplayCrashTrail.mark(context, "AFTER_LAUNCH_DOCK_GRID")
             // 桌面在超采样屏时默认活动屏 = 超采样屏（启动即显示桌面）
             if (appHiDisplayId >= 0) composer.requestActiveApp(true)
-            CriticalEventTrail.mark(context, "SHIZUKU_HEALER_BEGIN")
             startShizukuHealer()
             // 暗幕组件就绪（常亮+暗幕功能；主界面开关控制启停）
-            CriticalEventTrail.mark(context, "SCREEN_DIMMER_ATTACH_BEGIN")
             ScreenDimmer
                 .attach(context)
-            CriticalEventTrail.mark(context, "SCREEN_DIMMER_ATTACH_DONE")
-            if (safeTwoScreenMode && dockOk && gridOk) DisplayCrashTrail.mark(context, "SESSION_RUNNING")
             dockOk && gridOk
         } catch (error: IllegalStateException) {
             log("LAUNCHER: GL 合成器启动失败 - ${error.message}")
@@ -966,10 +909,6 @@ object VirtualLauncher {
     private var displaysViaService = false
 
     fun detach() {
-        appContextRef?.let { CriticalEventTrail.mark(it, "LAUNCHER_DETACH_BEGIN") }
-        val wasProtected = safeTwoScreenSession
-        val crashContext = if (wasProtected) appContextRef else null
-        if (wasProtected && crashContext != null) DisplayCrashTrail.mark(crashContext, "BEFORE_SESSION_DETACH")
         resetStandaloneFit()
         lastFullscreenMapPackage = null
         safeViewport = null
@@ -1021,12 +960,8 @@ object VirtualLauncher {
         if (displaysViaService) {
             val svc = CarInputClient.service
             if (svc != null) {
-                if (wasProtected && crashContext != null) DisplayCrashTrail.mark(crashContext, "BEFORE_RELEASE_DOCK")
                 if (dockDisplayId >= 0) runCatching { svc.releaseDisplay(dockDisplayId) }
-                if (wasProtected && crashContext != null) DisplayCrashTrail.mark(crashContext, "AFTER_RELEASE_DOCK")
-                if (wasProtected && crashContext != null) DisplayCrashTrail.mark(crashContext, "BEFORE_RELEASE_APP")
                 if (appDisplayId >= 0) runCatching { svc.releaseDisplay(appDisplayId) }
-                if (wasProtected && crashContext != null) DisplayCrashTrail.mark(crashContext, "AFTER_RELEASE_APP")
                 if (appHiDisplayId >= 0) runCatching { svc.releaseDisplay(appHiDisplayId) }
                 // 地图屏同样由 shell 持有：不释放会在断开后残留（重装后由启动检测兜底发现）
                 if (mapDisplayId >= 0) runCatching { svc.releaseDisplay(mapDisplayId) }
@@ -1080,8 +1015,6 @@ object VirtualLauncher {
         hiScale = 1f
         streamWidthPx = 0
         streamHeightPx = 0
-        safeTwoScreenSession = false
-        if (wasProtected && crashContext != null) DisplayCrashTrail.mark(crashContext, "SESSION_DETACHED")
     }
 
     private fun startOn(
@@ -1140,11 +1073,6 @@ object VirtualLauncher {
     /** 进入仪表盘：地图屏缩回 tile、默认地图占屏（缺则启动）、桌面切分屏布局。 */
     fun showDashboard() {
         if (!sessionAttached) return
-        if (safeTwoScreenSession && mapDisplayId < 0) {
-            logSink?.invoke("LAUNCHER T49: 稳定模式暂不启用独立地图屏；保留完整应用桌面")
-            showDesktop()
-            return
-        }
         syncDashboard(true)
         goGrid()
         composer?.requestActiveApp(appHiDisplayId >= 0 && gridDisplayId == appHiDisplayId)
@@ -1158,10 +1086,6 @@ object VirtualLauncher {
      */
     fun syncDashboard(dashboard: Boolean) {
         if (!sessionAttached) return
-        if (safeTwoScreenSession && mapDisplayId < 0 && dashboard) {
-            composer?.setTileLayout(DualDisplayComposer.TileLayout.HIDDEN)
-            return
-        }
         val changed = dashboardMode != dashboard
         dashboardMode = dashboard
         if (changed) notifyDashboard()
@@ -1183,7 +1107,6 @@ object VirtualLauncher {
 
     /** 滑动预览：仅切 tile 可见（不动 dashboardMode/监听），落定后由 syncDashboard 对账。 */
     fun showMapTile() {
-        if (safeTwoScreenSession && mapDisplayId < 0) return
         composer?.setTileLayout(DualDisplayComposer.TileLayout.SPLIT)
     }
 

@@ -44,7 +44,6 @@ import io.github.shaonialife.cardeck.ui.ScreenDimmer
 import io.github.shaonialife.cardeck.util.Bg
 import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.video.VideoSender
-import io.github.shaonialife.cardeck.video.SonyB233CrashGuard
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -2016,20 +2015,7 @@ object SessionController {
                             }
                         }
                         if (setup != null) {
-                            // T44: Real virtual desktop + HID is the only Buick-main display path.
-                            // Retired T28 preferences must not silently replace the user's video.
-                            val sonyB233CrashRisk = SonyB233CrashGuard.useDisplaylessDiagnostic(
-                                android.os.Build.MANUFACTURER,
-                                android.os.Build.MODEL,
-                                android.os.Build.VERSION.SDK_INT,
-                                client.currentEndpoint.isBuickB233,
-                            )
-                            if (sonyB233CrashRisk) {
-                                appendLog(
-                                    "BUICK-MAIN: Xperia Android15/B233 使用真实虚拟屏及触摸；" +
-                                        "出现手机系统重启请停车后使用别克设置中的日志上传保留证据",
-                                )
-                            }
+                            // Main now follows the same display creation path as verified Buick-Test.
                             // 记录会话凭据：投影授权晚于连接时用于动态补启音频。
                             // 用 client.currentEndpoint 而非 effectiveEndpoint：配对期间
                             // mDNS 刷新过端点时，真正连上的是 client 里的地址（2026-10-18：
@@ -2452,9 +2438,6 @@ object SessionController {
                                                 context.applicationContext,
                                                 log = { line -> appendLog(line) },
                                                 safeViewport = pendingSafeViewport,
-                                                // T55: remove ineffective Sony/B233 two-display restriction.
-                                                // Keep crash breadcrumbs; restore optional AppHi/Map screens.
-                                                safeTwoScreenMode = false,
                                             )
                                         currentHiddenSource = source
                                         val ok =

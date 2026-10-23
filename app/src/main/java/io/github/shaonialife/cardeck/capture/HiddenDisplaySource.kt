@@ -20,7 +20,6 @@ class HiddenDisplaySource(
     private val context: Context,
     private val log: (String) -> Unit = {},
     private val safeViewport: BuickViewport? = null,
-    private val safeTwoScreenMode: Boolean = false,
 ) : ScreenSource {
     override val name: String = "隐形屏"
 
@@ -66,7 +65,6 @@ class HiddenDisplaySource(
                 densityDpi,
                 log,
                 safeViewport,
-                safeTwoScreenMode,
             )
         displayId =
             if (ok) VirtualLauncher.appDisplayId else -1
