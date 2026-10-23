@@ -2034,24 +2034,11 @@ class MainActivity : AppCompatActivity() {
                         "SHELL: 启动检测到 ${residual.size} 个残留虚拟屏: " +
                             residual.joinToString(", ") { "${it.second}(${it.first})" },
                     )
-                    // 残留屏 = 上次会话异常退出（进程被杀）：横屏覆盖的会话末复原
-                    // 也没执行——一并清理，避免应用在手机侧残留横屏状态
-                    runCatching {
-                        val reset =
-                            AppOrientationCompat
-                                .resetAll(applicationContext)
-                        if (reset > 0) log("ORIENTATION: 残留会话的横屏覆盖已复原 $reset 个")
-                    }
-                    // 先自动清理一轮（含旧版本 UserService 进程回收——其持有的屏跨进程
-                    // 无法 release，只有进程回收能释放；重装 APK 后 Shizuku 按版本复用的
-                    // 旧进程正是「点清理释放 0/N」的根因，2026-10-16）。清不掉的再问用户。
-                    val released = releaseDisplays(residual.map { it.first })
-                    log("SHELL: 启动残留自动清理（释放 $released/${residual.size}）")
-                    if (released > 0) {
-                        residual =
-                            parseCarPlayDisplays(sh("dumpsys display"))
-                                .filter { it.first !in currentSessionDisplayIds() }
-                    }
+                    // T45: idle startup is observational ONLY. Never change display
+                    // state, orientation or kill old Shizuku processes on app open.
+                    // On Xperia Android 15, even release/teardown may crash system_server.
+                    log("SHELL T45: 仅检测残留屏，未自动释放；需用户明确确认后清理")
+
                 }
                 runOnUiThread {
                     startupCheckRunning = false
@@ -2060,8 +2047,9 @@ class MainActivity : AppCompatActivity() {
                         pendingResidualDisplays = residual
                         updateResidualChip()
                         if (heroState == HeroState.IDLE) applyHeroState(HeroState.IDLE)
-                        promptResidualDisplays(residual)
-                        // 自动展开日志卡：启动清理的两条记录直接可见（卡片默认折叠）
+                        // Do not automatically open a destructive-action dialog on app launch.
+                        // The hero chip keeps an explicit user-operated cleanup entry.
+                        // 自动展开日志卡：仅显示检测结果，等待用户选择清理
                         findViewById<View>(R.id.logBody).visibility = View.VISIBLE
                         findViewById<ImageView>(R.id.logChevron)
                             .animate()
@@ -2075,11 +2063,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // 预绑定 UserService：预热触摸注入，并触发旧版本残留进程回收（绑定回调内含
-            // reapStaleUserServices——重装 APK 后 Shizuku 不回收的旧进程，其持有的虚拟屏
-            // 只有进程回收能释放）。**必须晚于上方残留扫描**：回收会让旧进程的虚拟屏立即
-            // 消失，若先于扫描发生，残留清单可能变空 → resetAll（强制横屏复原）被跳过。
-            CarInputClient.ensure(this)
+            // T45: do not bind the virtual-display service just by opening the App.
+            // HiddenDisplaySource.attach() will bind on an explicit CarPlay start.
+
         }
     }
 

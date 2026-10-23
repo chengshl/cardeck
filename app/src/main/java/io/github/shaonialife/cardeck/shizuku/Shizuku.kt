@@ -278,9 +278,9 @@ object CarInputClient {
                     service = null
                     binding = false
                 } else {
-                    // 绑定成功后顺手回收旧版本残留进程（其持有的虚拟屏跨进程无法释放，
-                    // 只有进程回收才能让屏消失）。后台线程执行：内部含 shell ps/kill。
-                    Bg.run("stale-user-service-reap") { reapStaleUserServices() }
+                    // T45: NEVER kill stale UserServices automatically on bind.
+                    // Stale displays are handled only through explicit user-confirmed cleanup.
+                    diag("绑定成功；T45 不自动回收其他 UserService 进程", force = true)
                 }
             }
 

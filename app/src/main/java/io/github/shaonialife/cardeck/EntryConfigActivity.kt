@@ -18,6 +18,8 @@ import io.github.shaonialife.cardeck.service.GatewayLogService
 import android.widget.ScrollView
 import androidx.appcompat.app.AlertDialog
 import android.os.SystemClock
+import android.content.Context
+import java.security.MessageDigest
 import io.github.shaonialife.cardeck.util.Bg
 
 class EntryConfigActivity : AppCompatActivity() {
@@ -247,6 +249,21 @@ class EntryConfigActivity : AppCompatActivity() {
                     logStatus.setText(R.string.gateway_system_unavailable)
                     return@runOnUiThread
                 }
+                // T45: a fixed-size T43 evidence selection may be repeatedly
+                // uploaded from the same DropBox archive; compare the crash
+                // signature rather than treating each preview as a new reboot.
+                val crashStack = lines.filter {
+                    it.startsWith("[DropBox:system_server_crash]") ||
+                        it.startsWith("[上次启动crash]")
+                }
+                val crashSignature = if (recovery && crashStack.isNotEmpty()) {
+                    MessageDigest.getInstance("SHA-256")
+                        .digest(crashStack.joinToString("\n").toByteArray(Charsets.UTF_8))
+                        .joinToString("") { "%02x".format(it) }
+                } else null
+                val fingerprints = getSharedPreferences("buick-crash-evidence-fingerprints", Context.MODE_PRIVATE)
+                val sameStack = crashSignature != null &&
+                    crashSignature == fingerprints.getString("last_submitted_crash_signature", null)
                 val expires = SystemClock.elapsedRealtime() + 120_000
                 val body = TextView(this).apply {
                     text = lines.joinToString("\n")
@@ -258,8 +275,9 @@ class EntryConfigActivity : AppCompatActivity() {
                 previewDialog = AlertDialog.Builder(this)
                     .setTitle(if (recovery) "重启崩溃取证 · 脱敏预览" else getString(R.string.gateway_system_preview_title))
                     .setMessage(
-                        if (recovery) "共 ${lines.size} 行，包含上一轮 App 日志及可访问的历史系统崩溃记录。" +
-                            "\n系统日志必须在 Shizuku 可用时才能补查；无记录不代表没有崩溃。" +
+                        if (recovery) "精选摘要 ${lines.size} 行（不是全部历史；原策略最多 64 行，出现 41 行并不等于发生 41 次故障）。" +
+                            (if (sameStack) "\n注意：系统崩溃堆栈与上次已提交的记录相同，可能重复读取旧 DropBox，不代表新崩溃。" else "") +
+                            "\n系统日志需要 Shizuku；旧 DropBox 可能重复出现。没有新的记录不代表没有发生崩溃。" +
                             "\n仅点击“确认上传”才会发送以下脱敏内容。"
                         else getString(R.string.gateway_system_preview_help, lines.size)
                     )
@@ -268,6 +286,9 @@ class EntryConfigActivity : AppCompatActivity() {
                     .setPositiveButton(R.string.gateway_system_confirm) { _, _ ->
                         val valid = GatewayLogRuntime.running && GatewayLogRuntime.probe === target && SystemClock.elapsedRealtime() <= expires
                         val accepted = valid && target.uploadConfirmedSystemLogs(lines)
+                        if (accepted && crashSignature != null) {
+                            fingerprints.edit().putString("last_submitted_crash_signature", crashSignature).apply()
+                        }
                         logStatus.setText(if (accepted) R.string.gateway_system_pending else R.string.gateway_system_expired)
                     }.create().also { dialog ->
                         dialog.show()
