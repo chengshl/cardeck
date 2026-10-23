@@ -281,23 +281,39 @@ object TouchRouter {
             val ok: Boolean =
                 when {
                     contact.down && !pressed -> {
-                        pressed = true
-                        pressedDisplay = targetDisplay
-                        svc.pointerDown(targetDisplay, localX, localY)
+                        // Do not remember DOWN unless Android actually accepts it.
+                        // Rejected out-of-bounds input previously latched pressed=true,
+                        // making subsequent taps become MOVE against a missing pointer.
+                        val accepted = svc.pointerDown(targetDisplay, localX, localY)
+                        if (accepted) {
+                            pressed = true
+                            pressedDisplay = targetDisplay
+                        }
+                        accepted
                     }
 
                     contact.down && pressedDisplay != targetDisplay -> {
-                        // 跨屏拖动：先在旧屏收笔，再在新屏按下
+                        // Cross-display transition: retire the old pointer first.
                         runCatching { svc.pointerUp(pressedDisplay, 0, 0) }
-                        pressedDisplay = targetDisplay
-                        svc.pointerDown(targetDisplay, localX, localY)
+                        pressed = false
+                        pressedDisplay = -1
+                        val accepted = svc.pointerDown(targetDisplay, localX, localY)
+                        if (accepted) {
+                            pressed = true
+                            pressedDisplay = targetDisplay
+                        }
+                        accepted
                     }
 
                     contact.down -> svc.pointerMove(targetDisplay, localX, localY)
 
                     else -> {
+                        val old = pressedDisplay
+                        // Regardless of an UP failure, never carry a pressed state
+                        // into the next gesture/session with a stale screen ID.
                         pressed = false
-                        svc.pointerUp(pressedDisplay, localX, localY)
+                        pressedDisplay = -1
+                        if (old >= 0) svc.pointerUp(old, localX, localY) else true
                     }
                 }
             if (ok) lastInjectAt = nowMs
@@ -340,6 +356,11 @@ object TouchRouter {
         coordScaleY = 1f
         normalizedCanvasW = 0
         normalizedCanvasH = 0
+        failStreak = 0
+        throttleInited = false
+        lastInjectAt = 0L
+        throttledCount = 0
+        lastThrottleLogAt = 0L
     }
 
     // ---- 仪表盘地图 tile「快速点按 → 全屏地图」检测 ----

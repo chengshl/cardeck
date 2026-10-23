@@ -99,6 +99,53 @@ object TouchReports {
         return count
     }
 
+    /** HID 输入逻辑轴最大值，与主屏像素尺寸无必然关系。 */
+    data class LogicalMaxima(val x: Int, val y: Int)
+
+    /** Extract Generic Desktop X/Y Logical Maximum only for single-finger Digitizers. */
+    fun logicalMaximaFromDescriptor(descriptor: ByteArray): LogicalMaxima? {
+        if (formatFromDescriptor(descriptor) != Format.SINGLE_ABSOLUTE) return null
+        var page = 0
+        var usage = -1
+        var maximum = 0
+        var maxX = 0
+        var maxY = 0
+        var i = 0
+        while (i < descriptor.size) {
+            val prefix = descriptor[i].toInt() and 0xFF
+            if (prefix == 0xFE) return null
+            val size = when (prefix and 3) {
+                0 -> 0
+                1 -> 1
+                2 -> 2
+                else -> 4
+            }
+            if (i + 1 + size > descriptor.size) return null
+            var value = 0
+            for (j in 0 until size) {
+                value = value or ((descriptor[i + 1 + j].toInt() and 0xFF) shl (j * 8))
+            }
+            i += 1 + size
+            val type = (prefix shr 2) and 3
+            val tag = (prefix shr 4) and 15
+            when {
+                type == 1 && tag == 0 -> page = value
+                type == 2 && tag == 0 -> usage = if (page == 0x01) value else -1
+                type == 1 && tag == 2 -> maximum = value
+                type == 0 && tag == 8 -> {
+                    if (maximum in 1..65535) {
+                        when (usage) {
+                            0x30 -> maxX = maximum
+                            0x31 -> maxY = maximum
+                        }
+                    }
+                    usage = -1
+                }
+            }
+        }
+        return if (maxX > 0 && maxY > 0) LogicalMaxima(maxX, maxY) else null
+    }
+
     /**
      * 解析触摸报文。
      * @param format 描述符判定的格式；null 时按报文长度回退（5B=单指，≥12B=多槽）

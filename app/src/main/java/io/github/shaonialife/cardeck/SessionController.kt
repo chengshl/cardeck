@@ -1322,13 +1322,32 @@ object SessionController {
                                     activeTargetFps = fps
                                     // 车机触摸在通告视图坐标系（如 1160×540），流已按比例
                                     // 缩放（如 1450×674）——注入前需映射，否则点击漂移
-                                    TouchRouter
-                                        .setCoordinateScale(
-                                            setup.displayWidth,
-                                            setup.displayHeight,
-                                            streamW,
-                                            streamH,
-                                        )
+                                    // E5 T57: B233 touch HID axes are 3082x814, but the
+                                    // actual video canvas is 1972x520. Without normalizing
+                                    // the receiver's Digitizer logical maxima, taps drift
+                                    // and can be rejected as out-of-bounds (e.g. Y=733>520).
+                                    // Query the real advertised HID descriptor, never a
+                                    // hardcoded model coordinate system.
+                                    val hidLogical = setup.hidDescriptors.values.asSequence()
+                                        .mapNotNull(TouchReports::logicalMaximaFromDescriptor)
+                                        .firstOrNull()
+                                    // A new connection must not reuse the previous display's
+                                    // pointer-down state when the old display ID is now invalid.
+                                    TouchRouter.reset()
+                                    TouchRouter.setCoordinateScale(
+                                        setup.displayWidth,
+                                        setup.displayHeight,
+                                        streamW,
+                                        streamH,
+                                        hidMaxX = hidLogical?.x,
+                                        hidMaxY = hidLogical?.y,
+                                    )
+                                    appendLog(
+                                        "TOUCH T57: HID=${hidLogical?.x ?: "unknown"}x" +
+                                            "${hidLogical?.y ?: "unknown"} → " +
+                                            "stream=${streamW}x$streamH " +
+                                            "normalized=${hidLogical != null}",
+                                    )
                                     appendLog(
                                         "DISPLAY: 流 ${setup.displayWidth}x${setup.displayHeight} → " +
                                             "${streamW}x$streamH（$scalePct%）@${fps}fps",
