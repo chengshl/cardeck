@@ -564,10 +564,11 @@
                     android:layout_marginStart="54dp"
                     android:background="#5A394444" />
 
-                <!-- 车机侧声音 -->
+                <!-- Audio permission controls retained for compatibility, hidden in stable main UI. -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:visibility="gone"
                     android:gravity="center_vertical"
                     android:minHeight="60dp"
                     android:orientation="horizontal"

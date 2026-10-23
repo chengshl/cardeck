@@ -234,31 +234,10 @@ class MainActivity : AppCompatActivity() {
      * ——与正文「以看视频为主时建议暂不开启」一致；取消在最下。
      */
     private fun showAudioChoiceDialog() {
-        // 默认档 = 高质量媒体通路（type=102 + AAC-LC，真 iPhone 走这条）；
-        // 「兼容档」= 强制只走 PCM 旧通路（type=100），AAC 被车机直接拒掉时的人工退路。
-        // 按钮竖排每个约 36dp：横屏屏高只有 ~300dp，再多一个「取消」就会顶出屏幕，
-        // 因此横屏省略「取消」（弹窗默认可返回键/点外部关闭）。
-        val landscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val actions =
-            buildList {
-                add(
-                    DarkMessageDialog.Action(
-                        "仅视频（更流畅）",
-                        DarkMessageDialog.Emphasis.PRIMARY,
-                    ) { beginWithAudio(enabled = false) },
-                )
-                add(DarkMessageDialog.Action("开启声音") { beginWithAudio(enabled = true) })
-                if (!landscape) add(DarkMessageDialog.Action("取消") {})
-            }
-        DarkMessageDialog.show(
-            activity = this,
-            title = "是否在车机侧播放声音？",
-            message =
-                "开启后手机媒体/导航声音投到车机播放、手机本机静音（不开启则车上无声）。\n" +
-                    "音视频同时传会增加负载，以看视频为主时可先不开启。\n" +
-                    "开启声音需要「投屏」权限，会一并申请。",
-            actions = actions,
-        )
+        // Buick-main keeps the audio capture/permission implementation intact.
+        // The stable build exposes only video connection; the experimental
+        // audio opt-in remains accessible in Buick-Test.
+        beginWithAudio(enabled = false)
     }
 
     /** 「取消连接」确认弹窗（防误触）：中止当前连接尝试并断开蓝牙/WiFi 链路。 */
@@ -1180,7 +1159,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (bondedCount > 0) ready++
-        if (CarPlayService.mediaProjection != null) ready++
+        // Optional audio permission is hidden from the stable readiness UI.
 
         btBadge.visibility = if (bondedCount >= 0) View.VISIBLE else View.GONE
         if (bondedCount >= 0) {
@@ -1235,7 +1214,7 @@ class MainActivity : AppCompatActivity() {
             btnAudio.setTextColor(getColor(R.color.m3_primary))
             audioDesc.text = "需要「投屏」权限，可选 · 关闭时车机无声音"
         }
-        readyCount.text = "$ready/4"
+        readyCount.text = "$ready/3"
     }
 
     /**
