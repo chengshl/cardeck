@@ -42,6 +42,7 @@ class EntryConfigActivity : AppCompatActivity() {
     private lateinit var systemLogs: Button
     private lateinit var recoveryLogs: Button
     private lateinit var localAppLogs: Button
+    private lateinit var localBundle: Button
     private var observer: AutoCloseable? = null
     private var previewDialog: AlertDialog? = null
     private var previewGeneration = 0
@@ -63,6 +64,8 @@ class EntryConfigActivity : AppCompatActivity() {
         logStatus = findViewById(R.id.gatewayLogStatus)
         localAppLogs = findViewById(R.id.saveAppLogsLocally)
         localAppLogs.setOnClickListener { exportAppLogsLocally() }
+        localBundle = findViewById(R.id.saveDiagnosticBundle)
+        localBundle.setOnClickListener { exportDiagnosticBundle() }
         systemLogs = findViewById(R.id.uploadSystemLogs)
         systemLogs.setOnClickListener { previewSystemLogs(recovery = false) }
         recoveryLogs = findViewById(R.id.recoverCrashLogs)
@@ -115,6 +118,7 @@ class EntryConfigActivity : AppCompatActivity() {
         disconnect.isEnabled = testRunning || GatewayLogRuntime.running
         // Saving local files never depends on the diagnostic server.
         localAppLogs.isEnabled = !captureBusy
+        localBundle.isEnabled = !captureBusy
         systemLogs.isEnabled = !captureBusy && ShizukuGate.state(this) == ShizukuGate.State.READY
         recoveryLogs.isEnabled = !captureBusy
     }
@@ -322,6 +326,34 @@ class EntryConfigActivity : AppCompatActivity() {
                         dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = uploadReady
                         scroll.layoutParams = scroll.layoutParams.apply { height = (320 * resources.displayMetrics.density).toInt() }
                     }
+            }
+        }
+    }
+
+    private fun exportDiagnosticBundle() {
+        if (captureBusy) return
+        captureBusy = true
+        refreshControls()
+        logStatus.text = "正在整理完整本地诊断包（按需读取系统证据，不上传）…"
+        val token = stored?.token.orEmpty()
+        Bg.run("offline-diagnostic-bundle") {
+            val app = applicationContext
+            val redactor = LogRedactor(listOf(token))
+            val hasShizuku = ShizukuGate.state(app) == ShizukuGate.State.READY
+            val crash = runCatching {
+                SystemLogCapture.recoveryPreview(app, redactor)
+            }.getOrElse { listOf("[取证状态] 本次读取异常；请查看 App 历史与阶段记录") }
+            val system = if (hasShizuku) runCatching {
+                SystemLogCapture.preview(app, redactor)
+            }.getOrDefault(emptyList()) else emptyList()
+            val result = runCatching {
+                OfflineDiagnosticExporter.exportBundle(app, redactor, crash, system, hasShizuku)
+            }.getOrNull()
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                captureBusy = false
+                refreshControls()
+                showLocalSaveResult(result)
             }
         }
     }

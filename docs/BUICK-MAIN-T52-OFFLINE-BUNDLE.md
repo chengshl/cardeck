@@ -1,0 +1,3 @@
+# T52 offline bundled evidence
+
+The Diagnostics UI adds "导出完整诊断包". A deliberate user click collects already-sanitized app history (existing 2MB bound), persisted 50-event causal trail, a single manual crash-recovery snapshot and an optional single system warning snapshot via Shizuku. Stored as one plain UTF-8 file in Downloads/CarDeck. It does not open a Gateway socket or schedule background collection. Without Shizuku, the bundle still contains app history and persistent stages; unavailable sections are explicitly labeled. System/tombstone access remains OEM-dependent. Existing independent online-upload consent and stand-alone exports are unchanged.
