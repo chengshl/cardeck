@@ -205,13 +205,17 @@ object TouchRouter {
             ) {
                 val tileX = px - dockW
                 val tileVisibleW = if (launcher.mapFullscreen) Int.MAX_VALUE else launcher.mapTileWidth
-                if (tileX in 0 until tileVisibleW) {
+                val xStart = if (launcher.mapFullscreen) 0 else CARD_MARGIN_PX
+                val yStart = if (launcher.mapFullscreen) 0 else launcher.mapTileTopPx
+                val insideY = launcher.mapFullscreen ||
+                    (py >= yStart && py < yStart + launcher.mapTileHeight)
+                if (tileX >= xStart && tileX < xStart + tileVisibleW && insideY) {
                     inDock = false
                     targetDisplay = launcher.mapDisplayId
-                    // 地图屏按布局动态 resize（分屏=tile 尺寸、全屏=应用区尺寸），
-                    // 屏内容即坐标域：相对应用区左缘的偏移就是屏内坐标，直接平移
-                    localX = tileX
-                    localY = py
+                    // Translate into the map's newly resized tile surface.
+                    // Before T36 this path ignored the tile's 16px left margin.
+                    localX = tileX - xStart
+                    localY = py - yStart
                     routedToMap = true
                 }
             }

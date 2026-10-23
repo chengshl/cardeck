@@ -80,6 +80,10 @@ class DualDisplayComposer(
     @Volatile
     var targetFps: Int = 30
 
+    /** T36: map tile safe edges. Fullscreen/video canvas are left unmodified. */
+    @Volatile var mapTileTopPx: Int = CARD_MARGIN_PX
+    @Volatile var mapTileBottomPx: Int = CARD_MARGIN_PX
+
     companion object {
         private const val TAG = "DualComposer"
         private const val EGL_RECORDABLE_ANDROID = 0x3142
@@ -653,8 +657,8 @@ class DualDisplayComposer(
                             map!!,
                             dockW + CARD_MARGIN_PX - slide,
                             x1 - slide,
-                            CARD_MARGIN_PX.toFloat(),
-                            (outHeight - CARD_MARGIN_PX).toFloat(),
+                            mapTileBottomPx.toFloat(),
+                            (outHeight - mapTileTopPx).toFloat(),
                             cornerRadius = TILE_CORNER_RADIUS,
                         )
                     }

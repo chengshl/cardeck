@@ -250,6 +250,15 @@ object VirtualLauncher {
     var mapTileHeight: Int = 0
         private set
 
+    /** T36: top/bottom margins of the *dashboard map tile* in stream pixels. */
+    @Volatile
+    var mapTileTopPx: Int = CARD_MARGIN_PX
+        private set
+
+    @Volatile
+    var mapTileBottomPx: Int = CARD_MARGIN_PX
+        private set
+
     /**
      * 仪表盘分屏把手中心（流像素，顶部原点；横屏=x、竖屏=y）。<0 = 未 attach。
      * 拖动中由 [previewDashSplit] 连续预览，松手 [commitDashSplit] 落定并派生
@@ -459,6 +468,13 @@ object VirtualLauncher {
         }
         appAreaWidth = appWidth
         appAreaHeight = appHeightPx
+        // Keep the map tile below the real receiver's upper curved-screen safe
+        // edge. T34 only moved GridActivity; the map is a separate GL layer.
+        val tileMargins = io.github.shaonialife.cardeck.buick.BuickMapTileMargins.resolve(
+            safeViewport, totalHeight, CARD_MARGIN_PX,
+        )
+        mapTileTopPx = if (dockAtBottom) CARD_MARGIN_PX else tileMargins.first
+        mapTileBottomPx = if (dockAtBottom) CARD_MARGIN_PX else tileMargins.second
         // 竖屏应用屏密度：窗口逻辑宽度目标 ≈ 手机竖屏宽度（LETTERBOX_TARGET_DP）。
         // 错用 dock 的 densityDpi（随画布分辨率等比、非手机密度）会把窗口压到 ~206dp——文字观感大一倍
         // （2026-10-14 竖屏实测：应用与桌面字号明显偏大的根因）。
@@ -481,7 +497,7 @@ object VirtualLauncher {
         } else {
             val geom = dashSplitGeom(appWidth, dashSplitFraction)
             mapTileWidth = geom.tileLen
-            mapTileHeight = appHeightPx - CARD_MARGIN_PX * 2
+            mapTileHeight = (appHeightPx - mapTileTopPx - mapTileBottomPx).coerceAtLeast(160)
             // 横屏应用区从 dock 右缘起（竖屏 x 原点即流原点，无偏移）
             dashSplitPos = geom.splitCenter + dockWidthPx
         }
@@ -542,6 +558,8 @@ object VirtualLauncher {
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
         // Wallpaper and decoded video always render at 1:1 native stream size.
+        composer.mapTileTopPx = mapTileTopPx
+        composer.mapTileBottomPx = mapTileBottomPx
         composer.targetFps =
             DisplayPrefs
                 .fps(context)
@@ -823,6 +841,8 @@ object VirtualLauncher {
 
     fun detach() {
         safeViewport = null
+        mapTileTopPx = CARD_MARGIN_PX
+        mapTileBottomPx = CARD_MARGIN_PX
         // E5 T41: Activity tasks still alive while displays are released can be
         // reparented by Android onto physical display 0. Finish tasks first.
         sessionAttached = false
