@@ -380,6 +380,19 @@ class AirPlayClient(
             var udp: java.net.DatagramSocket? = null
             try {
                 udp = java.net.DatagramSocket()
+                // T62: route the UDP heartbeat through the same car WiFi
+                // as B233 RTSP, video, RTP and RTCP, even when VPN is active.
+                if (vehicleNetwork != null) {
+                    try {
+                        vehicleNetwork.bindSocket(udp)
+                        log("AIRPLAY T62: KeepAlive UDP 已绑定车机 WiFi Network=$vehicleNetwork")
+                    } catch (error: Exception) {
+                        log("AIRPLAY T62: KeepAlive WiFi 绑定失败（${error.javaClass.simpleName}）；" +
+                            "本轮心跳可能走默认路由/VPN")
+                    }
+                } else if (endpoint.isBuickB233) {
+                    log("AIRPLAY T62: B233 无车机 WiFi Network；KeepAlive 依赖默认路由")
+                }
                 val address = java.net.InetAddress.getByName(host)
                 var sent = 0
                 var lastSentAt = 0L
@@ -390,8 +403,9 @@ class AirPlayClient(
                     val payload = ByteArray(4).also(java.security.SecureRandom()::nextBytes)
                     udp.send(java.net.DatagramPacket(payload, payload.size, address, port))
                     sent++
-                    if (sent <= 3 || sent % 60 == 0) {
-                        log("AIRPLAY: keepAlive ping #$sent → $host:$port（间隔 ${gap}ms）")
+                    // Capture each B233 heartbeat in the critical 45s window.
+                    if ((endpoint.isBuickB233 && sent <= 10) || sent <= 3 || sent % 60 == 0) {
+                        log("AIRPLAY T62: keepAlive ping #$sent（间隔 ${gap}ms，网络绑定请求=${vehicleNetwork != null}）")
                     }
                     Thread.sleep(KEEPALIVE_INTERVAL_MS)
                 }
@@ -414,10 +428,17 @@ class AirPlayClient(
     fun startFeedbackLoop() {
         Thread({
             var sent = 0
+            var lastSuccessAt = 0L
             while (isSessionAlive()) {
                 try {
                     val (status, body) = request("POST", "/feedback", ByteArray(0))
+                    val now = SystemClock.uptimeMillis()
+                    val gap = if (lastSuccessAt == 0L) 0L else now - lastSuccessAt
+                    lastSuccessAt = now
                     sent++
+                    if (endpoint.isBuickB233 && (gap > 2_500L || !status.contains("200"))) {
+                        log("AIRPLAY T62: B233 feedback 异常 #$sent gap=${gap}ms status=$status")
+                    }
                     // T13 B233: T12 mistakenly treated 8s of logged feedback
                     // as feedback stopping at 8s. Dump every reply across the
                     // entire 20s teardown window and a full 40s comparison.
@@ -432,7 +453,10 @@ class AirPlayClient(
                     if (body.isNotEmpty() && (b233AudioTrace || sent <= 8 || sent % 30 == 0)) {
                         logFeedbackBody(body)
                     }
-                } catch (_: IOException) {
+                } catch (error: IOException) {
+                    if (endpoint.isBuickB233) {
+                        log("AIRPLAY T62: B233 feedback 结束 #$sent 原因=${error.javaClass.simpleName}")
+                    }
                     break // 连接已断（会话结束）
                 }
                 try {

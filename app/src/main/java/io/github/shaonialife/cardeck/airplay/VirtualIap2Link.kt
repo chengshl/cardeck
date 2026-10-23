@@ -76,6 +76,7 @@ class VirtualIap2Link(
     private var buickMfiAckObserved = false
     private var buickIdleAckAt = 0L
     private val buickCsmFrameAttempts = HashMap<Int, Int>()
+    private val buickCsmMessageIds = HashMap<Int, Int>()
 
     // ---- MIB3 路径状态 ----
     private var mib3Armed = false
@@ -155,9 +156,13 @@ class VirtualIap2Link(
             engine.onCsmFrameSent = { sequence, messageId, _ ->
                 val previous = buickCsmFrameAttempts[sequence] ?: 0
                 buickCsmFrameAttempts[sequence] = previous + 1
-                if (messageId == 0x5001 || previous > 0) {
+                buickCsmMessageIds[sequence] = messageId
+                // Trace first outbound control messages and all retransmits.
+                // The CSM ID is the key to distinguishing the +20s local
+                // watchdog from audio RTP/RTCP failure.
+                if (previous > 0 || buickCsmMessageIds.size <= 32) {
                     log(
-                        "IAPLINK T11: B233 outbound seq=$sequence " +
+                        "IAPLINK T62: B233 outbound seq=$sequence " +
                             "CSM=0x%04x attempt=%d".format(messageId, previous + 1),
                     )
                 }
@@ -451,6 +456,14 @@ class VirtualIap2Link(
                     handleFrameLocked(event.bytes)
 
                 is Iap2LinkEngine.Event.Dead -> {
+                    if (isBuickB233) {
+                        val sequence = Regex("packet ([0-9]+) not acknowledged")
+                            .find(event.reason.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
+                        val csmId = sequence?.let { buickCsmMessageIds[it] }
+                        val csmLabel = csmId?.let { "0x%04x".format(it) } ?: "unknown"
+                        log("IAPLINK T62: B233 链路终止; unackedSeq=${sequence ?: "unknown"} " +
+                            "unackedCSM=$csmLabel reason=${event.reason ?: "EOF"}")
+                    }
                     log("IAPLINK: 虚拟链路终止 - ${event.reason ?: "EOF"}")
                     return
                 }
