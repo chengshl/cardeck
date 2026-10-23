@@ -35,6 +35,7 @@ class EntryConfigActivity : AppCompatActivity() {
     private var testRunning = false
     private lateinit var logStatus: TextView
     private lateinit var systemLogs: Button
+    private lateinit var recoveryLogs: Button
     private var observer: AutoCloseable? = null
     private var previewDialog: AlertDialog? = null
     private var previewGeneration = 0
@@ -55,7 +56,9 @@ class EntryConfigActivity : AppCompatActivity() {
         gatewayStatus = findViewById(R.id.gatewayStatus)
         logStatus = findViewById(R.id.gatewayLogStatus)
         systemLogs = findViewById(R.id.uploadSystemLogs)
-        systemLogs.setOnClickListener { previewSystemLogs() }
+        systemLogs.setOnClickListener { previewSystemLogs(recovery = false) }
+        recoveryLogs = findViewById(R.id.recoverCrashLogs)
+        recoveryLogs.setOnClickListener { previewSystemLogs(recovery = true) }
         val draft = savedInstanceState?.getString("entry_address_draft")
         busy(true)
         val appContext = applicationContext
@@ -104,6 +107,7 @@ class EntryConfigActivity : AppCompatActivity() {
         disconnect.isEnabled = testRunning || GatewayLogRuntime.running
         val snapshot = GatewayLogRuntime.snapshot
         systemLogs.isEnabled = !captureBusy && GatewayLogRuntime.running && snapshot?.state == GatewayProbe.State.HEALTHY && snapshot.logsSupported && !snapshot.systemPending
+        recoveryLogs.isEnabled = systemLogs.isEnabled
     }
 
     private fun saveConfig() {
@@ -219,17 +223,21 @@ class EntryConfigActivity : AppCompatActivity() {
         refreshControls()
     }
 
-    private fun previewSystemLogs() {
+    private fun previewSystemLogs(recovery: Boolean) {
         val target = GatewayLogRuntime.probe ?: return
         val config = stored ?: return
         if (captureBusy) return
         val generation = ++previewGeneration
         captureBusy = true
-        logStatus.setText(R.string.gateway_system_collecting)
+        logStatus.text = if (recovery) "正在读取上次会话与系统崩溃线索…" else getString(R.string.gateway_system_collecting)
         refreshControls()
         val appContext = applicationContext
         Bg.run("system-log-preview") {
-            val result = runCatching { SystemLogCapture.preview(appContext, LogRedactor(listOf(config.token))) }
+            val result = runCatching {
+                val redactor = LogRedactor(listOf(config.token))
+                if (recovery) SystemLogCapture.recoveryPreview(appContext, redactor)
+                else SystemLogCapture.preview(appContext, redactor)
+            }
             runOnUiThread {
                 if (generation != previewGeneration || isFinishing || isDestroyed) return@runOnUiThread
                 captureBusy = false
@@ -248,8 +256,13 @@ class EntryConfigActivity : AppCompatActivity() {
                 }
                 val scroll = ScrollView(this).apply { addView(body) }
                 previewDialog = AlertDialog.Builder(this)
-                    .setTitle(R.string.gateway_system_preview_title)
-                    .setMessage(getString(R.string.gateway_system_preview_help, lines.size))
+                    .setTitle(if (recovery) "重启崩溃取证 · 脱敏预览" else getString(R.string.gateway_system_preview_title))
+                    .setMessage(
+                        if (recovery) "共 ${lines.size} 行，包含上一轮 App 日志及可访问的历史系统崩溃记录。" +
+                            "\n系统日志必须在 Shizuku 可用时才能补查；无记录不代表没有崩溃。" +
+                            "\n仅点击“确认上传”才会发送以下脱敏内容。"
+                        else getString(R.string.gateway_system_preview_help, lines.size)
+                    )
                     .setView(scroll)
                     .setNegativeButton(R.string.gateway_system_cancel, null)
                     .setPositiveButton(R.string.gateway_system_confirm) { _, _ ->

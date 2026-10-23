@@ -154,6 +154,21 @@
                 android:minHeight="52dp"
                 android:layout_marginTop="8dp"
                 android:text="@string/gateway_system_preview" />
+            <Button
+                android:id="@+id/recoverCrashLogs"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
+                android:layout_marginTop="8dp"
+                android:text="重启崩溃取证 · 找回上轮日志" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="手机重启后先重新启动 Shizuku，再点此处预览；手动确认后才会上传脱敏日志。"
+                android:textColor="#B0BEBE"
+                android:textSize="12sp" />
 
             <TextView
                 android:layout_width="match_parent"

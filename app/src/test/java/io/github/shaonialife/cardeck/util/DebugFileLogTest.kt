@@ -46,4 +46,20 @@ class DebugFileLogTest {
         val text = "[13:00:00.000] ${DebugFileLog.SESSION_MARKER}\n"
         assertEquals("\n", DebugFileLog.currentSessionSlice(text))
     }
+    @Test
+    fun previousSessionSurvivesCurrentProcessMarker() {
+        val input = "old\n[12:00:00.000] ${DebugFileLog.SESSION_MARKER}\n" +
+            "LINK closed: device restart\n" +
+            "[12:02:00.000] ${DebugFileLog.SESSION_MARKER}\n" +
+            "SHIZUKU NOT_RUNNING\n"
+        val result = DebugFileLog.previousSessionSlice(input)
+        assertTrue(result.contains("LINK closed"))
+        assertTrue(!result.contains("SHIZUKU NOT_RUNNING"))
+    }
+
+    @Test
+    fun previousSessionAbsentOnFirstLaunch() {
+        assertEquals("", DebugFileLog.previousSessionSlice("just legacy logs\n"))
+    }
+
 }

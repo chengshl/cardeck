@@ -2,6 +2,8 @@ package io.github.shaonialife.cardeck.gateway
 
 import android.content.Context
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
+import io.github.shaonialife.cardeck.shizuku.Shell
+import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.util.Bg
 import moe.shizuku.server.IShizukuService
 import java.io.FileInputStream
@@ -42,4 +44,37 @@ object SystemLogCapture {
             timer.shutdownNow()
         }
     }
+    /**
+     * T43: user-triggered post-reboot crash evidence preview. No upload and no
+     * background collection. Uses the persistent app debug file plus two Android
+     * boot evidence sources unavailable to the former 120-line warning sampler.
+     *
+     * logcat -L is only useful when the ROM preserves the last boot's buffers.
+     * DropBox entries might persist longer, but OEM policy may hide/rotate them.
+     * A reboot generally stops Shizuku; recover that first for system evidence.
+     */
+    fun recoveryPreview(context: Context, redactor: LogRedactor): List<String> {
+        val previousApp = DebugFileLog.readPreviousSession(context)
+        val ready = ShizukuGate.state(context) == ShizukuGate.State.READY
+        if (!ready) {
+            return CrashEvidenceSelector.select(previousApp, null, emptyMap(), false, redactor)
+        }
+
+        // Limit every shell command's stdout in the shell itself so even very
+        // large DropBox reports cannot be materialized unbounded in app memory.
+        // Reads run on the caller's Bg thread, never on the UI thread.
+        fun read(cmd: String): String {
+            val result = runCatching { Shell.exec(cmd, timeoutMs = 6500L) }.getOrNull()
+            return if (result?.ok == true) result.output.takeLast(36_000) else ""
+        }
+        val previousBoot = read("logcat -L -d -b crash -v brief -t 160 2>/dev/null | tail -c 36000")
+        val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
+        val dropbox = linkedMapOf<String, String>()
+        for (tag in tags) {
+            if (ShizukuGate.state(context) != ShizukuGate.State.READY) break
+            dropbox[tag] = read("dumpsys dropbox --print $tag 2>/dev/null | tail -c 32000")
+        }
+        return CrashEvidenceSelector.select(previousApp, previousBoot, dropbox, true, redactor)
+    }
+
 }

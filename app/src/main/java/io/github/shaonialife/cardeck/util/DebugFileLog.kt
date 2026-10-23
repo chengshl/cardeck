@@ -61,6 +61,25 @@ object DebugFileLog {
         return if (markerAt < 0) text else text.substring(markerAt + SESSION_MARKER.length)
     }
 
+    /**
+     * Previous process session (not the current one). Useful for evidence
+     * after an OS restart: onCreate has already appended a NEW start marker,
+     * but main_debug.log itself survives process/phone restarts.
+     * Empty result means evidence is unavailable, never imply there was no crash.
+     */
+    internal fun previousSessionSlice(text: String): String {
+        val latest = text.lastIndexOf(SESSION_MARKER)
+        if (latest < 0) return ""
+        val before = text.substring(0, latest)
+        val older = before.lastIndexOf(SESSION_MARKER)
+        return if (older < 0) before else before.substring(older + SESSION_MARKER.length)
+    }
+
+    fun readPreviousSession(context: Context): String? =
+        runCatching {
+            previousSessionSlice(File(context.filesDir, "main_debug.log").readText(Charsets.UTF_8))
+        }.getOrNull()
+
     fun append(
         context: Context,
         message: String,
