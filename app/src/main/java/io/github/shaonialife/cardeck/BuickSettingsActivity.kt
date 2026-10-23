@@ -54,21 +54,107 @@ class BuickSettingsActivity : AppCompatActivity() {
             setTextColor(if (sp < 14f) secondary else fg)
             setPadding(0, px(6), 0, px(8))
         }
+        /**
+         * T42: Never rely on the thumb position alone. The status label,
+         * outline, fill and actual switch tint all follow the same checked
+         * state, including when the whole setting card is tapped.
+         */
+        fun addStateCard(
+            title: String,
+            initiallyEnabled: Boolean,
+            onChanged: (Boolean) -> Unit,
+        ): Switch {
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(px(16), px(14), px(12), px(14))
+                isClickable = true
+                isFocusable = true
+            }
+            val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val titleView = TextView(this).apply {
+                text = title
+                textSize = 15.5f
+                setTextColor(fg)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+            val stateView = TextView(this).apply {
+                textSize = 14f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setPadding(0, px(8), 0, 0)
+            }
+            column.addView(titleView)
+            column.addView(stateView)
+            card.addView(
+                column,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    rightMargin = px(8)
+                },
+            )
+            val control = Switch(this).apply {
+                text = ""
+                showText = false
+                isChecked = initiallyEnabled
+                contentDescription = title
+                thumbTintList = ColorStateList(
+                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                    intArrayOf(accent, getColor(R.color.m3_outline)),
+                )
+                trackTintList = ColorStateList(
+                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                    intArrayOf(getColor(R.color.m3_pri_container), getColor(R.color.m3_surface_highest)),
+                )
+                minimumWidth = px(54)
+            }
+            card.addView(
+                control,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+            fun refreshState(on: Boolean) {
+                val state = if (on) "已开启" else "已关闭"
+                stateView.text = if (on) "●  $state" else "○  $state"
+                stateView.setTextColor(if (on) getColor(R.color.m3_ok) else secondary)
+                card.background = android.graphics.drawable.GradientDrawable().apply {
+                    cornerRadius = px(18).toFloat()
+                    setColor(getColor(if (on) R.color.m3_pri_container else R.color.m3_surface_high))
+                    setStroke(px(if (on) 2 else 1), if (on) accent else getColor(R.color.m3_outline))
+                }
+                card.contentDescription = "$title，$state，点击切换"
+                control.contentDescription = "$title，$state"
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    control.stateDescription = state
+                }
+            }
+            refreshState(initiallyEnabled)
+            control.setOnCheckedChangeListener { _, on ->
+                refreshState(on)
+                onChanged(on)
+            }
+            card.setOnClickListener { control.toggle() }
+            root.addView(
+                card,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    topMargin = px(6)
+                    bottomMargin = px(8)
+                },
+            )
+            return control
+        }
+
         root.addView(label("别克设置", 24f))
         root.addView(label("桌面与触摸", 19f))
-        val fullDesktop = Switch(this).apply {
-            text = "启用真实桌面及车机触摸"
-            setTextColor(fg)
-            thumbTintList = ColorStateList.valueOf(accent)
-            trackTintList = ColorStateList.valueOf(getColor(R.color.m3_sec_container))
-            isChecked = io.github.shaonialife.cardeck.video.BuickMainDisplayMode.enabled(this@BuickSettingsActivity)
-            setOnCheckedChangeListener { _, enabled ->
-                io.github.shaonialife.cardeck.video.BuickMainDisplayMode.setEnabled(
-                    this@BuickSettingsActivity, enabled,
-                )
-            }
+        addStateCard(
+            title = "真实桌面与车机触摸",
+            initiallyEnabled = io.github.shaonialife.cardeck.video.BuickMainDisplayMode.enabled(this),
+        ) { on ->
+            io.github.shaonialife.cardeck.video.BuickMainDisplayMode.setEnabled(this, on)
         }
-        root.addView(fullDesktop)
         root.addView(label(
             "开启：创建车机桌面虚拟屏，允许触摸注入。Sony Xperia 1 V / Android 15 曾在此过程中触发系统重启；" +
                 "如复现，可关闭本开关退回 T28 安全诊断画面。更改后需重新连接。",
@@ -76,15 +162,12 @@ class BuickSettingsActivity : AppCompatActivity() {
         ))
         root.addView(label("曲面屏安全区域", 19f))
         root.addView(label("安全区仅在下次连接时应用，与上面的真实桌面开关相互独立。"))
-        val switch = Switch(this).apply {
-            text = "启用 CarPlay 安全区域适配"
-            setTextColor(fg)
-            thumbTintList = ColorStateList.valueOf(accent)
-            trackTintList = ColorStateList.valueOf(getColor(R.color.m3_sec_container))
-            isChecked = BuickVehiclePrefs.enabled(this@BuickSettingsActivity)
-            setOnCheckedChangeListener { _, on -> BuickVehiclePrefs.setEnabled(this@BuickSettingsActivity, on) }
+        addStateCard(
+            title = "CarPlay 曲面屏安全区域",
+            initiallyEnabled = BuickVehiclePrefs.enabled(this),
+        ) { on ->
+            BuickVehiclePrefs.setEnabled(this, on)
         }
-        root.addView(switch)
         root.addView(label("车辆独立配置", 19f))
         if (profiles.isEmpty()) {
             root.addView(label("还没有已识别的车机。成功连接一次后，CarDeck 将保存匿名车辆画像、屏幕尺寸及车机提供的安全区；可再选择该车的方案。"))
