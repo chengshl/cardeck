@@ -26,6 +26,8 @@ class BuickSettingsActivity : AppCompatActivity() {
     private lateinit var modes: RadioGroup
     private lateinit var marginInputs: List<EditText>
     private lateinit var standaloneModes: RadioGroup
+    private val standaloneSafeChoiceId = View.generateViewId()
+    private val standaloneFullChoiceId = View.generateViewId()
     private lateinit var appModes: Spinner
     private lateinit var appPicker: Spinner
     private val appChoices = mutableListOf<Pair<String, String>>()
@@ -137,14 +139,14 @@ class BuickSettingsActivity : AppCompatActivity() {
         standaloneModes = RadioGroup(this).apply {
             orientation = RadioGroup.VERTICAL
             addView(RadioButton(this@BuickSettingsActivity).apply {
-                id = 52001
+                id = standaloneSafeChoiceId
                 tag = "safe"
                 text = "安全区域 · 完整保留界面，等比例缩小，边缘使用壁纸"
                 setTextColor(fg)
                 buttonTintList = ColorStateList.valueOf(accent)
             })
             addView(RadioButton(this@BuickSettingsActivity).apply {
-                id = 52002
+                id = standaloneFullChoiceId
                 tag = "full"
                 text = "全铺满 · 适合视频，允许边缘内容被车机裁切"
                 setTextColor(fg)
@@ -220,7 +222,7 @@ class BuickSettingsActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 BuickVehiclePrefs.save(this@BuickSettingsActivity, key, mode, custom)
-                val standalone = if (standaloneModes.checkedRadioButtonId == 52001) "safe" else "full"
+                val standalone = if (standaloneModes.checkedRadioButtonId == standaloneSafeChoiceId) "safe" else "full"
                 BuickVehiclePrefs.setStandaloneMode(this@BuickSettingsActivity, key, standalone)
                 android.widget.Toast.makeText(this@BuickSettingsActivity, "已保存，下次连接该车后生效", android.widget.Toast.LENGTH_SHORT).show()
             }
@@ -251,7 +253,7 @@ class BuickSettingsActivity : AppCompatActivity() {
             val option = modes.getChildAt(i) as RadioButton
             if (option.tag == profile.mode) modes.check(option.id)
         }
-        standaloneModes.check(if (profile.standaloneMode == "safe") 52001 else 52002)
+        standaloneModes.check(if (profile.standaloneMode == "safe") standaloneSafeChoiceId else standaloneFullChoiceId)
         refreshAppOverride()
         val v = profile.manual
         listOf(v.left, v.top, v.right, v.bottom).forEachIndexed { i, value ->
