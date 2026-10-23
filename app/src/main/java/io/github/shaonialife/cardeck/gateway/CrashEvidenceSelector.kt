@@ -5,6 +5,8 @@ package io.github.shaonialife.cardeck.gateway
  * crash report. Raw shell output is NEVER uploaded or written to disk.
  */
 internal object CrashEvidenceSelector {
+    private const val SESSION_BREAK = "=== CarDeck 前次进程分隔 ==="
+    fun joinPriorSessions(sessions: List<String>): String = sessions.joinToString("\n$SESSION_BREAK\n")
     private val clue = Regex(
         "FATAL|Exception|ANR|Watchdog|system_server|rescue.?party|reboot|restart|" +
             "tombstone|signal [0-9]+|WindowContextListenerImpl|DisplayManager|" +
@@ -33,12 +35,15 @@ internal object CrashEvidenceSelector {
 
         // Save the final meaningful pre-reboot app events even if the log stream
         // stopped when the system was killed. The file holds up to 2 MB only.
-        val previous = previousApp.orEmpty().lineSequence()
-            .map(String::trim).filter { it.isNotBlank() && !noise.containsMatchIn(it) }
-            .toList()
-        val previousClues = previous.filter { clue.containsMatchIn(it) }.takeLast(14)
-        if (previousClues.isNotEmpty()) previousClues.forEach { add("上轮App", it) }
-        else previous.takeLast(6).forEach { add("上轮App", it) }
+        val sessions = previousApp.orEmpty().split(SESSION_BREAK).takeLast(3)
+        for ((index, session) in sessions.withIndex()) {
+            val previous = session.lineSequence()
+                .map(String::trim).filter { it.isNotBlank() && !noise.containsMatchIn(it) }
+                .toList()
+            val previousClues = previous.filter { clue.containsMatchIn(it) }.takeLast(5)
+            val relevant = if (previousClues.isNotEmpty()) previousClues else previous.takeLast(2)
+            relevant.forEach { add("上轮App${index + 1}", it) }
+        }
 
         if (!shizukuAvailable) {
             add("取证状态", "Shizuku未运行或未授权：只含上轮App文件；启动Shizuku后重新取证才能读取系统记录")
@@ -52,7 +57,7 @@ internal object CrashEvidenceSelector {
             .toList()
         val bootCandidates = bootLines.filter { clue.containsMatchIn(it) ||
             it.startsWith("at ") || it.startsWith("Caused by:") || it.startsWith("E/") }
-        bootCandidates.takeLast(18).forEach { add("上次启动crash", it) }
+        bootCandidates.takeLast(16).forEach { add("上次启动crash", it) }
 
         val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
         for (tag in tags) {
@@ -66,7 +71,7 @@ internal object CrashEvidenceSelector {
             }
             val end = (hints.lastOrNull() ?: lines.lastIndex).coerceAtLeast(0)
             val from = (end - 6).coerceAtLeast(0)
-            lines.drop(from).take(12).forEach { add("DropBox:$tag", it) }
+            lines.drop(from).take(8).forEach { add("DropBox:$tag", it) }
         }
         if (bootCandidates.isEmpty() && dropboxByTag.values.none { value ->
                 value.lineSequence().any { clue.containsMatchIn(it) && !noEntries.containsMatchIn(it) }

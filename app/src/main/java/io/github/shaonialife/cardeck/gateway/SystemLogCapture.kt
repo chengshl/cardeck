@@ -54,7 +54,7 @@ object SystemLogCapture {
      * A reboot generally stops Shizuku; recover that first for system evidence.
      */
     fun recoveryPreview(context: Context, redactor: LogRedactor): List<String> {
-        val previousApp = DebugFileLog.readPreviousSession(context)
+        val previousApp = CrashEvidenceSelector.joinPriorSessions(DebugFileLog.readPriorSessions(context))
         val ready = ShizukuGate.state(context) == ShizukuGate.State.READY
         if (!ready) {
             return CrashEvidenceSelector.select(previousApp, null, emptyMap(), false, redactor)
