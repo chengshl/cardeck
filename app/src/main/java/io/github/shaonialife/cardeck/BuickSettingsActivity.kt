@@ -12,7 +12,6 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Spinner
-import android.widget.Switch
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import io.github.shaonialife.cardeck.buick.BuickInsets
@@ -81,66 +80,90 @@ class BuickSettingsActivity : AppCompatActivity() {
         })
         heading("曲面屏安全区域", "设置下次连接生效；桌面与触摸功能始终保持开启")
 
-        // Whole card is tappable, and the state remains clear even when the
-        // Android switch thumb is hard to distinguish on dark displays.
+        // T60: explicitly labelled two-state control. A tinted switch thumb was
+        // indistinct on Sony's dark screen; never rely on position/color alone.
         val toggleCard = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            setPadding(px(16), px(16), px(14), px(16))
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(16), px(16), px(16), px(16))
             isClickable = true
             isFocusable = true
         }
-        val toggleLabels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        toggleLabels.addView(label("CarPlay 曲面屏安全区域", 16f).apply {
+        toggleCard.addView(label("CarPlay 曲面屏安全区域", 16f).apply {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, 0, 0, px(3))
+            setPadding(0, 0, 0, px(5))
         })
-        val stateText = label("", 13f).apply {
+        val stateText = label("", 14f).apply {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, px(4), 0, 0)
+            setPadding(0, px(2), 0, px(12))
         }
-        toggleLabels.addView(stateText)
-        toggleCard.addView(
-            toggleLabels,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                rightMargin = px(8)
-            },
-        )
-        val enabledSwitch = Switch(this).apply {
-            text = ""
-            showText = false
-            isChecked = BuickVehiclePrefs.enabled(this@BuickSettingsActivity)
-            minimumWidth = px(54)
-            thumbTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(accent, getColor(R.color.m3_outline)),
-            )
-            trackTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(getColor(R.color.m3_pri_container), getColor(R.color.m3_surface_highest)),
-            )
+        toggleCard.addView(stateText)
+
+        val choiceRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(px(4), px(4), px(4), px(4))
+            background = rounded(getColor(R.color.m3_surface), getColor(R.color.m3_outline), 14)
         }
-        toggleCard.addView(enabledSwitch)
+        fun choice(): TextView = TextView(this).apply {
+            textSize = 16f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = android.view.Gravity.CENTER
+            minHeight = px(54)
+            isClickable = true
+            isFocusable = true
+        }
+        val offChoice = choice()
+        val onChoice = choice()
+        choiceRow.addView(offChoice, LinearLayout.LayoutParams(0, px(54), 1f).apply {
+            rightMargin = px(4)
+        })
+        choiceRow.addView(onChoice, LinearLayout.LayoutParams(0, px(54), 1f))
+        toggleCard.addView(choiceRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ))
+
         fun updateToggle(on: Boolean) {
-            val state = if (on) "●  已开启" else "○  已关闭"
-            stateText.text = state
-            stateText.setTextColor(if (on) getColor(R.color.m3_ok) else secondary)
+            stateText.text = if (on) "当前状态：已开启" else "当前状态：已关闭"
+            stateText.setTextColor(if (on) getColor(R.color.m3_on_pri_container) else fg)
             toggleCard.background = rounded(
                 if (on) getColor(R.color.m3_pri_container) else surfaceHigh,
                 if (on) accent else getColor(R.color.m3_outline),
             )
-            enabledSwitch.contentDescription = "CarPlay 曲面屏安全区域，" + state
-            toggleCard.contentDescription = "CarPlay 曲面屏安全区域，" + state + "，点击切换"
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                enabledSwitch.stateDescription = if (on) "已开启" else "已关闭"
+            for ((choice, value) in listOf(offChoice to false, onChoice to true)) {
+                val selected = value == on
+                choice.text = when {
+                    selected && value -> "✓ 已开启"
+                    selected -> "✓ 已关闭"
+                    value -> "开启"
+                    else -> "关闭"
+                }
+                choice.setTextColor(if (selected) getColor(R.color.m3_on_primary) else fg)
+                choice.background = rounded(
+                    if (selected) accent else getColor(R.color.m3_surface_high),
+                    null, 11,
+                )
+                choice.isSelected = selected
+                choice.contentDescription = (if (value) "开启" else "关闭") +
+                    " CarPlay 曲面屏安全区域，" + (if (selected) "当前已选" else "点击选择")
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    choice.stateDescription = if (selected) "已选中" else "未选中"
+                }
             }
+            toggleCard.contentDescription = "CarPlay 曲面屏安全区域，" +
+                (if (on) "已开启" else "已关闭") + "，点击可切换"
         }
-        updateToggle(enabledSwitch.isChecked)
-        enabledSwitch.setOnCheckedChangeListener { _, on ->
+        fun selectToggle(on: Boolean) {
+            // Preserve T59's immediate persistent setting and next-connection effect.
             BuickVehiclePrefs.setEnabled(this@BuickSettingsActivity, on)
             updateToggle(on)
         }
-        toggleCard.setOnClickListener { enabledSwitch.toggle() }
+        offChoice.setOnClickListener { selectToggle(false) }
+        onChoice.setOnClickListener { selectToggle(true) }
+        toggleCard.setOnClickListener {
+            selectToggle(!BuickVehiclePrefs.enabled(this@BuickSettingsActivity))
+        }
+        updateToggle(BuickVehiclePrefs.enabled(this))
         root.addView(toggleCard, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
