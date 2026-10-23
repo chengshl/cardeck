@@ -36,7 +36,7 @@
     <string name="gateway_system_preview_title">确认上传这份系统日志？</string>
     <string name="gateway_system_preview_help">最近 main/system 缓冲区中的警告与错误，脱敏后共 %1$d 行。请检查下方全部内容；只上传这份预览，不持续采集。取消不会上传。</string>
     <string name="gateway_system_confirm">确认上传这份日志</string>
-    <string name="gateway_system_cancel">取消，不上传</string>
+    <string name="gateway_system_cancel">取消</string>
     <string name="gateway_system_pending">系统日志正在上传，等待服务端逐批确认…</string>
     <string name="gateway_system_expired">连接已变化、预览已过期或上传未完成，请重新预览确认。</string>
     <string name="gateway_reports">状态已上报 · 服务端已确认 %1$d 次</string>
