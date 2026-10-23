@@ -25,12 +25,6 @@ class BuickSettingsActivity : AppCompatActivity() {
     private lateinit var details: TextView
     private lateinit var modes: RadioGroup
     private lateinit var marginInputs: List<EditText>
-    private lateinit var standaloneModes: RadioGroup
-    private val standaloneSafeChoiceId = View.generateViewId()
-    private val standaloneFullChoiceId = View.generateViewId()
-    private lateinit var appModes: Spinner
-    private lateinit var appPicker: Spinner
-    private val appChoices = mutableListOf<Pair<String, String>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -134,90 +128,54 @@ class BuickSettingsActivity : AppCompatActivity() {
             }
         }
         root.addView(marginRow)
-        root.addView(label("单独打开 App 的显示模式", 19f))
-        root.addView(label("只影响单独打开的应用及全屏地图，不改变主页、Dock、仪表盘地图卡片。"))
-        standaloneModes = RadioGroup(this).apply {
-            orientation = RadioGroup.VERTICAL
-            addView(RadioButton(this@BuickSettingsActivity).apply {
-                id = standaloneSafeChoiceId
-                tag = "safe"
-                text = "安全区域 · 完整保留界面，等比例缩小，边缘使用壁纸"
-                setTextColor(fg)
-                buttonTintList = ColorStateList.valueOf(accent)
-            })
-            addView(RadioButton(this@BuickSettingsActivity).apply {
-                id = standaloneFullChoiceId
-                tag = "full"
-                text = "全铺满 · 适合视频，允许边缘内容被车机裁切"
-                setTextColor(fg)
-                buttonTintList = ColorStateList.valueOf(accent)
-            })
-        }
-        root.addView(standaloneModes)
-        root.addView(label("个别 App 单独设置（可覆盖当前车辆默认方案）", 17f))
-        val launchIntent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
-            addCategory(android.content.Intent.CATEGORY_LAUNCHER)
-        }
-        val installed = packageManager.queryIntentActivities(launchIntent, 0)
-            .mapNotNull { info ->
-                val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
-                if (pkg == packageName) null else pkg to info.loadLabel(packageManager).toString()
+        root.addView(label("应用显示", 19f))
+        val appManagement = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(px(16), px(16), px(16), px(16))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = px(18).toFloat()
+                setColor(surfaceHigh)
+                setStroke(px(1), getColor(R.color.m3_outline_var))
             }
-            .distinctBy { it.first }
-            .sortedBy { it.second.lowercase() }
-        appChoices.addAll(installed)
-        // Explicit light text on dark panels: native Spinner theme defaults are
-        // not reliably readable on Sony dark UI (same issue as T33 settings).
-        fun readableAdapter(items: List<String>) = object : ArrayAdapter<String>(
-            this, android.R.layout.simple_spinner_item, items,
-        ) {
-            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
-                (super.getView(position, convertView, parent) as TextView).apply {
-                    setTextColor(fg)
-                    setBackgroundColor(surfaceHigh)
-                    setPadding(px(10), px(10), px(10), px(10))
-                }
-            override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
-                (super.getDropDownView(position, convertView, parent) as TextView).apply {
-                    setTextColor(fg)
-                    setBackgroundColor(surfaceHigh)
-                    setPadding(px(10), px(10), px(10), px(10))
-                }
-        }
-        appPicker = Spinner(this)
-        appPicker.adapter = readableAdapter(appChoices.map { "${it.second} · ${it.first}" })
-        root.addView(appPicker)
-        appModes = Spinner(this)
-        appModes.adapter = readableAdapter(listOf("跟随车辆默认", "安全区域", "全铺满"))
-        root.addView(appModes)
-        val perAppSave = Button(this).apply {
-            text = "保存该 App 显示方式"
-            setTextColor(getColor(R.color.m3_on_primary))
-            backgroundTintList = ColorStateList.valueOf(accent)
+            isClickable = true
+            isFocusable = true
             setOnClickListener {
-                val key = editingKey ?: return@setOnClickListener
-                val pkg = appChoices.getOrNull(appPicker.selectedItemPosition)?.first ?: return@setOnClickListener
-                val mode = when (appModes.selectedItemPosition) {
-                    1 -> "safe"
-                    2 -> "full"
-                    else -> null
-                }
-                BuickVehiclePrefs.setAppOverride(this@BuickSettingsActivity, key, pkg, mode)
-                android.widget.Toast.makeText(
-                    this@BuickSettingsActivity, "已保存该 App 的模式，重新打开该 App 时生效",
-                    android.widget.Toast.LENGTH_SHORT,
-                ).show()
+                val vehicle = editingKey ?: return@setOnClickListener
+                startActivity(android.content.Intent(
+                    this@BuickSettingsActivity, BuickAppDisplayActivity::class.java,
+                ).putExtra(BuickAppDisplayActivity.EXTRA_VEHICLE_KEY, vehicle))
             }
         }
-        root.addView(perAppSave)
-        appPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                refreshAppOverride()
-            }
+        val appIcon = android.widget.ImageView(this).apply {
+            setImageResource(android.R.drawable.ic_menu_manage)
+            imageTintList = ColorStateList.valueOf(accent)
+            contentDescription = null
         }
-        if (appChoices.isEmpty()) perAppSave.isEnabled = false
-
+        appManagement.addView(appIcon, LinearLayout.LayoutParams(px(28), px(28)))
+        val appCopy = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(14), 0, px(8), 0)
+        }
+        appCopy.addView(label("应用显示管理", 16f).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 0, 0)
+        })
+        appCopy.addView(label("应用列表 · 搜索 · 独立安全区/全铺满", 12f).apply {
+            setPadding(0, px(3), 0, 0)
+        })
+        appManagement.addView(appCopy, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        appManagement.addView(label("›", 26f).apply {
+            setTextColor(accent)
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, 0, 0, 0)
+        })
+        root.addView(appManagement, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            topMargin = px(6)
+            bottomMargin = px(16)
+        })
         val save = Button(this).apply {
             text = "保存当前车辆方案"
             setTextColor(getColor(R.color.m3_on_primary))
@@ -234,13 +192,11 @@ class BuickSettingsActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 BuickVehiclePrefs.save(this@BuickSettingsActivity, key, mode, custom)
-                val standalone = if (standaloneModes.checkedRadioButtonId == standaloneSafeChoiceId) "safe" else "full"
-                BuickVehiclePrefs.setStandaloneMode(this@BuickSettingsActivity, key, standalone)
                 android.widget.Toast.makeText(this@BuickSettingsActivity, "已保存，下次连接该车后生效", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
         root.addView(save)
-        root.addView(label("主页安全区与独立 App 显示分别配置。安全模式保持比例、同步触摸；全铺满不会拉伸视频，但屏幕角落可能裁切按钮。单独 App 设置在下次打开时生效。", 12f))
+        root.addView(label("主页安全区域在此保存；单独打开应用的默认方案和独立配置请进入「应用显示管理」，选择后自动保存。", 12f))
         if (profiles.isNotEmpty()) {
             spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
@@ -265,23 +221,10 @@ class BuickSettingsActivity : AppCompatActivity() {
             val option = modes.getChildAt(i) as RadioButton
             if (option.tag == profile.mode) modes.check(option.id)
         }
-        standaloneModes.check(if (profile.standaloneMode == "safe") standaloneSafeChoiceId else standaloneFullChoiceId)
-        refreshAppOverride()
         val v = profile.manual
         listOf(v.left, v.top, v.right, v.bottom).forEachIndexed { i, value ->
             marginInputs[i].setText(value.toString())
         }
     }
 
-    private fun refreshAppOverride() {
-        if (!::appModes.isInitialized || !::appPicker.isInitialized) return
-        val key = editingKey ?: return
-        val pkg = appChoices.getOrNull(appPicker.selectedItemPosition)?.first ?: return
-        val value = BuickVehiclePrefs.appOverride(this, key, pkg)
-        appModes.setSelection(when (value) {
-            "safe" -> 1
-            "full" -> 2
-            else -> 0
-        })
-    }
 }

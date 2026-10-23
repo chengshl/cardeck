@@ -93,6 +93,10 @@
             android:name="io.github.shaonialife.cardeck.BuickSettingsActivity"
             android:exported="false" />
         <activity
+            android:name="io.github.shaonialife.cardeck.BuickAppDisplayActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
             android:name="io.github.shaonialife.cardeck.SettingsContentActivity"
             android:exported="false" />
 
