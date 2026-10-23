@@ -14,6 +14,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import io.github.shaonialife.cardeck.buick.BuickE5HandshakePrefs
 import io.github.shaonialife.cardeck.buick.BuickInsets
 import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
 
@@ -75,9 +76,84 @@ class BuickSettingsActivity : AppCompatActivity() {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setPadding(0, px(6), 0, px(4))
         })
-        root.addView(label("显示与安全区 · 仅调整显示布局，不改变连接、蓝牙或音频策略", 13f).apply {
+        root.addView(label("曲面屏显示适配与连接实验 · 两项设置相互独立", 13f).apply {
             setPadding(0, 0, 0, px(16))
         })
+        heading("CarPlay 连接实验", "默认关闭；仅在测试其他别克曲面屏车机时启用")
+        val handshakeCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(16), px(15), px(16), px(16))
+            background = rounded(surfaceHigh, getColor(R.color.m3_outline), 16)
+        }
+        handshakeCard.addView(label("强制使用 E5/B233 握手流程", 16f).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 0, px(5))
+        })
+        handshakeCard.addView(label(
+            "开启后，下次连接跳过车型身份/消息清单的协议选择，直接执行 E5 的 32B MFi、0x4300/0x4301 流程。关闭后恢复默认识别；不会自动清除配对。",
+            12f,
+        ).apply { setPadding(0, 0, 0, px(10)) })
+        val handshakeStatus = label("", 14f).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 0, px(10))
+        }
+        handshakeCard.addView(handshakeStatus)
+        val handshakeChoices = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(px(4), px(4), px(4), px(4))
+            background = rounded(getColor(R.color.m3_surface), getColor(R.color.m3_outline), 12)
+        }
+        fun handshakeOption(): TextView = TextView(this).apply {
+            textSize = 15f
+            gravity = android.view.Gravity.CENTER
+            minHeight = px(50)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            isClickable = true
+            isFocusable = true
+        }
+        val handshakeOff = handshakeOption()
+        val handshakeOn = handshakeOption()
+        handshakeChoices.addView(handshakeOff, LinearLayout.LayoutParams(0, px(50), 1f).apply { rightMargin = px(4) })
+        handshakeChoices.addView(handshakeOn, LinearLayout.LayoutParams(0, px(50), 1f))
+        handshakeCard.addView(handshakeChoices)
+        fun refreshHandshake(enabled: Boolean) {
+            handshakeStatus.text = if (enabled) "当前：强制 E5 握手（实验中）" else "当前：默认协议（推荐）"
+            handshakeStatus.setTextColor(if (enabled) getColor(R.color.m3_amber) else getColor(R.color.m3_ok))
+            for ((choice, on) in listOf(handshakeOff to false, handshakeOn to true)) {
+                val checked = enabled == on
+                choice.text = when {
+                    checked && on -> "✓ 强制 E5"
+                    checked -> "✓ 默认关闭"
+                    on -> "强制 E5"
+                    else -> "默认关闭"
+                }
+                choice.setTextColor(if (checked) getColor(R.color.m3_on_primary) else fg)
+                choice.background = rounded(
+                    if (checked) accent else surfaceHigh, null, 10,
+                )
+                choice.contentDescription = choice.text.toString() + (if (checked) "，已选择" else "，点击切换")
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    choice.stateDescription = if (checked) "已选中" else "未选中"
+                }
+            }
+        }
+        handshakeOff.setOnClickListener {
+            BuickE5HandshakePrefs.setEnabled(this@BuickSettingsActivity, false)
+            refreshHandshake(false)
+        }
+        handshakeOn.setOnClickListener {
+            BuickE5HandshakePrefs.setEnabled(this@BuickSettingsActivity, true)
+            refreshHandshake(true)
+        }
+        refreshHandshake(BuickE5HandshakePrefs.enabled(this))
+        root.addView(handshakeCard, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { bottomMargin = px(12) })
+        root.addView(label(
+            "只对已选目标车机，或自动发现中名称包含 Buick 的设备强制生效；建议先在「连接准备」指定目标车机。更改后需重新连接。",
+            12f,
+        ).apply { setPadding(0, 0, 0, px(12)) })
+
         heading("曲面屏安全区域", "设置下次连接生效；桌面与触摸功能始终保持开启")
 
         // T60: explicitly labelled two-state control. A tinted switch thumb was

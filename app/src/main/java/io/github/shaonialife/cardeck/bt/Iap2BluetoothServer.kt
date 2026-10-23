@@ -5,6 +5,8 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import io.github.shaonialife.cardeck.gateway.GatewayVehicleIdentity
+import io.github.shaonialife.cardeck.buick.BuickE5HandshakePrefs
+import io.github.shaonialife.cardeck.buick.BuickE5HandshakeTarget
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
@@ -147,14 +149,18 @@ class Iap2BluetoothServer(
             } else {
                 log("BT: 接收端已连入 name=$peerName，开始 iAP2 发送端会话")
             }
-            Thread({ runSession(socket) }, "iap2-bt-session").apply {
+            val forcedE5 = BuickE5HandshakeTarget.shouldForce(
+                BuickE5HandshakePrefs.enabled(context), target?.address,
+                peerAddress, peerName,
+            )
+            Thread({ runSession(socket, forcedE5) }, "iap2-bt-session").apply {
                 isDaemon = true
                 start()
             }
         }
     }
 
-    private fun runSession(socket: BluetoothSocket) {
+    private fun runSession(socket: BluetoothSocket, forcedE5: Boolean) {
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
@@ -167,7 +173,7 @@ class Iap2BluetoothServer(
             channel.runSenderSession(
                 context, SESSION_TIMEOUT_MILLIS, log,
                 { endpoint ->
-                    if (endpoint.isBuickB233 &&
+                    if (endpoint.isBuickB233 && !forcedE5 &&
                         ReceiverCompatibilityMemory.rememberB233(context, socket.remoteDevice?.address)
                     ) {
                         log("BT: 已记录 B233 实车协议画像（仅本机；蓝牙改名后仍可识别）")
@@ -176,6 +182,7 @@ class Iap2BluetoothServer(
                 },
                 onWifiCredentials,
                 onEndpointUpdate,
+                forceBuickE5 = forcedE5,
             )
         } catch (error: IOException) {
             log("SESSION 失败: ${error.message}")

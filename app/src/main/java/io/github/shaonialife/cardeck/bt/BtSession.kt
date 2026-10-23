@@ -17,6 +17,7 @@ internal fun Iap2LinkChannel.runSenderSession(
     onEndpoint: (Iap2SenderSession.CarPlayEndpoint) -> Unit,
     onWifiCredentials: (Iap2SenderSession.WifiConfiguration) -> Unit,
     onEndpointUpdate: (Iap2SenderSession.CarPlayEndpoint) -> Unit,
+    forceBuickE5: Boolean = false,
 ) {
     val session =
         Iap2SenderSession(
@@ -28,6 +29,7 @@ internal fun Iap2LinkChannel.runSenderSession(
             onEndpointUpdate,
             // MFi 挑战长度按车机身份持久化（省掉 20B 静默 6 秒的试探）
             context.applicationContext,
+            forceBuickE5 = forceBuickE5,
         )
     val endpoint = session.run(timeoutMillis)
     onEndpoint(endpoint)

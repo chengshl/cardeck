@@ -4,6 +4,8 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import io.github.shaonialife.cardeck.gateway.GatewayVehicleIdentity
+import io.github.shaonialife.cardeck.buick.BuickE5HandshakePrefs
+import io.github.shaonialife.cardeck.buick.BuickE5HandshakeTarget
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
@@ -235,6 +237,7 @@ class Iap2BluetoothClient(
             }
             var connected: BluetoothSocket? = null
             var connectedKnownBuick = false
+            var connectedForcedE5 = false
             for (device in candidates) {
                 if (!running || generation.get() != myGeneration) return
                 val name =
@@ -248,10 +251,17 @@ class Iap2BluetoothClient(
                 // in T1, but Android sometimes reports no accessory iAP2 UUID
                 // in its SDP cache. Bypass only this known receiver, never all
                 // paired devices (headphones/watch still require SDP).
-                val knownBuick = BuickB233Route.useB233Transport(
+                val forcedE5 = BuickE5HandshakeTarget.shouldForce(
+                    BuickE5HandshakePrefs.enabled(context),
+                    targetProvider()?.address,
+                    device.address,
+                    name,
+                )
+                val knownBuick = forcedE5 || BuickB233Route.useB233Transport(
                     name,
                     ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
                 )
+                if (forcedE5) log("BT-C: Test 实验开关生效，本轮使用 E5/B233 连接与握手（不写入 B233 自动识别记忆）")
                 if (knownBuick) B233PairingMonitor.trackKnownReceiver(device.address)
                 if (targetProvider() == null && knownBuick &&
                     skippedNoService.add("B233:" + device.address)
@@ -330,6 +340,7 @@ class Iap2BluetoothClient(
                     log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
                     connected = socket
                     connectedKnownBuick = knownBuick
+                    connectedForcedE5 = forcedE5
                     break
                 } else {
                     val now = android.os.SystemClock.uptimeMillis()
@@ -352,7 +363,7 @@ class Iap2BluetoothClient(
             // Diagnostics only: resolve a random vehicle label after a real RFCOMM connection.
             val vehicleId = runCatching { GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address) }.getOrNull()
             try {
-                runSession(connected, connectedKnownBuick)
+                runSession(connected, connectedKnownBuick, connectedForcedE5)
             } finally {
                 GatewayVehicleIdentity.clearIfActive(vehicleId)
             }
@@ -398,8 +409,12 @@ class Iap2BluetoothClient(
         // Known B233 first: otherwise another paired device with a visible
         // UUID can make the candidates list omit Buick entirely.
         val knownBuick = bonded.filter { device ->
-            BuickB233Route.useB233Transport(
-                runCatching { device.name }.getOrNull(),
+            val name = runCatching { device.name }.getOrNull()
+            BuickE5HandshakeTarget.shouldForce(
+                BuickE5HandshakePrefs.enabled(context),
+                targetProvider()?.address, device.address, name,
+            ) || BuickB233Route.useB233Transport(
+                name,
                 ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
             )
         }
@@ -431,7 +446,7 @@ class Iap2BluetoothClient(
         }
     }
 
-    private fun runSession(socket: BluetoothSocket, knownBuick: Boolean) {
+    private fun runSession(socket: BluetoothSocket, knownBuick: Boolean, forcedE5: Boolean) {
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
@@ -444,7 +459,7 @@ class Iap2BluetoothClient(
                 { endpoint ->
                     // Only a completed B233 0x4301 exchange can teach the phone
                     // this receiver's protocol. Bluetooth names alone never do.
-                    if (endpoint.isBuickB233) {
+                    if (endpoint.isBuickB233 && !forcedE5) {
                         if (ReceiverCompatibilityMemory.rememberB233(context, socket.remoteDevice?.address)) {
                             log("BT-C: 已记录 B233 实车协议画像（仅本机；蓝牙改名后仍可识别）")
                         }
@@ -456,6 +471,7 @@ class Iap2BluetoothClient(
                 },
                 onWifiCredentials,
                 onEndpointUpdate,
+                forceBuickE5 = forcedE5,
             )
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")

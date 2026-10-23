@@ -44,6 +44,8 @@ class Iap2SenderSession(
      * 内存表（单测/纯 JVM），不影响协议流程。
      */
     private val context: android.content.Context? = null,
+    /** Buick-Test only: explicit user override; never derived from an unverified receiver name/list. */
+    private val forceBuickE5: Boolean = false,
 ) {
     /** 从 0x5703 + 0x4301 解析出的接收端信息。 */
     data class CarPlayEndpoint(
@@ -185,9 +187,10 @@ class Iap2SenderSession(
         // ---- MFi（跳过校验：0xAA05 自报成功）----
         val identityText = identityText(identification)
         val legacyCar = LEGACY_RECEIVER_MARKERS.any { identityText.contains(it) }
-        val buickB233 = identityText.contains("buick") &&
+        val buickB233 = forceBuickE5 || (identityText.contains("buick") &&
             identityText.contains("b233") &&
-            identityText.contains("saic general motors")
+            identityText.contains("saic general motors"))
+        if (forceBuickE5) log("iap2 Buick-Test: 用户强制 E5/B233 流程；忽略车型身份及消息清单的路径选择")
         if (buickB233) log("iap2 B233: exact 32B MFi; 75B two-group 0x4300")
         if (legacyCar) {
             log("iap2 识别为真车系（$identityText）——MFi 首选 20B（真 iPhone 实录长度；32B 对真车处置不稳定）")
@@ -634,7 +637,8 @@ class Iap2SenderSession(
      */
     private fun handleLateStartSession(frame: Iap2Csm.Frame) {
         logStartSessionRaw(frame)
-        val endpoint = parseStartSession(frame, wifi)
+        val parsed = parseStartSession(frame, wifi)
+        val endpoint = if (forceBuickE5) parsed.copy(isBuickB233 = true) else parsed
         if (wifi == null && endpoint.ssid.isNotEmpty()) {
             wifi =
                 WifiConfiguration(
