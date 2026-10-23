@@ -14,10 +14,26 @@ import java.util.UUID
  * Only infrequent named transitions should call mark().
  */
 internal object CriticalEventTrail {
-    private const val PREFS = "buick-e5-t52-critical-events"
+    private const val PREFS = BuickDiagnosticStorage.EVENTS
     private const val KEY = "last_50"
     private val session = UUID.randomUUID().toString().substring(0, 8)
     private val lock = Any()
+
+    private fun readStoredEvents(context: Context): List<CriticalEvent> {
+        val current = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val raw = if (current.contains(KEY)) {
+            current.getString(KEY, "").orEmpty()
+        } else {
+            // Preserve history saved under the old APK-specific file name.
+            // mark() writes the common name after reading this old data.
+            BuickDiagnosticStorage.legacyPrefs(context.packageName, "t52-critical-events")
+                ?.let { legacy ->
+                    context.applicationContext.getSharedPreferences(legacy, Context.MODE_PRIVATE)
+                        .getString(KEY, "")
+                }.orEmpty()
+        }
+        return CriticalTrailRing.decode(raw)
+    }
 
     fun mark(context: Context, stage: String) {
         if (!CriticalTrailRing.validPhase(stage)) return
@@ -25,7 +41,7 @@ internal object CriticalEventTrail {
         val ok = synchronized(lock) {
             runCatching {
                 val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                val old = CriticalTrailRing.decode(prefs.getString(KEY, "").orEmpty())
+                val old = readStoredEvents(context)
                 val next = CriticalTrailRing.append(old, entry)
                 prefs.edit().putString(KEY, CriticalTrailRing.encode(next)).commit()
             }.getOrDefault(false)
@@ -38,8 +54,7 @@ internal object CriticalEventTrail {
     fun recentLines(context: Context): List<String> {
         val events = synchronized(lock) {
             runCatching {
-                val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                CriticalTrailRing.decode(prefs.getString(KEY, "").orEmpty())
+                readStoredEvents(context)
             }.getOrDefault(emptyList())
         }
         val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ", Locale.US)
