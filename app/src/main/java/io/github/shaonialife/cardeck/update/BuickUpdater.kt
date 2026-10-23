@@ -198,8 +198,7 @@ object BuickUpdater {
                                 "当前版本：$installedVersionName\n" +
                                     "最新版本：$versionName\n" +
                                     "来源分支：$branch\n\n" +
-                                    "更新说明：\n$changeNotes\n\n" +
-                                    "仅安装 $SOURCE_BRANCH 分支的新版本，是否继续？",
+                                    "更新说明：\n$changeNotes",
                             )
                             .setNegativeButton("取消", null)
                             .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity)) }
