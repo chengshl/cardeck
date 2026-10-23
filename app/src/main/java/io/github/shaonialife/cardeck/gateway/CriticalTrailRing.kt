@@ -32,7 +32,7 @@ internal object CriticalTrailRing {
             val elapsed = columns[1].toLongOrNull() ?: return@mapNotNull null
             if (wall < 0 || elapsed < 0) return@mapNotNull null
             CriticalEvent(wall, elapsed, columns[2], columns[3])
-        }.takeLast(MAX).toList()
+        }.toList().takeLast(MAX)
 
     /** A system_server-only restart does not reset Android elapsed realtime. */
     fun possibleDeviceReboot(before: CriticalEvent, after: CriticalEvent) =
