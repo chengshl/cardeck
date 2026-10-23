@@ -47,7 +47,6 @@ import io.github.shaonialife.cardeck.ui.SignalWavesView
 import io.github.shaonialife.cardeck.ui.WallpaperStore
 import io.github.shaonialife.cardeck.util.Bg
 import io.github.shaonialife.cardeck.util.LogExporter
-import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import java.util.Locale
 
 /**
@@ -226,7 +225,7 @@ class MainActivity : AppCompatActivity() {
         java.util.concurrent.atomic
             .AtomicBoolean(false)
 
-    /** Buick-main T41: CarPlay audio is not released; connect with video only. */
+    /** Buick-main: keep Test's connection path but always select video-only. */
     private fun showAudioChoiceDialog() {
         beginWithAudio(enabled = false)
     }
@@ -371,7 +370,7 @@ class MainActivity : AppCompatActivity() {
             title = "断开连接？",
             message =
                 "将停止车机推流并关闭保活服务，车机画面会立即中断。\n\n" +
-                    "注意：投屏授权会随服务停止失效，下次如需车机侧声音请重新授权。",
+                    "普通蓝牙 A2DP 音源不受 CarPlay 视频连接的控制。",
             actions =
                 listOf(
                     DarkMessageDialog.Action("取消") {},
@@ -466,19 +465,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun beginWithAudio(enabled: Boolean) {
-        // Main branch never negotiates CarPlay audio, even if an older callback
-        // passes true. The ordinary Bluetooth A2DP route remains untouched.
-        SessionController.audioEnabledForSession =
-            io.github.shaonialife.cardeck.audio.BuickMainAudioPolicy.effectiveAudioEnabled(enabled)
+        // Buick-main: no CarPlay audio authorization or negotiation is reachable
+        // from this app. Leave Test's session, protocol, display and codec logic intact.
+        SessionController.audioEnabledForSession = false
         SessionController.audioPreferCompat = false
         pendingStartAfterProjection.set(false)
-        log("MODE T41: Buick-main 暂停 CarPlay 声音连接，仅视频 + 普通蓝牙音源")
+        log("MODE: Buick-main 仅视频；音频继续使用普通蓝牙 A2DP")
         startConnectionNow()
     }
 
     /** 「启动连接」主体（权限检查留在这里；会话启动交给 [SessionController]，幂等不双开）。 */
     private fun startConnectionNow() {
-        CriticalEventTrail.mark(this, "CONNECTION_REQUESTED")
         runOnUiThread {
             // 兜底守卫：授权回调等延迟路径也可能走到这里，Shizuku 中途停掉时同样要拦住
             val gate = ShizukuGate.state(this)
@@ -792,10 +789,9 @@ class MainActivity : AppCompatActivity() {
         // 目标车机选择：配对了多台车机时指定唯一目标（只向它发请求/只接受它连入）
         btnPickTarget.setOnClickListener { showTargetPicker() }
 
-        // T41: CarPlay audio capture is intentionally unavailable in main.
+        // Buick-main: the optional audio authorization control is disabled.
         btnAudio.isEnabled = false
         btnAudio.isClickable = false
-        btnAudio.alpha = 0.65f
 
         // ---- 车机显示 ----
         findViewById<LinearLayout>(R.id.rowDim).setOnClickListener {
@@ -878,11 +874,12 @@ class MainActivity : AppCompatActivity() {
         // 所以 Shizuku 授权成功、连接建立等时机都会再调一次。
         ensureNotificationAccessAsync()
 
-        // ---- Upstream-compatible car settings (no Buick-only diagnostics or update entries) ----
+        // ---- 车机设置（手机侧二级菜单：桌面/横屏/超采样/dock/默认地图） ----
         findViewById<LinearLayout>(R.id.btnCarSettings).setOnClickListener {
             startActivity(android.content.Intent(this, PhoneSettingsActivity::class.java))
         }
-        // Buick-specific settings, diagnostics and updater, isolated from upstream menus.
+
+        // T33: Buick VCS settings are local and per anonymously identified car.
         findViewById<LinearLayout>(R.id.btnBuickSettings).setOnClickListener {
             startActivity(android.content.Intent(this, BuickMenuActivity::class.java))
         }
@@ -1092,7 +1089,7 @@ class MainActivity : AppCompatActivity() {
             )!!
         DrawableCompat.setTint(icon.mutate(), getColor(if (on) R.color.m3_ok else R.color.m3_outline))
         audioTag.setCompoundDrawablesWithIntrinsicBounds(icon, null, null, null)
-        audioTag.text = "CarPlay 声音推送 · 暂未开放"
+        audioTag.text = if (on) "车机侧声音 · 开启" else "车机侧声音 · 关闭"
     }
 
     /**
@@ -1128,7 +1125,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (bondedCount > 0) ready++
-        if (CarPlayService.mediaProjection != null) ready++
+        // Buick-main: no optional projection authorization is counted.
 
         btBadge.visibility = if (bondedCount >= 0) View.VISIBLE else View.GONE
         if (bondedCount >= 0) {
@@ -1172,11 +1169,18 @@ class MainActivity : AppCompatActivity() {
         } else {
             btnPickTarget.visibility = View.GONE
         }
-        btnAudio.text = "未开放"
-        btnAudio.setTextColor(getColor(R.color.m3_on_var))
-        audioDesc.text = "CarPlay 音频暂未调通 · 视频连接不受影响，音乐走普通蓝牙"
-        btnAudio.isEnabled = false
-        readyCount.text = "$ready/4"
+        val projectionReady =
+            CarPlayService.mediaProjection != null
+        if (projectionReady) {
+            btnAudio.text = "已授权"
+            btnAudio.setTextColor(getColor(R.color.m3_ok))
+            audioDesc.text = "投屏权限已就绪 · 连接时可选开启"
+        } else {
+            btnAudio.text = "授权"
+            btnAudio.setTextColor(getColor(R.color.m3_primary))
+            audioDesc.text = "需要「投屏」权限，可选 · 关闭时车机无声音"
+        }
+        readyCount.text = "$ready/3"
     }
 
     /**
@@ -2036,11 +2040,24 @@ class MainActivity : AppCompatActivity() {
                         "SHELL: 启动检测到 ${residual.size} 个残留虚拟屏: " +
                             residual.joinToString(", ") { "${it.second}(${it.first})" },
                     )
-                    // T45: idle startup is observational ONLY. Never change display
-                    // state, orientation or kill old Shizuku processes on app open.
-                    // On Xperia Android 15, even release/teardown may crash system_server.
-                    log("SHELL T45: 仅检测残留屏，未自动释放；需用户明确确认后清理")
-
+                    // 残留屏 = 上次会话异常退出（进程被杀）：横屏覆盖的会话末复原
+                    // 也没执行——一并清理，避免应用在手机侧残留横屏状态
+                    runCatching {
+                        val reset =
+                            AppOrientationCompat
+                                .resetAll(applicationContext)
+                        if (reset > 0) log("ORIENTATION: 残留会话的横屏覆盖已复原 $reset 个")
+                    }
+                    // 先自动清理一轮（含旧版本 UserService 进程回收——其持有的屏跨进程
+                    // 无法 release，只有进程回收能释放；重装 APK 后 Shizuku 按版本复用的
+                    // 旧进程正是「点清理释放 0/N」的根因，2026-10-16）。清不掉的再问用户。
+                    val released = releaseDisplays(residual.map { it.first })
+                    log("SHELL: 启动残留自动清理（释放 $released/${residual.size}）")
+                    if (released > 0) {
+                        residual =
+                            parseCarPlayDisplays(sh("dumpsys display"))
+                                .filter { it.first !in currentSessionDisplayIds() }
+                    }
                 }
                 runOnUiThread {
                     startupCheckRunning = false
@@ -2049,9 +2066,8 @@ class MainActivity : AppCompatActivity() {
                         pendingResidualDisplays = residual
                         updateResidualChip()
                         if (heroState == HeroState.IDLE) applyHeroState(HeroState.IDLE)
-                        // Do not automatically open a destructive-action dialog on app launch.
-                        // The hero chip keeps an explicit user-operated cleanup entry.
-                        // 自动展开日志卡：仅显示检测结果，等待用户选择清理
+                        promptResidualDisplays(residual)
+                        // 自动展开日志卡：启动清理的两条记录直接可见（卡片默认折叠）
                         findViewById<View>(R.id.logBody).visibility = View.VISIBLE
                         findViewById<ImageView>(R.id.logChevron)
                             .animate()
@@ -2065,9 +2081,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // T45: do not bind the virtual-display service just by opening the App.
-            // HiddenDisplaySource.attach() will bind on an explicit CarPlay start.
-
+            // 预绑定 UserService：预热触摸注入，并触发旧版本残留进程回收（绑定回调内含
+            // reapStaleUserServices——重装 APK 后 Shizuku 不回收的旧进程，其持有的虚拟屏
+            // 只有进程回收能释放）。**必须晚于上方残留扫描**：回收会让旧进程的虚拟屏立即
+            // 消失，若先于扫描发生，残留清单可能变空 → resetAll（强制横屏复原）被跳过。
+            CarInputClient.ensure(this)
         }
     }
 

@@ -32,10 +32,22 @@ internal class B233ReconnectPolicy {
             return detail.contains("0x4301 not received") ||
                 detail.contains("while waiting 0x4301")
         }
+
+        /**
+         * T29: after an audio session teardown, B233 can stop ACKing even
+         * before CarPlay availability (0x4300), or not finish iAP2 SYN/ACK.
+         * These errors must back off, but must NOT arm inbound 0x4300 recovery.
+         */
+        fun isPreAvailabilityPeerSilent(message: String?): Boolean {
+            val detail = message?.lowercase() ?: return false
+            return detail.contains("0x4e0c peer ack missing") ||
+                detail.contains("iap2 链路协商超时")
+        }
     }
 
     private var until = 0L
     private var consecutiveStartTimeouts = 0
+    private var consecutivePreAvailabilityTimeouts = 0
     private var inboundFallbackUsed = false
     private var inboundFallbackArmed = false
 
@@ -43,6 +55,7 @@ internal class B233ReconnectPolicy {
     fun reset() {
         until = 0L
         consecutiveStartTimeouts = 0
+        consecutivePreAvailabilityTimeouts = 0
         inboundFallbackUsed = false
         inboundFallbackArmed = false
     }
@@ -70,6 +83,21 @@ internal class B233ReconnectPolicy {
             inboundFallbackArmed = true
         }
         val backoff = (15_000L shl (consecutiveStartTimeouts - 1))
+            .coerceAtMost(MAX_START_TIMEOUT_BACKOFF_MS)
+        until = maxOf(until, nowMs + backoff)
+        return until - nowMs
+    }
+
+    /**
+     * Slow down repeated pre-0x4300 failures without resetting Bluetooth bonds
+     * or touching HFP/A2DP. This is separate from the successful-0x4300
+     * watchdog: an absent peer ACK before availability cannot justify
+     * launching the receiver-initiated iAP2 one-shot fallback.
+     */
+    @Synchronized
+    fun onPreAvailabilityPeerSilent(nowMs: Long): Long {
+        consecutivePreAvailabilityTimeouts = (consecutivePreAvailabilityTimeouts + 1).coerceAtMost(3)
+        val backoff = (15_000L shl (consecutivePreAvailabilityTimeouts - 1))
             .coerceAtMost(MAX_START_TIMEOUT_BACKOFF_MS)
         until = maxOf(until, nowMs + backoff)
         return until - nowMs

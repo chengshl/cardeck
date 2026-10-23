@@ -645,14 +645,6 @@ object VirtualLauncher {
                             false,
                         )
                     CriticalEventTrail.mark(context, if (dockId >= 0) "CREATE_DOCK_OK" else "CREATE_DOCK_FAILED")
-                    // Android display-added notifications are asynchronous. The
-                    // Sony Android 15 crash was observed ~26ms after Dock returned,
-                    // while the next screen was already being created. Serialize
-                    // the adds without removing any virtual-screen feature.
-                    if (dockId >= 0) {
-                        Thread.sleep(350L)
-                        CriticalEventTrail.mark(context, "CREATE_DOCK_SETTLED")
-                    }
                     CriticalEventTrail.mark(context, "CREATE_APP_BEGIN")
                     val appId =
                         svc!!.createDisplay(
@@ -664,15 +656,10 @@ object VirtualLauncher {
                             true,
                         )
                     CriticalEventTrail.mark(context, if (appId >= 0) "CREATE_APP_OK" else "CREATE_APP_FAILED")
-                    if (appId >= 0) {
-                        Thread.sleep(350L)
-                        CriticalEventTrail.mark(context, "CREATE_APP_SETTLED")
-                    }
                     // 超采样屏（竖屏车机无、应用侧回退时也无）
                     val appHiId =
                         if (appHiSurface != null) {
-                            CriticalEventTrail.mark(context, "CREATE_APPHI_BEGIN")
-                            val created = svc!!.createDisplay(
+                            svc!!.createDisplay(
                                 "CarPlayAppHi",
                                 appHiWidth,
                                 appHiHeight,
@@ -680,17 +667,13 @@ object VirtualLauncher {
                                 appHiSurface,
                                 true,
                             )
-                            CriticalEventTrail.mark(context, if (created >= 0) "CREATE_APPHI_OK" else "CREATE_APPHI_FAILED")
-                            if (created >= 0) Thread.sleep(250L)
-                            created
                         } else {
                             -1
                         }
                     // 地图屏（横竖屏都创建；按应用区全尺寸创建，分屏/全屏间动态 resize）
                     val mapId =
                         if (mapSurface != null) {
-                            CriticalEventTrail.mark(context, "CREATE_MAP_BEGIN")
-                            val created = svc!!.createDisplay(
+                            svc!!.createDisplay(
                                 "CarPlayMap",
                                 appWidth,
                                 appHeightPx,
@@ -698,8 +681,6 @@ object VirtualLauncher {
                                 mapSurface,
                                 true,
                             )
-                            CriticalEventTrail.mark(context, if (created >= 0) "CREATE_MAP_OK" else "CREATE_MAP_FAILED")
-                            created
                         } else {
                             -1
                         }

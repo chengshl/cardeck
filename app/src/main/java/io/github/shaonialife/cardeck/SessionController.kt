@@ -6,11 +6,11 @@ import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
 import io.github.shaonialife.cardeck.buick.BuickViewport
 
 import android.content.Context
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
 import io.github.shaonialife.cardeck.airplay.PairVerifyClient
 import io.github.shaonialife.cardeck.audio.AudioProfile
-import io.github.shaonialife.cardeck.audio.BuickMainAudioPolicy
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
 import io.github.shaonialife.cardeck.audio.AudioTuning
@@ -24,10 +24,10 @@ import io.github.shaonialife.cardeck.capture.HiddenDisplaySource
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
 import io.github.shaonialife.cardeck.iap2.ReceiverProfile
-import io.github.shaonialife.cardeck.input.AirPlayHidCommand
 import io.github.shaonialife.cardeck.input.ConsumerKeys
 import io.github.shaonialife.cardeck.input.TouchReports
 import io.github.shaonialife.cardeck.input.TouchRouter
+import io.github.shaonialife.cardeck.input.AirPlayHidCommand
 import io.github.shaonialife.cardeck.launcher.settings.AppOrientationCompat
 import io.github.shaonialife.cardeck.launcher.settings.DisplayPrefs
 import io.github.shaonialife.cardeck.net.AirPlayFeatures
@@ -39,11 +39,13 @@ import io.github.shaonialife.cardeck.net.WifiSavedNetworks
 import io.github.shaonialife.cardeck.service.CarPlayService
 import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
-import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.ui.ScreenDimmer
 import io.github.shaonialife.cardeck.util.Bg
 import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.video.VideoSender
+import io.github.shaonialife.cardeck.video.SafeDiagnosticFrameSource
+import io.github.shaonialife.cardeck.video.SonyB233CrashGuard
+import io.github.shaonialife.cardeck.video.BuickTestVideoTouchMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -243,6 +245,10 @@ object SessionController {
     @Volatile
     var currentHiddenSource: HiddenDisplaySource? = null
 
+    /** T28: EGL-only B233 Xperia crash-isolation video source; creates zero Android displays. */
+    @Volatile
+    private var currentDiagnosticSource: SafeDiagnosticFrameSource? = null
+
     /** 当前会话的共享密钥与接收端地址：投影授权晚于连接时，动态补启音频用。 */
     @Volatile
     var currentSharedSecret: ByteArray? = null
@@ -253,10 +259,6 @@ object SessionController {
     /** 本次会话是否在车机侧播放声音（由「启动连接」弹窗选择）。 */
     @Volatile
     var audioEnabledForSession: Boolean = false
-        set(value) {
-            // Fail closed even if a legacy UI/callback explicitly enables audio.
-            field = BuickMainAudioPolicy.effectiveAudioEnabled(value)
-        }
 
     /**
      * 「开启声音（兼容档）」：候选里把非 media 档（compatibility 等）排前面。
@@ -431,6 +433,7 @@ object SessionController {
      * 幂等：已有会话时 BT 组件的 start() 自行短路，不会双开。
      */
     fun startConnection(context: Context) {
+        CriticalEventTrail.mark(context, "CONNECTION_REQUESTED")
         B233PairingMonitor.start(context.applicationContext, ::appendLog)
         connectCancelled = false
         phaseHint = "蓝牙就绪，等待车机回连…"
@@ -480,6 +483,7 @@ object SessionController {
 
     /** 「断开连接」（可在任意 Activity 实例上调用——操作的是真管线对象）。 */
     fun disconnect(context: Context) {
+        CriticalEventTrail.mark(context, "CONNECTION_DISCONNECT_REQUESTED")
         // The user's explicit disconnect cancels all in-flight pairing and auto-join work.
         connectCancelled = true
         sessionStarting.set(false)
@@ -518,6 +522,10 @@ object SessionController {
         val retiredClient = currentClient
         currentClient = null
         retiredClient?.cancelled = true
+        // T28: finish EGL producer before stopping/releasing MediaCodec input Surface.
+        val retiredDiagnostic = currentDiagnosticSource
+        currentDiagnosticSource = null
+        retiredDiagnostic?.stop()
         retiredVideo?.stop()
         // 暗幕/常亮随会话收掉（本方法在每轮配对起步也会执行，新一轮推流起来后会重新置位）
         ScreenDimmer.setSessionActive(false)
@@ -547,10 +555,6 @@ object SessionController {
     /** 会话已建立且投影就绪、但音频尚未启动时，动态补启（投影授权晚于连接的场景）。 */
     @Synchronized
     fun maybeStartAudioNow(context: Context) {
-        if (!BuickMainAudioPolicy.CARPLAY_AUDIO_SUPPORTED) {
-            appendLog("AUDIO T41: Buick-main 已屏蔽动态补启 CarPlay 声音，保留蓝牙 A2DP")
-            return
-        }
         val client =
             currentClient ?: run {
                 appendLog("MODE: 投屏已就绪（当前无会话——下次连接时自动启用音频）")
@@ -1149,12 +1153,8 @@ object SessionController {
         sharedSecret: ByteArray?,
         host: String?,
     ): Boolean {
-        if (!BuickMainAudioPolicy.CARPLAY_AUDIO_SUPPORTED) {
-            appendLog("AUDIO T41: Buick-main 未开放 CarPlay 音频，跳过全部音频 SETUP/RTP——仅视频 + 蓝牙音源")
-            return false
-        }
         if (!audioEnabledForSession) {
-            appendLog("AUDIO: 本次连接未启用 CarPlay 声音——仅推视频")
+            appendLog("AUDIO: 本次连接未开启车机侧声音（「启动连接」弹窗选择）——仅推视频")
             return false
         }
         if (sharedSecret == null) {
@@ -2015,7 +2015,30 @@ object SessionController {
                             }
                         }
                         if (setup != null) {
-                            // Main now follows the same display creation path as verified Buick-Test.
+                            // T28: Xperia 1 V Android 15 system_server repeatedly crashed
+                            // in WindowContextListenerImpl on display-add. On B233, keep
+                            // AirPlay video alive with EGL only; NEVER create virtual displays.
+                            // Test-channel ONLY: restore hidden desktop/real touches.
+                            // Keep Sony/B233 crash risk detection to warn in diagnostics.
+                            val sonyB233CrashRisk = SonyB233CrashGuard.useDisplaylessDiagnostic(
+                                android.os.Build.MANUFACTURER,
+                                android.os.Build.MODEL,
+                                android.os.Build.VERSION.SDK_INT,
+                                client.currentEndpoint.isBuickB233,
+                            )
+                            val t28Displayless = BuickTestVideoTouchMode.useT28Displayless(sonyB233CrashRisk)
+                            if (sonyB233CrashRisk && !t28Displayless) {
+                                appendLog(
+                                    "BUICK-TEST WARNING: Sony Android 15/B233 虚拟屏和触摸实验模式已启用；" +
+                                        "绕过 T28 测试条纹，创建虚拟屏可能再次导致手机系统重启；请仅在测试环境使用"
+                                )
+                            }
+                            if (t28Displayless) {
+                                appendLog(
+                                    "SAFETY T28: Xperia XQ-DQ72 / Android 15 / B233：无虚拟屏诊断已自动启用；" +
+                                        "禁用 Shizuku 创建显示器、CarDeck 桌面和触摸注入；仅发送 EGL 测试画面"
+                                )
+                            }
                             // 记录会话凭据：投影授权晚于连接时用于动态补启音频。
                             // 用 client.currentEndpoint 而非 effectiveEndpoint：配对期间
                             // mDNS 刷新过端点时，真正连上的是 client 里的地址（2026-10-18：
@@ -2024,9 +2047,10 @@ object SessionController {
                             currentSharedSecret = sessionKey
                             currentAudioHost =
                                 client.activeHost ?: EndpointHosts.candidates(client.currentEndpoint.ipAddresses).firstOrNull()
-                            // Small aggregate counters only: never log raw touch payloads.
+                            // Periodic counters distinguish missing incoming HID from
+                            // silently discarded HID payloads. No coordinates or device IDs.
                             val eventTypeCounts = hashMapOf<String, Int>()
-                            var lastEventSummaryAt = android.os.SystemClock.elapsedRealtime()
+                            var lastEventTypeSummaryAt = android.os.SystemClock.elapsedRealtime()
                             var hidReceivedCount = 0
                             client.connectEventChannel(sessionKey, setup) { command ->
                                 val incomingType = command["type"]?.toString() ?: "missing"
@@ -2036,13 +2060,13 @@ object SessionController {
                                 }
                                 eventTypeCounts[summaryKey] = (eventTypeCounts[summaryKey] ?: 0) + 1
                                 val now = android.os.SystemClock.elapsedRealtime()
-                                if (now - lastEventSummaryAt >= 30_000L) {
+                                if (now - lastEventTypeSummaryAt >= 30_000L) {
                                     val summary = eventTypeCounts.toSortedMap().entries.joinToString(" ") {
                                         "${it.key}=${it.value}"
                                     }
                                     appendLog("TOUCH DIAG: event30s $summary")
                                     eventTypeCounts.clear()
-                                    lastEventSummaryAt = now
+                                    lastEventTypeSummaryAt = now
                                 }
                                 when (incomingType) {
                                     "hidSendReport" -> {
@@ -2120,11 +2144,17 @@ object SessionController {
                                                 )
                                             }
                                             touchLogCount++
-                                            contacts.forEach {
-                                                TouchRouter.onContact(
-                                                    context.applicationContext,
-                                                    it,
-                                                )
+                                            if (t28Displayless) {
+                                                if (touchLogCount <= 30 || touchLogCount % 50 == 0) {
+                                                    appendLog("SAFETY T28: 触摸诊断仅记录，未注入 Android 显示器")
+                                                }
+                                            } else {
+                                                contacts.forEach {
+                                                    TouchRouter.onContact(
+                                                        context.applicationContext,
+                                                        it,
+                                                    )
+                                                }
                                             }
                                         } else if (report != null) {
                                             appendLog(
@@ -2161,7 +2191,8 @@ object SessionController {
                                         // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
                                         // T26: B233 video-only/A2DP should not take
                                         // ownership of CarPlay main audio on reassert.
-                                        val claimAudio = BuickMainAudioPolicy.shouldClaimCarPlayAudio(
+                                        val claimAudio = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
+                                            client.currentEndpoint.isBuickB233,
                                             audioEnabledForSession,
                                         )
                                         appendLog(
@@ -2191,7 +2222,8 @@ object SessionController {
                             // T26: Always claim main screen; for B233 video-only
                             // avoid claiming main audio while music runs via A2DP.
                             // Audi/non-B233 and CarPlay-audio mode remain unchanged.
-                            val claimAudioForCarPlay = BuickMainAudioPolicy.shouldClaimCarPlayAudio(
+                            val claimAudioForCarPlay = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
+                                client.currentEndpoint.isBuickB233,
                                 audioEnabledForSession,
                             )
                             appendLog(
@@ -2203,7 +2235,8 @@ object SessionController {
                             client.assertModes(claimAudioResource = claimAudioForCarPlay)
                             appendLog(
                                 "TOUCH DIAG: /info declaredHidCount=${setup.hidDeviceUuids.size} " +
-                                    "descriptorCount=${setup.hidDescriptors.size}; monitoring HID events"
+                                    "descriptorCount=${setup.hidDescriptors.size}; " +
+                                    "watching HID command delivery (Buick-Test)"
                             )
                             // HID 输入模式武装：/info hidDevices（奥迪字符串 "0"/"1"，触摸="1"）。
                             // display features=0x08（高保真触摸）已声明，缺这步车机不发 hidSendReport。
@@ -2372,6 +2405,9 @@ object SessionController {
                                             vehicleNetwork =
                                                 if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                                             keepAliveWithStats = setup.keepAliveSendStatsAsBody,
+                                            // T32: control RTSP health alone cannot prove video writes work.
+                                            stalledStreamTimeoutMs =
+                                                if (client.currentEndpoint.isBuickB233) 15_000L else 0L,
                                             onEnded = {
                                                 // A deliberately retired or superseded stream cannot
                                                 // change the current session (E5 T38 race fix).
@@ -2412,9 +2448,7 @@ object SessionController {
                                     owningSender = createdSender
                                     videoSender = createdSender
                                     // 先连端口（车机看门狗），编码器等 RECORD 后再启动
-                                    CriticalEventTrail.mark(context, "VIDEO_PORT_OPEN_BEGIN")
                                     videoSender?.openDataPort()
-                                    CriticalEventTrail.mark(context, "VIDEO_PORT_OPEN_RETURNED")
                                 }
                                 // 先 RECORD 激活会话并起视频，再协商音频（2026-10-17 奥迪定谳）：
                                 // 车机在「屏幕流 SETUP 之后」有约 2s 看门狗，等不到 RECORD/数据流即
@@ -2423,15 +2457,22 @@ object SessionController {
                                 // 返回同一毫秒、且 5 次实测全部复现。故顺序改为：
                                 //   屏幕 SETUP → 连数据端口 → RECORD → 起编码器（出帧）→ 音频 SETUP
                                 // 音频 SETUP 失败只丢声音，视频会话保持。
-                                CriticalEventTrail.mark(context, "AIRPLAY_RECORD_BEGIN")
                                 client.record()
-                                CriticalEventTrail.mark(context, "AIRPLAY_RECORD_RETURNED")
                                 if (host != null) {
                                     val videoW = pendingVideoW
                                     val videoH = pendingVideoH
                                     val videoDensity = pendingVideoDensity
-                                    CriticalEventTrail.mark(context, "VIDEO_SENDER_START_BEGIN")
                                     videoSender?.start { surface ->
+                                        if (t28Displayless) {
+                                            // No DisplayManager.createVirtualDisplay() anywhere in
+                                            // this path. Preserve AirPlay RECORD, encoder and TCP.
+                                            val diagnostic = SafeDiagnosticFrameSource(::appendLog)
+                                            currentDiagnosticSource = diagnostic
+                                            check(diagnostic.start(surface, videoW, videoH)) {
+                                                "T28 EGL diagnostic source failed to start"
+                                            }
+                                            appendLog("SAFETY T28: 活动测试条纹已开始推流；虚拟屏数量=0；普通蓝牙 A2DP 未修改")
+                                        } else {
                                         // 唯一模式：隐形屏（双屏启动器：dock + 应用屏）
                                         val source =
                                             HiddenDisplaySource(
@@ -2453,6 +2494,7 @@ object SessionController {
                                         // 暗幕/常亮只在真正开始投屏后生效（见 ScreenDimmer.sessionActive）：
                                         // 应用启动时只挂触摸探针，避免「会话早断了、手机过一会儿还是变暗」。
                                         if (ok) ScreenDimmer.setSessionActive(true)
+                                        }
                                     }
                                 }
                                 // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。

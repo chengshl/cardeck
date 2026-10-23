@@ -50,13 +50,6 @@ async def verify():
                 lines=['connection 192.0.2.10 user@example.com', 'Authorization: Bearer test-secret'])
             testCarName = 'BUICK_' + '1234'
             assert gateway.redact('BT-C: connected ' + testCarName) == 'BT-C: connected [车机蓝牙名]'
-            assert '20:43:53.468+0800' in gateway.redact('Timestamp: 2026-10-23 20:43:53.468+0800')
-            assert '20:44:07.465' in gateway.redact('10-23 20:44:07.465 system_server_crash')
-            assert '12:44:53.664Z' in gateway.redact('2026-10-23T12:44:53.664Z upload')
-            assert 'fe80::1234' not in gateway.redact('remote=fe80::1234')
-            assert '2001:db8' not in gateway.redact('remote=2001:db8::1')
-            assert '[IPv6]' in gateway.redact('remote=fe80::1234')
-
             await ws.send(json.dumps(app_batch))
             ack = json.loads(await ws.recv())
             assert ack['type'] == 'logs_ack' and ack['accepted_lines'] == 2

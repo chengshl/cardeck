@@ -21,9 +21,18 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "Buick-main"
-          grep -Fq 'private const val RELEASE_TAG = "buick-main-latest"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
-          grep -Fq 'private const val SOURCE_BRANCH = "Buick-main"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
-          grep -Fq 'private const val APK_NAME = "CarDeck-Buick-main.apk"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          cfg = json.loads(Path("app/src/main/assets/config/update-channel.json").read_text())
+          expected = {
+              "repository": "chengshl/cardeck",
+              "branch": "Buick-main",
+              "releaseTag": "buick-main-latest",
+              "apkName": "CarDeck-Buick-main.apk",
+          }
+          assert cfg == expected, f"Unexpected Buick-main channel: {cfg}"
+          PY
           printf 'RELEASE_TAG=%s\nAPK_NAME=%s\n' "buick-main-latest" "CarDeck-Buick-main.apk" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:

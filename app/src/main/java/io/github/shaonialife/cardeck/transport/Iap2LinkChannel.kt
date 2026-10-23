@@ -8,6 +8,22 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 /**
+ * T31 B233-only: repeated DETECT is insufficient to prove the peer reset.
+ * A single marker echo is eligible only while the local link remains NORMAL,
+ * the latest control packet is unacknowledged, and >=4 post-0x4300 markers
+ * have arrived. Pure function to keep safety conditions tested.
+ */
+internal fun shouldProbeB233Detect(
+    normal: Boolean,
+    markerDelta: Long,
+    latestSent: Int?,
+    peerAck: Int?,
+    used: Boolean,
+): Boolean =
+    normal && markerDelta >= 4L && latestSent != null &&
+        latestSent != peerAck && !used
+
+/**
  * 链路通道：一个读线程 + 一个节奏线程驱动 [Iap2LinkEngine]，向会话层暴露
  * 阻塞式的 sendControl/recvControl 与 awaitReady。
  */
@@ -23,6 +39,8 @@ class Iap2LinkChannel(
     /** Track the last outbound control sequence and inbound cumulative peer ACK. */
     private var lastOutboundControlSeq: Int? = null
     private var lastPeerAck: Int? = null
+    private var inboundMarkerCount = 0L
+    private var b233MarkerProbeSent = false
 
     @Volatile
     private var terminated = false
@@ -44,6 +62,14 @@ class Iap2LinkChannel(
                 "LINK: 采纳对端会话表 maxOutgoing=${sync.maxOutgoing} maxLen=${sync.maxLength} " +
                     "sessions=" + sync.sessions.joinToString { "${it.id}/k${it.kind}/v${it.version}" },
             )
+        }
+        engine.onMarkerReceived = {
+            inboundMarkerCount++
+            if (inboundMarkerCount <= 4L || inboundMarkerCount % 20L == 0L) {
+                log("LINK T30: BT DETECT marker #" + inboundMarkerCount +
+                    " state=" + engine.state)
+            }
+            lock.notifyAll()
         }
         engine.onUnknownSessionData = { sessionId, size ->
             log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
@@ -136,6 +162,35 @@ class Iap2LinkChannel(
      * T21 read-only B233 diagnostic. Snapshot is taken under the same lock
      * as onFrameReceived/onFrameSent; it never dumps identifiers or credentials.
      */
+    fun receivedMarkerCount(): Long = synchronized(lock) { inboundMarkerCount }
+
+    /**
+     * B233 T31: echo a *single* DETECT only during a stalled 0x4300
+     * exchange. Do not restart the existing link state, discard outstanding
+     * seq110, or interrupt sessions which may still receive a late ACK.
+     */
+    fun probeB233StalledAvailability(markersAtSend: Long): Boolean = synchronized(lock) {
+        if (terminated || !shouldProbeB233Detect(
+                normal = engine.state == Iap2LinkEngine.State.NORMAL,
+                markerDelta = inboundMarkerCount - markersAtSend,
+                latestSent = lastOutboundControlSeq,
+                peerAck = lastPeerAck,
+                used = b233MarkerProbeSent,
+            )
+        ) return@synchronized false
+        b233MarkerProbeSent = true
+        return@synchronized try {
+            stream.write(Iap2LinkEngine.MARKER)
+            log("LINK T31: BT B233 DETECT echoed once while 0x4300 unacked; " +
+                "markersSince4300=" + (inboundMarkerCount - markersAtSend) +
+                " sentSeq=" + lastOutboundControlSeq + " peerAck=" + lastPeerAck)
+            true
+        } catch (error: IOException) {
+            finishLocked(error)
+            false
+        }
+    }
+
     fun controlAckSnapshot(): String = synchronized(lock) {
         "sentSeq=${lastOutboundControlSeq ?: "none"} " +
             "peerAck=${lastPeerAck ?: "none"} alive=${!terminated}"

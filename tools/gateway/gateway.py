@@ -74,26 +74,11 @@ def redact(text):
         text = text.replace(secret, "[已隐藏凭证]")
     if re.search(r"(?i)authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|write.?key|read.?key|credential|nonce|salt|signature|密码|凭证", text):
         return "[已隐藏含凭证或密钥的日志行]"
-    # Event timestamps are crucial for identifying repeated vs newly occurring crashes.
-    # Protect clocks during the gateway's second pass of redaction (Android also
-    # redacts them on-device). Do not weaken masking of actual IPv6 addresses.
-    clocks = []
-    def hold_clock(match):
-        index = len(clocks)
-        clocks.append(match.group(0))
-        return "~CARDECK_CLOCK_%d~" % index
-    text = re.sub(r"(?<![0-9A-Fa-f:])(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?![0-9A-Fa-f:])",
-                  hold_clock, text)
     text = re.sub(r"(?i)\b[a-z][a-z0-9+.-]*://\S+", "[地址]", text)
     text = re.sub(r"(?i)\b(?:BUICK|CHEVROLET|CADILLAC)[_-][0-9]{3,}\b", "[车机蓝牙名]", text)
     text = re.sub(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", "[MAC]", text)
     text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[IP]", text)
-    # Also cover compressed IPv6 addresses such as fe80::1234.
-    text = re.sub(r"(?i)(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){1,7}:[0-9a-f:]{0,39}(?![0-9a-f:])",
-                  "[IPv6]", text)
     text = re.sub(r"(?i)(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]+", "[IPv6]", text)
-    for i, original in enumerate(clocks):
-        text = text.replace("~CARDECK_CLOCK_%d~" % i, original)
     text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}\b", "[邮箱]", text)
     text = re.sub(r"[A-Za-z0-9_+/=-]{32,}", "[长标识]", text)
     text = re.sub(r"\b\d{11,18}\b", "[数字标识]", text)

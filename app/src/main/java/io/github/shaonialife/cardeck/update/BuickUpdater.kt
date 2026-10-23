@@ -22,16 +22,12 @@ import java.net.URL
 import java.security.MessageDigest
 import kotlin.concurrent.thread
 
-/** Only this branch's own release is accepted; never switch update sources automatically. */
+/** 测试更新线独立校验来源，绝不回退到共享更新标签。 */
 object BuickUpdater {
-    private const val RELEASE_TAG = "buick-main-latest"
-    private const val SOURCE_BRANCH = "Buick-main"
-    private const val APK_NAME = "CarDeck-Buick-main.apk"
-    private const val RELEASES = "https://api.github.com/repos/chengshl/cardeck/releases/tags/buick-main-latest"
-    private const val PREF = "buick_main_updater"
+    private const val PREF = "buick_test_updater"
     private const val KEY_AUTO = "auto_check"
     private val main = Handler(Looper.getMainLooper())
-    private fun downloadedApk(activity: Activity) = File(activity.cacheDir, "updates/buick-main-latest/CarDeck-Buick-main.apk")
+    private fun downloadedApk(activity: Activity, channel: UpdateChannel) = File(activity.cacheDir, channel.cachePath)
 
     /**
      * Keep CarPlay process-bound to E5 Wi-Fi; route updater requests independently.
@@ -120,7 +116,7 @@ object BuickUpdater {
         if (shared.contains(KEY_AUTO)) return shared.getBoolean(KEY_AUTO, true)
         // Keep the user's previous auto-update preference when migrating from
         // either branch-specific updater; don't unexpectedly re-enable it.
-        for (previous in listOf("cardeck_shared_updater", "buick_updater", "buick_main_updater")) {
+        for (previous in listOf("cardeck_shared_updater", "buick_updater")) {
             val legacy = activity.getSharedPreferences(previous, 0)
             if (legacy.contains(KEY_AUTO)) return legacy.getBoolean(KEY_AUTO, true)
         }
@@ -134,8 +130,9 @@ object BuickUpdater {
     fun check(activity: Activity, silent: Boolean = false) {
         thread(name = "buick-update-check") {
             try {
+                val channel = UpdateChannel.load(activity)
                 val release = tryRoutes(activity, "检查 GitHub 更新") { route ->
-                    val conn = openHttp(RELEASES, route, 15_000, 20_000)
+                    val conn = openHttp(channel.releaseUrl, route, 15_000, 20_000)
                     try {
                         conn.setRequestProperty("Accept", "application/vnd.github+json")
                         require(conn.responseCode == 200) { "GitHub HTTP ${conn.responseCode}" }
@@ -144,7 +141,7 @@ object BuickUpdater {
                         conn.disconnect()
                     }
                 }
-                require(release.optString("tag_name") == RELEASE_TAG && !release.optBoolean("draft")) {
+                require(release.optString("tag_name") == channel.releaseTag && !release.optBoolean("draft")) {
                     "更新标签不匹配，拒绝安装"
                 }
                 val assets = release.getJSONArray("assets")
@@ -153,8 +150,8 @@ object BuickUpdater {
                 for (i in 0 until assets.length()) {
                     val asset = assets.getJSONObject(i)
                     val name = asset.optString("name")
-                    if (name == APK_NAME) apkUrl = asset.optString("browser_download_url")
-                    if (name == "$APK_NAME.sha256") digestUrl = asset.optString("browser_download_url")
+                    if (name == channel.apkName) apkUrl = asset.optString("browser_download_url")
+                    if (name == "${channel.apkName}.sha256") digestUrl = asset.optString("browser_download_url")
                 }
                 val code = release.optString("body").lineSequence()
                     .firstOrNull { it.startsWith("versionCode=") }
@@ -169,8 +166,8 @@ object BuickUpdater {
                     .firstOrNull { it.startsWith("branch=") }
                     ?.substringAfter("=")?.trim().orEmpty()
                 val changeNotes = UpdateNotes.extract(release.optString("body"))
-                require(branch == SOURCE_BRANCH) {
-                    "更新来源分支不匹配：$branch，预期 $SOURCE_BRANCH"
+                require(channel.acceptsSource(release.optString("tag_name"), branch)) {
+                    "更新来源分支无效：$branch"
                 }
                 val packageInfo = activity.packageManager.getPackageInfo(activity.packageName, 0)
                 val installed = if (Build.VERSION.SDK_INT >= 33) {
@@ -202,8 +199,8 @@ object BuickUpdater {
                                     "更新说明：\n$changeNotes",
                             )
                             .setNegativeButton("取消", null)
-                            .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity)) }
-                            .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl) }
+                            .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity, channel)) }
+                            .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl, channel) }
                             .show()
                     }
                 }
@@ -213,7 +210,7 @@ object BuickUpdater {
         }
     }
 
-    private fun download(activity: Activity, url: String, shaUrl: String) {
+    private fun download(activity: Activity, url: String, shaUrl: String, channel: UpdateChannel) {
         val dialog = android.app.ProgressDialog(activity).apply {
             setTitle("下载 Buick-main 更新")
             setMessage("正在下载…")
@@ -222,7 +219,7 @@ object BuickUpdater {
             show()
         }
         thread(name = "buick-update-download") {
-            val target = downloadedApk(activity)
+            val target = downloadedApk(activity, channel)
             try {
                 target.parentFile?.mkdirs()
                 tryRoutes(activity, "下载并校验 APK") { route ->
@@ -317,9 +314,10 @@ object BuickUpdater {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            // An APK replacement terminates the old process; onDestroy alone
-            // cannot guarantee the car receives a proper session retirement.
-            // This applies only to the app's own verified in-app updater.
+            // An APK replacement kills the old process without guaranteeing
+            // onDestroy(). Retire iAP2/AirPlay/BT while the old code still runs,
+            // before presenting the system installer. Browser/file-manager
+            // installs remain outside this app's control.
             SessionController.disconnect(activity.applicationContext)
             activity.startActivity(Intent.createChooser(intent, "选择安装程序"))
         } catch (e: Exception) {

@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.os.IBinder
 import android.util.Log
 import io.github.shaonialife.cardeck.util.Bg
-import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import moe.shizuku.server.IShizukuService
 import java.io.FileInputStream
 import java.util.concurrent.TimeUnit
@@ -217,11 +216,6 @@ object CarInputClient {
 
     private var binderListenerAdded = false
 
-    /** Strict phase identifiers: never record shell commands or binder payloads. */
-    private fun trace(stage: String) {
-        appContext?.let { CriticalEventTrail.mark(it, stage) }
-    }
-
     /**
      * 回收旧版本残留的 UserService 进程，返回实际 kill 的数量（不足条件时 0）。
      *
@@ -271,30 +265,26 @@ object CarInputClient {
                 name: ComponentName?,
                 binder: IBinder?,
             ) {
-                trace("SHIZUKU_SERVICE_CONNECTED")
                 service = ICarInput.Stub.asInterface(binder)
                 binding = false
-                trace("SHIZUKU_PING_BEGIN")
                 val ok =
                     try {
                         service?.ping() == true
                     } catch (_: Throwable) {
                         false
                     }
-                trace(if (ok) "SHIZUKU_PING_OK" else "SHIZUKU_PING_FAILED")
                 diag("connected ping=$ok")
                 if (!ok) {
                     service = null
                     binding = false
                 } else {
-                    // T45: NEVER kill stale UserServices automatically on bind.
-                    // Stale displays are handled only through explicit user-confirmed cleanup.
-                    diag("绑定成功；T45 不自动回收其他 UserService 进程", force = true)
+                    // 绑定成功后顺手回收旧版本残留进程（其持有的虚拟屏跨进程无法释放，
+                    // 只有进程回收才能让屏消失）。后台线程执行：内部含 shell ps/kill。
+                    Bg.run("stale-user-service-reap") { reapStaleUserServices() }
                 }
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
-                trace("SHIZUKU_SERVICE_DISCONNECTED")
                 diag("service disconnected")
                 service = null
                 binding = false
@@ -317,13 +307,11 @@ object CarInputClient {
             try {
                 rikka.shizuku.Shizuku.addBinderReceivedListener {
                     android.util.Log.i(TAG, "binder received -> rebind")
-                    trace("SHIZUKU_BINDER_RECEIVED")
                     binding = false
                     appContext?.let { ensure(it) }
                 }
                 rikka.shizuku.Shizuku.addBinderDeadListener {
                     android.util.Log.w(TAG, "binder dead")
-                    trace("SHIZUKU_BINDER_DEAD")
                     service = null
                     binding = false
                 }
@@ -361,19 +349,12 @@ object CarInputClient {
                     .also { userServiceArgs = it }
             // 重绑前先解绑旧连接（清掉可能残留的 binder 状态）
             if (hasBoundOnce) {
-                trace("SHIZUKU_UNBIND_BEGIN")
-                val returned = runCatching {
-                    rikka.shizuku.Shizuku.unbindUserService(args, conn, true)
-                }.isSuccess
-                trace(if (returned) "SHIZUKU_UNBIND_RETURNED" else "SHIZUKU_UNBIND_FAILED")
+                runCatching { rikka.shizuku.Shizuku.unbindUserService(args, conn, true) }
             }
-            trace("SHIZUKU_BIND_BEGIN")
             rikka.shizuku.Shizuku.bindUserService(args, conn)
             hasBoundOnce = true
-            trace("SHIZUKU_BIND_REQUESTED")
             diag("bindUserService requested")
         } catch (e: Throwable) {
-            trace("SHIZUKU_BIND_THROW")
             binding = false
             diag("bindUserService failed: ${e.message}")
         }

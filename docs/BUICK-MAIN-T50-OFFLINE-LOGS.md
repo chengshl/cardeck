@@ -1,2 +1,0 @@
-# T50 Offline diagnostics
-This source adds an offline-only text exporter (Downloads/CarDeck) for app history, current system warnings and post-reboot crash preview. No server connection is needed; user confirmation is required. App packet dumps are suppressed and secrets are redacted. The existing online upload protocol remains separate.

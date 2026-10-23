@@ -17,6 +17,9 @@ class B233ReconnectPolicyTest {
                 "Buick B233: 0x4301 not received after 30001ms",
             ),
         )
+        assertEquals(true, B233ReconnectPolicy.isUnansweredStartSession(
+            "Buick B233: peer restarted iAP2 while waiting 0x4301",
+        ))
     }
 
     @Test fun t27DoesNotBackOffOnManualCancelOrOtherLinkFailures() {
@@ -27,6 +30,42 @@ class B233ReconnectPolicyTest {
         assertEquals(false, B233ReconnectPolicy.isUnansweredStartSession("socket is closed"))
         assertEquals(false, B233ReconnectPolicy.isUnansweredStartSession("0x4300 ACK received and video ended"))
     }
+    @Test fun t29ClassifiesOnlyObservedPreAvailabilityPeerSilence() {
+        assertEquals(true, B233ReconnectPolicy.isPreAvailabilityPeerSilent(
+            "Buick B233: 0x4e0c peer ACK missing; 0x4300 not sent",
+        ))
+        assertEquals(true, B233ReconnectPolicy.isPreAvailabilityPeerSilent("iAP2 链路协商超时"))
+        assertEquals(false, B233ReconnectPolicy.isPreAvailabilityPeerSilent(null))
+        assertEquals(false, B233ReconnectPolicy.isPreAvailabilityPeerSilent("interrupted before 0x4300"))
+        assertEquals(false, B233ReconnectPolicy.isPreAvailabilityPeerSilent("iAP2 link closed while waiting 0x4301"))
+        assertEquals(false, B233ReconnectPolicy.isPreAvailabilityPeerSilent("normal socket closed"))
+        assertEquals(false, B233ReconnectPolicy.isPreAvailabilityPeerSilent("0x4300 ACK received"))
+    }
+
+    @Test fun t29PreAvailabilityCooldownIsBoundedAndNeverArmsInboundRecovery() {
+        val p = B233ReconnectPolicy()
+        assertEquals(15_000L, p.onPreAvailabilityPeerSilent(10_000L))
+        assertEquals(15_000L, p.remainingMs(10_000L))
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        assertEquals(30_000L, p.onPreAvailabilityPeerSilent(30_000L))
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        assertEquals(60_000L, p.onPreAvailabilityPeerSilent(70_000L))
+        assertEquals(60_000L, p.onPreAvailabilityPeerSilent(140_000L))
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionAccepted()
+        assertEquals(0L, p.remainingMs(140_000L))
+        assertEquals(15_000L, p.onPreAvailabilityPeerSilent(160_000L))
+    }
+
+    @Test fun t29PreAvailabilityFailuresDoNotResetPostAvailabilityCooldown() {
+        val p = B233ReconnectPolicy()
+        assertEquals(15_000L, p.onStartSessionTimeout(1_000L))
+        assertEquals(30_000L, p.onStartSessionTimeout(20_000L))
+        assertEquals(30_000L, p.onPreAvailabilityPeerSilent(20_000L))
+        assertEquals(true, p.claimInboundRecoveryAttempt())
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+    }
+
     @Test fun audioTeardownDelaysOnlyAutomaticRetry() {
         val p = B233ReconnectPolicy()
         assertEquals(0L, p.remainingMs(1_000L))

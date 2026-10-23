@@ -1,2 +1,0 @@
-# T52 crash evidence integration
-Manual recovery previews now include the 50 on-disk stage events, preserving event wall times, process-session boundaries and elapsed realtime (which resets on a full reboot but not on system_server-only restart). Native crash clues are queried only when the user triggers recovery, via read-only DropBox SYSTEM_TOMBSTONE and system_app_native_crash tags (may be inaccessible). Existing main/current crash logs remain separately labeled and bounded to 256 preview lines. No background polling or upload is added.

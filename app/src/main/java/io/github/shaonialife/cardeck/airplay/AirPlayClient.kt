@@ -1036,10 +1036,11 @@ class AirPlayClient(
          * （true → opcode=5 + bplist；false → opcode=2 空帧）。奥迪 3315 为 true。
          */
         val keepAliveSendStatsAsBody: Boolean = false,
+        /** T33: receiver-reported bounds from the chosen main view area. */
         val receiverSafeArea: BuickSafeArea? = null,
         val receiverModel: String? = null,
         val receiverManufacturer: String? = null,
-        /** Only transiently used to derive a salted local anonymous fingerprint. */
+        /** Used only in RAM to derive a local salted anonymous vehicle fingerprint. */
         val receiverDeviceId: String? = null,
     )
 
