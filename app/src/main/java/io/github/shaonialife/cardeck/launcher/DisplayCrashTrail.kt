@@ -2,6 +2,7 @@ package io.github.shaonialife.cardeck.launcher
 
 import android.content.Context
 import io.github.shaonialife.cardeck.util.DebugFileLog
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -16,6 +17,7 @@ internal object DisplayCrashTrail {
     private const val LAST = "last_phase"
 
     fun mark(context: Context, phase: String) {
+        CriticalEventTrail.mark(context, phase)
         val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ", Locale.US).format(Date())
         val record = "$time phase=$phase"
         val committed = runCatching {

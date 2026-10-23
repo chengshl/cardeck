@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.util.Log
 import io.github.shaonialife.cardeck.launcher.VirtualLauncher
 import io.github.shaonialife.cardeck.launcher.DisplayCrashTrail
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.util.DebugFileLog
 
 /**
@@ -26,10 +27,17 @@ class SenderApp : Application() {
         // 之后的部分。必须在这里写（Application 是进程最早入口），晚于任何业务日志
         // 都会让它被算进「历史」。
         DebugFileLog.markSessionStart(this)
+        CriticalEventTrail.reportPrevious(this)
+        CriticalEventTrail.mark(this, "APP_PROCESS_START")
         DisplayCrashTrail.reportPrevious(this)
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
-            override fun onActivityResumed(activity: Activity) { GatewayLogService.resumeIfEnabled(activity) }
-            override fun onActivityCreated(activity: Activity, state: Bundle?) {}
+            override fun onActivityResumed(activity: Activity) {
+                if (activity is MainActivity) CriticalEventTrail.mark(this@SenderApp, "MAIN_UI_RESUMED")
+                GatewayLogService.resumeIfEnabled(activity)
+            }
+            override fun onActivityCreated(activity: Activity, state: Bundle?) {
+                if (activity is MainActivity) CriticalEventTrail.mark(this@SenderApp, "MAIN_UI_CREATED")
+            }
             override fun onActivityStarted(activity: Activity) {}
             override fun onActivityPaused(activity: Activity) {}
             override fun onActivityStopped(activity: Activity) {}
@@ -39,6 +47,7 @@ class SenderApp : Application() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             Log.e(TAG, "未捕获异常（线程 ${thread.name}，已吞掉保进程）", throwable)
+            CriticalEventTrail.mark(this, "UNCAUGHT_APP_EXCEPTION")
             DebugFileLog.append(this, "未捕获异常（线程 ${thread.name}）\n" + Log.getStackTraceString(throwable))
             // 不调用 previous：默认处理器会 killProcess 杀死整个 app
         }
