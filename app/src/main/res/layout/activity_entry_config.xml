@@ -177,20 +177,12 @@
                 android:layout_height="wrap_content"
                 android:minHeight="52dp"
                 android:layout_marginTop="8dp"
-                android:text="预览系统日志 · 保存本地或在线上传" />
-            <Button
-                android:id="@+id/recoverCrashLogs"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="52dp"
-                android:layout_marginTop="8dp"
-                android:text="重启崩溃取证 · 保存本地或在线上传" />
-
+                android:text="系统诊断与崩溃取证 · 保存本地或在线上传" />
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="手机重启后可先导出 App 历史日志，重新启动 Shizuku 后可补充系统崩溃证据。保存本地无需服务器或联网；在线上传需再次确认。"
+                android:text="统一预览系统告警、当前及上次启动的崩溃记录和前次 App 阶段事件。无 Shizuku 时仍可预览本地取证；保存本地无需联网，在线上传需再次确认。"
                 android:textColor="#B0BEBE"
                 android:textSize="12sp" />
 

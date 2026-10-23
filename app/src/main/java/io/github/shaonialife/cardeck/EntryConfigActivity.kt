@@ -40,7 +40,6 @@ class EntryConfigActivity : AppCompatActivity() {
     private var testRunning = false
     private lateinit var logStatus: TextView
     private lateinit var systemLogs: Button
-    private lateinit var recoveryLogs: Button
     private lateinit var localAppLogs: Button
     private lateinit var localBundle: Button
     private var observer: AutoCloseable? = null
@@ -67,9 +66,7 @@ class EntryConfigActivity : AppCompatActivity() {
         localBundle = findViewById(R.id.saveDiagnosticBundle)
         localBundle.setOnClickListener { exportDiagnosticBundle() }
         systemLogs = findViewById(R.id.uploadSystemLogs)
-        systemLogs.setOnClickListener { previewSystemLogs(recovery = false) }
-        recoveryLogs = findViewById(R.id.recoverCrashLogs)
-        recoveryLogs.setOnClickListener { previewSystemLogs(recovery = true) }
+        systemLogs.setOnClickListener { previewCombinedDiagnostics() }
         val draft = savedInstanceState?.getString("entry_address_draft")
         busy(true)
         val appContext = applicationContext
@@ -119,8 +116,8 @@ class EntryConfigActivity : AppCompatActivity() {
         // Saving local files never depends on the diagnostic server.
         localAppLogs.isEnabled = !captureBusy
         localBundle.isEnabled = !captureBusy
-        systemLogs.isEnabled = !captureBusy && ShizukuGate.state(this) == ShizukuGate.State.READY
-        recoveryLogs.isEnabled = !captureBusy
+        // Still useful after a reboot when Shizuku is not running: keep app breadcrumbs.
+        systemLogs.isEnabled = !captureBusy
     }
 
     private fun saveConfig() {
@@ -240,20 +237,28 @@ class EntryConfigActivity : AppCompatActivity() {
         refreshControls()
     }
 
-    private fun previewSystemLogs(recovery: Boolean) {
+    private fun previewCombinedDiagnostics() {
         val target = GatewayLogRuntime.probe
         val token = stored?.token.orEmpty()
         if (captureBusy) return
         val generation = ++previewGeneration
         captureBusy = true
-        logStatus.text = if (recovery) "正在读取上次会话与系统崩溃线索…" else getString(R.string.gateway_system_collecting)
+        logStatus.text = "正在汇总系统日志、上轮会话及崩溃证据…"
         refreshControls()
         val appContext = applicationContext
         Bg.run("system-log-preview") {
             val result = runCatching {
                 val redactor = LogRedactor(listOf(token))
-                if (recovery) SystemLogCapture.recoveryPreview(appContext, redactor)
-                else SystemLogCapture.preview(appContext, redactor)
+                // Both sources are sampled only after this user action. A system-log
+                // failure must not discard the app's persisted crash breadcrumbs.
+                val crash = runCatching {
+                    SystemLogCapture.recoveryPreview(appContext, redactor)
+                }.getOrElse { listOf("[取证状态] 重启证据读取失败，请检查本地诊断包") }
+                val shizukuReady = ShizukuGate.state(appContext) == ShizukuGate.State.READY
+                val system = if (shizukuReady) runCatching {
+                    SystemLogCapture.preview(appContext, redactor)
+                }.getOrDefault(emptyList()) else emptyList()
+                CombinedDiagnosticSelector.merge(crash, system, shizukuReady)
             }
             runOnUiThread {
                 if (generation != previewGeneration || isFinishing || isDestroyed) return@runOnUiThread
@@ -265,13 +270,13 @@ class EntryConfigActivity : AppCompatActivity() {
                     return@runOnUiThread
                 }
                 // Dated DropBox event ID is stronger than a repeated crash stack.
-                val eventId = if (recovery) CrashEvidenceSelector.datedCrashId(lines) else null
+                val eventId = CrashEvidenceSelector.datedCrashId(lines)
                 val crashStack = lines.filter {
                     it.startsWith("[DropBox:system_server_crash]") ||
                         it.startsWith("[上次启动crash]")
                 }
                 val fingerprintSource = eventId ?: crashStack.take(18).joinToString("\n")
-                val crashSignature = if (recovery && fingerprintSource.isNotEmpty()) {
+                val crashSignature = if (fingerprintSource.isNotEmpty()) {
                     MessageDigest.getInstance("SHA-256")
                         .digest(fingerprintSource.toByteArray(Charsets.UTF_8))
                         .joinToString("") { "%02x".format(it) }
@@ -288,23 +293,19 @@ class EntryConfigActivity : AppCompatActivity() {
                 }
                 val scroll = ScrollView(this).apply { addView(body) }
                 previewDialog = AlertDialog.Builder(this)
-                    .setTitle(if (recovery) "重启崩溃取证 · 脱敏预览" else getString(R.string.gateway_system_preview_title))
+                    .setTitle("系统诊断与崩溃取证 · 脱敏预览")
                     .setMessage(
-                        if (recovery) "关键取证 ${lines.size} 行（上限256行，优先保留事件时间、异常首行与调用栈）。" +
-                            (if (eventId != null) "\n已识别崩溃事件：$eventId" else "\n未识别到带时间的崩溃事件，不能判定是新故障。") +
-                            (if (sameStack) "\n注意：与上次提交的崩溃事件或堆栈相同，可能重复读取旧DropBox。" else "") +
-                            "\n系统日志需要 Shizuku；历史记录可能重复。没有新记录不代表没有崩溃。" +
-                            "\n可选择「保存本地」，无需联网；在线上传仅在诊断服务连接后可用。"
-                        else "最近 main/system 缓冲区的警告与错误，已脱敏 ${lines.size} 行。\n可直接保存本地文件；只有选择确认在线上传才会发送服务器。"
+                        "本次合并采集 " + lines.size + " 行（最多256行；优先保留崩溃现场，另保留近期系统警告）。" +
+                            (if (eventId != null) "\n已识别崩溃事件：$eventId"
+                             else "\n未找到带原始发生时间的崩溃事件，不代表没有发生故障。") +
+                            (if (sameStack) "\n提示：与上次上传的崩溃证据相同，可能是旧记录。" else "") +
+                            "\n读取系统日志需要 Shizuku；未就绪时仍可查看前次 App 和阶段记录。" +
+                            "\n保存本地无需联网；仅手动确认后才会在线分批上传。"
                     )
                     .setView(scroll)
                     .setNegativeButton(R.string.gateway_system_cancel, null)
                     .setNeutralButton("保存本地") { _, _ ->
-                        saveLocalPreview(
-                            if (recovery) OfflineDiagnosticExporter.Kind.RECOVERY
-                            else OfflineDiagnosticExporter.Kind.SYSTEM,
-                            lines,
-                        )
+                        saveLocalPreview(OfflineDiagnosticExporter.Kind.DIAGNOSTIC, lines)
                     }
                     .setPositiveButton(R.string.gateway_system_confirm) { _, _ ->
                         val valid = target != null && GatewayLogRuntime.running &&

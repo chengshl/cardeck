@@ -16,7 +16,8 @@ import java.util.Locale
 internal object OfflineDiagnosticExporter {
     enum class Kind(val tag: String, val title: String) {
         APP("app", "应用历史日志"), SYSTEM("system", "系统警告与错误"),
-        RECOVERY("crash", "重启崩溃取证"), BUNDLE("bundle", "完整离线诊断包"),
+        RECOVERY("crash", "重启崩溃取证"), DIAGNOSTIC("diagnostic", "系统诊断与崩溃取证"),
+        BUNDLE("bundle", "完整离线诊断包"),
     }
     data class Result(val uri: Uri, val fileName: String, val displayPath: String, val bytes: Int)
 
