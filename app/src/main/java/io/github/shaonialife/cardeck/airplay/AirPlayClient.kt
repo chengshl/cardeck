@@ -1,5 +1,8 @@
 package io.github.shaonialife.cardeck.airplay
 
+import io.github.shaonialife.cardeck.buick.BuickSafeArea
+import io.github.shaonialife.cardeck.buick.BuickSafeAreaGeometry
+
 import android.content.Context
 import android.net.Network
 import android.os.SystemClock
@@ -812,6 +815,10 @@ class AirPlayClient(
                 enabledFeatures = (root["enabledFeatures"] as? List<*>)?.map { it.toString() }.orEmpty(),
                 displayWidth = ((display?.get("widthPixels") as? Long) ?: 1080L).toInt(),
                 displayHeight = ((display?.get("heightPixels") as? Long) ?: 2320L).toInt(),
+                receiverSafeArea = BuickSafeAreaGeometry.parse(display),
+                receiverModel = infoRoot?.get("model") as? String,
+                receiverManufacturer = infoRoot?.get("manufacturer") as? String,
+                receiverDeviceId = infoRoot?.get("deviceID") as? String,
                 // /info displays[0] 的显示屏 UUID（真实 iPhone 会把它回填进屏幕流 SETUP；
                 // 键名以小写 "uuid" 为准，大写 "UUID" 兜底）
                 displayUuid = (display?.get("uuid") ?: display?.get("UUID"))?.toString(),
@@ -852,6 +859,10 @@ class AirPlayClient(
          * （true → opcode=5 + bplist；false → opcode=2 空帧）。奥迪 3315 为 true。
          */
         val keepAliveSendStatsAsBody: Boolean = false,
+        val receiverSafeArea: BuickSafeArea? = null,
+        val receiverModel: String? = null,
+        val receiverManufacturer: String? = null,
+        val receiverDeviceId: String? = null,
     )
 
     /** 屏幕流协商结果。 */

@@ -1,6 +1,10 @@
 package io.github.shaonialife.cardeck
 
 import android.content.Context
+import io.github.shaonialife.cardeck.buick.BuickInsets
+import io.github.shaonialife.cardeck.buick.BuickSafeAreaGeometry
+import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
+import io.github.shaonialife.cardeck.buick.BuickViewport
 import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
@@ -1266,6 +1270,7 @@ object SessionController {
                                 var pendingVideoW = 0
                                 var pendingVideoH = 0
                                 var pendingVideoDensity = 0
+                                var pendingSafeViewport: BuickViewport? = null
                                 if (host != null) {
                                     // 「显示」偏好：流画布/虚拟屏按车机分辨率百分比生成。
                                     // 只在会话建立时生效——编码器与虚拟屏尺寸此时定型；
@@ -1283,6 +1288,29 @@ object SessionController {
                                         ((setup.displayWidth * scale).toInt().coerceAtLeast(320) / 2) * 2
                                     val streamH =
                                         ((setup.displayHeight * scale).toInt().coerceAtLeast(180) / 2) * 2
+                                    // T55: store hashed receiver profile, never raw car IDs.
+                                    val gmReceiver = client.currentEndpoint.isBuickB233 ||
+                                        (setup.receiverManufacturer?.contains("Saic General Motors", ignoreCase = true) == true)
+                                    if (gmReceiver) {
+                                        val observed = BuickVehiclePrefs.observe(
+                                            context, setup.receiverDeviceId, setup.receiverModel,
+                                            setup.displayWidth, setup.displayHeight, setup.receiverSafeArea,
+                                        )
+                                        if (BuickVehiclePrefs.enabled(context)) {
+                                            pendingSafeViewport = BuickSafeAreaGeometry.resolve(
+                                                setup.receiverSafeArea,
+                                                setup.displayWidth, setup.displayHeight,
+                                                streamW, streamH,
+                                                observed?.mode ?: "auto", observed?.manual ?: BuickInsets.ZERO,
+                                            )
+                                        }
+                                        appendLog(
+                                            "BUICK E5 T55: 车辆配置=" +
+                                                (if (observed != null) "已保存" else "暂无车机标识") +
+                                                " safe=" + (setup.receiverSafeArea?.insets?.toString() ?: "未提供") +
+                                                " viewport=" + (pendingSafeViewport?.toString() ?: "全铺满"),
+                                        )
+                                    }
                                     val fps =
                                         appContext
                                             ?.let {
@@ -1376,6 +1404,7 @@ object SessionController {
                                             HiddenDisplaySource(
                                                 context.applicationContext,
                                                 log = { line -> appendLog(line) },
+                                                safeViewport = pendingSafeViewport,
                                             )
                                         currentHiddenSource = source
                                         val ok =
