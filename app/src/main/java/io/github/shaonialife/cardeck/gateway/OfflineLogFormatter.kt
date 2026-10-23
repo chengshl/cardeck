@@ -31,3 +31,4 @@ internal object OfflineLogFormatter {
             appendLine("==================================================")
             lines.forEach { appendLine(it) }
         }
+}
