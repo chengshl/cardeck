@@ -38,7 +38,7 @@ internal object CrashEvidenceSelector {
         val sessions = previousApp.orEmpty().split(SESSION_BREAK).takeLast(3)
         for ((index, session) in sessions.withIndex()) {
             val previous = session.lineSequence()
-                .map(String::trim).filter { it.isNotBlank() && !noise.containsMatchIn(it) }
+                .map { it.trim() }.filter { it.isNotBlank() && !noise.containsMatchIn(it) }
                 .toList()
             val previousClues = previous.filter { clue.containsMatchIn(it) }.takeLast(5)
             val relevant = if (previousClues.isNotEmpty()) previousClues else previous.takeLast(2)
@@ -53,7 +53,7 @@ internal object CrashEvidenceSelector {
         // -L asks Android's logcat for the last boot (if pstore/pmsg is
         // supported); never mislabel current-boot -b crash as previous boot.
         val bootLines = previousBootCrash.orEmpty().lineSequence()
-            .map(String::trim).filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }
+            .map { it.trim() }.filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }
             .toList()
         val bootCandidates = bootLines.filter { clue.containsMatchIn(it) ||
             it.startsWith("at ") || it.startsWith("Caused by:") || it.startsWith("E/") }
@@ -62,7 +62,7 @@ internal object CrashEvidenceSelector {
         val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
         for (tag in tags) {
             val raw = dropboxByTag[tag].orEmpty()
-            val lines = raw.lineSequence().map(String::trim)
+            val lines = raw.lineSequence().map { it.trim() }
                 .filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }.toList()
             // Prefer the latest entry with the most relevant crash stack. A
             // DropBox dump can include unrelated earlier reports.
