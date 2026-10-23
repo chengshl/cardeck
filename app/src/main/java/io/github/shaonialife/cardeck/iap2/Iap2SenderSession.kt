@@ -706,7 +706,7 @@ class Iap2SenderSession(
                 MFI_ATTEMPTS.map { it.first }
             }
         val windowOf = MFI_ATTEMPTS.associate { it.first to it.second }
-        val memory = MfiLengthMemory.load(context, receiverKey)
+        // Forced experiments must not persist their 32B MFi outcome as the\n        // receiver's normal protocol preference after the switch is disabled.\n        val memoryContext = if (forceBuickE5) null else context\n        val memory = MfiLengthMemory.load(memoryContext, receiverKey)
         val order = if (buickStrict) listOf(32) else MfiLengthMemory.orderAttempts(baselineLengths, memory)
         if (!memory.isEmpty) {
             log(
@@ -736,7 +736,7 @@ class Iap2SenderSession(
                 if (frame == null) {
                     if (!channel.isAlive) {
                         log("iap2 MFi 挑战期间链路断开（${size}B，对端不接受该长度）——记入该车机被拒档位")
-                        MfiLengthMemory.recordRejected(context, receiverKey, size)
+                        MfiLengthMemory.recordRejected(memoryContext, receiverKey, size)
                         if (buickStrict) throw IOException("Buick B233: MFi 32B challenge disconnected")
                         return
                     }
@@ -762,13 +762,13 @@ class Iap2SenderSession(
                 if (gotResponse || gotFailure) break
             }
             if (gotResponse) {
-                MfiLengthMemory.recordSuccess(context, receiverKey, size)
+                MfiLengthMemory.recordSuccess(memoryContext, receiverKey, size)
                 return
             }
             if (gotFailure) {
-                MfiLengthMemory.recordRejected(context, receiverKey, size)
+                MfiLengthMemory.recordRejected(memoryContext, receiverKey, size)
             } else {
-                MfiLengthMemory.recordSilent(context, receiverKey, size)
+                MfiLengthMemory.recordSilent(memoryContext, receiverKey, size)
             }
             if (position < order.size - 1) {
                 log("iap2 MFi ${size}B 无应答，改用 ${order[position + 1]}B 重试")
