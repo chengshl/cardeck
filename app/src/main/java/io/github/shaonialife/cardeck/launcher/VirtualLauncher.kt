@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.launcher
 
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.buick.BuickViewport
 
 import android.annotation.SuppressLint
@@ -472,7 +473,9 @@ object VirtualLauncher {
         log: (String) -> Unit,
         viewport: BuickViewport? = null,
     ): Boolean {
+        CriticalEventTrail.mark(context, "LAUNCHER_ATTACH_ENTER")
         detach()
+        CriticalEventTrail.mark(context, "LAUNCHER_DETACH_RETURNED")
         // T34: keep the full video canvas. Only Buick landscape home controls
         // move inside the reported safe rectangle; never squash H.264 pixels.
         safeViewport = viewport?.takeIf { totalWidth > totalHeight }
@@ -610,6 +613,7 @@ object VirtualLauncher {
         this.composer = composer
         val displaysCreated = arrayOf(false)
         composer.onSurfacesReady = { dockSurface, appSurface, appHiSurface, mapSurface ->
+            CriticalEventTrail.mark(context, "DISPLAY_SURFACES_READY")
             // 优先：Shizuku shell 创建受信虚拟屏（VIRTUAL_DISPLAY_FLAG_TRUSTED）——
             // 允许第三方应用的新任务落在该屏；解决「应用内跳转的任务被重定向到手机主屏」。
             var viaService = false
@@ -630,6 +634,7 @@ object VirtualLauncher {
                         }
                     Thread.sleep(150) // 等系统完成注销
                     // dock 屏不声明受信：只承载自有 DockActivity，杜绝第三方任务逃逸上来
+                    CriticalEventTrail.mark(context, "CREATE_DOCK_BEGIN")
                     val dockId =
                         svc!!.createDisplay(
                             "CarPlayDock",
@@ -639,6 +644,8 @@ object VirtualLauncher {
                             dockSurface,
                             false,
                         )
+                    CriticalEventTrail.mark(context, if (dockId >= 0) "CREATE_DOCK_OK" else "CREATE_DOCK_FAILED")
+                    CriticalEventTrail.mark(context, "CREATE_APP_BEGIN")
                     val appId =
                         svc!!.createDisplay(
                             "CarPlayApp",
@@ -648,6 +655,7 @@ object VirtualLauncher {
                             appSurface,
                             true,
                         )
+                    CriticalEventTrail.mark(context, if (appId >= 0) "CREATE_APP_OK" else "CREATE_APP_FAILED")
                     // 超采样屏（竖屏车机无、应用侧回退时也无）
                     val appHiId =
                         if (appHiSurface != null) {
@@ -697,6 +705,7 @@ object VirtualLauncher {
                             log("LAUNCHER: 地图屏创建失败——仪表盘无地图 tile")
                         }
                         viaService = true
+                        CriticalEventTrail.mark(context, "TRUSTED_DISPLAYS_READY")
                     } else {
                         // 逐屏留痕：EMUI 等 ROM 对 shell 侧 createVirtualDisplay 是**静默
                         // 返回 null**（不抛异常）——整体回退时不打这条，日志里只剩
