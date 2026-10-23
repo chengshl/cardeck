@@ -45,6 +45,9 @@ class LogRedactorTest {
         assertFalse(ip.contains("fe80::1234"))
         assertFalse(ip.contains("2001:db8"))
         assertTrue(ip.contains("[IPv6]"))
+        assertEquals("clock 20:19:53 masked [IPv6]",
+            redact.line("clock 20:19:53 masked fe80::abcd"))
+
     }
 
     @Test fun boundsLinesAndDropsOldestUnderBackpressure() {

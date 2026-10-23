@@ -8,6 +8,8 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         Regex("\\b(?:BUICK|CHEVROLET|CADILLAC)[_-][0-9]{3,}\\b", RegexOption.IGNORE_CASE) to "[车机蓝牙名]",
         Regex("\\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\\b", RegexOption.IGNORE_CASE) to "[MAC]",
         Regex("\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b") to "[IP]",
+        // IPv6 with :: compression (e.g. fe80::1234), including one leading block.
+        Regex("""(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){1,7}:[0-9A-Fa-f:]{0,39}(?![0-9A-Fa-f:])""", RegexOption.IGNORE_CASE) to "[IPv6]",
         Regex("(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]+", RegexOption.IGNORE_CASE) to "[IPv6]",
         Regex("\\b[\\w.+-]+@[\\w.-]+\\.[a-zA-Z]{2,}\\b") to "[邮箱]",
         Regex("[A-Za-z0-9_+/=-]{32,}") to "[长标识]",
