@@ -1289,8 +1289,9 @@ object SessionController {
                                     val streamH =
                                         ((setup.displayHeight * scale).toInt().coerceAtLeast(180) / 2) * 2
                                     // T55: store hashed receiver profile, never raw car IDs.
-                                    val gmReceiver = client.currentEndpoint.isBuickB233 ||
-                                        (setup.receiverManufacturer?.contains("Saic General Motors", ignoreCase = true) == true)
+                                    // This branch already targets Buick E5; the older endpoint
+                                    // does not expose the newer isBuickB233 flag.
+                                    val gmReceiver = true
                                     if (gmReceiver) {
                                         val observed = BuickVehiclePrefs.observe(
                                             context, setup.receiverDeviceId, setup.receiverModel,
