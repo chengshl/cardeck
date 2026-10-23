@@ -44,8 +44,8 @@ class BuickMenuActivity : AppCompatActivity() {
                 }
                 1 -> {
                     holder.icon.setImageResource(android.R.drawable.ic_menu_send)
-                    holder.title.text = "日志上传"
-                    holder.desc.text = "软件日志 · 系统日志 · 重启崩溃取证"
+                    holder.title.text = "日志管理"
+                    holder.desc.text = "本地保存 · 可选在线上传 · 崩溃取证"
                     holder.itemView.setOnClickListener {
                         startActivity(Intent(this@BuickMenuActivity, EntryConfigActivity::class.java))
                     }

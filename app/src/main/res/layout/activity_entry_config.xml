@@ -43,9 +43,25 @@
             android:orientation="vertical"
             android:padding="24dp">
 
+            <Button
+                android:id="@+id/saveAppLogsLocally"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
+                android:text="保存 App 历史日志到本地（无需服务器）" />
+
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="系统日志和崩溃取证可在下方预览后选择「保存本地」。未配置 Gateway 也可使用，文件保存在下载/CarDeck。"
+                android:textColor="#B0BEBE"
+                android:textSize="12sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
                 android:labelFor="@id/entryAddress"
                 android:text="@string/entry_address_label"
                 android:textColor="#EDF3F3"
@@ -153,20 +169,20 @@
                 android:layout_height="wrap_content"
                 android:minHeight="52dp"
                 android:layout_marginTop="8dp"
-                android:text="@string/gateway_system_preview" />
+                android:text="预览系统日志 · 保存本地或在线上传" />
             <Button
                 android:id="@+id/recoverCrashLogs"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:minHeight="52dp"
                 android:layout_marginTop="8dp"
-                android:text="重启崩溃取证 · 找回上轮日志" />
+                android:text="重启崩溃取证 · 保存本地或在线上传" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="手机重启后先重新启动 Shizuku，再点此处预览；手动确认后才会上传脱敏日志。"
+                android:text="手机重启后可先导出 App 历史日志，重新启动 Shizuku 后可补充系统崩溃证据。保存本地无需服务器或联网；在线上传需再次确认。"
                 android:textColor="#B0BEBE"
                 android:textSize="12sp" />
 

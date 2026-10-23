@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="entry_title">日志上传</string>
+    <string name="entry_title">日志管理 · 本地保存 / 在线上传</string>
     <string name="entry_address_label">日志网关地址</string>
     <string name="entry_address_hint">填写完整的 wss:// 服务地址与路径</string>
     <string name="entry_token_label">日志上传凭证</string>

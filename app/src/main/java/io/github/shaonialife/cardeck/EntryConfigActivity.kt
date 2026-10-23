@@ -15,6 +15,8 @@ import io.github.shaonialife.cardeck.gateway.GatewayLogRuntime
 import io.github.shaonialife.cardeck.gateway.LogRedactor
 import io.github.shaonialife.cardeck.gateway.SystemLogCapture
 import io.github.shaonialife.cardeck.gateway.CrashEvidenceSelector
+import io.github.shaonialife.cardeck.gateway.OfflineDiagnosticExporter
+import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.service.GatewayLogService
 import android.widget.ScrollView
 import androidx.appcompat.app.AlertDialog
@@ -39,6 +41,7 @@ class EntryConfigActivity : AppCompatActivity() {
     private lateinit var logStatus: TextView
     private lateinit var systemLogs: Button
     private lateinit var recoveryLogs: Button
+    private lateinit var localAppLogs: Button
     private var observer: AutoCloseable? = null
     private var previewDialog: AlertDialog? = null
     private var previewGeneration = 0
@@ -58,6 +61,8 @@ class EntryConfigActivity : AppCompatActivity() {
         disconnect = findViewById(R.id.disconnectEntry)
         gatewayStatus = findViewById(R.id.gatewayStatus)
         logStatus = findViewById(R.id.gatewayLogStatus)
+        localAppLogs = findViewById(R.id.saveAppLogsLocally)
+        localAppLogs.setOnClickListener { exportAppLogsLocally() }
         systemLogs = findViewById(R.id.uploadSystemLogs)
         systemLogs.setOnClickListener { previewSystemLogs(recovery = false) }
         recoveryLogs = findViewById(R.id.recoverCrashLogs)
@@ -108,9 +113,10 @@ class EntryConfigActivity : AppCompatActivity() {
         clear.isEnabled = editable
         test.isEnabled = editable && configLoaded && stored != null
         disconnect.isEnabled = testRunning || GatewayLogRuntime.running
-        val snapshot = GatewayLogRuntime.snapshot
-        systemLogs.isEnabled = !captureBusy && GatewayLogRuntime.running && snapshot?.state == GatewayProbe.State.HEALTHY && snapshot.logsSupported && !snapshot.systemPending
-        recoveryLogs.isEnabled = systemLogs.isEnabled
+        // Saving local files never depends on the diagnostic server.
+        localAppLogs.isEnabled = !captureBusy
+        systemLogs.isEnabled = !captureBusy && ShizukuGate.state(this) == ShizukuGate.State.READY
+        recoveryLogs.isEnabled = !captureBusy
     }
 
     private fun saveConfig() {
@@ -231,8 +237,8 @@ class EntryConfigActivity : AppCompatActivity() {
     }
 
     private fun previewSystemLogs(recovery: Boolean) {
-        val target = GatewayLogRuntime.probe ?: return
-        val config = stored ?: return
+        val target = GatewayLogRuntime.probe
+        val token = stored?.token.orEmpty()
         if (captureBusy) return
         val generation = ++previewGeneration
         captureBusy = true
@@ -241,7 +247,7 @@ class EntryConfigActivity : AppCompatActivity() {
         val appContext = applicationContext
         Bg.run("system-log-preview") {
             val result = runCatching {
-                val redactor = LogRedactor(listOf(config.token))
+                val redactor = LogRedactor(listOf(token))
                 if (recovery) SystemLogCapture.recoveryPreview(appContext, redactor)
                 else SystemLogCapture.preview(appContext, redactor)
             }
@@ -284,15 +290,24 @@ class EntryConfigActivity : AppCompatActivity() {
                             (if (eventId != null) "\n已识别崩溃事件：$eventId" else "\n未识别到带时间的崩溃事件，不能判定是新故障。") +
                             (if (sameStack) "\n注意：与上次提交的崩溃事件或堆栈相同，可能重复读取旧DropBox。" else "") +
                             "\n系统日志需要 Shizuku；历史记录可能重复。没有新记录不代表没有崩溃。" +
-                            "\n点击“确认上传”后自动分成每批最多8行，逐批等待服务器确认；中断需重新取证和确认。"
-                        else getString(R.string.gateway_system_preview_help, lines.size) +
-                            "\n确认后按每批最多8行自动分批发送；中断需重新确认。"
+                            "\n可选择「保存本地」，无需联网；在线上传仅在诊断服务连接后可用。"
+                        else "最近 main/system 缓冲区的警告与错误，已脱敏 ${lines.size} 行。\n可直接保存本地文件；只有选择确认在线上传才会发送服务器。"
                     )
                     .setView(scroll)
                     .setNegativeButton(R.string.gateway_system_cancel, null)
+                    .setNeutralButton("保存本地") { _, _ ->
+                        saveLocalPreview(
+                            if (recovery) OfflineDiagnosticExporter.Kind.RECOVERY
+                            else OfflineDiagnosticExporter.Kind.SYSTEM,
+                            lines,
+                        )
+                    }
                     .setPositiveButton(R.string.gateway_system_confirm) { _, _ ->
-                        val valid = GatewayLogRuntime.running && GatewayLogRuntime.probe === target && SystemClock.elapsedRealtime() <= expires
-                        val accepted = valid && target.uploadConfirmedSystemLogs(lines)
+                        val valid = target != null && GatewayLogRuntime.running &&
+                            GatewayLogRuntime.probe === target &&
+                            GatewayLogRuntime.snapshot?.state == GatewayProbe.State.HEALTHY &&
+                            SystemClock.elapsedRealtime() <= expires
+                        val accepted = valid && target?.uploadConfirmedSystemLogs(lines) == true
                         if (accepted && crashSignature != null) {
                             fingerprints.edit().putString("last_submitted_crash_signature_v2", crashSignature).apply()
                         }
@@ -300,10 +315,60 @@ class EntryConfigActivity : AppCompatActivity() {
                     }.create().also { dialog ->
                         dialog.show()
                         dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        val uploadReady = target != null && stored != null && GatewayLogRuntime.running &&
+                            GatewayLogRuntime.snapshot?.state == GatewayProbe.State.HEALTHY &&
+                            GatewayLogRuntime.snapshot?.logsSupported == true &&
+                            GatewayLogRuntime.snapshot?.systemPending != true
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = uploadReady
                         scroll.layoutParams = scroll.layoutParams.apply { height = (320 * resources.displayMetrics.density).toInt() }
                     }
             }
         }
+    }
+
+    private fun exportAppLogsLocally() {
+        if (captureBusy) return
+        captureBusy = true
+        refreshControls()
+        logStatus.text = "正在整理本地 App 历史日志（脱敏，不上传）…"
+        val token = stored?.token.orEmpty()
+        Bg.run("offline-app-export") {
+            val result = runCatching {
+                OfflineDiagnosticExporter.exportApp(applicationContext, LogRedactor(listOf(token)))
+            }.getOrNull()
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                captureBusy = false
+                refreshControls()
+                showLocalSaveResult(result)
+            }
+        }
+    }
+
+    private fun saveLocalPreview(kind: OfflineDiagnosticExporter.Kind, lines: List<String>) {
+        logStatus.text = "正在保存本地诊断文件（不上传）…"
+        Bg.run("offline-system-export") {
+            val result = runCatching {
+                OfflineDiagnosticExporter.exportPreview(applicationContext, kind, lines)
+            }.getOrNull()
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                showLocalSaveResult(result)
+            }
+        }
+    }
+
+    private fun showLocalSaveResult(result: OfflineDiagnosticExporter.Result?) {
+        if (result == null) {
+            logStatus.text = "本地保存失败或没有可导出的日志，请检查存储空间后重试"
+            return
+        }
+        logStatus.text = "已保存到 下载/CarDeck：${result.fileName}"
+        AlertDialog.Builder(this)
+            .setTitle("本地日志保存成功")
+            .setMessage("文件位置：\n${result.displayPath}\n\n大小：${result.bytes} 字节。\n\n文件只保存在手机，不会自动上传；可通过文件管理器自行分享。")
+            .setPositiveButton("知道了", null)
+            .show()
     }
 
     override fun onStart() {
