@@ -166,17 +166,29 @@ class BuickSettingsActivity : AppCompatActivity() {
             .distinctBy { it.first }
             .sortedBy { it.second.lowercase() }
         appChoices.addAll(installed)
+        // Explicit light text on dark panels: native Spinner theme defaults are
+        // not reliably readable on Sony dark UI (same issue as T33 settings).
+        fun readableAdapter(items: List<String>) = object : ArrayAdapter<String>(
+            this, android.R.layout.simple_spinner_item, items,
+        ) {
+            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
+                (super.getView(position, convertView, parent) as TextView).apply {
+                    setTextColor(fg)
+                    setBackgroundColor(surfaceHigh)
+                    setPadding(px(10), px(10), px(10), px(10))
+                }
+            override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
+                (super.getDropDownView(position, convertView, parent) as TextView).apply {
+                    setTextColor(fg)
+                    setBackgroundColor(surfaceHigh)
+                    setPadding(px(10), px(10), px(10), px(10))
+                }
+        }
         appPicker = Spinner(this)
-        appPicker.adapter = ArrayAdapter(
-            this, android.R.layout.simple_spinner_dropdown_item,
-            appChoices.map { "${it.second} · ${it.first}" },
-        )
+        appPicker.adapter = readableAdapter(appChoices.map { "${it.second} · ${it.first}" })
         root.addView(appPicker)
         appModes = Spinner(this)
-        appModes.adapter = ArrayAdapter(
-            this, android.R.layout.simple_spinner_dropdown_item,
-            listOf("跟随车辆默认", "安全区域", "全铺满"),
-        )
+        appModes.adapter = readableAdapter(listOf("跟随车辆默认", "安全区域", "全铺满"))
         root.addView(appModes)
         val perAppSave = Button(this).apply {
             text = "保存该 App 显示方式"
