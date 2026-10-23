@@ -1,6 +1,7 @@
 package io.github.shaonialife.cardeck
 
 import android.content.Context
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
 import io.github.shaonialife.cardeck.audio.AudioSender
@@ -322,6 +323,7 @@ object SessionController {
      * 幂等：已有会话时 BT 组件的 start() 自行短路，不会双开。
      */
     fun startConnection(context: Context) {
+        CriticalEventTrail.mark(context, "CONNECTION_REQUESTED")
         connectCancelled = false
         phaseHint = "蓝牙就绪，等待车机回连…"
         when (
@@ -370,6 +372,7 @@ object SessionController {
 
     /** 「断开连接」（可在任意 Activity 实例上调用——操作的是真管线对象）。 */
     fun disconnect(context: Context) {
+        CriticalEventTrail.mark(context, "CONNECTION_DISCONNECT_REQUESTED")
         val hadProjection = CarPlayService.mediaProjection != null
         retireSession()
         // BT 控制会话只在这里（用户终态）退役，socket close 让保活读循环立刻退出：
