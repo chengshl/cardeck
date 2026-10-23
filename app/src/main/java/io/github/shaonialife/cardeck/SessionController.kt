@@ -2011,19 +2011,27 @@ object SessionController {
                             }
                         }
                         if (setup != null) {
-                            // T28: Xperia 1 V Android 15 system_server repeatedly crashed
-                            // in WindowContextListenerImpl on display-add. On B233, keep
-                            // AirPlay video alive with EGL only; NEVER create virtual displays.
-                            val t28Displayless = SonyB233CrashGuard.useDisplaylessDiagnostic(
+                            // T40: restore real Android virtual displays and HID in Buick-main,
+                            // while keeping the old T28 safe EGL-only path one switch away.
+                            val sonyB233CrashRisk = SonyB233CrashGuard.useDisplaylessDiagnostic(
                                 android.os.Build.MANUFACTURER,
                                 android.os.Build.MODEL,
                                 android.os.Build.VERSION.SDK_INT,
                                 client.currentEndpoint.isBuickB233,
                             )
+                            val restoreDesktop = io.github.shaonialife.cardeck.video.BuickMainDisplayMode.enabled(context)
+                            val t28Displayless = io.github.shaonialife.cardeck.video.BuickMainDisplayMode.useT28Displayless(
+                                sonyB233CrashRisk, restoreDesktop,
+                            )
+                            if (sonyB233CrashRisk && restoreDesktop) {
+                                appendLog(
+                                    "BUICK-MAIN T40 WARNING: Xperia Android15/B233 已启用真实虚拟屏及触摸；" +
+                                        "历史上可能导致手机系统重启。发生故障可在手机别克设置中关闭真实桌面与触摸开关"
+                                )
+                            }
                             if (t28Displayless) {
                                 appendLog(
-                                    "SAFETY T28: Xperia XQ-DQ72 / Android 15 / B233：无虚拟屏诊断已自动启用；" +
-                                        "禁用 Shizuku 创建显示器、CarDeck 桌面和触摸注入；仅发送 EGL 测试画面"
+                                    "SAFETY T28: 用户关闭真实桌面与触摸，Xperia/B233 使用无虚拟屏 EGL 测试画面"
                                 )
                             }
                             // 记录会话凭据：投影授权晚于连接时用于动态补启音频。

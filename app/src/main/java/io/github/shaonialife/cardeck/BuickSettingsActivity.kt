@@ -55,7 +55,27 @@ class BuickSettingsActivity : AppCompatActivity() {
             setPadding(0, px(6), 0, px(8))
         }
         root.addView(label("别克设置", 24f))
-        root.addView(label("曲面屏安全区域 · 仅在下次连接时应用，不修改蓝牙、音频或握手策略"))
+        root.addView(label("桌面与触摸", 19f))
+        val fullDesktop = Switch(this).apply {
+            text = "启用真实桌面及车机触摸"
+            setTextColor(fg)
+            thumbTintList = ColorStateList.valueOf(accent)
+            trackTintList = ColorStateList.valueOf(getColor(R.color.m3_sec_container))
+            isChecked = io.github.shaonialife.cardeck.video.BuickMainDisplayMode.enabled(this@BuickSettingsActivity)
+            setOnCheckedChangeListener { _, enabled ->
+                io.github.shaonialife.cardeck.video.BuickMainDisplayMode.setEnabled(
+                    this@BuickSettingsActivity, enabled,
+                )
+            }
+        }
+        root.addView(fullDesktop)
+        root.addView(label(
+            "开启：创建车机桌面虚拟屏，允许触摸注入。Sony Xperia 1 V / Android 15 曾在此过程中触发系统重启；" +
+                "如复现，可关闭本开关退回 T28 安全诊断画面。更改后需重新连接。",
+            12f,
+        ))
+        root.addView(label("曲面屏安全区域", 19f))
+        root.addView(label("安全区仅在下次连接时应用，与上面的真实桌面开关相互独立。"))
         val switch = Switch(this).apply {
             text = "启用 CarPlay 安全区域适配"
             setTextColor(fg)
