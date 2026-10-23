@@ -53,7 +53,7 @@ class BuickMenuActivity : AppCompatActivity() {
                 2 -> {
                     holder.icon.setImageResource(android.R.drawable.stat_sys_download)
                     holder.title.text = "在线更新"
-                    holder.desc.text = "仅检查 Buick-main 独立更新渠道"
+                    holder.desc.text = "仅检查当前应用的独立更新渠道"
                     holder.itemView.setOnClickListener { BuickUpdater.check(this@BuickMenuActivity) }
                 }
                 else -> {
@@ -66,7 +66,7 @@ class BuickMenuActivity : AppCompatActivity() {
                         BuickUpdater.setAutoEnabled(this@BuickMenuActivity, newEnabled)
                         Toast.makeText(
                             this@BuickMenuActivity,
-                            if (newEnabled) "Buick-main 自动检查更新已开启" else "Buick-main 自动检查更新已关闭",
+                            if (newEnabled) "自动检查更新已开启" else "自动检查更新已关闭",
                             Toast.LENGTH_SHORT,
                         ).show()
                         notifyItemChanged(position)
