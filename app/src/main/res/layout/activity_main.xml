@@ -964,7 +964,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:text="曲面屏安全区 · 自动读取 · 每台车独立方案"
+                        android:text="显示与安全区 · 日志上传 · 在线更新"
                         android:textColor="@color/m3_on_var"
                         android:textSize="12sp" />
                 </LinearLayout>

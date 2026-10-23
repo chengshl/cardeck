@@ -876,13 +876,13 @@ class MainActivity : AppCompatActivity() {
         // 所以 Shizuku 授权成功、连接建立等时机都会再调一次。
         ensureNotificationAccessAsync()
 
-        // ---- 车机设置（手机侧二级菜单：桌面/横屏/超采样/dock/默认地图） ----
+        // ---- Upstream-compatible car settings (no Buick-only diagnostics or update entries) ----
         findViewById<LinearLayout>(R.id.btnCarSettings).setOnClickListener {
             startActivity(android.content.Intent(this, PhoneSettingsActivity::class.java))
         }
-        // Buick local vehicle profiles, isolated from general settings.
+        // Buick-specific settings, diagnostics and updater, isolated from upstream menus.
         findViewById<LinearLayout>(R.id.btnBuickSettings).setOnClickListener {
-            startActivity(android.content.Intent(this, BuickSettingsActivity::class.java))
+            startActivity(android.content.Intent(this, BuickMenuActivity::class.java))
         }
 
         // 启动即检查：常亮开 + 无悬浮窗权限 → 主动请求
