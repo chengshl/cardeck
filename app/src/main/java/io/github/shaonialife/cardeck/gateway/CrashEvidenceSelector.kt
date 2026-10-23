@@ -1,23 +1,61 @@
 package io.github.shaonialife.cardeck.gateway
 
 /**
- * Pure, bounded evidence selection. Called only for a user-initiated, previewed
- * crash report. Raw shell output is NEVER uploaded or written to disk.
+ * Manual, bounded crash-evidence summary. A retained DropBox crash is not a new crash;
+ * preserve original event time and exception context before user-confirmed upload.
  */
 internal object CrashEvidenceSelector {
     private const val SESSION_BREAK = "=== CarDeck 前次进程分隔 ==="
-    fun joinPriorSessions(sessions: List<String>): String = sessions.joinToString("\n$SESSION_BREAK\n")
+    private const val MAX_LINES = 64 // GatewayProbe.uploadConfirmedSystemLogs enforces this limit.
+    private val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
     private val clue = Regex(
         "FATAL|Exception|ANR|Watchdog|system_server|rescue.?party|reboot|restart|" +
             "tombstone|signal [0-9]+|WindowContextListenerImpl|DisplayManager|" +
             "Bluetooth|BT-ADAPTER|SHIZUKU|SESSION|LINK closed|crash|崩溃|重启|蓝牙",
         RegexOption.IGNORE_CASE,
     )
-    private val noise = Regex("^(?:VIDEO: 帧|RAW (?:tx|rx):|IAPLINK: tx\\(|IAPLINK: rx\\()")
+    private val keyFault = Regex(
+        "FATAL|Exception|Caused by:|Process:|Subject:|Reason:|ANR in|signal [0-9]+|" +
+            "WindowContainer|RootWindowContainer|DisplayManager|Abort message|backtrace:|system_server died",
+        RegexOption.IGNORE_CASE,
+    )
+    private val stackFrame = Regex("""^(?:at\s+|#\d\d\s+|native:\s+|Caused by:)""", RegexOption.IGNORE_CASE)
+    private val noise = Regex("""^(?:VIDEO: 帧|RAW (?:tx|rx):|IAPLINK: tx\(|IAPLINK: rx\()""")
     private val noEntries = Regex(
         "No entries|No matching|permission denied|Can't find|not found|error:|unknown option",
         RegexOption.IGNORE_CASE,
     )
+    private val metadata = Regex(
+        """^(?:={3,}|Drop box contents:|Max entries:|Low priority rate limit|Low priority tags:|Searching for:)""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val fullEventDate = Regex("""\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b""")
+
+    fun joinPriorSessions(sessions: List<String>): String = sessions.joinToString("\n$SESSION_BREAK\n")
+
+    /** Stable identity for one dated event, rather than a stack common to many events. */
+    fun datedCrashId(preview: List<String>): String? =
+        preview.firstOrNull {
+            it.startsWith("[DropBox:system_server_crash] ") && fullEventDate.containsMatchIn(it)
+        }?.let { line ->
+            val timestamp = fullEventDate.find(line)?.value ?: return@let null
+            "system_server_crash@" + timestamp
+        }
+
+    private fun latestEntry(raw: String, tag: String): Pair<List<String>, Boolean> {
+        val lines = raw.lineSequence().map { it.trim() }
+            .filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }.toList()
+        // "dumpsys dropbox --print" emits a date and tag for each entry.
+        // Count metadata must never be treated as an event timestamp.
+        val header = Regex(
+            """^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+""" +
+                Regex.escape(tag) + """\s+\(""",
+            RegexOption.IGNORE_CASE,
+        )
+        val newest = lines.indexOfLast { header.containsMatchIn(it) }
+        return if (newest >= 0) lines.drop(newest) to true
+        else lines.filterNot { metadata.containsMatchIn(it) }.takeLast(128) to false
+    }
 
     fun select(
         previousApp: String?,
@@ -26,57 +64,67 @@ internal object CrashEvidenceSelector {
         shizukuAvailable: Boolean,
         redactor: LogRedactor,
     ): List<String> {
-        val output = ArrayList<String>(64)
+        val output = ArrayList<String>(MAX_LINES)
         fun add(source: String, line: String) {
-            if (output.size >= 64) return
-            val sanitized = redactor.line("[$source] ${line.trim()}")
-            if (sanitized.isNotBlank()) output.add(sanitized.take(256))
+            if (output.size >= MAX_LINES) return
+            val sanitized = redactor.line("[$source] " + line.trim())
+            if (sanitized.isNotBlank() && sanitized != "[已隐藏含凭证或密钥的日志行]") {
+                output.add(sanitized.take(256))
+            }
         }
 
-        // Save the final meaningful pre-reboot app events even if the log stream
-        // stopped when the system was killed. The file holds up to 2 MB only.
+        // Also keep last actions without keywords; they may show what immediately preceded a restart.
         val sessions = previousApp.orEmpty().split(SESSION_BREAK).takeLast(3)
         for ((index, session) in sessions.withIndex()) {
-            val previous = session.lineSequence()
-                .map { it.trim() }.filter { it.isNotBlank() && !noise.containsMatchIn(it) }
-                .toList()
-            val previousClues = previous.filter { clue.containsMatchIn(it) }.takeLast(5)
-            val relevant = if (previousClues.isNotEmpty()) previousClues else previous.takeLast(2)
-            relevant.forEach { add("上轮App${index + 1}", it) }
+            val clean = session.lineSequence().map { it.trim() }
+                .filter { it.isNotBlank() && !noise.containsMatchIn(it) }.toList()
+            val chosen = (clean.filter { clue.containsMatchIn(it) }.takeLast(2) +
+                clean.takeLast(2)).distinct().takeLast(4)
+            chosen.forEach { add("上轮App" + (index + 1), it) }
         }
 
         if (!shizukuAvailable) {
-            add("取证状态", "Shizuku未运行或未授权：只含上轮App文件；启动Shizuku后重新取证才能读取系统记录")
+            add("取证状态", "Shizuku未运行或未授权：只有前次App记录；需重新启动Shizuku后补查系统证据")
             return output
         }
 
-        // -L asks Android's logcat for the last boot (if pstore/pmsg is
-        // supported); never mislabel current-boot -b crash as previous boot.
-        val bootLines = previousBootCrash.orEmpty().lineSequence()
-            .map { it.trim() }.filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }
-            .toList()
-        val bootCandidates = bootLines.filter { clue.containsMatchIn(it) ||
-            it.startsWith("at ") || it.startsWith("Caused by:") || it.startsWith("E/") }
-        bootCandidates.takeLast(16).forEach { add("上次启动crash", it) }
+        // Previous-boot logcat -L, never current-boot -b crash.
+        val boot = previousBootCrash.orEmpty().lineSequence()
+            .map { it.trim() }.filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }.toList()
+        val bootInteresting = boot.filter {
+            keyFault.containsMatchIn(it) || stackFrame.containsMatchIn(it)
+        }.takeLast(12)
+        bootInteresting.forEach { add("上次启动crash", it) }
 
-        val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
+        var datedEvents = 0
+        var unknownDates = 0
+        val quotas = mapOf(
+            "system_server_crash" to 24,
+            "system_server_watchdog" to 6,
+            "SYSTEM_RESTART" to 6,
+            "SYSTEM_LAST_KMSG" to 6,
+        )
         for (tag in tags) {
-            val raw = dropboxByTag[tag].orEmpty()
-            val lines = raw.lineSequence().map { it.trim() }
-                .filter { it.isNotBlank() && !noEntries.containsMatchIn(it) }.toList()
-            // Prefer the latest entry with the most relevant crash stack. A
-            // DropBox dump can include unrelated earlier reports.
-            val hints = lines.mapIndexedNotNull { index, line ->
-                if (clue.containsMatchIn(line)) index else null
-            }
-            val end = (hints.lastOrNull() ?: lines.lastIndex).coerceAtLeast(0)
-            val from = (end - 6).coerceAtLeast(0)
-            lines.drop(from).take(8).forEach { add("DropBox:$tag", it) }
+            val (entry, hasDate) = latestEntry(dropboxByTag[tag].orEmpty(), tag)
+            if (entry.isEmpty()) continue
+            if (hasDate) datedEvents++ else unknownDates++
+            val limit = quotas.getValue(tag)
+            val chosen = linkedSetOf<Int>()
+            if (hasDate) chosen.add(0)
+            // Original occurrence time, first exception/caused-by and stack outrank footers.
+            entry.indices.filter { keyFault.containsMatchIn(entry[it]) }
+                .take(if (tag == "system_server_crash") 8 else 3).forEach { chosen.add(it) }
+            entry.indices.filter { stackFrame.containsMatchIn(entry[it]) }
+                .take(if (tag == "system_server_crash") 12 else 3).forEach { chosen.add(it) }
+            entry.indices.filter { !metadata.containsMatchIn(entry[it]) }
+                .take(if (tag == "system_server_crash") 6 else 5).forEach { chosen.add(it) }
+            chosen.toList().sorted().take(limit).forEach { add("DropBox:$tag", entry[it]) }
         }
-        if (bootCandidates.isEmpty() && dropboxByTag.values.none { value ->
-                value.lineSequence().any { clue.containsMatchIn(it) && !noEntries.containsMatchIn(it) }
-            }) {
-            add("取证状态", "系统未返回可识别崩溃栈；可能已轮转、厂商未保留或Shizuku权限不足，不能据此判定无崩溃")
+        if (unknownDates > 0) {
+            add("取证状态", "有 " + unknownDates + " 类DropBox内容未识别到事件时间；可能是截断的旧记录，不能视为新崩溃")
+        }
+        if (datedEvents == 0 && bootInteresting.isEmpty()) {
+            add("取证状态", "系统未返回带时间的可识别崩溃事件；可能未保留或已轮转，不能据此判定无崩溃")
         }
         return output
     }

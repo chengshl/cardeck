@@ -67,7 +67,7 @@ object SystemLogCapture {
             val result = runCatching { Shell.exec(cmd, timeoutMs = 6500L) }.getOrNull()
             return if (result?.ok == true) result.output.takeLast(36_000) else ""
         }
-        val previousBoot = read("logcat -L -d -b crash -v brief -t 160 2>/dev/null | tail -c 36000")
+        val previousBoot = read("logcat -L -d -b crash -v threadtime -v year -t 160 2>/dev/null | tail -c 36000")
         val tags = listOf("system_server_crash", "system_server_watchdog", "SYSTEM_RESTART", "SYSTEM_LAST_KMSG")
         val dropbox = linkedMapOf<String, String>()
         for (tag in tags) {

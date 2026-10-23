@@ -15,12 +15,22 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         Regex("\\b[A-HJ-NPR-Z0-9]{17}\\b") to "[车辆标识]",
     )
 
+    // Clock time is diagnostic data, not an IPv6 address.
+    private val clockTime = Regex("""(?<![0-9A-Fa-f:])(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?![0-9A-Fa-f:])""")
+
     fun line(raw: String): String {
         if (raw.length > 8192) return "[超长日志已省略]"
         var text = raw
         for (secret in secrets.filter { it.isNotEmpty() }) text = text.replace(secret, "[已隐藏凭证]")
         if (sensitive.containsMatchIn(text)) return "[已隐藏含凭证或密钥的日志行]"
+        val times = ArrayList<String>()
+        text = clockTime.replace(text) { matched ->
+            val id = times.size
+            times.add(matched.value)
+            "~CARDECK_TIME_" + id + "~"
+        }
         for ((pattern, replacement) in replacements) text = pattern.replace(text, replacement)
+        for ((index, value) in times.withIndex()) text = text.replace("~CARDECK_TIME_" + index + "~", value)
         text = Regex("(ssid|serial|device.?id|vin|latitude|longitude)\\s*[:=].*", RegexOption.IGNORE_CASE)
             .replace(text) { "${it.groupValues[1]}=[已隐藏]" }
         return text.map { if (it.code < 32 || it.code == 127) ' ' else it }.joinToString("").take(256)
