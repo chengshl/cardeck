@@ -10,6 +10,7 @@ import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
 import io.github.shaonialife.cardeck.airplay.PairVerifyClient
 import io.github.shaonialife.cardeck.audio.AudioProfile
+import io.github.shaonialife.cardeck.audio.BuickMainAudioPolicy
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
 import io.github.shaonialife.cardeck.audio.AudioTuning
@@ -257,6 +258,10 @@ object SessionController {
     /** 本次会话是否在车机侧播放声音（由「启动连接」弹窗选择）。 */
     @Volatile
     var audioEnabledForSession: Boolean = false
+        set(value) {
+            // Fail closed even if a legacy UI/callback explicitly enables audio.
+            field = BuickMainAudioPolicy.effectiveAudioEnabled(value)
+        }
 
     /**
      * 「开启声音（兼容档）」：候选里把非 media 档（compatibility 等）排前面。
@@ -551,6 +556,10 @@ object SessionController {
     /** 会话已建立且投影就绪、但音频尚未启动时，动态补启（投影授权晚于连接的场景）。 */
     @Synchronized
     fun maybeStartAudioNow(context: Context) {
+        if (!BuickMainAudioPolicy.CARPLAY_AUDIO_SUPPORTED) {
+            appendLog("AUDIO T41: Buick-main 已屏蔽动态补启 CarPlay 声音，保留蓝牙 A2DP")
+            return
+        }
         val client =
             currentClient ?: run {
                 appendLog("MODE: 投屏已就绪（当前无会话——下次连接时自动启用音频）")
@@ -1149,8 +1158,12 @@ object SessionController {
         sharedSecret: ByteArray?,
         host: String?,
     ): Boolean {
+        if (!BuickMainAudioPolicy.CARPLAY_AUDIO_SUPPORTED) {
+            appendLog("AUDIO T41: Buick-main 未开放 CarPlay 音频，跳过全部音频 SETUP/RTP——仅视频 + 蓝牙音源")
+            return false
+        }
         if (!audioEnabledForSession) {
-            appendLog("AUDIO: 本次连接未开启车机侧声音（「启动连接」弹窗选择）——仅推视频")
+            appendLog("AUDIO: 本次连接未启用 CarPlay 声音——仅推视频")
             return false
         }
         if (sharedSecret == null) {
@@ -2185,8 +2198,7 @@ object SessionController {
                                         // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
                                         // T26: B233 video-only/A2DP should not take
                                         // ownership of CarPlay main audio on reassert.
-                                        val claimAudio = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
-                                            client.currentEndpoint.isBuickB233,
+                                        val claimAudio = BuickMainAudioPolicy.shouldClaimCarPlayAudio(
                                             audioEnabledForSession,
                                         )
                                         appendLog(
@@ -2216,8 +2228,7 @@ object SessionController {
                             // T26: Always claim main screen; for B233 video-only
                             // avoid claiming main audio while music runs via A2DP.
                             // Audi/non-B233 and CarPlay-audio mode remain unchanged.
-                            val claimAudioForCarPlay = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
-                                client.currentEndpoint.isBuickB233,
+                            val claimAudioForCarPlay = BuickMainAudioPolicy.shouldClaimCarPlayAudio(
                                 audioEnabledForSession,
                             )
                             appendLog(

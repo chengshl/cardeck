@@ -264,7 +264,7 @@
                     android:gravity="center_vertical"
                     android:paddingStart="13dp"
                     android:paddingEnd="13dp"
-                    android:text="车机侧声音 · 开启"
+                    android:text="CarPlay 音频 · 未开放"
                     android:textColor="@color/m3_on_var"
                     android:textSize="11.5sp"
                     android:textStyle="bold"
@@ -597,7 +597,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="车机侧声音"
+                            android:text="CarPlay 声音推送"
                             android:textColor="@color/m3_on_surface"
                             android:textSize="14.5sp"
                             android:textStyle="bold" />
@@ -607,7 +607,7 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="2dp"
-                            android:text="需要「投屏」权限，可选 · 关闭时车机无声音"
+                            android:text="主线暂未调通，音乐仍可通过普通蓝牙播放"
                             android:textColor="@color/m3_on_var"
                             android:textSize="12sp" />
                     </LinearLayout>
@@ -622,7 +622,7 @@
                         android:paddingTop="9dp"
                         android:paddingEnd="12dp"
                         android:paddingBottom="9dp"
-                        android:text="授权"
+                        android:text="未开放"
                         android:textColor="@color/m3_primary"
                         android:textSize="13sp"
                         android:textStyle="bold" />
