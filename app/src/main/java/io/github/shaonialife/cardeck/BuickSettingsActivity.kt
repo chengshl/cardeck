@@ -248,7 +248,7 @@ class BuickSettingsActivity : AppCompatActivity() {
                     setTextColor(fg)
                     setHintTextColor(secondary)
                     backgroundTintList = ColorStateList.valueOf(accent)
-                    selectAllOnFocus = true
+                    setSelectAllOnFocus(true)
                     filters = arrayOf(android.text.InputFilter.LengthFilter(4))
                     contentDescription = side + "边距（像素）"
                 }
