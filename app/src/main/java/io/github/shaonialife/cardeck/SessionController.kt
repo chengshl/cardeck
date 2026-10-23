@@ -2446,6 +2446,7 @@ object SessionController {
                                                 context.applicationContext,
                                                 log = { line -> appendLog(line) },
                                                 safeViewport = pendingSafeViewport,
+                                                safeTwoScreenMode = sonyB233CrashRisk,
                                             )
                                         currentHiddenSource = source
                                         val ok =

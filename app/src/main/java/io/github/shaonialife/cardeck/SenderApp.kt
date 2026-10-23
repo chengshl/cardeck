@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
 import io.github.shaonialife.cardeck.launcher.VirtualLauncher
+import io.github.shaonialife.cardeck.launcher.DisplayCrashTrail
 import io.github.shaonialife.cardeck.util.DebugFileLog
 
 /**
@@ -25,6 +26,7 @@ class SenderApp : Application() {
         // 之后的部分。必须在这里写（Application 是进程最早入口），晚于任何业务日志
         // 都会让它被算进「历史」。
         DebugFileLog.markSessionStart(this)
+        DisplayCrashTrail.reportPrevious(this)
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) { GatewayLogService.resumeIfEnabled(activity) }
             override fun onActivityCreated(activity: Activity, state: Bundle?) {}
