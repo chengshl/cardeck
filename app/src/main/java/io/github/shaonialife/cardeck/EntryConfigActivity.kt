@@ -15,6 +15,7 @@ import io.github.shaonialife.cardeck.gateway.GatewayLogRuntime
 import io.github.shaonialife.cardeck.gateway.LogRedactor
 import io.github.shaonialife.cardeck.gateway.SystemLogCapture
 import io.github.shaonialife.cardeck.gateway.CrashEvidenceSelector
+import io.github.shaonialife.cardeck.gateway.CombinedDiagnosticSelector
 import io.github.shaonialife.cardeck.gateway.OfflineDiagnosticExporter
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.service.GatewayLogService
