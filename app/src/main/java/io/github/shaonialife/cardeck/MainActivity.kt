@@ -924,6 +924,9 @@ class MainActivity : AppCompatActivity() {
         findViewById<LinearLayout>(R.id.btnCarSettings).setOnClickListener {
             startActivity(android.content.Intent(this, PhoneSettingsActivity::class.java))
         }
+        findViewById<LinearLayout>(R.id.btnBuickSettings).setOnClickListener {
+            startActivity(android.content.Intent(this, BuickMenuActivity::class.java))
+        }
 
         // 启动即检查：常亮开 + 无悬浮窗权限 → 主动请求
         if (ScreenDimmer.enabled) {

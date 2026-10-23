@@ -14,7 +14,7 @@ import java.util.UUID
  * Only infrequent named transitions should call mark().
  */
 internal object CriticalEventTrail {
-    private const val PREFS = "buick-main-t52-critical-events"
+    private const val PREFS = "buick-e5-t52-critical-events"
     private const val KEY = "last_50"
     private val session = UUID.randomUUID().toString().substring(0, 8)
     private val lock = Any()
