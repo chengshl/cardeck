@@ -14,6 +14,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import io.github.shaonialife.cardeck.buick.BuickAudioGuardPrefs
 import io.github.shaonialife.cardeck.buick.BuickConnectionModePrefs
 import io.github.shaonialife.cardeck.buick.BuickE5HandshakePrefs
 import io.github.shaonialife.cardeck.buick.BuickInsets
@@ -224,6 +225,76 @@ class BuickSettingsActivity : AppCompatActivity() {
             "只对已选目标车机，或自动发现中名称包含 Buick 的设备强制生效；建议先在「连接准备」指定目标车机。更改后需重新连接。",
             12f,
         ).apply { setPadding(0, 0, 0, px(12)) })
+
+        heading("T74 音频保护实验", "仅 Buick-Test / E5 B233；默认关闭，需重新连接")
+        val audioGuardCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(16), px(15), px(16), px(16))
+            background = rounded(surfaceHigh, getColor(R.color.m3_outline), 16)
+        }
+        audioGuardCard.addView(label(
+            "18秒后尝试仅撤销音频流（实验）", 16f,
+        ).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+        audioGuardCard.addView(label(
+            "默认关闭，不影响正常音频。开启后，仅当车机确认单独撤销音频流才停止RTP，" +
+                "并尝试重新声明纯视频；如果撤销失败继续保持音频。T63/T64曾发现" +
+                "车机仍可能拆掉视频，本功能不能保证避免断连。Wi-Fi RSSI/UDP耗时诊断不依赖此开关。",
+            12f,
+        ))
+        val guardState = label("", 14f).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+        audioGuardCard.addView(guardState)
+        val guardRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(px(4), px(4), px(4), px(4))
+            background = rounded(getColor(R.color.m3_surface), getColor(R.color.m3_outline), 12)
+        }
+        val guardOff = TextView(this).apply {
+            textSize = 15f
+            gravity = android.view.Gravity.CENTER
+            minHeight = px(50)
+            isClickable = true
+            isFocusable = true
+        }
+        val guardOn = TextView(this).apply {
+            textSize = 15f
+            gravity = android.view.Gravity.CENTER
+            minHeight = px(50)
+            isClickable = true
+            isFocusable = true
+        }
+        guardRow.addView(guardOff, LinearLayout.LayoutParams(0, px(50), 1f))
+        guardRow.addView(guardOn, LinearLayout.LayoutParams(0, px(50), 1f))
+        audioGuardCard.addView(guardRow)
+        fun refreshAudioGuard(enabled: Boolean) {
+            guardState.text = if (enabled) "当前状态：实验已开启" else "当前状态：已关闭（推荐）"
+            guardState.setTextColor(getColor(if (enabled) R.color.m3_amber else R.color.m3_ok))
+            for ((button, optionOn) in listOf(guardOff to false, guardOn to true)) {
+                val checked = enabled == optionOn
+                button.text = if (checked) {
+                    if (optionOn) "✓ 实验开启" else "✓ 已关闭"
+                } else {
+                    if (optionOn) "实验开启" else "关闭"
+                }
+                button.setTextColor(if (checked) getColor(R.color.m3_on_primary) else fg)
+                button.background = rounded(if (checked) accent else surfaceHigh, null, 10)
+                button.contentDescription = button.text.toString() +
+                    if (checked) "，已选中" else "，点击切换"
+            }
+        }
+        guardOff.setOnClickListener {
+            BuickAudioGuardPrefs.setTimedFallbackEnabled(this@BuickSettingsActivity, false)
+            refreshAudioGuard(false)
+        }
+        guardOn.setOnClickListener {
+            BuickAudioGuardPrefs.setTimedFallbackEnabled(this@BuickSettingsActivity, true)
+            refreshAudioGuard(true)
+        }
+        refreshAudioGuard(BuickAudioGuardPrefs.timedFallbackEnabled(this))
+        root.addView(audioGuardCard, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { bottomMargin = px(16) })
 
         heading("曲面屏安全区域", "设置下次连接生效；桌面与触摸功能始终保持开启")
 
