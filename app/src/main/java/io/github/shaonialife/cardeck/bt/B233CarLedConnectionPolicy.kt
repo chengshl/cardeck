@@ -76,6 +76,27 @@ internal class B233CarLedConnectionPolicy {
         return true
     }
 
+    /**
+     * T67: the user explicitly pressed Start while the known B233 was already
+     * physically connected (HFP/A2DP confirmed on that receiver). No new ACL
+     * broadcast follows registerReceiver(), so T66 would wait indefinitely.
+     *
+     * Treat the existing ACL as observed WITHOUT fabricating a new edge. Give
+     * reverse iAP2 1.5s priority, then ONE accessory RFCOMM compatibility
+     * attempt in a 15s window. Never re-arm on later polling/profile events.
+     * A real ACL disconnect clears this state as usual.
+     */
+    @Synchronized
+    fun armAlreadyConnectedStartupProbe(address: String, nowMs: Long): Boolean {
+        if (aclConnectedAddress != null || attemptsLeft > 0) return false
+        aclConnectedAddress = key(address)
+        invitedAddress = aclConnectedAddress
+        notBeforeMs = nowMs + INBOUND_PRIORITY_MS
+        untilMs = nowMs + 15_000L
+        attemptsLeft = 1
+        return true
+    }
+
     /** Explicit diagnostics only, never an automatic session recovery. */
     @Synchronized
     fun requestOneManualProbe(nowMs: Long, selectedAddress: String?) {

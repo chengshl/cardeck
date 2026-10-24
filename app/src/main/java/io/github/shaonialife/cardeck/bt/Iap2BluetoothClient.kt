@@ -263,6 +263,10 @@ class Iap2BluetoothClient(
             } ?: return
         var lastFailureLogAt = 0L
         var lastCooldownLogUntil = 0L
+        // T67: evaluate a pre-existing HFP/A2DP connection only once shortly
+        // after the user's Start action; never revive a stale connect request.
+        var startupProbeChecked = false
+        val startupProbeDeadlineMs = android.os.SystemClock.uptimeMillis() + 15_000L
         while (running && generation.get() == myGeneration) {
             // 静默降噪（2026-10-10 用户实测后启用）——会话期间完全静默，不产生任何连接尝试/日志：
             //  - inboundActive：接收端正在连我们（两条 RFCOMM 会互相踩；Audi 实测双会话混乱）
@@ -295,6 +299,46 @@ class Iap2BluetoothClient(
                 log("BT-C: 没有已配对的蓝牙设备——请先在系统设置里与车机完成蓝牙配对")
                 sleepQuietly(RETRY_DELAY_MILLIS * 3)
                 continue
+            }
+            if (!startupProbeChecked) {
+                startupProbeChecked = true
+                if (android.os.SystemClock.uptimeMillis() <= startupProbeDeadlineMs) {
+                    // HFP/A2DP are evidence the receiver's ACL already exists,
+                    // but MUST NOT be treated as recurring CarPlay invitations.
+                    // This check is in the background client thread; querying
+                    // Bluetooth profile proxies must never block the main UI.
+                    val alreadyConnectedB233 = candidates.filter { device ->
+                        val name = runCatching { device.name }.getOrNull()
+                        val selected = targetProvider()
+                        val isB233 = BuickE5HandshakeTarget.shouldForce(
+                            BuickE5HandshakePrefs.enabled(context),
+                            selected?.address, device.address, name,
+                        ) || BuickB233Route.useB233Transport(
+                            name, ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
+                        )
+                        isB233 && BtProfiles.connectedNames(context, device.address).isNotEmpty()
+                    }
+                    if (alreadyConnectedB233.size == 1 &&
+                        !BtSessionGate.inboundActive && !BtSessionGate.sessionActive &&
+                        carLedPolicy.armAlreadyConnectedStartupProbe(
+                            alreadyConnectedB233.single().address,
+                            android.os.SystemClock.uptimeMillis(),
+                        )
+                    ) {
+                        log(
+                            "BT-C T67: 用户启动时 B233 已有蓝牙配置文件连接；" +
+                                "先等车机主动 iAP2 1.5s，再允许一次限时配件端连接（不断 HFP/A2DP）",
+                        )
+                    } else if (alreadyConnectedB233.size > 1) {
+                        log("BT-C T67: 多台 B233 蓝牙已连接，未自动选择；请先指定目标车机")
+                    } else if (alreadyConnectedB233.size == 1) {
+                        log("BT-C T67: 已有车机主动会话或 ACL 连接许可；不再添加启动拨号")
+                    } else {
+                        log("BT-C T67: 未确认已有 B233 蓝牙配置文件连接；保持等待车机邀请")
+                    }
+                } else {
+                    log("BT-C T67: 启动连接检测已过期，不补发迟到拨号")
+                }
             }
             var connected: BluetoothSocket? = null
             var connectedKnownBuick = false
@@ -411,7 +455,7 @@ class Iap2BluetoothClient(
                             device.address, android.os.SystemClock.uptimeMillis(),
                         )
                     ) continue
-                    log("BT-C T66: 建链方向=手机主动连接车机配件端；车机 ACL 触发的限次兼容路径")
+                    log("BT-C T67: 建链方向=手机主动连接车机配件端；经 ACL 或已有蓝牙连接授权的限次路径")
                 }
                 val socket = tryConnect(device)
                 if (socket != null) {
