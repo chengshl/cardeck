@@ -1450,6 +1450,12 @@ object SessionController {
                     // Other cars retain existing no-local-speaker policy.
                     mutePhoneOutput = !client.currentEndpoint.isBuickB233,
                     verboseStartupDiagnostics = client.currentEndpoint.isBuickB233,
+                    onStopped =
+                        if (modernB233Timing) {
+                            { client.closeReverseAudioControlPort() }
+                        } else {
+                            null
+                        },
                     onSyncPortRefused =
                         if (client.currentEndpoint.isBuickB233) {
                             { error ->
@@ -1529,6 +1535,7 @@ object SessionController {
                 )
             audioSender = sender
             if (!sender.start(projection)) {
+                client.closeReverseAudioControlPort()
                 audioSender = null
                 activeAudioProfile = null
                 activeAudioStartedAt = 0L
@@ -1538,6 +1545,7 @@ object SessionController {
                 true
             }
         } catch (error: Exception) {
+            client.closeReverseAudioControlPort()
             appendLog("AUDIO: 通道启动异常 - ${error.message}")
             audioSender = null
             activeAudioProfile = null

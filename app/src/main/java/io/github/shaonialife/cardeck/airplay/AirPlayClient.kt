@@ -111,6 +111,19 @@ class AirPlayClient(
      */
     private val timingServer = TimingServer(log, vehicleNetwork)
 
+    /**
+     * T73: a PHONE-local reverse RTCP listener, advertised in type=102/media
+     * SETUP before the car returns its own distinct controlPort (e.g. 6011).
+     * This is receive-only and does not re-enable T70's legacy 0xD4 sender.
+     */
+    @Volatile private var reverseAudioControlPort: AudioReverseControlPort? = null
+
+    @Synchronized
+    fun closeReverseAudioControlPort() {
+        reverseAudioControlPort?.close()
+        reverseAudioControlPort = null
+    }
+
     /** pair-verify 之后启用：所有后续 RTSP 报文整体加密封装。 */
     private var cipher: ControlCipher? = null
 
@@ -501,6 +514,7 @@ class AirPlayClient(
     private fun isSessionAlive(): Boolean = socket?.isClosed == false
 
     fun close() {
+        closeReverseAudioControlPort()
         runCatching { socket?.close() }
         socket = null
         activeHost = null
@@ -1696,6 +1710,30 @@ class AirPlayClient(
             tuning.spf?.let {
                 if (profile.codec == AudioCodec.AAC_LC) it.toLong() else AudioSender.SAMPLES_PER_PACKET.toLong()
             }
+        // T73: CatPlay transmitter first binds a local RTCP UDP socket, then
+        // advertises ITS port in the outgoing audio SETUP. CarDeck previously
+        // only read the receiver's (opposite-direction) controlPort response.
+        // Limit the experiment to the already-audible T71 B233 AAC media path.
+        closeReverseAudioControlPort()
+        val reversePort =
+            if (BuickAudioTimingPolicy.useModernSenderTiming(endpoint.isBuickB233, profile)) {
+                val network = vehicleNetwork
+                if (network == null) {
+                    log("AUDIO T73: 未取得车机 WiFi Network；不启动缺失反向控制端口的音频")
+                    return null
+                }
+                val reverse = AudioReverseControlPort(
+                    bindNetwork = { udp -> network.bindSocket(udp) },
+                    log = log,
+                )
+                val port = reverse.start()
+                if (port == 0) return null
+                reverseAudioControlPort = reverse
+                log("AUDIO T73: SETUP 即将声明手机本地 controlPort=$port，区别于车机返回的控制端口")
+                port
+            } else {
+                0
+            }
         val body =
             BinaryPlist.encode(
                 linkedMapOf(
@@ -1714,6 +1752,9 @@ class AirPlayClient(
                                 // 在音频通路初始化阶段就放弃该流。
                                 put("input", false)
                                 put("supportsRTPPacketRedundancy", false)
+                                // T73: local RTCP port owned by this phone, not
+                                // the controlPort supplied later by the car.
+                                if (reversePort > 0) put("controlPort", reversePort.toLong())
                                 // T71: modern B233 102/media follows catplay's
                                 // high-accuracy timestamp capability; audio capture,
                                 // RTP payload and all non-B233 setup remain unchanged.
@@ -1747,11 +1788,13 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
+                closeReverseAudioControlPort()
                 log("AIRPLAY: 音频流协商失败 - ${error.message}")
                 return null
             }
         log("AIRPLAY: 音频 SETUP 往返 ${SystemClock.uptimeMillis() - startedAt}ms [$statusLine]")
         if (!statusLine.contains("200")) {
+            closeReverseAudioControlPort()
             log("AIRPLAY: 音频流协商应答 [$statusLine]")
             return null
         }
@@ -1761,11 +1804,13 @@ class AirPlayClient(
             } catch (error: IllegalArgumentException) {
                 null
             } ?: run {
+                closeReverseAudioControlPort()
                 log("AIRPLAY: 音频流协商应答解析失败")
                 return null
             }
         val streams =
             root["streams"] as? List<*> ?: run {
+                closeReverseAudioControlPort()
                 log("AIRPLAY: 音频流协商应答缺少 streams")
                 return null
             }
@@ -1773,11 +1818,13 @@ class AirPlayClient(
             streams.firstOrNull { entry ->
                 ((entry as? Map<*, *>)?.get("type") as? Long) == profile.streamType
             } as? Map<*, *> ?: run {
+                closeReverseAudioControlPort()
                 log("AIRPLAY: 音频流被拒绝（streams=$streams）")
                 return null
             }
         val dataPort = portOf(audio["dataPort"])
         if (dataPort == 0) {
+            closeReverseAudioControlPort()
             log("AIRPLAY: 音频流未返回 dataPort（$audio）")
             return null
         }
@@ -1791,7 +1838,8 @@ class AirPlayClient(
             "AIRPLAY: ✓ 音频流协商成功（type=${profile.streamType} ${negotiation.audioType} " +
                 "format=0x${negotiation.formatBit.toString(16)} ${negotiation.sampleRate}Hz " +
                 "latency=${negotiation.latencyMs}ms）" +
-                "dataPort=$dataPort controlPort=${portOf(audio["controlPort"])} connId=$connectionId" +
+                "dataPort=$dataPort controlPort=${portOf(audio["controlPort"])} " +
+                "phoneControlPort=$reversePort connId=$connectionId" +
                 " 全字段=$audio",
         )
         // 音频通路已建好，但「车机在收数据、喇叭没声」还剩一种很常见的原因：

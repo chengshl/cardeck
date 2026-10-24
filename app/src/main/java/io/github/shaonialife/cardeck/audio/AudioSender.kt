@@ -73,6 +73,8 @@ class AudioSender(
     private val verboseStartupDiagnostics: Boolean = false,
     /** T24: B233 audio RTP and RTCP must not depend on VPN/default routes. */
     private val vehicleNetwork: android.net.Network? = null,
+    /** T73: release the phone-local reverse RTCP listener when this audio sender stops. */
+    private val onStopped: (() -> Unit)? = null,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -406,6 +408,8 @@ class AudioSender(
         syncThread = null
         thread = null
         if (mutePhoneOutput) restorePhoneMedia()
+        runCatching { onStopped?.invoke() }
+            .onFailure { log("AUDIO T73: 反向音频控制端口释放失败：${it.javaClass.simpleName}") }
         log("AUDIO: 已停止（共发 $packetsSent 包 / ${bytesSent / 1024}KB）")
     }
 
