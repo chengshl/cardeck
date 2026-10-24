@@ -61,6 +61,8 @@ class AudioSender(
      * 发一个 [AudioSyncPacket] 建立 RTP↔NTP 锚点；0 = 车机没给（旧车机），只发音频。
      */
     private val controlPort: Int = 0,
+    /** T71 B233 type=102: remote controlPort is reported but no classic 0xD4 is sent. */
+    private val sendLegacyAudioSyncPackets: Boolean = true,
     /** B233 only: do not send RTCP before the late-joined audio RECORD succeeds. */
     private val deferSyncUntilRecord: Boolean = false,
     /** B233 only: detect rejected audio control endpoint and leave the video session alive. */
@@ -425,6 +427,13 @@ class AudioSender(
     // ---- 音频同步包（RTP 时间戳 ↔ NTP，每秒一个） ----
 
     private fun startSyncLoop() {
+        if (!sendLegacyAudioSyncPackets) {
+            log(
+                "AUDIO T71: B233 102/media 已协商 controlPort=$controlPort，" +
+                    "本轮不主动发送传统 0xD4；避免混淆为车机未下发端口",
+            )
+            return
+        }
         if (controlPort <= 0) {
             log("AUDIO: 车机未下发 controlPort——不发同步包（只能靠音频包自带时间戳）")
             return

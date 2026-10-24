@@ -1440,10 +1440,11 @@ object SessionController {
                         if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                     // T71/B233 type=102 media: catplay modern TX does not actively
                     // emit traditional RAOP 0xD4 synchronization packets.
-                    // Avoid touching B233's rejected port 6011 at all, unlike T14.
-                    // The negotiated remote controlPort remains logged but is not
-                    // connected; other vehicles and B233 PCM keep prior behavior.
-                    controlPort = if (modernB233Timing) 0 else audio.controlPort,
+                    // Keep the actual negotiated controlPort for truthful logs;
+                    // never connect/send on it in this isolated B233 experiment.
+                    // Other vehicles and B233 PCM keep their prior sync behavior.
+                    controlPort = audio.controlPort,
+                    sendLegacyAudioSyncPackets = !modernB233Timing,
                     deferSyncUntilRecord = client.currentEndpoint.isBuickB233,
                     // T12: keep Sony media volume intact while isolating B233 zero capture.
                     // Other cars retain existing no-local-speaker policy.

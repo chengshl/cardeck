@@ -4,6 +4,7 @@
 - 同一档位 SETUP 改为声明支持高精度时间戳；保留既有 AAC、RTP、spf、RECORD 和视频编码流程。
 - 这不同于旧 T14 “先向 6011 发送同步包、收到 ECONNREFUSED 后继续 RTP”：本版从建立音频流起就不向 6011 发送传统同步包。
 - T71 新增专门日志和策略测试，仅针对 Buick E5/B233 的 AAC-LC type=102/media；PCM、其他档位和其他车型原路径不变。
+- 保留 SETUP 实际协商的 controlPort 数字供日志核对；仅禁止主动访问端口，不把它误报成“车机未下发 controlPort”。
 - 保留 T70 音频晚授权的完整 SETUP → RECORD 激活修复。
 - 主动连接与视频协议不变；实验性音频仍默认关闭。
 
