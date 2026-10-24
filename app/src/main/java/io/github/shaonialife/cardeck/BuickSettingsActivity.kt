@@ -14,6 +14,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import io.github.shaonialife.cardeck.buick.BuickConnectionModePrefs
 import io.github.shaonialife.cardeck.buick.BuickE5HandshakePrefs
 import io.github.shaonialife.cardeck.buick.BuickInsets
 import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
@@ -76,10 +77,80 @@ class BuickSettingsActivity : AppCompatActivity() {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setPadding(0, px(6), 0, px(4))
         })
-        root.addView(label("曲面屏显示适配与连接实验 · 两项设置相互独立", 13f).apply {
+        root.addView(label("别克 E5 服务、连接方式与曲面屏显示设置", 13f).apply {
             setPadding(0, 0, 0, px(16))
         })
-        heading("CarPlay 连接实验", "默认关闭；仅在测试其他别克曲面屏车机时启用")
+        heading("服务连接方式", "仅影响别克 E5/B233；更改后停止服务并重新启动才生效")
+        val modeCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(16), px(15), px(16), px(16))
+            background = rounded(surfaceHigh, getColor(R.color.m3_outline), 16)
+        }
+        modeCard.addView(label("iAP2 连接方向", 16f).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 0, px(5))
+        })
+        val modeStatus = label("", 14f).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, px(2), 0, px(10))
+        }
+        modeCard.addView(modeStatus)
+        val modeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(px(4), px(4), px(4), px(4))
+            background = rounded(getColor(R.color.m3_surface), getColor(R.color.m3_outline), 12)
+        }
+        fun modeChoice(): TextView = TextView(this).apply {
+            textSize = 15f
+            gravity = android.view.Gravity.CENTER
+            minHeight = px(50)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            isClickable = true
+            isFocusable = true
+        }
+        val passiveChoice = modeChoice()
+        val activeChoice = modeChoice()
+        modeRow.addView(passiveChoice, LinearLayout.LayoutParams(0, px(50), 1f).apply { rightMargin = px(4) })
+        modeRow.addView(activeChoice, LinearLayout.LayoutParams(0, px(50), 1f))
+        modeCard.addView(modeRow)
+        modeCard.addView(label(
+            "被动（默认）：服务启动后等待车机连接，不主动发起 iAP2。" +
+                "主动：服务启动后由手机尝试连接车机；两次尝试之间至少间隔15秒，并避免与车机主动连接竞争。" +
+                "切换时不会中断正在运行的服务或删除配对记录。",
+            12f,
+        ).apply { setPadding(0, px(10), 0, 0) })
+        fun refreshMode(active: Boolean) {
+            modeStatus.text = if (active) "当前已保存：主动连接" else "当前已保存：被动连接（推荐）"
+            modeStatus.setTextColor(getColor(if (active) R.color.m3_amber else R.color.m3_ok))
+            for ((button, optionActive) in listOf(passiveChoice to false, activeChoice to true)) {
+                val checked = active == optionActive
+                button.text = if (optionActive) {
+                    if (checked) "✓ 主动连接" else "主动连接"
+                } else {
+                    if (checked) "✓ 被动连接" else "被动连接"
+                }
+                button.setTextColor(if (checked) getColor(R.color.m3_on_primary) else fg)
+                button.background = rounded(if (checked) accent else surfaceHigh, null, 10)
+                button.contentDescription = button.text.toString() + if (checked) "，已选择" else "，点击切换"
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    button.stateDescription = if (checked) "已选中" else "未选中"
+                }
+            }
+        }
+        passiveChoice.setOnClickListener {
+            BuickConnectionModePrefs.setActive(this@BuickSettingsActivity, false)
+            refreshMode(false)
+        }
+        activeChoice.setOnClickListener {
+            BuickConnectionModePrefs.setActive(this@BuickSettingsActivity, true)
+            refreshMode(true)
+        }
+        refreshMode(BuickConnectionModePrefs.active(this))
+        root.addView(modeCard, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { bottomMargin = px(16) })
+
+        heading("握手兼容实验", "仅用于其他别克车机的兼容性验证")
         val handshakeCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(px(16), px(15), px(16), px(16))
@@ -153,33 +224,6 @@ class BuickSettingsActivity : AppCompatActivity() {
             "只对已选目标车机，或自动发现中名称包含 Buick 的设备强制生效；建议先在「连接准备」指定目标车机。更改后需重新连接。",
             12f,
         ).apply { setPadding(0, 0, 0, px(12)) })
-
-        // Test-only escape hatch. B233's default flow now waits for a
-        // receiver-side invitation; this button is not an auto-retry setting.
-        heading("连接诊断 · Test 专用", "正常请在车机端选择手机或设置默认连接")
-        val oneShotProbe = Button(this).apply {
-            text = "仅试一次：手机侧 iAP2 兼容连接"
-            textSize = 14f
-            isAllCaps = false
-            setTextColor(fg)
-            background = rounded(surfaceHigh, getColor(R.color.m3_outline), 13)
-            minHeight = px(52)
-            setOnClickListener {
-                val accepted = SessionController.requestB233ManualProbe()
-                android.widget.Toast.makeText(
-                    this@BuickSettingsActivity,
-                    if (accepted) "已允许单次诊断连接，请查看日志" else "请先在主页点击启动连接以开启服务",
-                    android.widget.Toast.LENGTH_LONG,
-                ).show()
-            }
-        }
-        root.addView(oneShotProbe, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, px(54),
-        ))
-        root.addView(label(
-            "仅在车机端点击连接仍无响应时使用。它是明确的人工诊断，不会定时重试，不会改变默认的车机主导模式。",
-            12f,
-        ).apply { setPadding(0, px(7), 0, px(12)) })
 
         heading("曲面屏安全区域", "设置下次连接生效；桌面与触摸功能始终保持开启")
 

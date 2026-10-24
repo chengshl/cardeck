@@ -18,6 +18,7 @@ import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.B233PairingMonitor
 import io.github.shaonialife.cardeck.bt.BtSessionGate
 import io.github.shaonialife.cardeck.bt.Iap2BluetoothClient
+import io.github.shaonialife.cardeck.buick.BuickConnectionModePrefs
 import io.github.shaonialife.cardeck.bt.Iap2BluetoothServer
 import io.github.shaonialife.cardeck.bt.TargetDevicePrefs
 import io.github.shaonialife.cardeck.capture.HiddenDisplaySource
@@ -460,7 +461,8 @@ object SessionController {
         CriticalEventTrail.mark(context, "CONNECTION_REQUESTED")
         B233PairingMonitor.start(context.applicationContext, ::appendLog)
         connectCancelled = false
-        phaseHint = "蓝牙就绪，等待车机回连…"
+        val phoneInitiates = BuickConnectionModePrefs.active(context)
+        phaseHint = if (phoneInitiates) "服务运行中 · 主动尝试连接车机…" else "服务运行中 · 等待车机主动接入…"
         when (
             ShizukuGate
                 .state(context)
@@ -495,7 +497,11 @@ object SessionController {
         // Other head units retain the original active connection path.
         bluetoothServer?.start()
         bluetoothClient?.start()
-        appendLog("BT T65: B233 车机主导模式已就绪；可在车机端手动连接或设置默认设备自动连接")
+        appendLog(if (phoneInitiates) {
+            "BT T69: B233 主动连接模式已启动；手机按15秒最短间隔尝试 RFCOMM"
+        } else {
+            "BT T69: B233 被动连接模式已启动；等待车机主动 iAP2 接入，不进行主动拨号"
+        })
         // 诊断（奥迪实测：手机与车机「蓝牙已连接」时车机不开放 CarPlay）：
         // 连之前把目标设备的蓝牙配置文件状态打出来，失败时一眼看出是不是这个原因。
         Bg.run("bt-profile-diag") {

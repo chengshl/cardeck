@@ -4,6 +4,8 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import io.github.shaonialife.cardeck.gateway.GatewayVehicleIdentity
+import io.github.shaonialife.cardeck.buick.BuickConnectionModePolicy
+import io.github.shaonialife.cardeck.buick.BuickConnectionModePrefs
 import io.github.shaonialife.cardeck.buick.BuickE5HandshakePrefs
 import io.github.shaonialife.cardeck.buick.BuickE5HandshakeTarget
 import android.bluetooth.BluetoothManager
@@ -68,6 +70,8 @@ class Iap2BluetoothClient(
     private val b233ReconnectPolicy = B233ReconnectPolicy()
     // T65: B233 does not dial on its own; car Bluetooth events grant a bounded window.
     private val carLedPolicy = B233CarLedConnectionPolicy()
+    /** Snapshot once per service start; mode cannot flip in the middle of iAP2. */
+    @Volatile private var b233ActiveMode = false
     private var vehicleSignalReceiver: BroadcastReceiver? = null
 
     /**
@@ -198,7 +202,7 @@ class Iap2BluetoothClient(
                         carLedPolicy.clearPendingInvitation()
                         log("BT-C T66: 车机 ACL 已连接，但 iAP2 会话正在运行；不重复拨号")
                     } else {
-                        log("BT-C T66: B233 新建 ACL；优先等待车机 iAP2，随后仅允许本车最多两次兼容拨号")
+                        log("BT-C T69: B233 新建 ACL；当前为" + (if (b233ActiveMode) "主动模式（按受限重试策略拨号）" else "被动模式（不主动拨号）"))
                     }
                 }
             }
@@ -236,12 +240,14 @@ class Iap2BluetoothClient(
         skippedNoService.clear()
         b233ReconnectPolicy.reset()
         carLedPolicy.reset()
+        b233ActiveMode = BuickConnectionModePrefs.active(context)
         running = true
         val myGeneration = generation.incrementAndGet()
         val target = targetProvider()
         log(
-            "BT-C T65: 服务就绪；Buick E5/B233 等待车机发起连接，" +
-                "其他车型保持原有主动 iAP2 连接方式。" +
+            "BT-C T69: 服务就绪；B233 " +
+                (if (b233ActiveMode) "主动模式（服务启动后主动拨号；仍接受车机回连）" else "被动模式（仅车机发起 iAP2；不自动拨号）") +
+                "；其他车型维持原连接流程。" +
                 if (target != null) " 目标：「${target.name}」" else " 未指定目标",
         )
         registerVehicleSignals()
@@ -263,10 +269,10 @@ class Iap2BluetoothClient(
             } ?: return
         var lastFailureLogAt = 0L
         var lastCooldownLogUntil = 0L
-        // T67: evaluate a pre-existing HFP/A2DP connection only once shortly
-        // after the user's Start action; never revive a stale connect request.
-        var startupProbeChecked = false
-        val startupProbeDeadlineMs = android.os.SystemClock.uptimeMillis() + 15_000L
+        // Active B233 dialing waits briefly for a reverse session, then uses
+        // a 15-second minimum interval. Passive mode never dials.
+        val modeStartedAtMs = android.os.SystemClock.uptimeMillis()
+        var lastB233DialAtMs = 0L
         while (running && generation.get() == myGeneration) {
             // 静默降噪（2026-10-10 用户实测后启用）——会话期间完全静默，不产生任何连接尝试/日志：
             //  - inboundActive：接收端正在连我们（两条 RFCOMM 会互相踩；Audi 实测双会话混乱）
@@ -300,46 +306,6 @@ class Iap2BluetoothClient(
                 sleepQuietly(RETRY_DELAY_MILLIS * 3)
                 continue
             }
-            if (!startupProbeChecked) {
-                startupProbeChecked = true
-                if (android.os.SystemClock.uptimeMillis() <= startupProbeDeadlineMs) {
-                    // HFP/A2DP are evidence the receiver's ACL already exists,
-                    // but MUST NOT be treated as recurring CarPlay invitations.
-                    // This check is in the background client thread; querying
-                    // Bluetooth profile proxies must never block the main UI.
-                    val alreadyConnectedB233 = candidates.filter { device ->
-                        val name = runCatching { device.name }.getOrNull()
-                        val selected = targetProvider()
-                        val isB233 = BuickE5HandshakeTarget.shouldForce(
-                            BuickE5HandshakePrefs.enabled(context),
-                            selected?.address, device.address, name,
-                        ) || BuickB233Route.useB233Transport(
-                            name, ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
-                        )
-                        isB233 && BtProfiles.connectedNames(context, device.address).isNotEmpty()
-                    }
-                    if (alreadyConnectedB233.size == 1 &&
-                        !BtSessionGate.inboundActive && !BtSessionGate.sessionActive &&
-                        carLedPolicy.armAlreadyConnectedStartupProbe(
-                            alreadyConnectedB233.single().address,
-                            android.os.SystemClock.uptimeMillis(),
-                        )
-                    ) {
-                        log(
-                            "BT-C T67: 用户启动时 B233 已有蓝牙配置文件连接；" +
-                                "先等车机主动 iAP2 1.5s，再允许一次限时配件端连接（不断 HFP/A2DP）",
-                        )
-                    } else if (alreadyConnectedB233.size > 1) {
-                        log("BT-C T67: 多台 B233 蓝牙已连接，未自动选择；请先指定目标车机")
-                    } else if (alreadyConnectedB233.size == 1) {
-                        log("BT-C T67: 已有车机主动会话或 ACL 连接许可；不再添加启动拨号")
-                    } else {
-                        log("BT-C T67: 未确认已有 B233 蓝牙配置文件连接；保持等待车机邀请")
-                    }
-                } else {
-                    log("BT-C T67: 启动连接检测已过期，不补发迟到拨号")
-                }
-            }
             var connected: BluetoothSocket? = null
             var connectedKnownBuick = false
             var connectedForcedE5 = false
@@ -366,13 +332,9 @@ class Iap2BluetoothClient(
                     name,
                     ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
                 )
-                // T66: return to passive polling without repeated SDP,
-                // HFP diagnostics or forced-handshake logs until THIS car
-                // has a fresh ACL event or an explicit manual probe.
-                if (knownBuick && !carLedPolicy.hasEligibleInvitation(
-                        device.address, android.os.SystemClock.uptimeMillis(),
-                    )
-                ) continue
+                // T69: passive strictly listens for the car. A Bluetooth ACL
+                // event is NOT permission to dial. Active selection is explicit.
+                if (knownBuick && !b233ActiveMode) continue
                 if (forcedE5) log("BT-C: Test 实验开关生效，本轮使用 E5/B233 连接与握手（不写入 B233 自动识别记忆）")
                 if (knownBuick) B233PairingMonitor.trackKnownReceiver(device.address)
                 if (targetProvider() == null && knownBuick &&
@@ -448,14 +410,19 @@ class Iap2BluetoothClient(
                     break
                 }
                 if (knownBuick) {
-                    // T65: No polling-driven CarPlay takeover. An actual
-                    // Bluetooth connection event from the car grants at most
-                    // two outgoing attempts if B233 requires that socket direction.
-                    if (!carLedPolicy.claimOutboundAttempt(
-                            device.address, android.os.SystemClock.uptimeMillis(),
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val retryAge = if (lastB233DialAtMs == 0L) Long.MAX_VALUE
+                        else (now - lastB233DialAtMs).coerceAtLeast(0L)
+                    if (!BuickConnectionModePolicy.mayDial(
+                            active = b233ActiveMode,
+                            sessionBusy = BtSessionGate.inboundActive || BtSessionGate.sessionActive,
+                            runningForMs = now - modeStartedAtMs,
+                            sinceLastAttemptMs = retryAge,
+                            cooldownRemainingMs = b233ReconnectPolicy.remainingMs(now),
                         )
                     ) continue
-                    log("BT-C T67: 建链方向=手机主动连接车机配件端；经 ACL 或已有蓝牙连接授权的限次路径")
+                    lastB233DialAtMs = now
+                    log("BT-C T69: 用户选择主动模式；手机拨号 B233（不拆 HFP/A2DP，失败至少等待15秒）")
                 }
                 val socket = tryConnect(device)
                 if (socket != null) {

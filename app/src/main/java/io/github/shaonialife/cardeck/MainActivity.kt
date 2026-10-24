@@ -226,39 +226,23 @@ class MainActivity : AppCompatActivity() {
         java.util.concurrent.atomic
             .AtomicBoolean(false)
 
-    /**
-     * 「启动连接」前的音频选择弹窗：
-     * 音频与视频同时推流会显著增加负载（实测 48k 立体声 PCM ≈1.5Mbps + 视频 ≈4Mbps），
-     * 测试台出现画面卡顿与断连；真车链路能力未知。因此默认不推音频，需用户显式开启。
-     *
-     * 三个选项竖排（横排会挤爆窄屏）：推荐项「仅视频」放第一位并用实心强调
-     * ——与正文「以看视频为主时建议暂不开启」一致；取消在最下。
-     */
+    /** Start the service using an opt-in yes/no experimental-audio prompt. */
     private fun showAudioChoiceDialog() {
-        // 默认档 = 高质量媒体通路（type=102 + AAC-LC，真 iPhone 走这条）；
-        // 「兼容档」= 强制只走 PCM 旧通路（type=100），AAC 被车机直接拒掉时的人工退路。
-        // 按钮竖排每个约 36dp：横屏屏高只有 ~300dp，再多一个「取消」就会顶出屏幕，
-        // 因此横屏省略「取消」（弹窗默认可返回键/点外部关闭）。
-        val landscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val actions =
-            buildList {
-                add(
-                    DarkMessageDialog.Action(
-                        "仅视频（更流畅）",
-                        DarkMessageDialog.Emphasis.PRIMARY,
-                    ) { beginWithAudio(enabled = false) },
-                )
-                add(DarkMessageDialog.Action("开启声音") { beginWithAudio(enabled = true) })
-                if (!landscape) add(DarkMessageDialog.Action("取消") {})
-            }
         DarkMessageDialog.show(
             activity = this,
-            title = "是否在车机侧播放声音？",
+            title = "是否推送车机音频？",
             message =
-                "开启后手机媒体/导航声音投到车机播放、手机本机静音（不开启则车上无声）。\n" +
-                    "音视频同时传会增加负载，以看视频为主时可先不开启。\n" +
-                    "开启声音需要「投屏」权限，会一并申请。",
-            actions = actions,
+                "CarPlay 音频推送是试验性功能，不保证稳定运行。" +
+                    "在别克 E5/B233 上曾触发视频断开和后续连接失败。" +
+                    "\n\n不开启仍正常启动服务，视频照常推送，声音可继续使用普通蓝牙 A2DP。" +
+                    "\n开启后可能需要系统录音及投屏授权。",
+            actions = listOf(
+                DarkMessageDialog.Action(
+                    "不推送音频",
+                    DarkMessageDialog.Emphasis.PRIMARY,
+                ) { beginWithAudio(enabled = false) },
+                DarkMessageDialog.Action("试验性开启音频") { beginWithAudio(enabled = true) },
+            ),
         )
     }
 
@@ -266,12 +250,12 @@ class MainActivity : AppCompatActivity() {
     private fun promptCancelConnecting() {
         DarkMessageDialog.show(
             activity = this,
-            title = "取消连接？",
-            message = "将停止当前连接尝试：蓝牙与 WiFi 链路都会断开，需重新点「启动连接」。",
+            title = "停止服务？",
+            message = "将停止 CarDeck 服务和本轮蓝牙/Wi-Fi 会话；再次使用需重新启动服务。",
             actions =
                 listOf(
-                    DarkMessageDialog.Action("继续连接") {},
-                    DarkMessageDialog.Action("取消连接", DarkMessageDialog.Emphasis.DANGER) {
+                    DarkMessageDialog.Action("继续运行") {},
+                    DarkMessageDialog.Action("停止服务", DarkMessageDialog.Emphasis.DANGER) {
                         // 关闭仍在等待的「加入热点」确认弹窗（其 onChoice(null) 会与
                         // connectCancelled 一起让 autoJoin 流程立即中止）
                         wifiJoinDialog?.cancel()
@@ -399,14 +383,14 @@ class MainActivity : AppCompatActivity() {
     private fun promptDisconnect() {
         DarkMessageDialog.show(
             activity = this,
-            title = "断开连接？",
+            title = "停止服务？",
             message =
-                "将停止车机推流并关闭保活服务，车机画面会立即中断。\n\n" +
+                "将停止 CarDeck 服务并结束当前车机画面。\n\n" +
                     "注意：投屏授权会随服务停止失效，下次如需车机侧声音请重新授权。",
             actions =
                 listOf(
                     DarkMessageDialog.Action("取消") {},
-                    DarkMessageDialog.Action("断开", DarkMessageDialog.Emphasis.DANGER) {
+                    DarkMessageDialog.Action("停止服务", DarkMessageDialog.Emphasis.DANGER) {
                         SessionController.disconnect(this)
                     },
                 ),
@@ -808,7 +792,7 @@ class MainActivity : AppCompatActivity() {
         ctaButton.setOnClickListener {
             when (heroState) {
                 HeroState.CONNECTED -> promptDisconnect()
-                // 前置检查：Shizuku（硬性依赖）→ 蓝牙权限/开关 → 音频选择
+                // 启动服务前检查 Shizuku/蓝牙；音频询问只有「不开启/试验性开启」
                 HeroState.IDLE -> ensureShizukuReady { ensureBluetoothReady { showAudioChoiceDialog() } }
                 // 连接中可取消：卡在错误网络/等待回连时用户主动脱身（弹窗防误触）
                 HeroState.CONNECTING -> promptCancelConnecting()
@@ -963,8 +947,8 @@ class MainActivity : AppCompatActivity() {
         CarInputClient.logSink = { line -> log(line) }
 
         log("CarDeck Phase 0 就绪")
-        log("别克 E5：蓝牙配对后开启 CarDeck 服务；在车机端选手机连接（或设置默认设备自动连接）；App 不再无条件抢连 B233")
-        log("测试台：两台手机蓝牙配对 -> 备用机跑 xcertplay 无线模式 -> 点「启动连接」等待回连")
+        log("别克 E5：服务默认被动监听车机 iAP2；可在「别克设置」改为主动模式。CarPlay 音频为试验性功能")
+        log("测试台：两台手机蓝牙配对 -> 备用机跑 xcertplay 无线模式 -> 启动服务")
     }
 
     private fun bindExpandable(
@@ -1014,7 +998,7 @@ class MainActivity : AppCompatActivity() {
             if (gate != ShizukuGate.State.READY) {
                 heroSubline.text =
                     "Shizuku 未就绪（${ShizukuGate.guidanceOf(gate).title}）——" +
-                    "无法连接，点下方「Shizuku」查看怎么处理"
+                    "服务无法启动，点顶部 Shizuku 状态查看处理方式"
             }
         }
         updateConnectedSubline()
@@ -1075,9 +1059,9 @@ class MainActivity : AppCompatActivity() {
 
         heroStateText.text =
             when (s) {
-                HeroState.IDLE -> "未连接"
-                HeroState.CONNECTING -> "正在连接"
-                HeroState.CONNECTED -> "已连接"
+                HeroState.IDLE -> "服务未启动"
+                HeroState.CONNECTING -> "服务已启动"
+                HeroState.CONNECTED -> "服务运行中"
             }
         heroProgress.visibility = if (s == HeroState.CONNECTING) View.VISIBLE else View.GONE
         heroStats.visibility = if (s == HeroState.CONNECTED) View.VISIBLE else View.GONE
@@ -1089,18 +1073,18 @@ class MainActivity : AppCompatActivity() {
                     if (pending != null) {
                         "上次会话异常退出，遗留 ${pending.size} 个虚拟屏待清理"
                     } else {
-                        "与车机蓝牙完成配对后，点击下方按钮发起无线连接"
+                        "启动服务后等待车机发起连接；也可在「别克设置」改为主动模式"
                     }
-                styleCta(R.drawable.bg_cta_fill, R.color.m3_on_primary, R.drawable.ic_play, "启动连接")
+                styleCta(R.drawable.bg_cta_fill, R.color.m3_on_primary, R.drawable.ic_play, "启动服务")
                 audioTag.visibility = View.GONE
             }
             HeroState.CONNECTING -> {
                 heroSubline.text = SessionController.phaseHint ?: DEFAULT_CONNECTING_HINT
-                styleCta(R.drawable.bg_cta_fill, R.color.m3_on_primary, R.drawable.ic_close, "取消连接")
+                styleCta(R.drawable.bg_cta_fill, R.color.m3_on_primary, R.drawable.ic_close, "停止服务")
                 audioTag.visibility = View.GONE
             }
             HeroState.CONNECTED -> {
-                styleCta(R.drawable.bg_cta_outline_err, R.color.m3_error, R.drawable.ic_power, "断开连接")
+                styleCta(R.drawable.bg_cta_outline_err, R.color.m3_error, R.drawable.ic_power, "停止服务")
                 audioTag.visibility = View.VISIBLE
             }
         }
@@ -1135,7 +1119,7 @@ class MainActivity : AppCompatActivity() {
                 .toString()
                 .trim()
                 .ifEmpty { "车机热点" }
-        heroSubline.text = String.format(Locale.US, "已连接 · %s · %02d:%02d · 视频推流中", ssid, mm, ss)
+        heroSubline.text = String.format(Locale.US, "车机画面已连接 · %s · %02d:%02d · 视频推流中", ssid, mm, ss)
     }
 
     private fun updateAudioTag() {
@@ -1164,24 +1148,10 @@ class MainActivity : AppCompatActivity() {
         audioTag.text = status.caption
     }
 
-    /**
-     * 连接准备计数：Shizuku / 热点 SSID / 蓝牙配对 / 投屏权限。
-     *
-     * Shizuku 是**硬性前置**（未就绪时连接会被拦下），所以计入总数并单独渲染状态行。
-     */
+    /** Preparation shows only Bluetooth target and hotspot; Shizuku remains at the top. */
     private fun updateReadyRow() {
-        var ready = 0
-        val shizukuState = ShizukuGate.state(this)
-        val shizukuReady = shizukuState == ShizukuGate.State.READY
-        if (shizukuReady) ready++
-        updateShizukuRow(shizukuState)
-        if (ssidInput.text
-                .toString()
-                .trim()
-                .isNotEmpty()
-        ) {
-            ready++
-        }
+        // Shizuku status already appears in the header. The SSID is often
+        // learned only after iAP2, so do not treat it as a precondition.
         val btGranted =
             ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
                 PackageManager.PERMISSION_GRANTED
@@ -1196,8 +1166,6 @@ class MainActivity : AppCompatActivity() {
                 bondedCount = -1
             }
         }
-        if (bondedCount > 0) ready++
-        if (CarPlayService.mediaProjection != null) ready++
 
         btBadge.visibility = if (bondedCount >= 0) View.VISIBLE else View.GONE
         if (bondedCount >= 0) {
@@ -1246,13 +1214,13 @@ class MainActivity : AppCompatActivity() {
         if (projectionReady) {
             btnAudio.text = "已授权"
             btnAudio.setTextColor(getColor(R.color.m3_ok))
-            audioDesc.text = "投屏权限已就绪 · 连接时可选开启"
+            audioDesc.text = "音频推送属试验性功能 · 已授权"
         } else {
             btnAudio.text = "授权"
             btnAudio.setTextColor(getColor(R.color.m3_primary))
-            audioDesc.text = "需要「投屏」权限，可选 · 关闭时车机无声音"
+            audioDesc.text = "试验性音频需要授权；不开启可继续普通蓝牙音源"
         }
-        readyCount.text = "$ready/4"
+        readyCount.visibility = View.GONE
     }
 
     /**
