@@ -184,15 +184,75 @@ class MainActivity : AppCompatActivity() {
             if (ok) snack("壁纸已更新") else snack("保存失败")
         }
 
+    /** Separate audio permission flow: never open MediaProjection while RECORD_AUDIO is pending. */
+    private val audioPermissionFlow = AudioCapturePermissionFlow()
+
     private val audioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             log("MODE: RECORD_AUDIO 授权: $granted（音频通道需要）")
+            if (audioPermissionFlow.onPermissionResult(granted)) {
+                log("MODE T72: RECORD_AUDIO 已允许，继续申请 MediaProjection")
+                launchAudioProjectionConsent()
+            } else if (!granted) {
+                // A denial must not leave a pending start that could be resumed
+                // unexpectedly after an unrelated authorization callback.
+                if (pendingStartAfterProjection.compareAndSet(true, false)) {
+                    SessionController.audioEnabledForSession = false
+                    log("MODE T72: RECORD_AUDIO 被拒绝，取消本次实验性音频连接；视频可单独启动")
+                }
+                snack("未取得录音权限，未启动实验性音频；可选择仅视频模式")
+            }
         }
+
+    /**
+     * Shared by both the standalone audio authorization button and the
+     * experimental-audio startup flow. Only one Android permission dialog may
+     * be active at a time; MediaProjection is launched from the grant callback.
+     */
+    private fun requestAudioCaptureConsent() {
+        val granted =
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        when (audioPermissionFlow.begin(granted)) {
+            AudioCapturePermissionFlow.Next.REQUEST_RECORD_AUDIO -> {
+                log("MODE T72: 先申请 RECORD_AUDIO，等待结果后才申请 MediaProjection")
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            AudioCapturePermissionFlow.Next.LAUNCH_MEDIA_PROJECTION ->
+                launchAudioProjectionConsent()
+            AudioCapturePermissionFlow.Next.ALREADY_WAITING ->
+                log("MODE T72: RECORD_AUDIO 授权窗口处理中，不重复申请")
+        }
+    }
+
+    private fun launchAudioProjectionConsent() {
+        // If projection was authorized earlier, do not ask for a second capture
+        // grant or needlessly replace the running projection.
+        if (CarPlayService.mediaProjection != null) {
+            if (pendingStartAfterProjection.compareAndSet(true, false)) {
+                log("MODE T72: 音频双权限已就绪，继续启动 CarPlay")
+                startConnectionNow()
+            } else {
+                log("MODE T72: 投屏已授权，无需重复申请")
+                Bg.run("audio-permission-ready") {
+                    SessionController.maybeStartAudioNow(applicationContext)
+                }
+            }
+            return
+        }
+        val manager =
+            getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+        projectionLauncher.launch(manager.createScreenCaptureIntent())
+    }
 
     private val projectionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val data = result.data
             if (result.resultCode != RESULT_OK || data == null) {
+                if (pendingStartAfterProjection.compareAndSet(true, false)) {
+                    SessionController.audioEnabledForSession = false
+                    log("MODE T72: MediaProjection 未授权，取消本次实验性音频连接")
+                }
                 log("MODE: 投屏权限被拒绝（车机侧声音不可用）")
                 return@registerForActivityResult
             }
@@ -210,6 +270,9 @@ class MainActivity : AppCompatActivity() {
                     Thread.sleep(200)
                 }
                 if (CarPlayService.mediaProjection == null) {
+                    if (pendingStartAfterProjection.compareAndSet(true, false)) {
+                        SessionController.audioEnabledForSession = false
+                    }
                     log("MODE: 投影 5 秒未就绪（服务异常？），音频通道本次未启动")
                     return@run
                 }
@@ -495,21 +558,19 @@ class MainActivity : AppCompatActivity() {
             startConnectionNow()
             return
         }
-        if (CarPlayService.mediaProjection != null) {
-            log("MODE: 已选择开启声音（投屏权限已就绪）")
+        if (CarPlayService.mediaProjection != null &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            log("MODE: 已选择开启声音（录音与投屏权限均已就绪）")
             startConnectionNow()
             return
         }
-        // 开启声音需要投屏权限（播放捕获的授权来源）：先申请，授权完成后再启动连接
-        log("MODE: 开启声音需要投屏权限——先后申请（音频捕获依赖），授权后自动开始连接")
+        // T72: both required grants must be ready; do not launch both Android
+        // permission UIs at the same time or accidentally continue after denial.
+        log("MODE T72: 开启声音需要录音与投屏授权——按顺序请求，成功后再启动连接")
         pendingStartAfterProjection.set(true)
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
-        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-        projectionLauncher.launch(manager.createScreenCaptureIntent())
+        requestAudioCaptureConsent()
     }
 
     /** 「启动连接」主体（权限检查留在这里；会话启动交给 [SessionController]，幂等不双开）。 */
@@ -829,13 +890,8 @@ class MainActivity : AppCompatActivity() {
 
         // 车机侧声音授权（原「申请投屏权限」）：RECORD_AUDIO + MediaProjection 一起请求
         btnAudio.setOnClickListener {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            }
-            val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-            projectionLauncher.launch(manager.createScreenCaptureIntent())
+            // T72: permission and projection result must be sequenced.
+            requestAudioCaptureConsent()
         }
 
         // ---- 车机显示 ----
