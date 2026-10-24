@@ -4,55 +4,72 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class B233CarLedConnectionPolicyTest {
-    @Test fun serviceStartDoesNotTriggerOutboundConnection() {
+    private val carA = "01:23:45:67:89:AB"
+    private val carB = "10:32:54:76:98:BA"
+
+    @Test fun serviceStartupNeverAutomaticallyDials() {
         val p = B233CarLedConnectionPolicy()
-        assertEquals(false, p.claimOutboundAttempt(1_000L))
-        assertEquals(false, p.claimOutboundAttempt(30_000L))
+        assertEquals(false, p.claimOutboundAttempt(carA, 1_000L))
+        assertEquals(false, p.claimOutboundAttempt(carB, 50_000L))
     }
 
-    @Test fun receiverSignalAllowsOnlyTwoAttemptsWithinLimitedWindow() {
+    @Test fun aclEventWaitsForInboundAndAllowsTwoBoundedDialsOnlyToOriginator() {
         val p = B233CarLedConnectionPolicy()
-        assertEquals(true, p.onVehicleBluetoothConnected(10_000L))
-        assertEquals(true, p.claimOutboundAttempt(11_000L))
-        assertEquals(true, p.claimOutboundAttempt(20_000L))
-        assertEquals(false, p.claimOutboundAttempt(21_000L))
-        assertEquals(true, p.onVehicleBluetoothConnected(60_000L))
-        assertEquals(false, p.claimOutboundAttempt(105_000L))
+        assertEquals(true, p.onVehicleAclConnected(carA, 10_000L))
+        assertEquals(false, p.claimOutboundAttempt(carA, 10_500L))
+        assertEquals(false, p.claimOutboundAttempt(carB, 12_000L))
+        assertEquals(true, p.claimOutboundAttempt(carA.lowercase(), 12_000L))
+        assertEquals(true, p.claimOutboundAttempt(carA, 20_000L))
+        assertEquals(false, p.claimOutboundAttempt(carA, 21_000L))
     }
 
-    @Test fun rapidAclAndProfileBroadcastsDoNotResetAttemptBudget() {
+    @Test fun delayedHfpOrRepeatedAclCannotRearmWithoutPhysicalDisconnect() {
         val p = B233CarLedConnectionPolicy()
-        assertEquals(true, p.onVehicleBluetoothConnected(1_000L))
-        assertEquals(true, p.claimOutboundAttempt(1_001L))
-        assertEquals(false, p.onVehicleBluetoothConnected(2_000L))
-        assertEquals(true, p.claimOutboundAttempt(2_001L))
-        assertEquals(false, p.claimOutboundAttempt(2_002L))
-    }
-
-    @Test fun successfulOrReverseSessionConsumesThePendingInvitation() {
-        val p = B233CarLedConnectionPolicy()
-        p.onVehicleBluetoothConnected(1_000L)
+        assertEquals(true, p.onVehicleAclConnected(carA, 1_000L))
+        assertEquals(true, p.claimOutboundAttempt(carA, 3_000L))
         p.clearPendingInvitation()
-        assertEquals(false, p.claimOutboundAttempt(2_000L))
-        assertEquals(true, p.onVehicleBluetoothConnected(7_000L))
-        assertEquals(true, p.claimOutboundAttempt(7_001L))
+        // The HFP profile can reconnect even while the same ACL stays up.
+        assertEquals(false, p.onVehicleAclConnected(carA, 10_000L))
+        assertEquals(false, p.claimOutboundAttempt(carA, 10_100L))
+        assertEquals(false, p.onVehicleAclConnected(carA, 80_000L))
+        assertEquals(false, p.onVehicleAclDisconnected(carB))
+        assertEquals(true, p.onVehicleAclDisconnected(carA))
+        assertEquals(true, p.onVehicleAclConnected(carA, 90_000L))
+        assertEquals(true, p.claimOutboundAttempt(carA, 92_000L))
+    }
+
+    @Test fun acceptedReverseSessionConsumesTheOriginalAclInvitation() {
+        val p = B233CarLedConnectionPolicy()
+        p.onVehicleAclConnected(carA, 1_000L)
+        p.clearPendingInvitation()
+        assertEquals(false, p.claimOutboundAttempt(carA, 5_000L))
+        assertEquals(false, p.onVehicleAclConnected(carA, 20_000L))
+    }
+
+    @Test fun signalExpiresBeforeLateAutomaticDial() {
+        val p = B233CarLedConnectionPolicy()
+        p.onVehicleAclConnected(carA, 3_000L)
+        assertEquals(true, p.claimOutboundAttempt(carA, 24_000L))
+        assertEquals(false, p.claimOutboundAttempt(carA, 48_000L))
+    }
+
+    @Test fun manualDiagnosticIsSingleUseAndCanBindToSelectedCar() {
+        val p = B233CarLedConnectionPolicy()
+        p.requestOneManualProbe(1_000L, carB)
+        assertEquals(false, p.claimOutboundAttempt(carA, 1_001L))
+        assertEquals(true, p.claimOutboundAttempt(carB, 1_001L))
+        assertEquals(false, p.claimOutboundAttempt(carB, 1_002L))
+        p.requestOneManualProbe(3_000L, null)
+        assertEquals(false, p.claimOutboundAttempt(carA, 18_000L))
+    }
+
+    @Test fun manualStopAndPhysicalDisconnectClearPermission() {
+        val p = B233CarLedConnectionPolicy()
+        p.onVehicleAclConnected(carA, 1_000L)
         p.reset()
-        assertEquals(false, p.claimOutboundAttempt(8_000L))
-    }
-
-    @Test fun explicitDiagnosticProbeIsSingleUse() {
-        val p = B233CarLedConnectionPolicy()
-        p.requestOneManualProbe(1_000L)
-        assertEquals(true, p.claimOutboundAttempt(1_001L))
-        assertEquals(false, p.claimOutboundAttempt(1_002L))
-        p.requestOneManualProbe(3_000L)
-        assertEquals(false, p.claimOutboundAttempt(18_000L))
-    }
-
-    @Test fun signalCanWaitUntilAudioTeardownCooldownEnds() {
-        val p = B233CarLedConnectionPolicy()
-        p.onVehicleBluetoothConnected(3_000L)
-        assertEquals(true, p.claimOutboundAttempt(24_000L))
-        assertEquals(false, p.claimOutboundAttempt(48_000L))
+        assertEquals(false, p.claimOutboundAttempt(carA, 3_000L))
+        assertEquals(true, p.onVehicleAclConnected(carA, 5_000L))
+        assertEquals(true, p.onVehicleAclDisconnected(carA))
+        assertEquals(false, p.claimOutboundAttempt(carA, 8_000L))
     }
 }

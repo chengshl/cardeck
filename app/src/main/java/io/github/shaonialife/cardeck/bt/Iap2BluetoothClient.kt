@@ -164,12 +164,12 @@ class Iap2BluetoothClient(
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(receiverContext: Context, intent: Intent) {
                 if (!running) return
-                // Profile broadcasts fire for disconnects too. Only a new
-                // *connected* event can authorize an outgoing CarPlay dial.
+                // T66: do NOT treat HFP/A2DP profile CONNECTED as a
+                // second CarPlay invitation. The 15:54:38 HFP transition
+                // rearmed a new outgoing dial while reverse iAP2 was live.
+                // Only physical ACL edges can permit a compatibility dial.
                 if (intent.action != BluetoothDevice.ACTION_ACL_CONNECTED &&
-                    intent.getIntExtra(android.bluetooth.BluetoothProfile.EXTRA_STATE, -1) !=
-                    android.bluetooth.BluetoothProfile.STATE_CONNECTED
-                ) return
+                    intent.action != BluetoothDevice.ACTION_ACL_DISCONNECTED) return
                 @Suppress("DEPRECATION")
                 val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
                     ?: return
@@ -185,15 +185,27 @@ class Iap2BluetoothClient(
                     ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
                 )
                 if (!knownB233) return
-                if (carLedPolicy.onVehicleBluetoothConnected(android.os.SystemClock.uptimeMillis())) {
-                    log("BT-C T65: B233 车机蓝牙连接事件；允许短时间内最多两次 iAP2 配件端拨号")
+                if (intent.action == BluetoothDevice.ACTION_ACL_DISCONNECTED) {
+                    if (carLedPolicy.onVehicleAclDisconnected(device.address)) {
+                        log("BT-C T66: B233 物理蓝牙链路已断开；旧连接许可作废，等待下次车机连接")
+                    }
+                    return
+                }
+                if (carLedPolicy.onVehicleAclConnected(device.address, android.os.SystemClock.uptimeMillis())) {
+                    // Incoming receiver RFCOMM gets the first 1.5s to win.
+                    // Active CarPlay must not trigger a second outgoing dial.
+                    if (BtSessionGate.inboundActive || BtSessionGate.sessionActive) {
+                        carLedPolicy.clearPendingInvitation()
+                        log("BT-C T66: 车机 ACL 已连接，但 iAP2 会话正在运行；不重复拨号")
+                    } else {
+                        log("BT-C T66: B233 新建 ACL；优先等待车机 iAP2，随后仅允许本车最多两次兼容拨号")
+                    }
                 }
             }
         }
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
-            addAction(android.bluetooth.BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-            addAction(android.bluetooth.BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
         }
         try {
             ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
@@ -310,6 +322,13 @@ class Iap2BluetoothClient(
                     name,
                     ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
                 )
+                // T66: return to passive polling without repeated SDP,
+                // HFP diagnostics or forced-handshake logs until THIS car
+                // has a fresh ACL event or an explicit manual probe.
+                if (knownBuick && !carLedPolicy.hasEligibleInvitation(
+                        device.address, android.os.SystemClock.uptimeMillis(),
+                    )
+                ) continue
                 if (forcedE5) log("BT-C: Test 实验开关生效，本轮使用 E5/B233 连接与握手（不写入 B233 自动识别记忆）")
                 if (knownBuick) B233PairingMonitor.trackKnownReceiver(device.address)
                 if (targetProvider() == null && knownBuick &&
@@ -388,10 +407,11 @@ class Iap2BluetoothClient(
                     // T65: No polling-driven CarPlay takeover. An actual
                     // Bluetooth connection event from the car grants at most
                     // two outgoing attempts if B233 requires that socket direction.
-                    if (!carLedPolicy.claimOutboundAttempt(android.os.SystemClock.uptimeMillis())) {
-                        continue
-                    }
-                    log("BT-C T65: 收到车机连接信号，执行一次 B233 配件端 iAP2 建链")
+                    if (!carLedPolicy.claimOutboundAttempt(
+                            device.address, android.os.SystemClock.uptimeMillis(),
+                        )
+                    ) continue
+                    log("BT-C T66: 建链方向=手机主动连接车机配件端；车机 ACL 触发的限次兼容路径")
                 }
                 val socket = tryConnect(device)
                 if (socket != null) {
@@ -603,8 +623,10 @@ class Iap2BluetoothClient(
             log("BT-C T65: 尚未开启连接服务，不能进行单次诊断拨号")
             return false
         }
-        carLedPolicy.requestOneManualProbe(android.os.SystemClock.uptimeMillis())
-        log("BT-C T65: 用户手动允许单次 iAP2 诊断拨号（不自动重复）")
+        carLedPolicy.requestOneManualProbe(
+            android.os.SystemClock.uptimeMillis(), targetProvider()?.address,
+        )
+        log("BT-C T66: 用户手动允许单次 iAP2 诊断拨号（不自动重复）")
         return true
     }
 

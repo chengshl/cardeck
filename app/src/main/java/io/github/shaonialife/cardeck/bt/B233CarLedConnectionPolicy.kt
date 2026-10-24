@@ -1,66 +1,96 @@
 package io.github.shaonialife.cardeck.bt
 
+import java.util.Locale
+
 /**
- * Buick-Test T65: the receiver decides when CarPlay may connect.
+ * Buick-Test T66: the vehicle chooses WHEN and WHICH receiver connects.
  *
- * An incoming iAP2 RFCOMM session never needs this gate. An outgoing RFCOMM
- * dial to the accessory UUID is allowed only after an actual vehicle Bluetooth
- * connection event. This is a compatibility bridge for receivers that initiate
- * the workflow but require the phone to open the accessory-side socket.
+ * Passive RFCOMM incoming sessions need no permission from this class.
+ * For receivers that instead need a phone-originating accessory RFCOMM link,
+ * a real ACL_CONNECTED event grants a short, bounded compatibility window.
  *
- * No polling-driven invitation, no automatic re-arm on failure, and no carryover
- * from a previous established session. Manual disconnect stops the caller.
+ * HFP/A2DP profile CONNECTED notifications are NOT CarPlay invitations.
+ * One physical ACL connection can arm us only once, even if many profile
+ * updates follow. A new grant requires ACL_DISCONNECTED then ACL_CONNECTED,
+ * or an explicit user-initiated one-shot diagnostic request.
+ *
+ * Addresses are stored only in volatile memory to bind the invitation to
+ * the exact receiver; never logged or persisted.
  */
 internal class B233CarLedConnectionPolicy {
     companion object {
         const val INVITATION_WINDOW_MS = 45_000L
-        const val DUPLICATE_EVENT_MS = 5_000L
+        const val INBOUND_PRIORITY_MS = 1_500L
         const val MAX_OUTBOUND_ATTEMPTS = 2
     }
 
-    private var lastSignalAt = -1L
-    private var until = 0L
+    private var aclConnectedAddress: String? = null
+    private var invitedAddress: String? = null
+    private var notBeforeMs = 0L
+    private var untilMs = 0L
     private var attemptsLeft = 0
+
+    private fun key(address: String): String = address.uppercase(Locale.ROOT)
 
     @Synchronized
     fun reset() {
-        lastSignalAt = -1L
-        until = 0L
-        attemptsLeft = 0
+        aclConnectedAddress = null
+        clearPendingInvitation()
     }
 
-    /** Returns true only when a new externally initiated Bluetooth event arms us. */
+    /** Only a fresh, vehicle-specific ACL connection arms the fallback. */
     @Synchronized
-    fun onVehicleBluetoothConnected(nowMs: Long): Boolean {
-        if (lastSignalAt >= 0 && nowMs - lastSignalAt < DUPLICATE_EVENT_MS) return false
-        lastSignalAt = nowMs
-        until = nowMs + INVITATION_WINDOW_MS
+    fun onVehicleAclConnected(address: String, nowMs: Long): Boolean {
+        if (aclConnectedAddress != null) return false
+        aclConnectedAddress = key(address)
+        invitedAddress = aclConnectedAddress
+        notBeforeMs = nowMs + INBOUND_PRIORITY_MS
+        untilMs = nowMs + INVITATION_WINDOW_MS
         attemptsLeft = MAX_OUTBOUND_ATTEMPTS
         return true
     }
 
-    /** Consume a bounded, event-backed phone-side dial attempt. */
+    /** A full physical disconnect resets the edge detector for the NEXT tap. */
     @Synchronized
-    fun claimOutboundAttempt(nowMs: Long): Boolean {
-        if (nowMs >= until || attemptsLeft <= 0) return false
-        attemptsLeft--
+    fun onVehicleAclDisconnected(address: String): Boolean {
+        if (aclConnectedAddress != key(address)) return false
+        aclConnectedAddress = null
+        clearPendingInvitation()
         return true
     }
 
     /**
-     * Explicit diagnostics fallback only. Does NOT run on normal startup,
-     * disconnection, Bluetooth pairing, or a background retry timer.
+     * Consume only a matching receiver's invitation; allow the car's reverse
+     * iAP2 socket a brief head start before trying accessory-side RFCOMM.
      */
     @Synchronized
-    fun requestOneManualProbe(nowMs: Long) {
-        until = nowMs + 15_000L
+    fun hasEligibleInvitation(address: String, nowMs: Long): Boolean {
+        if (invitedAddress != null && invitedAddress != key(address)) return false
+        return attemptsLeft > 0 && nowMs >= notBeforeMs && nowMs < untilMs
+    }
+
+    @Synchronized
+    fun claimOutboundAttempt(address: String, nowMs: Long): Boolean {
+        if (!hasEligibleInvitation(address, nowMs)) return false
+        attemptsLeft--
+        return true
+    }
+
+    /** Explicit diagnostics only, never an automatic session recovery. */
+    @Synchronized
+    fun requestOneManualProbe(nowMs: Long, selectedAddress: String?) {
+        invitedAddress = selectedAddress?.let(::key)
+        notBeforeMs = nowMs
+        untilMs = nowMs + 15_000L
         attemptsLeft = 1
     }
 
-    /** An established session or accepted reverse connection ends this invitation. */
+    /** Does not rearm ACL: this prevents late HFP/A2DP updates from retrying. */
     @Synchronized
     fun clearPendingInvitation() {
-        until = 0L
+        invitedAddress = null
+        notBeforeMs = 0L
+        untilMs = 0L
         attemptsLeft = 0
     }
 }

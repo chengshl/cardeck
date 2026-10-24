@@ -157,18 +157,18 @@ class Iap2BluetoothServer(
                 continue
             }
             if (isB233) {
-                log("BT T65: B233 车机主动连接 iAP2 已接受；暂停手机主动拨号")
+                log("BT T66: 建链方向=车机主动连接手机 iAP2；优先使用原版 iPhone 式被动接入")
             } else {
                 log("BT: 接收端已连入 name=$peerName，开始 iAP2 发送端会话")
             }
-            Thread({ runSession(socket, forcedE5) }, "iap2-bt-session").apply {
+            Thread({ runSession(socket, forcedE5, isB233) }, "iap2-bt-session").apply {
                 isDaemon = true
                 start()
             }
         }
     }
 
-    private fun runSession(socket: BluetoothSocket, forcedE5: Boolean) {
+    private fun runSession(socket: BluetoothSocket, forcedE5: Boolean, isB233: Boolean) {
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
@@ -193,6 +193,12 @@ class Iap2BluetoothServer(
                 forceBuickE5 = forcedE5,
             )
         } catch (error: IOException) {
+            if (isB233 && B233ReconnectPolicy.isUnansweredStartSession(error.message)) {
+                log(
+                    "BT T66: B233 车机主动连入的 iAP2 会话未确认 0x4300；" +
+                        "此前成功样本为手机连接配件端，需实车对照而非忽略 ACK",
+                )
+            }
             log("SESSION 失败: ${error.message}")
         } finally {
             if (activeChannel === channel) activeChannel = null
