@@ -1,0 +1,37 @@
+name: Build upstream main APK (manual test)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-upstream-main.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cardeck-upstream-main-apk
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build original standard release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleStandardRelease --stacktrace
+      - name: Upload APK for installation test
+        uses: actions/upload-artifact@v4
+        with:
+          name: CarDeck-Upstream-main-${{ github.run_number }}
+          path: app/build/outputs/apk/standard/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
