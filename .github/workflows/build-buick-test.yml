@@ -17,6 +17,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -37,6 +39,25 @@ jobs:
           assert re.fullmatch(r'[A-Za-z0-9_-]+\.apk', c['apkName'])
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               output.write(f"RELEASE_TAG={c['releaseTag']}\nAPK_NAME={c['apkName']}\n")
+          PY
+      - name: Validate Chinese release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Human-readable notes must be maintained in Chinese, never copied from the git commit.
+          # Fail closed if the latest commit omitted release notes, to prevent stale descriptions.
+          test -s docs/BUICK_TEST_RELEASE_NOTES.md
+          if git rev-parse --verify HEAD^ >/dev/null 2>&1 &&
+              git diff --quiet HEAD^ HEAD -- docs/BUICK_TEST_RELEASE_NOTES.md; then
+            echo "::error::请在本次提交中更新 docs/BUICK_TEST_RELEASE_NOTES.md（中文更新说明）"
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          notes = Path('docs/BUICK_TEST_RELEASE_NOTES.md').read_text(encoding='utf-8')
+          assert any('一' <= char <= '鿿' for char in notes), '更新说明必须包含中文'
+          assert len(notes.strip()) >= 30, '更新说明不能过短'
+          print('中文更新说明已验证')
           PY
       - name: Restore existing APK signing key
         env:
@@ -126,16 +147,16 @@ jobs:
             printf 'versionName=%s\nversionCode=%s\nbranch=Buick-Test\ncommit=%s\n' \
               "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_SHA"
             printf '\n## 更新说明\n'
-            git log -1 --pretty=%B
+            cat docs/BUICK_TEST_RELEASE_NOTES.md
           } > test-release-notes.txt
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" --clobber
-            gh release edit "$RELEASE_TAG" --title "CarDeck Buick-Test $CARDECK_RELEASE_VERSION_NAME" \
+            gh release edit "$RELEASE_TAG" --title "CarDeck 别克测试版 $CARDECK_RELEASE_VERSION_NAME" \
               --notes-file test-release-notes.txt --prerelease --latest=false
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
               -f sha="$GITHUB_SHA" -F force=true >/dev/null
           else
             gh release create "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" --target "$GITHUB_SHA" \
-              --title "CarDeck Buick-Test $CARDECK_RELEASE_VERSION_NAME" \
+              --title "CarDeck 别克测试版 $CARDECK_RELEASE_VERSION_NAME" \
               --notes-file test-release-notes.txt --prerelease --latest=false
           fi
