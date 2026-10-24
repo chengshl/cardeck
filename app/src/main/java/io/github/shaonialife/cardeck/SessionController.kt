@@ -256,7 +256,20 @@ object SessionController {
     @Volatile
     var currentAudioHost: String? = null
 
-    /** 本次会话是否在车机侧播放声音（由「启动连接」弹窗选择）。 */
+    /**
+     * Requested by the user, independent of whether RTP later starts/stops.
+     * T68: UI must not report "user off" when B233 auto-downgrades on error.
+     */
+    @Volatile
+    var audioRequestedByUserForSession: Boolean = false
+
+    @Volatile
+    var audioAttemptedForSession: Boolean = false
+
+    @Volatile
+    var audioAutoDowngradedForSession: Boolean = false
+
+    /** 本次会话是否应尝试在车机侧播放声音（断链后可能自动降级）。 */
     @Volatile
     var audioEnabledForSession: Boolean = false
 
@@ -1173,9 +1186,15 @@ object SessionController {
         host: String?,
     ): Boolean {
         if (!audioEnabledForSession) {
-            appendLog("AUDIO: 本次连接未开启车机侧声音（「启动连接」弹窗选择）——仅推视频")
+            appendLog(
+                if (audioAutoDowngradedForSession && audioRequestedByUserForSession)
+                    "AUDIO T68: 用户曾开启声音，但本会话音频异常后已自动降级为仅视频"
+                else
+                    "AUDIO: 本次连接未开启车机侧声音（「启动连接」弹窗选择）——仅推视频"
+            )
             return false
         }
+        audioAttemptedForSession = true
         if (sharedSecret == null) {
             // 明文会话（et=NONE）没有共享密钥可派生 DataStream 输出密钥：
             // 推出去的 RTP 车机无法解密。宁可不推，也不要制造「有包无声」的假象。
@@ -1390,6 +1409,7 @@ object SessionController {
                                                 // video session 14s later. Reassert video-only
                                                 // ownership while keeping Bluetooth A2DP.
                                                 audioEnabledForSession = false
+                                                audioAutoDowngradedForSession = true
                                                 val videoOnlyClaimed =
                                                     client.assertModes(claimAudioResource = false)
                                                 appendLog(
@@ -1411,6 +1431,7 @@ object SessionController {
                                             audioSender = null
                                             activeAudioProfile = null
                                             activeAudioStartedAt = 0L
+                                            audioAutoDowngradedForSession = true
                                             AudioProfileMemory.recordTransportFailure(
                                                 context.applicationContext, identity, profile.key,
                                             )
@@ -2491,6 +2512,7 @@ object SessionController {
                                                         // again as soon as 0x4301 recovers.
                                                         // Explicit user audio selection can retry.
                                                         audioEnabledForSession = false
+                                                        audioAutoDowngradedForSession = true
                                                         appendLog(
                                                             "AUDIO T64: 音频异常拆链；自动恢复" +
                                                                 "降级为仅视频，不再次协商 AAC",

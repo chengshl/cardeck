@@ -27,6 +27,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
+import io.github.shaonialife.cardeck.audio.AudioUiStatus
 import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.TargetDevicePrefs
 import io.github.shaonialife.cardeck.input.TouchRouter
@@ -496,6 +497,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun beginWithAudio(enabled: Boolean) {
+        // T68: user's explicit choice must survive transport failure and
+        // automatic video-only fallback; never mislabel that as a user OFF.
+        SessionController.audioRequestedByUserForSession = enabled
+        SessionController.audioAttemptedForSession = false
+        SessionController.audioAutoDowngradedForSession = false
         SessionController.audioEnabledForSession = enabled
         // 声音只剩一个模式：通路协商（AAC-LC 优先，不行自动退 PCM）在会话内自动完成，
         // 不再有「兼容档」这种人工分支。
@@ -1134,17 +1140,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateAudioTag() {
         if (heroState != HeroState.CONNECTED) return
-        val on =
-            SessionController.audioEnabledForSession &&
-                SessionController.audioSender?.isRunning == true
-        val icon =
-            ContextCompat.getDrawable(
-                this,
-                if (on) R.drawable.ic_music_small else R.drawable.ic_volume_off_small,
-            )!!
-        DrawableCompat.setTint(icon.mutate(), getColor(if (on) R.color.m3_ok else R.color.m3_outline))
+        val status = AudioUiStatus.fromSession(
+            userRequested = SessionController.audioRequestedByUserForSession,
+            attempted = SessionController.audioAttemptedForSession,
+            senderRunning = SessionController.audioSender?.isRunning == true,
+            autoDowngraded = SessionController.audioAutoDowngradedForSession,
+        )
+        val sending = status == AudioUiStatus.SENDING
+        val failed = status == AudioUiStatus.FAILED || status == AudioUiStatus.DOWNGRADED
+        val icon = ContextCompat.getDrawable(
+            this,
+            if (sending) R.drawable.ic_music_small else R.drawable.ic_volume_off_small,
+        )!!
+        DrawableCompat.setTint(
+            icon.mutate(),
+            getColor(when {
+                sending -> R.color.m3_ok
+                failed -> R.color.m3_amber
+                else -> R.color.m3_outline
+            }),
+        )
         audioTag.setCompoundDrawablesWithIntrinsicBounds(icon, null, null, null)
-        audioTag.text = if (on) "车机侧声音 · 开启" else "车机侧声音 · 关闭"
+        audioTag.text = status.caption
     }
 
     /**
