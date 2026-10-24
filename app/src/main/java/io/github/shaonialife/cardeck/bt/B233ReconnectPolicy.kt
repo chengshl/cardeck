@@ -69,6 +69,11 @@ internal class B233ReconnectPolicy {
     @Synchronized
     fun onAudioSessionEnded(nowMs: Long): Long {
         until = maxOf(until, nowMs + AFTER_AUDIO_TEARDOWN_MS)
+        // T63: an audio-triggered teardown is evidence for the same recovery
+        // that two unanswered 0x4300 rounds previously had to establish.
+        // Arm ONE verified B233 inbound iAP2 opportunity during cooldown,
+        // without disconnecting HFP/A2DP, resetting bonds or affecting Audi.
+        if (!inboundFallbackUsed) inboundFallbackArmed = true
         return until - nowMs
     }
 

@@ -281,6 +281,14 @@ object SessionController {
     private var activeAudioStartedAt: Long = 0L
 
     /**
+     * T63: remember that this video session REALLY started B233 audio even if
+     * AudioSender stopped itself on UDP ECONNREFUSED before video onEnded.
+     * isRunning at teardown is too late and suppressed the iAP2 recovery path.
+     */
+    @Volatile
+    private var b233AudioStartedInSession = false
+
+    /**
      * 音频「存活窗口」（ms）：超过它才认为该档位可用。
      * 依据 2026-10-19 实测：拆链发生在音频起流后 6.5s；取 20s 留足车机音频通路初始化
      * 与首个欠载周期的余量。
@@ -531,6 +539,7 @@ object SessionController {
         ScreenDimmer.setSessionActive(false)
         audioSender?.stop()
         audioSender = null
+        b233AudioStartedInSession = false
         currentSharedSecret = null
         currentAudioHost = null
         currentHiddenSource?.release()
@@ -1310,6 +1319,7 @@ object SessionController {
             activeAudioProfile = profile
             activeAudioReceiverKey = identity
             activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
+            b233AudioStartedInSession = client.currentEndpoint.isBuickB233
             val sender =
                 AudioSender(
                     host = host,
@@ -1345,16 +1355,35 @@ object SessionController {
                                                 profile.codec,
                                             )
                                         ) {
-                                            // RTCP controlPort=6011 is explicitly refused, but
-                                            // AAC dataPort=6000 did accept 49 packets and the
-                                            // /feedback stream clock advanced. The sync thread
-                                            // already exits on this IOException: keep RTP alive
-                                            // to test whether the B233 audio watchdog requires
-                                            // uninterrupted packets after SETUP + RECORD.
+                                            // T63 (Test only): try a stream-scoped RTSP
+                                            // TEARDOWN, never a session-wide empty TEARDOWN.
+                                            // Stopping RTP alone left a negotiated audio stream
+                                            // alive and the B233 tore down video ~20s later.
+                                            // On a rejected/unsupported TEARDOWN, preserve
+                                            // T14's RTP behavior rather than worsening it.
                                             appendLog(
-                                                "AUDIO T14: B233 AAC RTCP端口拒绝（$error）；" +
-                                                    "仅停止同步包，继续 AAC RTP 推流以验证20秒拆链",
+                                                "AUDIO T63: B233 AAC 同步端口拒绝（$error）；" +
+                                                    "尝试仅撤销音频流，保留视频",
                                             )
+                                            val audioRemoved =
+                                                client.teardownAudioStream(profile.streamType)
+                                            if (audioRemoved && currentClient === client &&
+                                                audioSender === active
+                                            ) {
+                                                audioSender = null
+                                                activeAudioProfile = null
+                                                activeAudioStartedAt = 0L
+                                                active.stop()
+                                                appendLog(
+                                                    "AUDIO T63: 音频流单独撤销成功，AAC 已停止；" +
+                                                        "视频/RTSP/BT 不主动关闭",
+                                                )
+                                            } else {
+                                                appendLog(
+                                                    "AUDIO T63: 音频流撤销未确认；维持 RTP，" +
+                                                        "等待真实断链证据，不误关视频",
+                                                )
+                                            }
                                         } else {
                                             appendLog(
                                                 "AUDIO T10: B233 sync端口拒绝（$error）；" +
@@ -1383,6 +1412,7 @@ object SessionController {
                 audioSender = null
                 activeAudioProfile = null
                 activeAudioStartedAt = 0L
+                b233AudioStartedInSession = false
                 false
             } else {
                 true
@@ -1392,6 +1422,7 @@ object SessionController {
             audioSender = null
             activeAudioProfile = null
             activeAudioStartedAt = 0L
+            b233AudioStartedInSession = false
             false
         }
     }
@@ -2425,7 +2456,15 @@ object SessionController {
                                                     // Video-only sessions are not penalized.
                                                     val b233AudioEnded =
                                                         client.currentEndpoint.isBuickB233 &&
-                                                            audioSender?.isRunning == true
+                                                            b233AudioStartedInSession
+                                                    if (b233AudioEnded) {
+                                                        appendLog(
+                                                            "AUDIO T63: B233 视频会话退出，" +
+                                                                "本轮曾开启音频（senderRunning=" +
+                                                                "${audioSender?.isRunning == true}）；" +
+                                                                "即使 UDP 发送器先停止也执行 iAP2 恢复",
+                                                        )
+                                                    }
                                                     attributeAudioTeardown()
                                                     // B233: release naturally ended streams as well.
                                                     if (client.currentEndpoint.isBuickB233) {

@@ -74,6 +74,19 @@ class B233ReconnectPolicyTest {
         assertEquals(0L, p.remainingMs(21_000L))
     }
 
+    @Test fun t63AudioTeardownImmediatelyArmsOnlyOneVerifiedInboundRecovery() {
+        val p = B233ReconnectPolicy()
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        assertEquals(20_000L, p.onAudioSessionEnded(10_000L))
+        assertEquals(true, p.claimInboundRecoveryAttempt())
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        assertEquals(19_000L, p.remainingMs(11_000L))
+        p.onStartSessionTimeout(31_000L)
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+        p.onStartSessionAccepted()
+        assertEquals(false, p.claimInboundRecoveryAttempt())
+    }
+
     @Test fun repeatedUnansweredStartSessionsBackOffAtSixtySeconds() {
         val p = B233ReconnectPolicy()
         assertEquals(15_000L, p.onStartSessionTimeout(100_000L))

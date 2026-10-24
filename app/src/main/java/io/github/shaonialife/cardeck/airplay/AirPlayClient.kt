@@ -2111,6 +2111,37 @@ class AirPlayClient(
         return ScreenStreamInfo(connectionId, dataPort, cipher)
     }
 
+    /**
+     * T63 Buick-Test: withdraw ONLY the negotiated audio stream when its
+     * RTCP control port rejects packets. UxPlay/iPhone stream-scoped TEARDOWN
+     * carries a non-empty bplist "streams" array; an empty request could
+     * terminate the entire mirroring session and strand B233 on reconnect.
+     * A non-200 or broken RTSP link does NOT count as successful isolation.
+     */
+    fun teardownAudioStream(streamType: Long): Boolean {
+        if (!endpoint.isBuickB233 || !isSessionAlive()) return false
+        val body = BinaryPlist.encode(
+            linkedMapOf<String, Any?>(
+                "streams" to listOf(linkedMapOf<String, Any?>("type" to streamType)),
+            ),
+        )
+        return try {
+            val (statusLine, _) = request(
+                "TEARDOWN",
+                "/",
+                body,
+                timeoutMillis = 3_000,
+                contentType = "application/x-apple-binary-plist",
+            )
+            val ok = statusLine.contains("200")
+            log("AIRPLAY T63: B233 audio-only TEARDOWN type=$streamType -> [$statusLine] accepted=$ok")
+            ok
+        } catch (error: IOException) {
+            log("AIRPLAY T63: B233 audio-only TEARDOWN unavailable - ${error.message}")
+            false
+        }
+    }
+
     /** RECORD：激活会话（接收端 onSessionActive）。路径用相对 `/`（catplay record() 同款）。 */
     fun record(): Boolean =
         try {
