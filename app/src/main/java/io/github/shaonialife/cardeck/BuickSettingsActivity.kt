@@ -154,6 +154,33 @@ class BuickSettingsActivity : AppCompatActivity() {
             12f,
         ).apply { setPadding(0, 0, 0, px(12)) })
 
+        // Test-only escape hatch. B233's default flow now waits for a
+        // receiver-side invitation; this button is not an auto-retry setting.
+        heading("连接诊断 · Test 专用", "正常请在车机端选择手机或设置默认连接")
+        val oneShotProbe = Button(this).apply {
+            text = "仅试一次：手机侧 iAP2 兼容连接"
+            textSize = 14f
+            isAllCaps = false
+            setTextColor(fg)
+            background = rounded(surfaceHigh, getColor(R.color.m3_outline), 13)
+            minHeight = px(52)
+            setOnClickListener {
+                val accepted = SessionController.requestB233ManualProbe()
+                android.widget.Toast.makeText(
+                    this@BuickSettingsActivity,
+                    if (accepted) "已允许单次诊断连接，请查看日志" else "请先在主页点击启动连接以开启服务",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+        root.addView(oneShotProbe, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, px(54),
+        ))
+        root.addView(label(
+            "仅在车机端点击连接仍无响应时使用。它是明确的人工诊断，不会定时重试，不会改变默认的车机主导模式。",
+            12f,
+        ).apply { setPadding(0, px(7), 0, px(12)) })
+
         heading("曲面屏安全区域", "设置下次连接生效；桌面与触摸功能始终保持开启")
 
         // T60: explicitly labelled two-state control. A tinted switch thumb was

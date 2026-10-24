@@ -389,8 +389,11 @@ object SessionController {
                     onWifiCredentials = wifiCredentialHook,
                     onEndpointUpdate = { endpoint -> onLateEndpoint(endpoint, "车机回连") },
                     targetProvider = targetProvider,
-                    claimB233InboundRecovery = {
-                        bluetoothClient?.claimB233InboundRecovery() == true
+                    onB233Incoming = {
+                        // T65: reverse iAP2 is the normal B233 entry path.
+                        // Yield only an unestablished phone dial; never tear
+                        // down an existing active CarPlay session.
+                        bluetoothClient?.yieldToB233Incoming() != false
                     },
                 )
             bluetoothClient =
@@ -473,10 +476,13 @@ object SessionController {
         ctrlAdvertiser?.resetInviteCount()
         // 后台发布：start() 首次要向 Shizuku 解析真实蓝牙 MAC（shell），不能在主线程做
         Bg.run("ctrl-publish") { ctrlAdvertiser?.start() }
-        // 真车路径：手机主动连车机（SDP …caff 配件服务）
-        // 测试台路径：监听手机侧 iPhone UUID，等 DiPlay/xcertplay 回连
-        bluetoothClient?.start()
+        // T65: start receiving BEFORE any outbound compatibility dial.
+        // Buick E5/B233: listen for the car first; outbound RFCOMM is
+        // permitted only after an observed vehicle Bluetooth connection.
+        // Other head units retain the original active connection path.
         bluetoothServer?.start()
+        bluetoothClient?.start()
+        appendLog("BT T65: B233 车机主导模式已就绪；可在车机端手动连接或设置默认设备自动连接")
         // 诊断（奥迪实测：手机与车机「蓝牙已连接」时车机不开放 CarPlay）：
         // 连之前把目标设备的蓝牙配置文件状态打出来，失败时一眼看出是不是这个原因。
         Bg.run("bt-profile-diag") {
@@ -488,6 +494,10 @@ object SessionController {
             )
         }
     }
+
+    /** T65: explicit test-only compatibility probe; never invoked automatically. */
+    fun requestB233ManualProbe(): Boolean =
+        bluetoothClient?.requestB233ManualProbe() == true
 
     /** 「断开连接」（可在任意 Activity 实例上调用——操作的是真管线对象）。 */
     fun disconnect(context: Context) {

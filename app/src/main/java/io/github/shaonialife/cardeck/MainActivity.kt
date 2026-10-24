@@ -957,7 +957,7 @@ class MainActivity : AppCompatActivity() {
         CarInputClient.logSink = { line -> log(line) }
 
         log("CarDeck Phase 0 就绪")
-        log("真车：与车机蓝牙配对 + 手机加入车机热点 -> 点「启动连接」（自动主动连入车机）")
+        log("别克 E5：蓝牙配对后开启 CarDeck 服务；在车机端选手机连接（或设置默认设备自动连接）；App 不再无条件抢连 B233")
         log("测试台：两台手机蓝牙配对 -> 备用机跑 xcertplay 无线模式 -> 点「启动连接」等待回连")
     }
 

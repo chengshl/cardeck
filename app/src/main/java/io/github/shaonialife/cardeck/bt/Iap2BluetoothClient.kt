@@ -9,6 +9,9 @@ import io.github.shaonialife.cardeck.buick.BuickE5HandshakeTarget
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
@@ -63,6 +66,9 @@ class Iap2BluetoothClient(
     // T17: B233 only. Avoid hammering a head unit that has just torn down an
     // audio CarPlay session or silently ignored the 0x4300 request.
     private val b233ReconnectPolicy = B233ReconnectPolicy()
+    // T65: B233 does not dial on its own; car Bluetooth events grant a bounded window.
+    private val carLedPolicy = B233CarLedConnectionPolicy()
+    private var vehicleSignalReceiver: BroadcastReceiver? = null
 
     /**
      * 客户端线程世代号：start()/stop() 都会递增。卡在阻塞 connect() 里的线程被
@@ -153,6 +159,50 @@ class Iap2BluetoothClient(
         ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
             PackageManager.PERMISSION_GRANTED
 
+    @SuppressLint("MissingPermission")
+    private fun registerVehicleSignals() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(receiverContext: Context, intent: Intent) {
+                if (!running) return
+                // Profile broadcasts fire for disconnects too. Only a new
+                // *connected* event can authorize an outgoing CarPlay dial.
+                if (intent.action != BluetoothDevice.ACTION_ACL_CONNECTED &&
+                    intent.getIntExtra(android.bluetooth.BluetoothProfile.EXTRA_STATE, -1) !=
+                    android.bluetooth.BluetoothProfile.STATE_CONNECTED
+                ) return
+                @Suppress("DEPRECATION")
+                val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                    ?: return
+                val target = targetProvider()
+                if (target != null && !TargetDevicePrefs.matches(target, device.address)) return
+                val name = runCatching { device.name }.getOrNull()
+                val forced = BuickE5HandshakeTarget.shouldForce(
+                    BuickE5HandshakePrefs.enabled(context),
+                    target?.address, device.address, name,
+                )
+                val knownB233 = forced || BuickB233Route.useB233Transport(
+                    name,
+                    ReceiverCompatibilityMemory.wasB233Observed(context, device.address),
+                )
+                if (!knownB233) return
+                if (carLedPolicy.onVehicleBluetoothConnected(android.os.SystemClock.uptimeMillis())) {
+                    log("BT-C T65: B233 车机蓝牙连接事件；允许短时间内最多两次 iAP2 配件端拨号")
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction(android.bluetooth.BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+            addAction(android.bluetooth.BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+        }
+        try {
+            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+            vehicleSignalReceiver = receiver
+        } catch (error: Exception) {
+            log("BT-C T65: 蓝牙车机事件监听失败（${error.javaClass.simpleName}），仍保持 iAP2 被动监听")
+        }
+    }
+
     fun start(): Boolean {
         if (running) return true
         if (!hasPermission()) {
@@ -173,17 +223,16 @@ class Iap2BluetoothClient(
         iap2ServiceCache.clear()
         skippedNoService.clear()
         b233ReconnectPolicy.reset()
+        carLedPolicy.reset()
         running = true
         val myGeneration = generation.incrementAndGet()
         val target = targetProvider()
         log(
-            "BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）" +
-                if (target != null) {
-                    "，目标：「${target.name}」${target.address}（只连该设备）"
-                } else {
-                    "（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）"
-                },
+            "BT-C T65: 服务就绪；Buick E5/B233 等待车机发起连接，" +
+                "其他车型保持原有主动 iAP2 连接方式。" +
+                if (target != null) " 目标：「${target.name}」" else " 未指定目标",
         )
+        registerVehicleSignals()
         Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
             isDaemon = true
             thread = this
@@ -335,12 +384,22 @@ class Iap2BluetoothClient(
                     log("BT-C T18: 接收端反向 iAP2 会话占用中，取消本次主动连入")
                     break
                 }
+                if (knownBuick) {
+                    // T65: No polling-driven CarPlay takeover. An actual
+                    // Bluetooth connection event from the car grants at most
+                    // two outgoing attempts if B233 requires that socket direction.
+                    if (!carLedPolicy.claimOutboundAttempt(android.os.SystemClock.uptimeMillis())) {
+                        continue
+                    }
+                    log("BT-C T65: 收到车机连接信号，执行一次 B233 配件端 iAP2 建链")
+                }
                 val socket = tryConnect(device)
                 if (socket != null) {
                     log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
                     connected = socket
                     connectedKnownBuick = knownBuick
                     connectedForcedE5 = forcedE5
+                    if (knownBuick) carLedPolicy.clearPendingInvitation()
                     break
                 } else {
                     val now = android.os.SystemClock.uptimeMillis()
@@ -526,12 +585,38 @@ class Iap2BluetoothClient(
      * Explicit stop/start clears this cooldown immediately.
      */
     fun recoverAfterB233AudioTeardown() {
+        carLedPolicy.clearPendingInvitation()
         val cooldown = b233ReconnectPolicy.onAudioSessionEnded(
             android.os.SystemClock.uptimeMillis(),
         )
         log("BT-C T17: B233 音频异常拆链，退役旧 iAP2 控制连接；" +
             "自动重试冷却 ${cooldown / 1000}s（不重启 App、不删除配对）")
         detachCurrentSession()
+    }
+
+    /**
+     * User-triggered diagnostic fallback, not automatic CarPlay initiation.
+     * This button is intentionally buried in Buick-Test settings.
+     */
+    fun requestB233ManualProbe(): Boolean {
+        if (!running) {
+            log("BT-C T65: 尚未开启连接服务，不能进行单次诊断拨号")
+            return false
+        }
+        carLedPolicy.requestOneManualProbe(android.os.SystemClock.uptimeMillis())
+        log("BT-C T65: 用户手动允许单次 iAP2 诊断拨号（不自动重复）")
+        return true
+    }
+
+    /**
+     * T65: give a B233 inbound RFCOMM request priority over an unestablished
+     * phone-originating dial. Do not terminate an already active iAP2 session.
+     */
+    fun yieldToB233Incoming(): Boolean {
+        if (activeChannel != null) return false
+        carLedPolicy.clearPendingInvitation()
+        currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+        return true
     }
 
     /** 主动结束当前 BT 控制会话（不影响重连循环）。供 AirPlay 配对前复现控制通道退役状态。 */
@@ -546,6 +631,9 @@ class Iap2BluetoothClient(
 
     fun stop() {
         running = false
+        vehicleSignalReceiver?.let { runCatching { context.unregisterReceiver(it) } }
+        vehicleSignalReceiver = null
+        carLedPolicy.reset()
         // 递增世代：即便有线程卡在 connect()，事后也会因世代不符自杀，不会在下次启动时复活
         generation.incrementAndGet()
         currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
