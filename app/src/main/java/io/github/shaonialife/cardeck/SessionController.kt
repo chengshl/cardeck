@@ -1374,9 +1374,18 @@ object SessionController {
                                                 activeAudioProfile = null
                                                 activeAudioStartedAt = 0L
                                                 active.stop()
+                                                // T64: a successful stream-scoped TEARDOWN did
+                                                // not release the previously claimed CarPlay
+                                                // main-audio RESOURCE. B233 still tore down the
+                                                // video session 14s later. Reassert video-only
+                                                // ownership while keeping Bluetooth A2DP.
+                                                audioEnabledForSession = false
+                                                val videoOnlyClaimed =
+                                                    client.assertModes(claimAudioResource = false)
                                                 appendLog(
-                                                    "AUDIO T63: 音频流单独撤销成功，AAC 已停止；" +
-                                                        "视频/RTSP/BT 不主动关闭",
+                                                    "AUDIO T64: 音频流已撤销，重新声明仅主屏/" +
+                                                        "普通蓝牙 A2DP，modesChanged成功=$videoOnlyClaimed；" +
+                                                        "观察视频是否继续存活",
                                                 )
                                             } else {
                                                 appendLog(
@@ -2466,6 +2475,17 @@ object SessionController {
                                                         )
                                                     }
                                                     attributeAudioTeardown()
+                                                    if (b233AudioEnded) {
+                                                        // T64: after B233 audio-triggered teardown,
+                                                        // an automatic retry must NOT launch AAC
+                                                        // again as soon as 0x4301 recovers.
+                                                        // Explicit user audio selection can retry.
+                                                        audioEnabledForSession = false
+                                                        appendLog(
+                                                            "AUDIO T64: 音频异常拆链；自动恢复" +
+                                                                "降级为仅视频，不再次协商 AAC",
+                                                        )
+                                                    }
                                                     // B233: release naturally ended streams as well.
                                                     if (client.currentEndpoint.isBuickB233) {
                                                         retireSession()
