@@ -1983,7 +1983,7 @@ class AirPlayClient(
                             audioType = audioType,
                             formatBit = bit,
                             sampleRate = rate,
-                            latencyMs = latencyFor(info, audioType, streamType),
+                            latencyMs = if (endpoint.isBuickB233 && streamType == AUDIO_STREAM_TYPE_MAIN_HIGH && audioType == AUDIO_TYPE_MEDIA) 1_000L else latencyFor(info, audioType, streamType),
                             streamType = streamType,
                             codec = AudioCodec.AAC_LC,
                         )
