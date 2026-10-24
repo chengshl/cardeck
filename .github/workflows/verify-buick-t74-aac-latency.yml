@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2 # git diff HEAD~1 requires its parent; default depth=1 fails 128
+          fetch-depth: 0 # compare with exact T73 baseline, not shallow HEAD
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -31,7 +31,7 @@ jobs:
       - name: Patch whitespace (repository has pre-existing Spotless violations)
         run: |
           git diff --check HEAD~1 HEAD
-          if git diff --name-only 46ee1af2c2ea579a3e899631f356ba1f5d9653ec HEAD -- app/src/main/java/ | grep -v -F 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'; then
+          if git diff --name-only 46ee1af2c2ea579a3e899631f356ba1f5d9653ec HEAD -- app/src/main/java/ | grep -v -Fx 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'; then
             echo "::error::Latency A/B experiment has other app source changes"
             exit 1
           fi
@@ -83,11 +83,11 @@ jobs:
             exit 1
           fi
           cp "$APK" CarDeck-Buick-Test-T74-AAC1000.apk
-          sha256sum CarDeck-Buick-Test-T74-Experiment.apk > CarDeck-Buick-Test-T74-Experiment.apk.sha256
+          sha256sum CarDeck-Buick-Test-T74-AAC1000.apk > CarDeck-Buick-Test-T74-AAC1000.apk.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: Buick-Test-T74-AAC1000-${{ github.run_id }}
           path: |
-            CarDeck-Buick-Test-T74-Experiment.apk
-            CarDeck-Buick-Test-T74-Experiment.apk.sha256
+            CarDeck-Buick-Test-T74-AAC1000.apk
+            CarDeck-Buick-Test-T74-AAC1000.apk.sha256
           if-no-files-found: error
