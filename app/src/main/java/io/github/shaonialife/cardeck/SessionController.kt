@@ -603,9 +603,66 @@ object SessionController {
             appendLog("MODE: 明文会话（未配对）无共享密钥——不补启音频")
             return
         }
+        if (!audioEnabledForSession) {
+            appendLog("MODE: 本轮未选择实验性音频，不执行动态补启")
+            return
+        }
+        // A projection grant may arrive while initial SETUP/RECORD is in progress.
+        // The normal session path will consume the permission once the screen is live.
+        // Do not race its video watchdog by sending audio SETUP/RECORD too early.
+        if (videoSender?.isRunning != true) {
+            appendLog("MODE: 已取得音频权限，但屏幕流尚未运行；等待正常建链流程启用音频")
+            return
+        }
         if (audioSender?.isRunning == true) return
-        appendLog("MODE: 会话进行中，动态补启音频通道…")
-        startAudioChannel(context, client, secret, currentAudioHost)
+        appendLog("MODE: 会话进行中，动态补启音频通道（共用音频 RECORD 流程）…")
+        startAndActivateAudio(context, client, secret, currentAudioHost)
+    }
+
+    /**
+     * T70: both initial audio SETUP and later MediaProjection grants must perform
+     * the same post-SETUP RECORD. Without it the receiver may accept SETUP but
+     * not activate the new stream, while B233's RTCP sender waits indefinitely
+     * behind syncRecordAccepted=false.
+     *
+     * Serialized across setup and permission callback threads to prevent two
+     * audio senders/RECORD requests for the same CarPlay session.
+     */
+    @Synchronized
+    private fun startAndActivateAudio(
+        context: Context,
+        client: AirPlayClient,
+        sharedSecret: ByteArray?,
+        host: String?,
+    ): Boolean {
+        if (currentClient !== client || connectCancelled) {
+            appendLog("AUDIO T70: 会话已改变或被取消，忽略迟到的音频启动")
+            return false
+        }
+        if (audioSender?.isRunning == true) return true
+        if (!startAudioChannel(context, client, sharedSecret, host)) return false
+        val owningSender = audioSender ?: return false
+        appendLog("AUDIO T70: 音频流后加入会话，补发 RECORD 激活（首次/晚授权共用）")
+        return io.github.shaonialife.cardeck.audio.AudioStreamActivation.finish(
+            isBuickB233 = client.currentEndpoint.isBuickB233,
+            record = { client.record() },
+            onConfirmed = {
+                if (currentClient === client && audioSender === owningSender) {
+                    owningSender.activateSyncAfterRecord()
+                } else {
+                    appendLog("AUDIO T70: RECORD 返回时会话已退役，忽略旧音频同步激活")
+                }
+            },
+            onRejected = {
+                if (currentClient === client && audioSender === owningSender) {
+                    appendLog("AUDIO T70: B233 音频 RECORD 未确认，停止音频、保留视频")
+                    audioSender = null
+                    activeAudioProfile = null
+                    activeAudioStartedAt = 0L
+                    owningSender.stop()
+                }
+            },
+        )
     }
 
     /**
@@ -2594,29 +2651,10 @@ object SessionController {
                                         }
                                     }
                                 }
-                                // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。
-                                // 会话已激活（RECORD 完成）后再协商；失败不影响视频主链路。
-                                val audioStarted = startAudioChannel(context, client, sessionKey, host)
-                                if (audioStarted) {
-                                    // 流在 RECORD 之后加入：AirPlay 语义要求再发一次 RECORD
-                                    // 把新流纳入已激活的会话。缺这一步时车机对 SETUP 回 200
-                                    // 并给 dataPort，但不会真正播放（2026-10-17 奥迪实测：
-                                    // 音频包持续发送、采集内容非零，车机无声）。
-                                    appendLog("AUDIO: 音频流已加入——补发 RECORD 激活（流后加入会话）")
-                                    val recorded = client.record()
-                                    if (client.currentEndpoint.isBuickB233) {
-                                        if (recorded) {
-                                            audioSender?.activateSyncAfterRecord()
-                                        } else {
-                                            appendLog("AUDIO T10: B233 音频 RECORD 未确认，停止音频并保留视频")
-                                            val failed = audioSender
-                                            audioSender = null
-                                            activeAudioProfile = null
-                                            activeAudioStartedAt = 0L
-                                            failed?.stop()
-                                        }
-                                    }
-                                }
+                                // 音频在主屏 RECORD 之后加入，需补发 RECORD 激活。
+                                // T70: late MediaProjection grant uses the exact same path.
+                                // Do not change AAC/PCM choice, RTP/RTCP framing, or B233 teardown policy.
+                                startAndActivateAudio(context, client, sessionKey, host)
                             }
                         } else {
                             // 会话级 SETUP 被拒（典型：接收端按设备过滤回 403，见
