@@ -13,6 +13,8 @@ import io.github.shaonialife.cardeck.airplay.PairVerifyClient
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
+import io.github.shaonialife.cardeck.audio.BuickAudioNetworkPolicy
+import io.github.shaonialife.cardeck.buick.BuickAudioGuardPrefs
 import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.B233PairingMonitor
@@ -643,7 +645,7 @@ object SessionController {
         if (!startAudioChannel(context, client, sharedSecret, host)) return false
         val owningSender = audioSender ?: return false
         appendLog("AUDIO T70: 音频流后加入会话，补发 RECORD 激活（首次/晚授权共用）")
-        return io.github.shaonialife.cardeck.audio.AudioStreamActivation.finish(
+        val activated = io.github.shaonialife.cardeck.audio.AudioStreamActivation.finish(
             isBuickB233 = client.currentEndpoint.isBuickB233,
             record = { client.record() },
             onConfirmed = {
@@ -663,6 +665,72 @@ object SessionController {
                 }
             },
         )
+        if (activated && client.currentEndpoint.isBuickB233 &&
+            BuickAudioGuardPrefs.timedFallbackEnabled(context)
+        ) {
+            val profile = activeAudioProfile
+            if (profile != null) scheduleB233T74TimedTrial(context, client, owningSender, profile)
+        }
+        return activated
+    }
+
+    /**
+     * T74 opt-in 18-second A/B trial. Do NOT merely stop RTP: T63/T64 showed
+     * that abandoning an advertised stream still tears down video later.
+     * Only stop the sender if the receiver confirms stream-scoped TEARDOWN.
+     * An explicit trial is NOT evidence that a Wi-Fi buffer was full.
+     */
+    private fun scheduleB233T74TimedTrial(
+        context: Context,
+        client: AirPlayClient,
+        owningSender: AudioSender,
+        profile: AudioProfile,
+    ) {
+        appendLog("AUDIO T74: 已开启18秒音频降级实验；到期仅尝试独立音频TEARDOWN，默认版本不开启")
+        Bg.run("b233-audio-t74-guard") {
+            try {
+                Thread.sleep(BuickAudioNetworkPolicy.TIMED_TRIAL_MS)
+            } catch (_: InterruptedException) {
+                return@run
+            }
+            val stillCurrent = currentClient === client && audioSender === owningSender &&
+                activeAudioProfile?.key == profile.key && !connectCancelled
+            val elapsed = if (activeAudioStartedAt > 0L) {
+                android.os.SystemClock.uptimeMillis() - activeAudioStartedAt
+            } else {
+                -1L
+            }
+            if (!BuickAudioNetworkPolicy.shouldAttemptTimedFallback(
+                    enabled = BuickAudioGuardPrefs.timedFallbackEnabled(context),
+                    isBuickB233 = client.currentEndpoint.isBuickB233,
+                    sessionUnchanged = stillCurrent,
+                    audioRunning = owningSender.isRunning,
+                    elapsedMs = elapsed,
+                )
+            ) return@run
+
+            appendLog("AUDIO T74: 18秒实验到期，先请求车机单独撤销音频流；暂不停RTP")
+            val withdrawn = client.teardownAudioStream(profile.streamType)
+            if (!withdrawn) {
+                appendLog("AUDIO T74: 车机未确认音频流撤销；保留RTP及视频，避免盲停后整链超时")
+                return@run
+            }
+            if (currentClient !== client || audioSender !== owningSender || connectCancelled) {
+                appendLog("AUDIO T74: 音频撤销确认时会话已变化，不接管新会话")
+                return@run
+            }
+            audioSender = null
+            activeAudioProfile = null
+            activeAudioStartedAt = 0L
+            audioEnabledForSession = false
+            audioAutoDowngradedForSession = true
+            owningSender.stop()
+            val videoOnlyClaimed = client.assertModes(claimAudioResource = false)
+            appendLog(
+                "AUDIO T74: 音频流撤销获确认，已停止发送并申请仅视频资源；" +
+                    "modesChanged成功=$videoOnlyClaimed。仍需观察后续60秒视频/触控是否持续",
+            )
+        }
     }
 
     /**
