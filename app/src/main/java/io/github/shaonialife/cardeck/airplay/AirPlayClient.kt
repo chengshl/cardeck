@@ -9,6 +9,7 @@ import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioSender
 import io.github.shaonialife.cardeck.audio.AudioTuning
+import io.github.shaonialife.cardeck.audio.BuickAudioTimingPolicy
 import io.github.shaonialife.cardeck.iap2.Iap2Csm
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
@@ -1713,7 +1714,17 @@ class AirPlayClient(
                                 // 在音频通路初始化阶段就放弃该流。
                                 put("input", false)
                                 put("supportsRTPPacketRedundancy", false)
-                                put("supportsHighAccuracyTimestamps", tuning.highAccuracyTimestamps)
+                                // T71: modern B233 102/media follows catplay's
+                                // high-accuracy timestamp capability; audio capture,
+                                // RTP payload and all non-B233 setup remain unchanged.
+                                put(
+                                    "supportsHighAccuracyTimestamps",
+                                    tuning.highAccuracyTimestamps ||
+                                        BuickAudioTimingPolicy.useModernSenderTiming(
+                                            isBuickB233 = endpoint.isBuickB233,
+                                            profile = profile,
+                                        ),
+                                )
                                 // spf = 每包样本帧数：AAC 一帧 1024，PCM 走 352。
                                 // 2026-10-20 Honda 实测：不声明 spf 时车机照样收包并按 44.1k
                                 // 实时消费，但喇叭无声——「按固定 SPF 排播」的实现需要这个值。

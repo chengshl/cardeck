@@ -1408,6 +1408,19 @@ object SessionController {
                 appendLog("AUDIO: 全部候选档位协商失败（共 ${ordered.size} 档）——本次仅推视频")
                 return false
             }
+            val modernB233Timing =
+                io.github.shaonialife.cardeck.audio.BuickAudioTimingPolicy.useModernSenderTiming(
+                    isBuickB233 = client.currentEndpoint.isBuickB233,
+                    profile = profile,
+                )
+            if (modernB233Timing) {
+                appendLog(
+                    "AUDIO T71: B233 type=102/media 改用现代发送端同步策略：" +
+                        "不主动向 RTCP controlPort=${audio.controlPort} 发送传统 0xD4；" +
+                        "仅发音频 RTP，SETUP 声明高精度时间戳；" +
+                        "与 T14 先触发 6011 拒绝后继续 RTP 不同",
+                )
+            }
             activeAudioProfile = profile
             activeAudioReceiverKey = identity
             activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
@@ -1425,9 +1438,12 @@ object SessionController {
                     adtsFrames = tuning.adts,
                     vehicleNetwork =
                         if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
-                    // 同步包目标端口：车机在 SETUP 应答里下发。缺了它就没有 RTP↔NTP 锚点，
-                    // 接收端只能「按到达时刻猜」，严格的实现干脆不排播（2026-10-20 实测）。
-                    controlPort = audio.controlPort,
+                    // T71/B233 type=102 media: catplay modern TX does not actively
+                    // emit traditional RAOP 0xD4 synchronization packets.
+                    // Avoid touching B233's rejected port 6011 at all, unlike T14.
+                    // The negotiated remote controlPort remains logged but is not
+                    // connected; other vehicles and B233 PCM keep prior behavior.
+                    controlPort = if (modernB233Timing) 0 else audio.controlPort,
                     deferSyncUntilRecord = client.currentEndpoint.isBuickB233,
                     // T12: keep Sony media volume intact while isolating B233 zero capture.
                     // Other cars retain existing no-local-speaker policy.
