@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Smaller iOS-style selected Dock capsule; 42dp touch bounds unchanged. -->
+<!-- Crisp Dock Home capsule. ~42dp tappable area unchanged. -->
 <inset xmlns:android="http://schemas.android.com/apk/res/android"
-    android:insetLeft="8dp" android:insetRight="8dp"
-    android:insetTop="8dp" android:insetBottom="8dp">
+    android:insetLeft="7dp" android:insetRight="7dp"
+    android:insetTop="7dp" android:insetBottom="7dp">
     <shape android:shape="rectangle">
-        <solid android:color="#50DDEAFF"/>
-        <stroke android:width="0.5dp" android:color="#83E6F0FF"/>
-        <corners android:radius="12dp"/>
+        <solid android:color="#3CFFFFFF" />
+        <stroke android:width="0.6dp" android:color="#88FFFFFF" />
+        <corners android:radius="14dp" />
     </shape>
 </inset>

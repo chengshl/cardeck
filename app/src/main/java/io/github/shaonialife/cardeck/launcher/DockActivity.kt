@@ -132,6 +132,16 @@ class DockActivity : AppCompatActivity() {
                 scrimParams.width = contentWidth
                 scrimParams.height = params.height
                 scrim.layoutParams = scrimParams
+                // T61: the visual capsule follows the functional rail bounds,
+                // preserving the established input geometry and safe viewport.
+                findViewById<View>(R.id.dockRail)?.let { rail ->
+                    rail.layoutParams = FrameLayout.LayoutParams(
+                        contentWidth, params.height,
+                    ).apply {
+                        leftMargin = rect.left
+                        topMargin = rect.top
+                    }
+                }
             }
         }
         findViewById<ImageView>(R.id.dockHome).apply {
@@ -232,12 +242,29 @@ class DockActivity : AppCompatActivity() {
     private fun applyDockPrefs() {
         val scrim = findViewById<View>(R.id.dockScrim) ?: return
         val alpha = (DockPrefs.scrimOpacity(this) * 255 / 100).coerceIn(0, 255)
-        scrim.background =
-            android.graphics.drawable.ColorDrawable(
-                android.graphics.Color.argb(alpha, 0, 0, 0),
+        if (barForm) {
+            scrim.background =
+                android.graphics.drawable.ColorDrawable(
+                    android.graphics.Color.argb(alpha, 0, 0, 0),
+                )
+        } else {
+            // Dark tint only *inside* the inset capsule: no hard rectangular bar.
+            // This is plain semi-transparent colour, not a frosted-glass blur.
+            val d = resources.displayMetrics.density
+            val shape = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = 19f * d
+                setColor(android.graphics.Color.argb(alpha, 15, 23, 42))
+            }
+            scrim.background = android.graphics.drawable.InsetDrawable(
+                shape, (4f * d).toInt(), (5f * d).toInt(),
+                (4f * d).toInt(), (5f * d).toInt(),
             )
+        }
         val wallpaper = wallpaperView ?: return
-        val percent = DockPrefs.blur(this)
+        // Buick E5 landscape: user wants crisp original wallpaper behind Dock.
+        // Portrait/bottom dock continues to respect the existing blur preference.
+        val percent = if (barForm) DockPrefs.blur(this) else 0
         if (percent <= 0) {
             wallpaper.setRenderEffect(null)
         } else {
@@ -370,8 +397,10 @@ class DockActivity : AppCompatActivity() {
         lastRendered = current
         container.removeAllViews()
         val density = resources.displayMetrics.density
-        val iconPx = ((if (barForm) 32 else 30) * density).toInt()
-        val pad = (6 * density).toInt()
+        // E5 sidebar: render 24dp glyphs in unchanged ~42dp hit targets.
+        // Bottom bar remains at its established size and spacing.
+        val iconPx = ((if (barForm) 32 else 24) * density).toInt()
+        val pad = ((if (barForm) 6 else 9) * density).toInt()
         val apps = synchronized(VirtualLauncher.runningApps) { VirtualLauncher.runningApps.toList() }
         val iconCache = VirtualLauncher.iconCache
         apps.forEach { component ->
@@ -389,7 +418,9 @@ class DockActivity : AppCompatActivity() {
                         Bg.run("launch-app") { VirtualLauncher.launchApp(component) }
                     }
                 },
-                LinearLayout.LayoutParams(iconPx + pad * 2, iconPx + pad * 2),
+                LinearLayout.LayoutParams(iconPx + pad * 2, iconPx + pad * 2).apply {
+                    if (!barForm) bottomMargin = (3 * density).toInt()
+                },
             )
         }
     }

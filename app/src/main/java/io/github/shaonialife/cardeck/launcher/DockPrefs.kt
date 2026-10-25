@@ -6,7 +6,7 @@ import android.content.Context
  * dock 栏外观偏好（SharedPreferences 持久化 + 监听器通知）。
  *
  *  - scrimOpacity：dock 暗幕强度 0..100（%黑；0=壁纸清晰可见，100=全黑）
- *  - blur：背景高斯模糊强度 0..100（0=不模糊；映射到 RenderEffect 模糊半径）
+ *  - blur：可选背景模糊强度 0..100（0=不模糊；仅允许显示区特定层使用）
  *
  * 监听器在主线程回调（设置页拖动滑条时触发），DockActivity 据此即时重渲染。
  */
@@ -49,7 +49,7 @@ object DockPrefs {
     }
 
     /** 模糊强度默认值（%）。 */
-    const val DEFAULT_BLUR = 40
+    const val DEFAULT_BLUR = 0
 
     /** T59 daylight card opacity; separate from dock dark scrim and blur. */
     const val DEFAULT_CARD_OPACITY = 92

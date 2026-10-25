@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Low-alpha overlay: shared wallpaper remains visible. -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <gradient android:angle="0" android:startColor="#242B3B67" android:endColor="#180D152E" />
-    <stroke android:width="0.35dp" android:color="#2CBCD2F8" />
-</shape>
+<!-- Floating Dock menu. Plain transparent colour, NO bitmap Gaussian blur.
+     Only this menu capsule is rounded; wallpaper outside stays unaltered. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:insetLeft="4dp" android:insetRight="4dp"
+    android:insetTop="5dp" android:insetBottom="5dp">
+    <shape android:shape="rectangle">
+        <solid android:color="#2415223F" />
+        <stroke android:width="0.6dp" android:color="#5AFFFFFF" />
+        <corners android:radius="19dp" />
+    </shape>
+</inset>
