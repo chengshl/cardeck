@@ -51,6 +51,8 @@ class GridActivity : AppCompatActivity() {
     private var cellWidthPx = 0
     private var cellHeightPx = 0
     private var iconSizePx = 0
+    private var lastPagerWidth = 0
+    private var lastPagerHeight = 0
 
     /** 当前行数（横屏 3；竖屏按格子高宽比自适应，分页容量 = COLUMNS × rows）。 */
     private var rows = ROWS_MIN
@@ -568,10 +570,22 @@ class GridActivity : AppCompatActivity() {
                 adapter = PageAdapter()
             }
         dotsRow = findViewById(R.id.dotsRow)
+        pager?.post { reconcileGridMetrics() }
+        pager?.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, oright, ob ->
+            if (r - l != oright - ol || b - t != ob - ot) {
+                pager?.post { reconcileGridMetrics() }
+            }
+        }
         pager?.registerOnPageChangeCallback(
             object : ViewPager2.OnPageChangeCallback() {
                 override fun onPageSelected(position: Int) {
                     updateDots(position)
+                    if (position > 0) {
+                        pager?.post {
+                            reconcileGridMetrics()
+                            pager?.adapter?.notifyItemChanged(pager?.currentItem ?: position)
+                        }
+                    }
                     // 用户滑动切换仪表盘/桌面：回写 launcher（含地图任务与 tile 布局）
                     if (position == 0 && !VirtualLauncher.dashboardMode) VirtualLauncher.showDashboard()
                     if (position != 0 && VirtualLauncher.dashboardMode) VirtualLauncher.showDesktop()
@@ -650,7 +664,9 @@ class GridActivity : AppCompatActivity() {
             return
         }
         // 也覆盖从设置页返回：勾选变化即时反映
+        computeCellMetrics()
         reload()
+        pager?.post { reconcileGridMetrics() }
         refreshWallpaperIfChanged()
     }
 
@@ -676,8 +692,10 @@ class GridActivity : AppCompatActivity() {
         val safeBottom = rect?.let {
             ((VirtualLauncher.streamHeightPx - it.top - it.height) * scale).toInt().coerceAtLeast(0)
         } ?: 0
-        val usableW = dm.widthPixels - chromeHorizontalPx - safeRight
-        val usableH = dm.heightPixels - chromeVerticalPx - safeTop - safeBottom
+        // Pager bounds already exclude the physical receiver's unsafe margins.
+        val view = pager ?: findViewById<ViewPager2>(R.id.gridPager)
+        val usableW = (view.width.takeIf { it > 0 } ?: (dm.widthPixels - safeRight)) - chromeHorizontalPx
+        val usableH = (view.height.takeIf { it > 0 } ?: (dm.heightPixels - safeTop - safeBottom)) - chromeVerticalPx
         if (usableW <= 0 || usableH <= 0) {
             cellWidthPx = 0
             cellHeightPx = 0
@@ -693,9 +711,22 @@ class GridActivity : AppCompatActivity() {
         rows = rowCount
         cellHeightPx = usableH / rowCount
         iconSizePx =
-            (cellHeightPx * 0.63f)
+            (cellHeightPx * 0.56f)
                 .toInt()
-                .coerceAtMost((cellWidthPx * 0.72f).toInt())
+                .coerceAtMost((cellWidthPx * 0.66f).toInt())
+                .coerceAtMost((58f * density).toInt())
+                .coerceAtLeast(1)
+    }
+
+    /** Rebind once actual safe view dimensions have settled. */
+    private fun reconcileGridMetrics() {
+        val view = pager ?: return
+        if (view.width <= 0 || view.height <= 0) return
+        if (lastPagerWidth == view.width && lastPagerHeight == view.height) return
+        lastPagerWidth = view.width
+        lastPagerHeight = view.height
+        computeCellMetrics()
+        if (cellWidthPx > 0 && cellHeightPx > 0 && pages.isNotEmpty()) reload()
     }
 
     /** 重新读取应用清单与桌面选择（首帧与每次回到桌面时调用）。 */
@@ -934,7 +965,7 @@ class GridActivity : AppCompatActivity() {
     ) : RecyclerView.ViewHolder(grid) {
         fun bind(page: Int) {
             grid.removeAllViews()
-            pages[page].forEach { cell ->
+            pages[page].forEachIndexed { index, cell ->
                 val view = layoutInflater.inflate(R.layout.item_app_cell, grid, false)
                 val icon =
                     view.findViewById<ImageView>(R.id.cellIcon).apply {
@@ -962,6 +993,8 @@ class GridActivity : AppCompatActivity() {
                 grid.addView(
                     view,
                     GridLayout.LayoutParams().apply {
+                        rowSpec = GridLayout.spec(index / COLUMNS)
+                        columnSpec = GridLayout.spec(index % COLUMNS)
                         width = cellWidthPx
                         height = cellHeightPx
                     },

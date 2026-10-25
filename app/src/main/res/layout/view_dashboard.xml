@@ -87,13 +87,13 @@
                 android:layout_marginTop="6dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
-                <FrameLayout android:layout_width="78dp"
-                    android:layout_height="78dp"
+                <FrameLayout android:layout_width="70dp"
+                    android:layout_height="70dp"
                     android:background="@drawable/bg_ios27_album_plate">
                     <ImageView android:layout_width="match_parent"
                         android:layout_height="match_parent"
                         android:src="@drawable/ic_music"
-                        android:tint="#FFFFFFFF" android:padding="23dp"
+                        android:tint="#FFFFFFFF" android:padding="19dp"
                         android:importantForAccessibility="no" />
                     <ImageView android:id="@+id/dashCover"
                         android:layout_width="match_parent"
@@ -112,7 +112,7 @@
                         android:layout_height="wrap_content"
                         android:text="未在播放"
                         android:textColor="#FF273348"
-                        android:textSize="15sp" android:textStyle="bold"
+                        android:textSize="14sp" android:textStyle="bold"
                         android:maxLines="2" android:ellipsize="end"
                         android:includeFontPadding="false" />
                     <TextView android:id="@+id/dashMediaArtist"

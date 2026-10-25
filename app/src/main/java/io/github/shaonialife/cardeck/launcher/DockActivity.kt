@@ -166,7 +166,7 @@ class DockActivity : AppCompatActivity() {
         updateNetworkIndicators()
         // 字号按「设计 px × designScale」设置（不进 XML：荣耀 ROM 上 autoSize 对窄 dock
         // 不生效，仍需布局完成后按实测宽度手工缩钟表——见 fitClockText；13/22 为原型值）
-        clockView?.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 22f * designScale)
+        clockView?.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, (if (barForm) 22f else 18f) * designScale)
         batteryText?.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 13f * designScale)
         clockView?.post { fitClockText(clockView!!) }
         setupWallpaper()
@@ -312,7 +312,7 @@ class DockActivity : AppCompatActivity() {
         val available = view.width - view.paddingLeft - view.paddingRight
         if (available <= 0) return
         val scale = designScale
-        var size = 22f * scale
+        var size = (if (barForm) 22f else 18f) * scale
         view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, size)
         val paint = view.paint
         while (size > 12f * scale && paint.measureText(view.text.toString()) > available) {

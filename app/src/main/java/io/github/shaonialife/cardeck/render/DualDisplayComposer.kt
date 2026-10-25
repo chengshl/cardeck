@@ -97,7 +97,7 @@ class DualDisplayComposer(
         // Fullscreen third-party apps are functional surfaces, not card widgets.
         // Disabling corner clipping keeps their native rectangle, without changing
         // virtual display dimensions or touch coordinates.
-        private const val APP_CORNER_RADIUS = 0f
+        private const val APP_CORNER_RADIUS = 40f
 
         /** 2D 纹理程序用的单位纹理矩阵（Bitmap 已按目标方向摆好顶点）。 */
         private val IDENTITY_ST =

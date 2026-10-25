@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- T60: daylight frosted, less glaring against E5 purple wallpaper. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <gradient android:angle="270" android:startColor="#DAF6F8FD"
-        android:centerColor="#D4F0F4FA" android:endColor="#C6DFE8F3" />
-    <stroke android:width="0.6dp" android:color="#A9FFFFFF" />
-    <corners android:radius="20dp" />
+  <gradient android:angle="270" android:startColor="#C2EDF2F9"
+    android:centerColor="#C1E2EAF5" android:endColor="#B9D3E0F0" />
+  <stroke android:width="0.6dp" android:color="#99FFFFFF" />
+  <corners android:radius="20dp" />
 </shape>

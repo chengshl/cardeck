@@ -43,7 +43,7 @@
         android:gravity="center_horizontal"
         android:paddingLeft="3.05dp"
         android:paddingRight="3.05dp"
-        android:paddingTop="4.57dp"
+        android:paddingTop="10dp"
         android:paddingBottom="4.57dp">
 
     <TextView
@@ -52,7 +52,7 @@
         android:layout_height="wrap_content"
         android:gravity="center"
         android:maxLines="1"
-        android:letterSpacing="0.03"
+        android:letterSpacing="0"
         android:textColor="#FFFFFF"
         android:textStyle="bold"
         android:includeFontPadding="false" />
