@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The whole map row is one actionable capsule; no inner pill. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="0" android:startColor="#DFF7F9FD"
+        android:endColor="#CCDEE9F5" />
+    <stroke android:width="0.65dp" android:color="#B5FFFFFF" />
+    <corners android:radius="22dp" />
+</shape>

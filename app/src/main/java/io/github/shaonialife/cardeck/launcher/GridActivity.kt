@@ -92,6 +92,22 @@ class GridActivity : AppCompatActivity() {
         runOnUiThread {
             applyDashCardChrome()
             refreshDashWallpaper()
+            applyFullscreenWallpaperBlur()
+        }
+    }
+
+    private fun applyFullscreenWallpaperBlur() {
+        val backdrop = mediaFullscreen?.findViewById<ImageView>(R.id.playerWallpaper) ?: return
+        val strength = DockPrefs.blur(this)
+        if (strength == 0) {
+            backdrop.setRenderEffect(null)
+        } else {
+            val radius = (10f + strength * 0.28f) * resources.displayMetrics.density
+            backdrop.setRenderEffect(
+                android.graphics.RenderEffect.createBlurEffect(
+                    radius, radius, android.graphics.Shader.TileMode.CLAMP,
+                ),
+            )
         }
     }
 
@@ -312,7 +328,36 @@ class GridActivity : AppCompatActivity() {
         val overlay = mediaFullscreen ?: return
         VirtualLauncher.syncDashboard(false)
         overlay.visibility = View.VISIBLE
+        applyFullscreenWallpaperBlur()
+        // Measure using actual panel dimensions: artwork stays square at all E5
+        // render scales, rather than stretching into a wide coloured rectangle.
+        overlay.post { fitFullscreenAlbumArt() }
         renderFullscreenMedia()
+    }
+
+    private fun fitFullscreenAlbumArt() {
+        val overlay = mediaFullscreen ?: return
+        val slot = overlay.findViewById<View>(R.id.playerArtSlot) ?: return
+        val frame = overlay.findViewById<View>(R.id.playerArtFrame) ?: return
+        if (slot.width <= 0 || slot.height <= 0) return
+        val edge = (8 * resources.displayMetrics.density).toInt()
+        val size = minOf(slot.width, slot.height).minus(edge * 2).coerceAtLeast(40)
+        (frame.layoutParams as? android.widget.FrameLayout.LayoutParams)?.let { lp ->
+            if (lp.width != size || lp.height != size) {
+                lp.width = size
+                lp.height = size
+                frame.layoutParams = lp
+            }
+        }
+        frame.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) {
+                outline.setRoundRect(
+                    0, 0, view.width, view.height,
+                    16f * resources.displayMetrics.density,
+                )
+            }
+        }
+        frame.clipToOutline = true
     }
 
     private fun closeFullscreenMedia() {
@@ -370,6 +415,7 @@ class GridActivity : AppCompatActivity() {
     private fun setupFullscreenMedia() {
         val overlay = findViewById<View>(R.id.mediaFullscreen) ?: return
         mediaFullscreen = overlay
+        applyFullscreenWallpaperBlur()
         val rect = VirtualLauncher.safeViewport
         if (rect != null) {
             val scale = VirtualLauncher.gridScale()
@@ -583,7 +629,11 @@ class GridActivity : AppCompatActivity() {
                         "view=${params?.width}x${params?.height} left=${params?.leftMargin} " +
                         "samples=[$samples]",
                 )
-                runOnUiThread { view.setImageBitmap(bitmap) }
+                runOnUiThread {
+                    view.setImageBitmap(bitmap)
+                    mediaFullscreen?.findViewById<ImageView>(R.id.playerWallpaper)
+                        ?.setImageBitmap(bitmap)
+                }
             } else {
                 VirtualLauncher.logSink?.invoke("WALLPAPER-GRID: 解码失败")
             }

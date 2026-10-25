@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Smaller visible Home key; original tap target stays 42dp. -->
+<!-- Smaller iOS-style selected Dock capsule; 42dp touch bounds unchanged. -->
 <inset xmlns:android="http://schemas.android.com/apk/res/android"
-    android:insetLeft="6dp" android:insetTop="6dp"
-    android:insetRight="6dp" android:insetBottom="6dp">
+    android:insetLeft="8dp" android:insetRight="8dp"
+    android:insetTop="8dp" android:insetBottom="8dp">
     <shape android:shape="rectangle">
-        <gradient android:angle="270" android:startColor="#88697DAF" android:endColor="#70465E91" />
-        <stroke android:width="0.6dp" android:color="#88C8D8FF" />
-        <corners android:radius="10dp" />
+        <solid android:color="#50DDEAFF"/>
+        <stroke android:width="0.5dp" android:color="#83E6F0FF"/>
+        <corners android:radius="12dp"/>
     </shape>
 </inset>

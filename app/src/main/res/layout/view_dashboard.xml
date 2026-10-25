@@ -17,14 +17,14 @@
         android:orientation="vertical"
         android:padding="4dp">
 
-        <!-- A working map entry; home/company routing is tracked separately in #10. -->
+        <!-- Single tappable map capsule; destination routing is separately tracked in #10. -->
         <LinearLayout android:id="@+id/dashMapShortcut"
             android:layout_width="match_parent"
-            android:layout_height="45dp"
+            android:layout_height="43dp"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:paddingStart="11dp" android:paddingEnd="8dp"
-            android:background="@drawable/bg_e5_daylight_card"
+            android:paddingStart="12dp" android:paddingEnd="12dp"
+            android:background="@drawable/bg_e5_dashboard_pill"
             android:contentDescription="打开默认地图">
 
             <FrameLayout android:layout_width="30dp" android:layout_height="30dp"
@@ -44,7 +44,7 @@
                 android:orientation="vertical">
                 <TextView android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="地图导航"
+                    android:text="地图"
                     android:textColor="#FF273348"
                     android:textSize="12sp"
                     android:textStyle="bold"
@@ -52,20 +52,18 @@
                 <TextView android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="路线与路口详情以地图为准"
+                    android:text="轻触打开默认地图"
                     android:textColor="#FF6E7889"
                     android:textSize="9sp" android:maxLines="1"
                     android:ellipsize="end"
                     android:includeFontPadding="false" />
             </LinearLayout>
-            <TextView android:layout_width="wrap_content"
-                android:layout_height="30dp"
-                android:paddingStart="10dp" android:paddingEnd="10dp"
-                android:gravity="center"
-                android:text="打开"
-                android:textSize="11sp" android:textStyle="bold"
-                android:textColor="#FF3B639B"
-                android:background="@drawable/bg_e5_daylight_chip" />
+            <ImageView android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:padding="3dp"
+                android:src="@drawable/ic_chev_right"
+                android:tint="#FF45566E"
+                android:importantForAccessibility="no" />
         </LinearLayout>
 
         <LinearLayout android:id="@+id/dashMediaCard"
@@ -79,8 +77,8 @@
 
             <TextView android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="正在播放"
-                android:textColor="#FF737F90"
+                android:text="媒体"
+                android:textColor="#FF586B81"
                 android:textSize="10sp" android:textStyle="bold"
                 android:includeFontPadding="false" />
 
@@ -89,13 +87,13 @@
                 android:layout_marginTop="6dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
-                <FrameLayout android:layout_width="70dp"
-                    android:layout_height="70dp"
+                <FrameLayout android:layout_width="78dp"
+                    android:layout_height="78dp"
                     android:background="@drawable/bg_ios27_album_plate">
                     <ImageView android:layout_width="match_parent"
                         android:layout_height="match_parent"
                         android:src="@drawable/ic_music"
-                        android:tint="#FFFFFFFF" android:padding="20dp"
+                        android:tint="#FFFFFFFF" android:padding="23dp"
                         android:importantForAccessibility="no" />
                     <ImageView android:id="@+id/dashCover"
                         android:layout_width="match_parent"
@@ -149,27 +147,27 @@
                 android:includeFontPadding="false" />
 
             <LinearLayout android:layout_width="match_parent"
-                android:layout_height="35dp"
-                android:layout_marginTop="5dp"
+                android:layout_height="41dp"
+                android:layout_marginTop="3dp"
                 android:orientation="horizontal"
                 android:gravity="center">
                 <ImageView android:id="@+id/dashPrev"
-                    android:layout_width="37dp" android:layout_height="35dp"
+                    android:layout_width="43dp" android:layout_height="41dp"
                     android:padding="10dp"
                     android:src="@drawable/ic_media_prev"
                     android:tint="#FF25344C"
                     android:contentDescription="上一首"
                     android:background="?android:attr/selectableItemBackgroundBorderless" />
                 <ImageView android:id="@+id/dashPlayPause"
-                    android:layout_width="40dp" android:layout_height="35dp"
+                    android:layout_width="43dp" android:layout_height="41dp"
                     android:layout_marginStart="11dp" android:layout_marginEnd="11dp"
                     android:padding="9dp"
                     android:src="@drawable/ic_media_play"
                     android:tint="#FF25344C"
                     android:contentDescription="播放或暂停"
-                    android:background="@drawable/bg_e5_daylight_chip" />
+                    android:background="@drawable/bg_e5_play_circle" />
                 <ImageView android:id="@+id/dashNext"
-                    android:layout_width="37dp" android:layout_height="35dp"
+                    android:layout_width="43dp" android:layout_height="41dp"
                     android:padding="10dp"
                     android:src="@drawable/ic_media_next"
                     android:tint="#FF25344C"

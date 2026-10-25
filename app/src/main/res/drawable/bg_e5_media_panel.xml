@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A single floating player panel, not transparent desktop icons. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="0" android:startColor="#B64F6078"
+        android:centerColor="#B24A5B72" android:endColor="#A7435872"/>
+    <stroke android:width="0.8dp" android:color="#93D5E4F5"/>
+    <corners android:radius="23dp"/>
+</shape>
