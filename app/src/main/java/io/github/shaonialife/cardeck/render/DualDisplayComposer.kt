@@ -93,6 +93,8 @@ class DualDisplayComposer(
         private const val EGL_RECORDABLE_ANDROID = 0x3142
 
         private const val TILE_CORNER_RADIUS = 24f
+        // Fullscreen shader clipping only: no change to viewports or touch coordinates.
+        private const val APP_CORNER_RADIUS = 28f
 
         /** 2D 纹理程序用的单位纹理矩阵（Bitmap 已按目标方向摆好顶点）。 */
         private val IDENTITY_ST =
@@ -641,12 +643,12 @@ class DualDisplayComposer(
                 // 仪表盘时地图卡叠在应用区上半（地图上/音乐下），全屏盖满应用区。
                 if (dock.hasContent) drawInput(dock, 0f, outWidth.toFloat(), 0f, dockH.toFloat())
                 if (activeInput?.hasContent == true) {
-                    drawInput(activeInput, 0f, outWidth.toFloat(), dockH.toFloat(), outHeight.toFloat())
+                    drawInputUV(activeInput, 0f, outWidth.toFloat(), dockH.toFloat(), outHeight.toFloat(), cornerRadius = APP_CORNER_RADIUS)
                 }
                 val layoutP = tileLayout
                 if (map?.hasContent == true && layoutP != TileLayout.HIDDEN) {
                     if (layoutP == TileLayout.FULLSCREEN) {
-                        drawInput(map!!, 0f, outWidth.toFloat(), dockH.toFloat(), outHeight.toFloat())
+                        drawInputUV(map!!, 0f, outWidth.toFloat(), dockH.toFloat(), outHeight.toFloat(), cornerRadius = APP_CORNER_RADIUS)
                     } else {
                         // 上半卡片：左右留 16、顶留 16；pager 水平滑动 → tile 向左滑出（跟手）
                         // tileEdgeOverride = tile 把手侧边缘（顶部原点 y，即 tile 下缘）；
@@ -688,17 +690,18 @@ class DualDisplayComposer(
                 val mapLayoutNow = tileLayout
                 if (activeInput?.hasContent == true && mapLayoutNow != TileLayout.FULLSCREEN) {
                     if (fitted != null) {
-                        drawInput(
+                        drawInputUV(
                             activeInput, fitted.left.toFloat(), (fitted.left + fitted.width).toFloat(),
                             (outHeight - fitted.top - fitted.height).toFloat(),
                             (outHeight - fitted.top).toFloat(),
+                            cornerRadius = APP_CORNER_RADIUS,
                         )
                     } else {
-                        drawInput(activeInput, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat())
+                        drawInputUV(activeInput, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat(), cornerRadius = APP_CORNER_RADIUS)
                     }
                 } else if (activeInput?.hasContent == true && mapLayoutNow == TileLayout.FULLSCREEN &&
                     fitted == null) {
-                    drawInput(activeInput, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat())
+                    drawInputUV(activeInput, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat(), cornerRadius = APP_CORNER_RADIUS)
                 }
                 // 地图层叠在应用区之上（HIDDEN 不画）：
                 //  FULLSCREEN=整个应用区；SPLIT=左半卡片区域。
@@ -709,13 +712,14 @@ class DualDisplayComposer(
                 if (map?.hasContent == true && layout != TileLayout.HIDDEN) {
                     if (layout == TileLayout.FULLSCREEN) {
                         if (fitted != null) {
-                            drawInput(
+                            drawInputUV(
                                 map!!, fitted.left.toFloat(), (fitted.left + fitted.width).toFloat(),
                                 (outHeight - fitted.top - fitted.height).toFloat(),
                                 (outHeight - fitted.top).toFloat(),
+                                cornerRadius = APP_CORNER_RADIUS,
                             )
                         } else {
-                            drawInput(map!!, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat())
+                            drawInputUV(map!!, dockW.toFloat(), outWidth.toFloat(), 0f, outHeight.toFloat(), cornerRadius = APP_CORNER_RADIUS)
                         }
                     } else {
                         // 卡片形态：四周留边 + 圆角（与音乐卡一致）。

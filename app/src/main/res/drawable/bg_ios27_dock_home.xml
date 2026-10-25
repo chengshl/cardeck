@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Smaller visible Home key; original tap target stays 42dp. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:insetLeft="6dp" android:insetTop="6dp"
+    android:insetRight="6dp" android:insetBottom="6dp">
+    <shape android:shape="rectangle">
+        <gradient android:angle="270" android:startColor="#88697DAF" android:endColor="#70465E91" />
+        <stroke android:width="0.6dp" android:color="#88C8D8FF" />
+        <corners android:radius="10dp" />
+    </shape>
+</inset>

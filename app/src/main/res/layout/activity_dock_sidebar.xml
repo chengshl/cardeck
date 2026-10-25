@@ -56,6 +56,13 @@
         android:textStyle="bold"
         android:includeFontPadding="false" />
 
+    <io.github.shaonialife.cardeck.launcher.DockStatusView
+        android:id="@+id/dockNetworkIndicators"
+        android:layout_width="34dp"
+        android:layout_height="12dp"
+        android:layout_marginTop="3dp"
+        android:contentDescription="手机蜂窝和 Wi-Fi 信号状态" />
+
     <TextView
         android:id="@+id/dockBatteryText"
         android:layout_width="match_parent"
@@ -105,9 +112,9 @@
         android:id="@+id/dockHome"
         android:layout_width="match_parent"
         android:layout_height="41.90dp"
-        android:background="@drawable/bg_ios27_home_button"
+        android:background="@drawable/bg_ios27_dock_home"
         android:contentDescription="回到桌面"
-        android:padding="9.90dp"
+        android:padding="12dp"
         android:scaleType="fitCenter"
         android:src="@drawable/ic_dock_home" />
     </LinearLayout>

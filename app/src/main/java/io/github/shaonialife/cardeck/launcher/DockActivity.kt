@@ -6,6 +6,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Bundle
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
+import android.telephony.TelephonyManager
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -34,6 +38,7 @@ class DockActivity : AppCompatActivity() {
     private var batteryBar: View? = null
     private var batteryFill: View? = null
     private var barForm = false
+    private var networkIndicators: DockStatusView? = null
 
     /**
      * 设计基准密度（420dpi）的当前倍率。dock 屏密度由 SessionController 按画布短边等比
@@ -51,6 +56,7 @@ class DockActivity : AppCompatActivity() {
         object : Runnable {
             override fun run() {
                 refresh()
+                updateNetworkIndicators()
                 pollHandler.postDelayed(this, 3_000)
             }
         }
@@ -105,6 +111,7 @@ class DockActivity : AppCompatActivity() {
         batteryBar = findViewById(R.id.dockBatteryBar)
         batteryFill = findViewById(R.id.dockBatteryFill)
         appsContainer = findViewById(R.id.dockApps)
+        networkIndicators = findViewById(R.id.dockNetworkIndicators)
         wallpaperView = findViewById(R.id.dockWallpaper)
         // T34: keep the dock wallpaper full-bleed, but shift only its actual
         // controls out of the curved receiver's left/top unsafe strips.
@@ -146,6 +153,7 @@ class DockActivity : AppCompatActivity() {
         VirtualLauncher.addRunningAppsListener(refreshListener)
         pollHandler.postDelayed(pollRunnable, 3_000)
         clockHandler.post(clockTicker)
+        updateNetworkIndicators()
         // 字号按「设计 px × designScale」设置（不进 XML：荣耀 ROM 上 autoSize 对窄 dock
         // 不生效，仍需布局完成后按实测宽度手工缩钟表——见 fitClockText；13/22 为原型值）
         clockView?.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 22f * designScale)
@@ -314,6 +322,40 @@ class DockActivity : AppCompatActivity() {
                 fill.setBackgroundColor(if (percent <= 20) 0xFFFF6B6B.toInt() else 0xFF34C759.toInt())
             }
         }
+    }
+
+    /**
+     * Read the handset networks independently of CarPlay's bound process network.
+     * No network binding, permission request or session changes.
+     */
+    private fun updateNetworkIndicators() {
+        val view = networkIndicators ?: return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val networks = runCatching {
+            cm?.allNetworks?.mapNotNull { n -> cm.getNetworkCapabilities(n) }.orEmpty()
+        }.getOrDefault(emptyList())
+        val wifi = networks.any { it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }
+        val cellular = networks.any { it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) }
+        val wifiLevel = if (wifi) runCatching {
+            val manager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            val rssi = manager.connectionInfo?.rssi ?: -127
+            when {
+                rssi <= -100 || rssi >= 0 -> null
+                rssi >= -60 -> 3
+                rssi >= -74 -> 2
+                else -> 1
+            }
+        }.getOrNull() else null
+        val cellularLevel = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 28 &&
+                packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEPHONY)
+            ) {
+                (getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager)
+                    ?.signalStrength?.level?.coerceIn(0, 4)
+            } else null
+        }.getOrNull()
+        view.setIndicators(wifi, wifiLevel, cellular || cellularLevel != null, cellularLevel)
     }
 
     private var lastRendered: List<String> = emptyList()

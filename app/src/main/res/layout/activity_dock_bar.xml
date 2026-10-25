@@ -43,9 +43,9 @@
             android:id="@+id/dockHome"
             android:layout_width="38.10dp"
             android:layout_height="match_parent"
-            android:background="@drawable/bg_ios27_home_button"
+            android:background="@drawable/bg_ios27_dock_home"
             android:contentDescription="回到桌面"
-            android:padding="9.90dp"
+            android:padding="12dp"
             android:scaleType="fitCenter"
             android:src="@drawable/ic_dock_home" />
 
