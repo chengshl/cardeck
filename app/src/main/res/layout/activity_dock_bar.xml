@@ -22,6 +22,13 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Separate, passive glass overlay; does not alter touch dispatch. -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_ios27_dock_rail"
+        android:importantForAccessibility="no" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -36,7 +43,7 @@
             android:id="@+id/dockHome"
             android:layout_width="38.10dp"
             android:layout_height="match_parent"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:background="@drawable/bg_ios27_home_button"
             android:contentDescription="回到桌面"
             android:padding="9.90dp"
             android:scaleType="fitCenter"
