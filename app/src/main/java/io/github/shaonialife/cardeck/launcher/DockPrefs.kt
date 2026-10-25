@@ -15,6 +15,7 @@ object DockPrefs {
     private const val KEY_SCRIM = "dockScrimOpacity"
     private const val KEY_BLUR = "dockBlur"
     private const val KEY_WIDTH = "dockWidthPercent"
+    private const val KEY_CARD = "e5DashboardCardOpacity"
 
     /** 暗幕强度默认值（%）。 */
     const val DEFAULT_SCRIM = 20
@@ -50,6 +51,9 @@ object DockPrefs {
     /** 模糊强度默认值（%）。 */
     const val DEFAULT_BLUR = 40
 
+    /** T59 daylight card opacity; separate from dock dark scrim and blur. */
+    const val DEFAULT_CARD_OPACITY = 92
+
     private val listeners = java.util.concurrent.CopyOnWriteArraySet<() -> Unit>()
 
     fun addListener(listener: () -> Unit) {
@@ -65,6 +69,14 @@ object DockPrefs {
     fun scrimOpacity(context: Context): Int = prefs(context).getInt(KEY_SCRIM, DEFAULT_SCRIM).coerceIn(0, 100)
 
     fun blur(context: Context): Int = prefs(context).getInt(KEY_BLUR, DEFAULT_BLUR).coerceIn(0, 100)
+
+    fun cardOpacity(context: Context): Int = prefs(context).getInt(KEY_CARD, DEFAULT_CARD_OPACITY).coerceIn(45, 100)
+
+    /** Prepares live-adjustable cards. No extra manual slider in T59. */
+    fun setCardOpacity(context: Context, value: Int) {
+        prefs(context).edit().putInt(KEY_CARD, value.coerceIn(45, 100)).apply()
+        notifyListeners()
+    }
 
     fun setScrimOpacity(
         context: Context,

@@ -106,6 +106,11 @@ class GridActivity : AppCompatActivity() {
             android.graphics.drawable.ColorDrawable(
                 android.graphics.Color.argb(alpha, 0, 0, 0),
             )
+        // Only mutate each card's own drawable instance: changes from settings
+        // must never leak to the other cards or shared resource constant state.
+        val cardAlpha = (DockPrefs.cardOpacity(this) * 255 / 100).coerceIn(115, 255)
+        panel.findViewById<View>(R.id.dashMapShortcut)?.background?.mutate()?.alpha = cardAlpha
+        panel.findViewById<View>(R.id.dashMediaCard)?.background?.mutate()?.alpha = cardAlpha
         val wallpaper = panel.findViewById<ImageView>(R.id.dashWallpaper)
         val percent = DockPrefs.blur(this)
         if (percent <= 0) {
@@ -656,6 +661,11 @@ class GridActivity : AppCompatActivity() {
                     }
                 }
             panel.clipToOutline = true
+            panel.findViewById<View>(R.id.dashMapShortcut)?.setOnClickListener {
+                val component = VirtualLauncher.defaultMapComponent(this@GridActivity)
+                    ?: return@setOnClickListener
+                Bg.run("dashboard-map") { VirtualLauncher.launchApp(component) }
+            }
             panel.findViewById<ImageView>(R.id.dashPrev).setOnClickListener {
                 dispatchMediaKey(android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS)
             }
