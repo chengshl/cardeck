@@ -126,6 +126,9 @@ object VirtualLauncher {
 
     val runningApps = LinkedHashSet<ComponentName>()
 
+    /** Per-session successful app/display, even if MagicOS dumpsys omits it. */
+    private val launchedAppTargets = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     private val runningAppsListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
 
     /** dock 注册回调：运行列表变化时刷新（dock 独占一屏，永远 resumed，onResume 不再触发）。 */
@@ -909,6 +912,7 @@ object VirtualLauncher {
     private var displaysViaService = false
 
     fun detach() {
+        launchedAppTargets.clear()
         resetStandaloneFit()
         lastFullscreenMapPackage = null
         safeViewport = null
@@ -1448,7 +1452,8 @@ object VirtualLauncher {
         // 任务查询共用一次 dumpsys 快照（此前 onTarget + 清理两块屏最多连跑 3 遍 4s 超时命令）
         val tasks = taskIdsByDisplayPkg()
         val onTarget = tasksOf(tasks, component.packageName, targetDisplay).isNotEmpty()
-        if (!onTarget) {
+        val rememberedTarget = launchedAppTargets[component.packageName] == targetDisplay
+        if (!onTarget && !rememberedTarget) {
             // 偏好切换后清理另一块应用屏上的旧任务（不同屏双实例会各自维护状态，易混淆）
             val otherDisplay = if (targetDisplay == appHiDisplayId) appDisplayId else appHiDisplayId
             if (otherDisplay >= 0) {
@@ -1465,23 +1470,26 @@ object VirtualLauncher {
                 component.flattenToShortString()
             }
         val result =
-            if (onTarget) {
-                Shell.exec("am start -n $target --display $targetDisplay", timeoutMs = 8000)
+            if (onTarget || rememberedTarget) {
+                // Previously successful target: prefer bringing task forward, no MULTIPLE_TASK.
+                Shell.exec("am start -n $target --display $targetDisplay -f 0x10000000", timeoutMs = 8000)
             } else {
                 // MULTIPLE_TASK：即使该应用在其他屏有任务，也强制在目标屏新建实例
                 Shell.exec("am start -n $target --display $targetDisplay -f 0x18000000", timeoutMs = 8000)
             }
         var ok = result.ok && result.output.contains("Starting:", ignoreCase = true)
-        if (!ok && onTarget) {
+        if (!ok && (onTarget || rememberedTarget)) {
             // 复用路径失败（任务可能已被系统移走）：退回 MULTIPLE_TASK 新建
             val retry = Shell.exec("am start -n $target --display $targetDisplay -f 0x18000000", timeoutMs = 8000)
             ok = retry.ok && retry.output.contains("Starting:", ignoreCase = true)
         }
         logSink?.invoke(
-            "LAUNCH(${component.packageName}): hi=$wantHi disp=$targetDisplay onTarget=$onTarget ok=$ok " +
+            "LAUNCH(${component.packageName}): hi=$wantHi disp=$targetDisplay onTarget=$onTarget " +
+                "remembered=$rememberedTarget ok=$ok " +
                 "out=${result.output.take(80)}",
         )
         if (ok) {
+            launchedAppTargets[component.packageName] = targetDisplay
             synchronized(runningApps) { runningApps.add(component) }
             notifyRunningAppsChanged()
             // 仪表盘/全屏地图中打开普通应用：退出仪表盘并隐藏地图层，
@@ -1596,7 +1604,7 @@ object VirtualLauncher {
     private var watchdogThread: Thread? = null
 
     val taskRegex = Regex("""Task\{[0-9a-f]+ #(\d+) type=standard A=\d+:(\S+)""")
-    private val displayRegex = Regex("""Display: mDisplayId=(\d+)""")
+    private val displayRegex = Regex("""(?:Display: mDisplayId=|Display #)(\d+)""")
 
     /** 诊断日志出口（由 MainActivity 接到文件日志）。 */
     @Volatile
