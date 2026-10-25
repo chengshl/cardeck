@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Overlay is translucent, so the existing user wallpaper remains visible. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="0"
+        android:startColor="#E12F394C"
+        android:centerColor="#DA424A55"
+        android:endColor="#D62E4154" />
+</shape>

@@ -24,4 +24,9 @@
         android:layout_gravity="bottom|center_horizontal"
         android:layout_marginBottom="8dp"
         android:orientation="horizontal" />
+    <!-- In-process fullscreen media; the map tile is hidden by display mode. -->
+    <include
+        android:id="@+id/mediaFullscreen"
+        layout="@layout/view_e5_media_fullscreen"
+        android:visibility="gone" />
 </FrameLayout>

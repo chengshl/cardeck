@@ -68,9 +68,15 @@ class GridActivity : AppCompatActivity() {
     /** 仪表盘模式面板（分屏时显示在应用区右半；左半由地图 tile 覆盖）。 */
     private var dashboardView: android.view.View? = null
 
+    /** In-app media presentation; it never opens a new virtual screen. */
+    private var mediaFullscreen: View? = null
+
     /** 仪表盘模式变化（VirtualLauncher 通知）。 */
     private val dashboardListener = { dashboard: Boolean ->
-        runOnUiThread { applyDashboardMode(dashboard) }
+        runOnUiThread {
+            if (dashboard) mediaFullscreen?.visibility = View.GONE
+            applyDashboardMode(dashboard)
+        }
     }
 
     /** 媒体状态监听（MediaSessionsState 主线程回调）。 */
@@ -220,6 +226,7 @@ class GridActivity : AppCompatActivity() {
      * 状态统一写死两行，避免二者来自不同来源。
      */
     private fun renderMediaCard() {
+        renderFullscreenMedia()
         val panel = dashboardView ?: return
         val now = MediaSessionsState.nowPlaying
         val title = now?.title?.takeIf { it.isNotBlank() }
@@ -285,18 +292,8 @@ class GridActivity : AppCompatActivity() {
                             }
                         }
                 }
-                // 点击封面 → 拉回正在播放的应用（任务复用：回到其播放界面）
-                cover.setOnClickListener {
-                    val pkg = now.pkg ?: return@setOnClickListener
-                    val component =
-                        packageManager.getLaunchIntentForPackage(pkg)?.component
-                            ?: run {
-                                VirtualLauncher.logSink
-                                    ?.invoke("MEDIA: $pkg 无可启动入口，忽略封面点击")
-                                return@setOnClickListener
-                            }
-                    Bg.run("launch-app") { VirtualLauncher.launchApp(component) }
-                }
+                // Tap art to open the first-party media presentation, not a new task.
+                cover.setOnClickListener { openFullscreenMedia() }
             } else {
                 // 占位不消失（INVISIBLE）：封面异步加载/切歌间隙内容不上下跳动
                 cover.visibility = View.INVISIBLE
@@ -306,6 +303,110 @@ class GridActivity : AppCompatActivity() {
         // 进度显示需要持续走秒：渲染尾部续调度（防重：先移除）
         tickHandler.removeCallbacks(mediaTick)
         tickHandler.postDelayed(mediaTick, 1_000)
+    }
+
+    /** T59: toggle fullscreen media without touching the audio stream or
+     * virtual-display topology. The map tile is hidden via existing dashboard
+     * mode; Home / Back restores it. */
+    private fun openFullscreenMedia() {
+        val overlay = mediaFullscreen ?: return
+        VirtualLauncher.syncDashboard(false)
+        overlay.visibility = View.VISIBLE
+        renderFullscreenMedia()
+    }
+
+    private fun closeFullscreenMedia() {
+        mediaFullscreen?.visibility = View.GONE
+        if (VirtualLauncher.sessionAttached) VirtualLauncher.showDashboard()
+    }
+
+    private fun launchPlayingApp() {
+        val pkg = MediaSessionsState.nowPlaying?.pkg ?: return
+        val component = packageManager.getLaunchIntentForPackage(pkg)?.component ?: return
+        mediaFullscreen?.visibility = View.GONE
+        Bg.run("launch-media-app") { VirtualLauncher.launchApp(component) }
+    }
+
+    private fun renderFullscreenMedia() {
+        val overlay = mediaFullscreen ?: return
+        if (overlay.visibility != View.VISIBLE) return
+        val now = MediaSessionsState.nowPlaying
+        val title = now?.title?.takeIf { it.isNotBlank() }
+        val noPermission = now != null && title == null && !MediaSessionsState.accessGranted
+        overlay.findViewById<TextView>(R.id.playerTitle)?.text =
+            title ?: if (noPermission) "无法读取播放信息" else "未在播放"
+        overlay.findViewById<TextView>(R.id.playerArtist)?.text =
+            now?.artist?.takeIf { it.isNotBlank() }
+                ?: if (noPermission) "请在手机设置中开启通知使用权" else ""
+        overlay.findViewById<ImageView>(R.id.playerPlay)?.setImageResource(
+            if (now?.playing == true) R.drawable.ic_media_pause else R.drawable.ic_media_play,
+        )
+        overlay.findViewById<ImageView>(R.id.playerCover)?.let { image ->
+            if (now?.art != null) {
+                image.setImageBitmap(now.art)
+                image.visibility = View.VISIBLE
+            } else {
+                image.visibility = View.INVISIBLE
+            }
+        }
+        val duration = now?.durationMs ?: 0L
+        val position = if (duration > 0) {
+            now!!.displayPositionAt(android.os.SystemClock.elapsedRealtime()).coerceIn(0L, duration)
+        } else 0L
+        overlay.findViewById<ProgressBar>(R.id.playerProgress)?.let { progress ->
+            progress.visibility = if (duration > 0L) View.VISIBLE else View.INVISIBLE
+            progress.progress = if (duration > 0L) (position * 1000 / duration).toInt() else 0
+        }
+        overlay.findViewById<TextView>(R.id.playerElapsed)?.text =
+            if (duration > 0L) formatTime(position) else ""
+        overlay.findViewById<TextView>(R.id.playerRemaining)?.text =
+            if (duration > 0L) "-${formatTime(duration - position)}" else ""
+        overlay.findViewById<View>(R.id.playerOpenApp)?.visibility =
+            if (now?.pkg != null && packageManager.getLaunchIntentForPackage(now.pkg) != null) {
+                View.VISIBLE
+            } else View.GONE
+    }
+
+    private fun setupFullscreenMedia() {
+        val overlay = findViewById<View>(R.id.mediaFullscreen) ?: return
+        mediaFullscreen = overlay
+        val rect = VirtualLauncher.safeViewport
+        if (rect != null) {
+            val scale = VirtualLauncher.gridScale()
+            val right = ((VirtualLauncher.streamWidthPx - rect.left - rect.width) * scale)
+                .toInt().coerceAtLeast(0)
+            val top = (rect.top * scale).toInt().coerceAtLeast(0)
+            val bottom = ((VirtualLauncher.streamHeightPx - rect.top - rect.height) * scale)
+                .toInt().coerceAtLeast(0)
+            (overlay.layoutParams as? android.widget.FrameLayout.LayoutParams)?.let { lp ->
+                lp.rightMargin = right
+                lp.topMargin = top
+                lp.bottomMargin = bottom
+                overlay.layoutParams = lp
+            }
+        }
+        overlay.findViewById<View>(R.id.playerBack)?.setOnClickListener {
+            closeFullscreenMedia()
+        }
+        overlay.findViewById<View>(R.id.playerOpenApp)?.setOnClickListener {
+            launchPlayingApp()
+        }
+        overlay.findViewById<View>(R.id.playerPrev)?.setOnClickListener {
+            dispatchMediaKey(android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+            MediaSessionsState.requestResync()
+        }
+        overlay.findViewById<View>(R.id.playerNext)?.setOnClickListener {
+            dispatchMediaKey(android.view.KeyEvent.KEYCODE_MEDIA_NEXT)
+            MediaSessionsState.requestResync()
+        }
+        overlay.findViewById<View>(R.id.playerPlay)?.setOnClickListener {
+            val playing = MediaSessionsState.nowPlaying?.playing == true
+            dispatchMediaKey(
+                if (playing) android.view.KeyEvent.KEYCODE_MEDIA_PAUSE
+                else android.view.KeyEvent.KEYCODE_MEDIA_PLAY,
+            )
+            overlay.postDelayed({ MediaSessionsState.requestResync() }, 400)
+        }
     }
 
     /** 仪表盘模式 → pager 位置同步（0=仪表盘，1+=桌面；已在目标位则不动）。 */
@@ -330,6 +431,7 @@ class GridActivity : AppCompatActivity() {
             return
         }
         setContentView(R.layout.activity_grid)
+        setupFullscreenMedia()
 
         // T34: wallpaper remains full-canvas. Only the interactive ViewPager
         // and its page indicators stay clear of the receiver's curved edges.
@@ -661,6 +763,9 @@ class GridActivity : AppCompatActivity() {
                     }
                 }
             panel.clipToOutline = true
+            panel.findViewById<View>(R.id.dashMediaCard)?.setOnClickListener {
+                openFullscreenMedia()
+            }
             panel.findViewById<View>(R.id.dashMapShortcut)?.setOnClickListener {
                 val component = VirtualLauncher.defaultMapComponent(this@GridActivity)
                     ?: return@setOnClickListener
@@ -868,7 +973,10 @@ class GridActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    override fun onBackPressed() = Unit // 桌面不退出
+    override fun onBackPressed() {
+        if (mediaFullscreen?.visibility == View.VISIBLE) closeFullscreenMedia()
+        // Otherwise the CarPlay desktop remains persistent.
+    }
 
     companion object {
         @Volatile private var activeSessionActivity: java.lang.ref.WeakReference<GridActivity>? = null

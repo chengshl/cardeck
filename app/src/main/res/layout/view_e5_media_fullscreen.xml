@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- T59 first-party media details: view only, all controls route to existing media keys. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_e5_full_media_backdrop">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
+        android:paddingStart="17dp" android:paddingEnd="18dp"
+        android:paddingTop="12dp" android:paddingBottom="16dp"
+        android:orientation="vertical">
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="43dp"
+            android:orientation="horizontal" android:gravity="center_vertical">
+            <TextView android:id="@+id/playerBack"
+                android:layout_width="48dp" android:layout_height="38dp"
+                android:gravity="center"
+                android:text="‹" android:textSize="32sp"
+                android:textColor="#FFFFFFFF"
+                android:contentDescription="返回仪表盘"
+                android:background="@drawable/bg_e5_media_outline" />
+            <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
+            <TextView android:id="@+id/playerOpenApp"
+                android:layout_width="wrap_content" android:layout_height="36dp"
+                android:gravity="center"
+                android:paddingStart="13dp" android:paddingEnd="13dp"
+                android:text="打开播放应用"
+                android:textColor="#FFEFF5FF"
+                android:textSize="12sp"
+                android:background="@drawable/bg_e5_media_outline" />
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="0dp"
+            android:layout_weight="1" android:layout_marginTop="8dp"
+            android:orientation="horizontal" android:gravity="center_vertical">
+
+            <LinearLayout android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="1.15"
+                android:paddingStart="12dp" android:paddingEnd="14dp"
+                android:orientation="vertical" android:gravity="center_vertical">
+                <TextView android:id="@+id/playerTitle"
+                    android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:text="未在播放"
+                    android:textColor="#FFFFFFFF"
+                    android:textStyle="bold" android:textSize="25sp"
+                    android:maxLines="2" android:ellipsize="end"
+                    android:gravity="center" />
+                <TextView android:id="@+id/playerArtist"
+                    android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:textColor="#DCE4EDFF"
+                    android:textSize="14sp"
+                    android:maxLines="2" android:ellipsize="end"
+                    android:gravity="center" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="65dp"
+                    android:layout_marginTop="18dp"
+                    android:gravity="center" android:orientation="horizontal">
+                    <ImageView android:id="@+id/playerPrev"
+                        android:layout_width="64dp" android:layout_height="60dp"
+                        android:src="@drawable/ic_media_prev" android:tint="#FFFFFFFF"
+                        android:padding="17dp" android:contentDescription="上一首"
+                        android:background="?android:attr/selectableItemBackgroundBorderless" />
+                    <ImageView android:id="@+id/playerPlay"
+                        android:layout_width="70dp" android:layout_height="65dp"
+                        android:layout_marginStart="10dp" android:layout_marginEnd="10dp"
+                        android:src="@drawable/ic_media_play" android:tint="#FFFFFFFF"
+                        android:padding="17dp" android:contentDescription="播放或暂停"
+                        android:background="@drawable/bg_e5_media_outline" />
+                    <ImageView android:id="@+id/playerNext"
+                        android:layout_width="64dp" android:layout_height="60dp"
+                        android:src="@drawable/ic_media_next" android:tint="#FFFFFFFF"
+                        android:padding="17dp" android:contentDescription="下一首"
+                        android:background="?android:attr/selectableItemBackgroundBorderless" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <FrameLayout android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="0.83"
+                android:paddingStart="12dp" android:paddingEnd="12dp"
+                android:paddingTop="8dp" android:paddingBottom="8dp">
+                <FrameLayout android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_ios27_album_plate">
+                    <ImageView android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:src="@drawable/ic_music"
+                        android:padding="55dp"
+                        android:tint="#FFFFFFFF"
+                        android:importantForAccessibility="no" />
+                    <ImageView android:id="@+id/playerCover"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:scaleType="fitCenter"
+                        android:visibility="invisible"
+                        android:importantForAccessibility="no" />
+                </FrameLayout>
+            </FrameLayout>
+        </LinearLayout>
+
+        <ProgressBar android:id="@+id/playerProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent" android:layout_height="4dp"
+            android:max="1000"
+            android:layout_marginTop="6dp"
+            android:progressDrawable="@drawable/bg_e5_media_full_progress"
+            android:visibility="gone" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="26dp"
+            android:orientation="horizontal" android:gravity="center_vertical">
+            <TextView android:id="@+id/playerElapsed"
+                android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="#E3EBF5FF"
+                android:textSize="11sp"
+                android:fontFeatureSettings="tnum"
+                android:includeFontPadding="false" />
+            <TextView android:id="@+id/playerRemaining"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:gravity="end"
+                android:textColor="#E3EBF5FF"
+                android:textSize="11sp"
+                android:fontFeatureSettings="tnum"
+                android:includeFontPadding="false" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>
