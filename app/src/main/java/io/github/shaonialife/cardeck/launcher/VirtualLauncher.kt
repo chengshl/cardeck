@@ -44,6 +44,11 @@ import io.github.shaonialife.cardeck.util.Bg
 object VirtualLauncher {
     private const val TAG = "VirtualLauncher"
 
+    /** AOSP @hide flag 1 << 8: destroy car-screen activities on virtual-display removal
+     * instead of moving their tasks to the physical phone's Recent Apps.
+     * Do not force-stop unrelated phone tasks. */
+    private const val FLAG_DESTROY_CONTENT_ON_REMOVAL = 1 shl 8
+
     /**
      * dock 宽度（dp；应用屏可用宽度 = 总宽 - 本值换算的像素）。CarPlay 化后含时钟/电量。
      * 密度基准 420dpi（↔ 奥迪设计画布 1160×540），由 SessionController 按画布短边
@@ -760,7 +765,8 @@ object VirtualLauncher {
                         dockDensityDpi,
                         dockSurface,
                         DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
-                            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY,
+                            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                            FLAG_DESTROY_CONTENT_ON_REMOVAL,
                         null,
                         null,
                     )
@@ -772,7 +778,8 @@ object VirtualLauncher {
                         appNativeDensity,
                         appSurface,
                         DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
-                            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY,
+                            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                            FLAG_DESTROY_CONTENT_ON_REMOVAL,
                         null,
                         null,
                     )
@@ -785,7 +792,8 @@ object VirtualLauncher {
                             appHiDensity,
                             appHiSurface,
                             DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
-                                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY,
+                                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                            FLAG_DESTROY_CONTENT_ON_REMOVAL,
                             null,
                             null,
                         )
@@ -806,7 +814,8 @@ object VirtualLauncher {
                             MAP_DISPLAY_DPI,
                             mapSurface,
                             DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
-                                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY,
+                                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                            FLAG_DESTROY_CONTENT_ON_REMOVAL,
                             null,
                             null,
                         )

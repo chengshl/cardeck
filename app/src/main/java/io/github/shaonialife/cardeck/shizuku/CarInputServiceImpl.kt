@@ -380,6 +380,7 @@ class CarInputServiceImpl(
             val flags =
                 (if (trusted) FLAG_TRUSTED or android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC else 0) or
                     FLAG_SUPPORTS_TOUCH or
+                    FLAG_DESTROY_CONTENT_ON_REMOVAL or
                     android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
             fileLog("flags=0x${flags.toString(16)}")
             val vd = dm.createVirtualDisplay(name, width, height, dpi, surface, flags, null, null)
@@ -456,5 +457,10 @@ class CarInputServiceImpl(
 
         /** VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH（@hide；AOSP 定义 = 1 << 6 = 0x40）。 */
         private const val FLAG_SUPPORTS_TOUCH = 1 shl 6
+
+        /** On display release, destroy its tasks instead of relocating to phone Recents.
+         * AOSP DisplayManager hidden flag; applies to PUBLIC car app/map screens.
+         * We never call force-stop or remove tasks from the user's physical display. */
+        private const val FLAG_DESTROY_CONTENT_ON_REMOVAL = 1 shl 8
     }
 }
