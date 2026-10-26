@@ -83,6 +83,28 @@
             <LinearLayout android:id="@+id/advancedGatewayPanel"
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:visibility="gone" android:orientation="vertical">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="22dp" android:text="重启前日志留存 · 高级取证"
+                android:textColor="#EDF3F3" android:textSize="16sp" android:textStyle="bold" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="仅主动开启后在通知栏持续运行；筛选并脱敏后保存本机，最多2MB/4小时；不自动上传。卸载或清除数据会删除未导出文件。"
+                android:textColor="#B0BEBE" android:textSize="12sp" />
+            <Button android:id="@+id/startRescueTrace" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                android:minHeight="48dp" android:text="开始留存重启前系统日志" />
+            <Button android:id="@+id/stopRescueTrace" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="6dp"
+                android:minHeight="44dp" android:text="停止留存" />
+            <Button android:id="@+id/exportRescueTrace" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="6dp"
+                android:minHeight="44dp" android:text="导出已留存文件（手动）" />
+            <TextView android:id="@+id/rescueTraceStatus"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:text="默认关闭；系统重启后可导出上一轮文件"
+                android:textColor="#B0BEBE" android:textSize="12sp" />
+
+
 
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:layout_marginTop="14dp" android:labelFor="@id/entryAddress"

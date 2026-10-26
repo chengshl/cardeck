@@ -105,6 +105,11 @@
             android:name="io.github.shaonialife.cardeck.service.GatewayLogService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- Opt-in, low-volume, local-only pre-reboot trace; never boot auto-start. -->
+        <service
+            android:name="io.github.shaonialife.cardeck.service.RescueTraceService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <service
             android:name="io.github.shaonialife.cardeck.service.CarPlayService"

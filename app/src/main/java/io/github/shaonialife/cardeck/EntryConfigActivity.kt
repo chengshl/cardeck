@@ -25,6 +25,8 @@ import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.gateway.OfflineDiagnosticExporter
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.service.GatewayLogService
+import io.github.shaonialife.cardeck.service.RescueTraceService
+import io.github.shaonialife.cardeck.gateway.RescueTraceStore
 import android.app.Dialog
 import io.github.shaonialife.cardeck.ui.DiagnosticPreviewDialog
 import androidx.appcompat.app.AlertDialog
@@ -78,6 +80,34 @@ class EntryConfigActivity : AppCompatActivity() {
         localAppLogs.setOnClickListener { exportAppLogsLocally() }
         localBundle = findViewById(R.id.saveDiagnosticBundle)
         localBundle.setOnClickListener { exportDiagnosticBundle() }
+        findViewById<Button>(R.id.startRescueTrace).setOnClickListener {
+            if (ShizukuGate.state(this) != ShizukuGate.State.READY) {
+                findViewById<TextView>(R.id.rescueTraceStatus).text =
+                    "Shizuku未就绪，未开始采集；请先启动并授权Shizuku"
+            } else {
+                runCatching { RescueTraceService.start(this) }.onSuccess {
+                    findViewById<TextView>(R.id.rescueTraceStatus).text =
+                        "已申请开始本地采集；查看常驻通知或返回页面核实状态"
+                }.onFailure {
+                    findViewById<TextView>(R.id.rescueTraceStatus).text =
+                        "启动失败：" + (it.message ?: "系统不允许前台服务")
+                }
+            }
+        }
+        findViewById<Button>(R.id.stopRescueTrace).setOnClickListener {
+            RescueTraceService.stop(this)
+            updateRescueTraceStatus()
+        }
+        findViewById<Button>(R.id.exportRescueTrace).setOnClickListener {
+            findViewById<TextView>(R.id.rescueTraceStatus).text = "正在复制已脱敏日志到 下载/CarDeck…"
+            val app = applicationContext
+            Bg.run("rescue-trace-export") {
+                val result = runCatching { RescueTraceStore.export(app) }.getOrNull()
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) showLocalSaveResult(result)
+                }
+            }
+        }
         systemLogs = findViewById(R.id.uploadSystemLogs)
         systemLogs.setOnClickListener { previewCombinedDiagnostics() }
         detailedSystemLogs = findViewById(R.id.uploadDetailedSystemLogs)
@@ -471,6 +501,12 @@ class EntryConfigActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun updateRescueTraceStatus() {
+        val retainedKb = RescueTraceStore.forApp(this).retainedBytes() / 1024
+        findViewById<TextView>(R.id.rescueTraceStatus).text =
+            RescueTraceService.description + "；已留存约 " + retainedKb + "KB（卸载前请先导出）"
+    }
+
     override fun onStart() {
         super.onStart()
         observer = GatewayLogRuntime.subscribe { snapshot ->
@@ -478,6 +514,7 @@ class EntryConfigActivity : AppCompatActivity() {
         }
         testRunning = GatewayLogRuntime.running
         refreshControls()
+        updateRescueTraceStatus()
     }
 
     override fun onStop() {
