@@ -1,0 +1,49 @@
+name: Sync shared CarDeck governance from Buick
+
+on:
+  push:
+    branches: [Buick]
+    paths:
+      - 'docs/PROJECT-GOVERNANCE.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cardeck-governance-sync
+  cancel-in-progress: false
+
+jobs:
+  mirror-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout authoritative Buick policy
+        uses: actions/checkout@v4
+        with:
+          ref: Buick
+          fetch-depth: 0
+
+      - name: Mirror only the shared policy into active branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="$RUNNER_TEMP/cardeck-project-governance.md"
+          cp docs/PROJECT-GOVERNANCE.md "$SOURCE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for TARGET in Buick-E5 Buick-Test; do
+            echo "Sync governance: Buick -> $TARGET"
+            git fetch --no-tags origin "refs/heads/$TARGET:refs/remotes/origin/$TARGET"
+            git switch -C "governance-$TARGET" "refs/remotes/origin/$TARGET"
+            mkdir -p docs
+            cp "$SOURCE" docs/PROJECT-GOVERNANCE.md
+            git add -- docs/PROJECT-GOVERNANCE.md
+            if git diff --cached --quiet; then
+              echo "$TARGET already synchronized"
+              continue
+            fi
+            git commit -m "docs(governance): mirror authoritative Buick rules [skip ci]"
+            # Non-forced push: a concurrent edit must fail instead of replacing it.
+            git push origin "HEAD:refs/heads/$TARGET"
+          done
+          echo "Verified: no app source, release tag, signing or version file was modified"

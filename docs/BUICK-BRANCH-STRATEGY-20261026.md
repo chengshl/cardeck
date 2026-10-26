@@ -1,3 +1,5 @@
+> **统一规则已迁移**：此文件是历史分支定位快照。项目约定的唯一现行版本见 [`docs/PROJECT-GOVERNANCE.md`](PROJECT-GOVERNANCE.md)（Buick 权威、Buick-E5 / Buick-Test 同步；main 不参与）。如有冲突，以统一规则和用户最新明确决定为准。
+
 # Buick 分支规则（2026-10-26）
 - `Buick`：最终正式版，仅合并 Buick-Test 已经验证的功能；当前由旧 Buick-main 头提交创建。
 - `Buick-Test`：过渡集成测试分支，按需吸收上游更新并融合 Buick-E5 稳定功能；未来可由短期集成分支替代。
