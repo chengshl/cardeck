@@ -110,5 +110,5 @@ jobs:
             printf 'B方案更新器：选择并记住具体实验功能线；无Release时显示空状态，版本过低提示重新发布高版本，App内下载安装需用户确认。本包不包含未验收音频修复。\n'
           } > updater-b-experiment-release.txt
           gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" --title "Buick-Test Updater-B 音频诊断实验 $CARDECK_RELEASE_VERSION_NAME" \
+            --target "$GITHUB_SHA" --title "Buick-Test Updater-B 更新通道实验 $CARDECK_RELEASE_VERSION_NAME" \
             --notes-file updater-b-experiment-release.txt --prerelease --latest=false
