@@ -90,7 +90,7 @@ class UpdateCenterActivity : AppCompatActivity() {
         }
         val scroll = ScrollView(this).apply {
             setBackgroundColor(bg)
-            fillViewport = true
+            isFillViewport = true
             isVerticalScrollBarEnabled = false
             addView(page)
         }
