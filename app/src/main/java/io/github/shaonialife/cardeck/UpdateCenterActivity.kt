@@ -138,13 +138,19 @@ class UpdateCenterActivity : AppCompatActivity() {
         val rowText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         rowText.line(txt("自动检查更新", 15f, fg, true))
         rowText.line(txt("仅检查当前选中分支，安装仍需确认", 12f, muted), 5)
+        val autoState = txt(if (BuickUpdater.autoEnabled(this)) "状态：已开启" else "状态：已关闭", 12.5f, muted, true)
+        rowText.line(autoState, 6)
         row.addView(rowText, LinearLayout.LayoutParams(0, -2, 1f))
         val toggle = SwitchCompat(this).apply {
-            thumbTintList = ColorStateList.valueOf(accent)
+            thumbTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(accent, muted),
+            )
             isChecked = BuickUpdater.autoEnabled(this@UpdateCenterActivity)
             contentDescription = "自动检查当前选中更新分支"
             setOnCheckedChangeListener { _, checked ->
                 BuickUpdater.setAutoEnabled(this@UpdateCenterActivity, checked)
+                autoState.text = if (checked) "状态：已开启" else "状态：已关闭"
             }
         }
         row.addView(toggle)
