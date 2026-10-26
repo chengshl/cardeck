@@ -1,4 +1,4 @@
-name: T75 RTC P control diagnostics (no release)
+name: T75 RTCP control diagnostics (no release)
 on:
   push:
     branches:
@@ -31,3 +31,52 @@ jobs:
             app/build/reports/lint-results-debug.*
             app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: warn
+      - name: Restore Buick-Test signing key for standalone experiment (no publishing)
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-t75.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-t75.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-t75.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Assign T75 isolated version
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_EPOCH="$(date -u +%s)"
+          echo "CARDECK_BUILD_VERSION_CODE=$(( BUILD_EPOCH - 1704067200 ))" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)" >> "$GITHUB_ENV"
+      - name: Build signed T75 artifact (not a release)
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify package and signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          "$AAPT" dump badging "$APK" | grep -Fq "package: name='io.github.buick.test.cardeck'"
+          "$APKSIGNER" verify "$APK"
+          if "$APKSIGNER" verify --print-certs "$APK" | grep -qi 'CN=Android Debug'; then
+            echo "::error::不能交付debug签名的替换安装包"
+            exit 1
+          fi
+          cp "$APK" CarDeck-Buick-Test-T75-RTCP-OBS.apk
+          sha256sum CarDeck-Buick-Test-T75-RTCP-OBS.apk > CarDeck-Buick-Test-T75-RTCP-OBS.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Buick-Test-T75-RTCP-OBS-${{ github.run_id }}
+          path: |
+            CarDeck-Buick-Test-T75-RTCP-OBS.apk
+            CarDeck-Buick-Test-T75-RTCP-OBS.apk.sha256
+          if-no-files-found: error
