@@ -166,6 +166,7 @@ object BuickUpdater {
                     .firstOrNull { it.startsWith("branch=") }
                     ?.substringAfter("=")?.trim().orEmpty()
                 val changeNotes = UpdateNotes.extract(release.optString("body"))
+                val buildTimeLabel = ReleaseBuildTime.label(release.optString("body"), versionName)
                 require(channel.acceptsSource(release.optString("tag_name"), branch)) {
                     "更新来源分支无效：$branch"
                 }
@@ -186,7 +187,7 @@ object BuickUpdater {
                             info(
                                 activity,
                                 "已是最新版本（$installedVersionName）\n" +
-                                    "发布分支：$branch\n\n更新说明：\n$changeNotes",
+                                    "发布分支：$branch\n$buildTimeLabel\n\n更新说明：\n$changeNotes",
                             )
                         }
                     } else {
@@ -195,7 +196,7 @@ object BuickUpdater {
                             .setMessage(
                                 "当前版本：$installedVersionName\n" +
                                     "最新版本：$versionName\n" +
-                                    "来源分支：$branch\n\n" +
+                                    "来源分支：$branch\n$buildTimeLabel\n\n" +
                                     "更新说明：\n$changeNotes",
                             )
                             .setNegativeButton("取消", null)
