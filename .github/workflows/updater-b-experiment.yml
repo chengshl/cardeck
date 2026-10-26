@@ -107,7 +107,7 @@ jobs:
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
             printf '\n## 更新说明\n'
-            printf 'B方案更新器：选择并记住具体实验功能线；无Release时显示空状态，版本过低提示重新发布高版本，App内下载安装需用户确认。本包不包含未验收音频修复。\n'
+            printf 'Updater-B 界面修订：修复实验项目选择、历史版本列表、实验包安装确认、未知来源授权和APK下载进度仍沿用旧版浅色原生弹窗的问题；现统一深色卡片、清晰换行、版本可覆盖状态显示。保留所选实验功能线记忆、App内下载、SHA-256及系统安装确认。不涉及手机连接主页整体改版（另见Issue#25），也不涉及音频P0修复。\n'
           } > updater-b-experiment-release.txt
           gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --title "Buick-Test Updater-B 更新通道实验 $CARDECK_RELEASE_VERSION_NAME" \
