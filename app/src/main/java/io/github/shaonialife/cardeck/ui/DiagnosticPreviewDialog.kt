@@ -144,14 +144,10 @@ internal object DiagnosticPreviewDialog {
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f).apply {
             topMargin = dp(8)
         })
-        val summaryText = DiagnosticPreviewSummary.body(
+        val summaryText = DiagnosticPreviewSummary.compact(
             model.lines, model.eventId, model.uploadedBefore, model.shizukuReady,
-        ) + if (model.detailedCount != null) {
-            "\n\n用户确认的取证模式：精准脱敏、最多3000行，本次待发送 " +
-                model.detailedCount + " 行（仅展示首尾精选样本）。" +
-                "\n所含系统记录仅为当前logcat缓冲区可读取的相关事件，不保证覆盖此前10分钟。" +
-                "\n上传需逐批服务器确认；断线未确认部分不视为上传成功。"
-        } else ""
+            model.detailedCount, model.diagnosticType,
+        )
         fun showTab(raw: Boolean) {
             summaryTab.background = shape(if (raw) surface else selected, if (raw) surface else accent)
             rawTab.background = shape(if (raw) selected else surface, if (raw) accent else surface)
