@@ -3,7 +3,7 @@ package io.github.shaonialife.cardeck.gateway
 /** 对已脱敏的取证预览做说明，不推断崩溃根因或把历史记录冒充新事件。 */
 internal object DiagnosticPreviewSummary {
     fun headline(eventId: String?, uploadedBefore: Boolean): String = when {
-        uploadedBefore -> "历史证据 · 已上传过相同崩溃记录"
+        uploadedBefore -> "历史证据 · 此前提交过相同崩溃记录"
         eventId != null -> "发现带原始时间的系统崩溃记录"
         else -> "尚未识别带发生时间的系统崩溃事件"
     }
@@ -33,7 +33,7 @@ internal object DiagnosticPreviewSummary {
                 append("不代表没有发生系统故障。\n\n")
             }
             if (uploadedBefore) {
-                append("本机已保存相同崩溃证据的确认上传指纹。\n")
+                append("本机已保存此前确认提交同一崩溃证据的指纹。\n                append("提交请求已排队不代表所有批次都已被服务器确认。\n")
                 append("这是重复证据，不能作为今天再次崩溃的证明。\n\n")
             } else if (eventId != null) {
                 append("本机未记录这条崩溃证据此前成功提交的指纹。\n")
