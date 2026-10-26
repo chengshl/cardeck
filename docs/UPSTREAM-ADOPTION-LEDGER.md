@@ -48,6 +48,7 @@
 | E5 T62/T66 任务隔离与复用 → Buick-Test | `experiment/buick-test-e5-task-isolation` / [PR #20](https://github.com/chengshl/cardeck/pull/20) / [实验 commit `dbea08f1`](https://github.com/chengshl/cardeck/commit/dbea08f1a50dc6f85e0624672940874cab74b4b1) / [独立 Release](https://github.com/chengshl/cardeck/releases/tag/exp-buick-test-task-20261026144650) | **已借鉴适配至 Test 实验分支，CI通过，已发布独立签名实验APK；手机/实车未测，正式 Test 未合并** |
 | E5 T57 触控 DOWN/UP 状态恢复 → Buick-Test | `experiment/buick-test-e5-touch-recovery` / [PR #22](https://github.com/chengshl/cardeck/pull/22) / [实验 commit `1fd1ebad`](https://github.com/chengshl/cardeck/commit/1fd1ebad5d3ebbb418c8dffa163f39a24cbd61c7) | **已借鉴适配至 Test 实验分支、Debug CI通过；独立签名APK未发布，实车未测，正式 Test 未合并** |
 | E5 更新 UI、身份标识 → Test | [更新架构 #17](https://github.com/chengshl/cardeck/issues/17) | **待实验评估**，不能把 E5 已发布等同于 Test 已融入 |
+| **Test Updater-B 精准项目订阅 → E5** | **内部来源** Test [PR #26](https://github.com/chengshl/cardeck/pull/26)、`5f2f82e` → E5 集中融合实验 [`ebd37be`](https://github.com/chengshl/cardeck/commit/ebd37be63a8589db5733584f249022a0a7975969)，[#27](https://github.com/chengshl/cardeck/issues/27)、[#17](https://github.com/chengshl/cardeck/issues/17) | **已借鉴改写至 E5 隔离实验，CI/实车待验收，正式 E5 尚未合并**。E5 保留 InstalledBuildIdentity、旧版 APK 仅下载、SHA256/包名/版号检查；只选择性引入具体 `sourceBranch` 订阅、项目目录及深色选择 UI。该成果来自本项目 Test，**不冒充上游 `main`** |
 
 ## D. 下一次更新台账时必做
 
