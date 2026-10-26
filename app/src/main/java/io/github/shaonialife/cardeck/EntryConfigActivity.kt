@@ -19,7 +19,8 @@ import io.github.shaonialife.cardeck.gateway.CombinedDiagnosticSelector
 import io.github.shaonialife.cardeck.gateway.OfflineDiagnosticExporter
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.service.GatewayLogService
-import android.widget.ScrollView
+import android.app.Dialog
+import io.github.shaonialife.cardeck.ui.DiagnosticPreviewDialog
 import androidx.appcompat.app.AlertDialog
 import android.os.SystemClock
 import android.content.Context
@@ -44,7 +45,7 @@ class EntryConfigActivity : AppCompatActivity() {
     private lateinit var localAppLogs: Button
     private lateinit var localBundle: Button
     private var observer: AutoCloseable? = null
-    private var previewDialog: AlertDialog? = null
+    private var previewDialog: Dialog? = null
     private var previewGeneration = 0
     private var captureBusy = false
 
@@ -286,48 +287,40 @@ class EntryConfigActivity : AppCompatActivity() {
                 val sameStack = crashSignature != null &&
                     crashSignature == fingerprints.getString("last_submitted_crash_signature_v2", null)
                 val expires = SystemClock.elapsedRealtime() + 120_000
-                val body = TextView(this).apply {
-                    text = lines.joinToString("\n")
-                    setTextIsSelectable(true)
-                    textSize = 12f
-                    setPadding(24, 16, 24, 16)
-                }
-                val scroll = ScrollView(this).apply { addView(body) }
-                previewDialog = AlertDialog.Builder(this)
-                    .setTitle("系统诊断与崩溃取证 · 脱敏预览")
-                    .setMessage(
-                        "本次合并采集 " + lines.size + " 行（最多256行；优先保留崩溃现场，另保留近期系统警告）。" +
-                            (if (eventId != null) "\n已识别崩溃事件：$eventId"
-                             else "\n未找到带原始发生时间的崩溃事件，不代表没有发生故障。") +
-                            (if (sameStack) "\n提示：与上次上传的崩溃证据相同，可能是旧记录。" else "") +
-                            "\n读取系统日志需要 Shizuku；未就绪时仍可查看前次 App 和阶段记录。" +
-                            "\n保存本地无需联网；仅手动确认后才会在线分批上传。"
-                    )
-                    .setView(scroll)
-                    .setNegativeButton(R.string.gateway_system_cancel, null)
-                    .setNeutralButton("保存本地") { _, _ ->
+                // 诊断UI由独立深色弹层承载，先看摘要再按需展开精选日志。
+                // 保持既有256行脱敏边界、确认上传、120秒快照有效期与签名指纹判断。
+                val uploadReady = target != null && stored != null && GatewayLogRuntime.running &&
+                    GatewayLogRuntime.snapshot?.state == GatewayProbe.State.HEALTHY &&
+                    GatewayLogRuntime.snapshot?.logsSupported == true &&
+                    GatewayLogRuntime.snapshot?.systemPending != true
+                previewDialog = DiagnosticPreviewDialog.show(
+                    this,
+                    DiagnosticPreviewDialog.Model(
+                        lines = lines,
+                        eventId = eventId,
+                        uploadedBefore = sameStack,
+                        shizukuReady = ShizukuGate.state(this) == ShizukuGate.State.READY,
+                        uploadReady = uploadReady,
+                    ),
+                    onSave = {
                         saveLocalPreview(OfflineDiagnosticExporter.Kind.DIAGNOSTIC, lines)
-                    }
-                    .setPositiveButton(R.string.gateway_system_confirm) { _, _ ->
+                    },
+                    onUpload = {
                         val valid = target != null && GatewayLogRuntime.running &&
                             GatewayLogRuntime.probe === target &&
                             GatewayLogRuntime.snapshot?.state == GatewayProbe.State.HEALTHY &&
                             SystemClock.elapsedRealtime() <= expires
                         val accepted = valid && target?.uploadConfirmedSystemLogs(lines) == true
                         if (accepted && crashSignature != null) {
-                            fingerprints.edit().putString("last_submitted_crash_signature_v2", crashSignature).apply()
+                            fingerprints.edit()
+                                .putString("last_submitted_crash_signature_v2", crashSignature)
+                                .apply()
                         }
-                        logStatus.setText(if (accepted) R.string.gateway_system_pending else R.string.gateway_system_expired)
-                    }.create().also { dialog ->
-                        dialog.show()
-                        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-                        val uploadReady = target != null && stored != null && GatewayLogRuntime.running &&
-                            GatewayLogRuntime.snapshot?.state == GatewayProbe.State.HEALTHY &&
-                            GatewayLogRuntime.snapshot?.logsSupported == true &&
-                            GatewayLogRuntime.snapshot?.systemPending != true
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = uploadReady
-                        scroll.layoutParams = scroll.layoutParams.apply { height = (320 * resources.displayMetrics.density).toInt() }
-                    }
+                        logStatus.setText(
+                            if (accepted) R.string.gateway_system_pending else R.string.gateway_system_expired,
+                        )
+                    },
+                )
             }
         }
     }
