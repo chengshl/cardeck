@@ -15,3 +15,5 @@
 细节修正：自动检查开关不仅依赖颜色/滑块位置，统一软件更新页增加明确的“状态：已开启/已关闭”文字，关闭态与开启态使用不同颜色，便于索尼手机暗色屏识别。之前三分支构建曾因 ScrollView 的 Kotlin 属性名称及 Buick-Test 中文说明门禁失败，已修正并重新验证。最终 CI 状态以本次提交构建为准。
 
 实验兼容补充：统一软件更新页的实验APK要求更新器架构标记`updaterSchema=2`（同时包含UpdateCenterActivity与UpdatePreference）；旧`updaterSchema=1`实验包仍保留历史但不列入新版可选安装包，避免安装后恢复旧粉色选择弹窗。T75实验源码和GitHub预发布构建已经同步这一修订。此发布不改变T75的音频协议，也不代表车机稳定性验收。
+
+质量验证修正：GitHub CI 的 Android Lint 指出新页面手动赋值的 breakStrategy 常量不符合当前SDK的 @IntDef（WrongConstant）；已从统一软件更新页移除这行非必要设置，保留系统默认自动换行、多行卡片、显式开关状态与渠道自动检查逻辑。此修复在E5/Main/Test/T75同步，正式测试版以最新CI成功为交付依据。
