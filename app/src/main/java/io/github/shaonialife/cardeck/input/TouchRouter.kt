@@ -281,23 +281,37 @@ object TouchRouter {
             val ok: Boolean =
                 when {
                     contact.down && !pressed -> {
-                        pressed = true
-                        pressedDisplay = targetDisplay
-                        svc.pointerDown(targetDisplay, localX, localY)
+                        // 与 E5 T57 一致：只有系统实际接受 DOWN 才记录 pressed，
+                        // 避免越界/系统拒绝后后续点击被误判为 MOVE。
+                        val accepted = svc.pointerDown(targetDisplay, localX, localY)
+                        if (accepted) {
+                            pressed = true
+                            pressedDisplay = targetDisplay
+                        }
+                        accepted
                     }
 
                     contact.down && pressedDisplay != targetDisplay -> {
-                        // 跨屏拖动：先在旧屏收笔，再在新屏按下
+                        // 跨屏先释放上一屏，旧状态无论 UP 结果如何都立即清空。
                         runCatching { svc.pointerUp(pressedDisplay, 0, 0) }
-                        pressedDisplay = targetDisplay
-                        svc.pointerDown(targetDisplay, localX, localY)
+                        pressed = false
+                        pressedDisplay = -1
+                        val accepted = svc.pointerDown(targetDisplay, localX, localY)
+                        if (accepted) {
+                            pressed = true
+                            pressedDisplay = targetDisplay
+                        }
+                        accepted
                     }
 
                     contact.down -> svc.pointerMove(targetDisplay, localX, localY)
 
                     else -> {
+                        val old = pressedDisplay
+                        // UP 失败也不能把手势留作下一次注入的按下状态。
                         pressed = false
-                        svc.pointerUp(pressedDisplay, localX, localY)
+                        pressedDisplay = -1
+                        if (old >= 0) svc.pointerUp(old, localX, localY) else true
                     }
                 }
             if (ok) lastInjectAt = nowMs
@@ -340,6 +354,10 @@ object TouchRouter {
         coordScaleY = 1f
         normalizedCanvasW = 0
         normalizedCanvasH = 0
+        throttleInited = false
+        lastInjectAt = 0L
+        throttledCount = 0
+        lastThrottleLogAt = 0L
     }
 
     // ---- 仪表盘地图 tile「快速点按 → 全屏地图」检测 ----
