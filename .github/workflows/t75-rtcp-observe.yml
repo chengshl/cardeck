@@ -1,11 +1,11 @@
-name: T75 RTCP control diagnostics (no release)
+name: T75 RTCP experiment build and isolated prerelease
 on:
   push:
     branches:
       - experiment/buick-test-t75-rtcp-observe
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -80,3 +80,23 @@ jobs:
             CarDeck-Buick-Test-T75-RTCP-OBS.apk
             CarDeck-Buick-Test-T75-RTCP-OBS.apk.sha256
           if-no-files-found: error
+      - name: Publish selected T75 only to isolated prerelease (never stable latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-t75-rtcp-observe"
+          TAG="exp-buick-test-t75-$CARDECK_RELEASE_VERSION_NAME"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          APK="CarDeck-Buick-Test-T75-RTCP-OBS.apk"
+          test -s "$APK" && test -s "$APK.sha256"
+          {
+            printf 'artifactKind=experiment\nbaseBranch=Buick-Test\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## 更新说明\n'
+            printf 'T75只读音频诊断：记录反向RTCP头部、累计包数和连接后前30秒的间隔。尚未解决20秒断连，待B233实车验证。\n'
+          } > t75-experiment-release.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Buick-Test T75 音频诊断实验 $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file t75-experiment-release.txt --prerelease --latest=false
