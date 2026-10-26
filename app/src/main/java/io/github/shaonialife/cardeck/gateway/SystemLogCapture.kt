@@ -63,7 +63,8 @@ object SystemLogCapture {
             "MediaCodec|CCodec|OMX|Surface|BufferQueue|DisplayManager|VirtualDisplay|" +
                 "WindowManager|ActivityTaskManager|ActivityManager|AndroidRuntime|" +
                 "Shizuku|Connectivity|NetworkMonitor|Wifi|Wi-Fi|Vpn|netd|" +
-                "CarDeck|carplay|H264|codec|system_server|binder|Fatal|ANR|crash|SIGABRT",
+                "CarDeck|carplay|H264|codec|system_server|binder|Fatal|ANR|crash|SIGABRT|" +
+                "SELinux|avc: denied|SettingsProvider|systemhelper|reboot|shutdown|bootreason|pstore|watchdog",
             RegexOption.IGNORE_CASE,
         )
         val timer = Executors.newSingleThreadScheduledExecutor()
