@@ -460,8 +460,14 @@ class GridActivity : AppCompatActivity() {
     /** 仪表盘模式 → pager 位置同步（0=仪表盘，1+=桌面；已在目标位则不动）。 */
     private fun applyDashboardMode(dashboard: Boolean) {
         val pager = findViewById<ViewPager2>(R.id.gridPager)
-        if (dashboard && pager.currentItem != 0) pager.setCurrentItem(0, false)
-        if (!dashboard && pager.currentItem == 0) pager.setCurrentItem(1, false)
+        val target = if (dashboard) 0 else if (pager.currentItem == 0) 1 else pager.currentItem
+        if (pager.currentItem != target) {
+            // Animate between pages after layout. Initial startup and ongoing
+            // gestures keep the immediate path to avoid nested scroll races.
+            val animate = pager.width > 0 && pager.height > 0 &&
+                pager.scrollState == ViewPager2.SCROLL_STATE_IDLE
+            pager.setCurrentItem(target, animate)
+        }
     }
 
     /** 音乐控制：系统媒体键（AudioManager 全局路由给活跃媒体会话，无需权限）。 */
@@ -581,10 +587,9 @@ class GridActivity : AppCompatActivity() {
                 override fun onPageSelected(position: Int) {
                     updateDots(position)
                     if (position > 0) {
-                        pager?.post {
-                            reconcileGridMetrics()
-                            pager?.adapter?.notifyItemChanged(pager?.currentItem ?: position)
-                        }
+                        // T62 already observes real bounds. Rebinding each page
+                        // switch creates unnecessary invalidation and flicker.
+                        pager?.post { reconcileGridMetrics() }
                     }
                     // 用户滑动切换仪表盘/桌面：回写 launcher（含地图任务与 tile 布局）
                     if (position == 0 && !VirtualLauncher.dashboardMode) VirtualLauncher.showDashboard()

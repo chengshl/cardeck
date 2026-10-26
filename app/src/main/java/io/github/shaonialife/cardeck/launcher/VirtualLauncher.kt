@@ -134,6 +134,10 @@ object VirtualLauncher {
     /** Per-session successful app/display, even if MagicOS dumpsys omits it. */
     private val launchedAppTargets = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
+    /** Last successful map launch on the current trusted display session. */
+    @Volatile
+    private var activeMapTaskPackage: String? = null
+
     private val runningAppsListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
 
     /** dock 注册回调：运行列表变化时刷新（dock 独占一屏，永远 resumed，onResume 不再触发）。 */
@@ -922,6 +926,7 @@ object VirtualLauncher {
 
     fun detach() {
         launchedAppTargets.clear()
+        activeMapTaskPackage = null
         resetStandaloneFit()
         lastFullscreenMapPackage = null
         safeViewport = null
@@ -1104,6 +1109,7 @@ object VirtualLauncher {
         if (changed) notifyDashboard()
         if (dashboard) {
             Bg.run("dashboard-enter") {
+                if (!dashboardMode) return@run
                 ensureMapTask()
                 if (mapFullscreen) setMapFullscreen(false)
                 // 期间用户可能已点开普通应用（launchApp 会置 HIDDEN 并退出仪表盘）：
@@ -1329,17 +1335,13 @@ object VirtualLauncher {
             } else {
                 component.flattenToShortString()
             }
-        // 同屏已有其他地图任务时清掉（白名单互斥；默认地图任务保留复用）
-        val ctx = appContextRef
-        val defaultPkg = ctx?.let { defaultMapComponent(it)?.packageName }
-        if (component.packageName != defaultPkg) {
-            taskIdsOnDisplayPkg(component.packageName, mapDisplayId).forEach { taskId ->
-                Shell.exec("am stack remove $taskId", timeoutMs = 4000)
-            }
-        }
+        // Reuse an already successful map task. Do not delete the target's
+        // own task before reopening it; NEW_TASK|MULTIPLE_TASK only on first use.
+        val known = activeMapTaskPackage == component.packageName
+        val launchFlags = if (known) "0x10000000" else "0x18000000"
         val result =
             Shell.exec(
-                "am start -n $target --display $mapDisplayId -f 0x18000000",
+                "am start -n $target --display $mapDisplayId -f $launchFlags",
                 timeoutMs = 8000,
             )
         val ok = result.ok && result.output.contains("Starting:", ignoreCase = true)
@@ -1347,6 +1349,7 @@ object VirtualLauncher {
             "LAUNCH(${component.packageName}): → 地图屏全屏 ok=$ok out=${result.output.take(80)}",
         )
         if (ok) {
+            activeMapTaskPackage = component.packageName
             synchronized(runningApps) { runningApps.add(component) }
             notifyRunningAppsChanged()
             appContextRef?.let {
@@ -1415,8 +1418,14 @@ object VirtualLauncher {
             } else {
                 component.flattenToShortString()
             }
+        // Dashboard changes map geometry, not the currently running map app.
+        // Repeated shell launches make otherwise simple page transitions stall.
+        if (activeMapTaskPackage == component.packageName) return
         // 不带 MULTIPLE_TASK：任务已在地图屏时等价于带回前台
         val result = Shell.exec("am start -n $target --display $mapDisplayId", timeoutMs = 8000)
+        if (result.ok && result.output.contains("Starting:", ignoreCase = true)) {
+            activeMapTaskPackage = component.packageName
+        }
         logSink?.invoke(
             "LAUNCHER: 默认地图 ${component.packageName} → 地图屏（display=$mapDisplayId）ok=" +
                 (result.ok && result.output.contains("Starting:", ignoreCase = true)) +
