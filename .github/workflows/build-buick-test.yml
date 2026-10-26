@@ -144,8 +144,8 @@ jobs:
             exit 0
           fi
           {
-            printf 'versionName=%s\nversionCode=%s\nbranch=Buick-Test\ncommit=%s\n' \
-              "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_SHA"
+            printf 'versionName=%s\nversionCode=%s\nbranch=Buick-Test\ncommit=%s\nbuiltAt=%s\ntimezone=Asia/Shanghai\n' \
+              "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$GITHUB_SHA" "$(date -u +%FT%TZ)"
             printf '\n## 更新说明\n'
             cat docs/BUICK_TEST_RELEASE_NOTES.md
           } > test-release-notes.txt
