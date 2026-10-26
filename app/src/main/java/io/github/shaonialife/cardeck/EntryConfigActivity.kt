@@ -1,6 +1,7 @@
 package io.github.shaonialife.cardeck
 
 import android.os.Bundle
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
@@ -17,6 +18,7 @@ import io.github.shaonialife.cardeck.gateway.SystemLogCapture
 import io.github.shaonialife.cardeck.gateway.CrashEvidenceSelector
 import io.github.shaonialife.cardeck.gateway.CombinedDiagnosticSelector
 import io.github.shaonialife.cardeck.gateway.DetailedDiagnosticSelector
+import io.github.shaonialife.cardeck.gateway.RebootEvidenceCapture
 import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import io.github.shaonialife.cardeck.gateway.OfflineLogFormatter
 import io.github.shaonialife.cardeck.util.DebugFileLog
@@ -47,6 +49,10 @@ class EntryConfigActivity : AppCompatActivity() {
     private lateinit var logStatus: TextView
     private lateinit var systemLogs: Button
     private lateinit var detailedSystemLogs: Button
+    private lateinit var rebootSystemLogs: Button
+    private lateinit var advancedPanel: View
+    private lateinit var advancedToggle: Button
+    private var advancedExpanded = false
     private lateinit var localAppLogs: Button
     private lateinit var localBundle: Button
     private var observer: AutoCloseable? = null
@@ -76,6 +82,16 @@ class EntryConfigActivity : AppCompatActivity() {
         systemLogs.setOnClickListener { previewCombinedDiagnostics() }
         detailedSystemLogs = findViewById(R.id.uploadDetailedSystemLogs)
         detailedSystemLogs.setOnClickListener { previewCombinedDiagnostics(detailed = true) }
+        rebootSystemLogs = findViewById(R.id.uploadRebootEvidence)
+        rebootSystemLogs.setOnClickListener { previewCombinedDiagnostics(detailed = true, reboot = true) }
+        advancedPanel = findViewById(R.id.advancedGatewayPanel)
+        advancedToggle = findViewById(R.id.advancedGatewayToggle)
+        advancedExpanded = savedInstanceState?.getBoolean("gateway_advanced_expanded", false) ?: false
+        updateAdvancedVisibility()
+        advancedToggle.setOnClickListener {
+            advancedExpanded = !advancedExpanded
+            updateAdvancedVisibility()
+        }
         val draft = savedInstanceState?.getString("entry_address_draft")
         busy(true)
         val appContext = applicationContext
@@ -106,7 +122,14 @@ class EntryConfigActivity : AppCompatActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("entry_address_draft", address.text.toString())
+        outState.putBoolean("gateway_advanced_expanded", advancedExpanded)
         super.onSaveInstanceState(outState)
+    }
+
+    private fun updateAdvancedVisibility() {
+        advancedPanel.visibility = if (advancedExpanded) View.VISIBLE else View.GONE
+        advancedToggle.text = if (advancedExpanded) "收起更多选项  ▴"
+            else "更多选项 · 服务器配置 / 单独App日志  ▾"
     }
 
     private fun busy(value: Boolean) {
@@ -128,6 +151,7 @@ class EntryConfigActivity : AppCompatActivity() {
         // Still useful after a reboot when Shizuku is not running: keep app breadcrumbs.
         systemLogs.isEnabled = !captureBusy
         detailedSystemLogs.isEnabled = !captureBusy
+        rebootSystemLogs.isEnabled = !captureBusy
     }
 
     private fun saveConfig() {
@@ -250,14 +274,17 @@ class EntryConfigActivity : AppCompatActivity() {
         refreshControls()
     }
 
-    private fun previewCombinedDiagnostics(detailed: Boolean = false) {
+    private fun previewCombinedDiagnostics(detailed: Boolean = false, reboot: Boolean = false) {
         val target = GatewayLogRuntime.probe
         val token = stored?.token.orEmpty()
         if (captureBusy) return
         val generation = ++previewGeneration
         captureBusy = true
-        logStatus.text = if (detailed) "正在按需采集详细故障日志（含系统显示/编解码/网络），不会自动上传…" else
-            "正在汇总系统日志、上轮会话及崩溃证据…"
+        logStatus.text = when {
+            reboot -> "正在只读采集重启原因、系统DropBox及操作轨迹；不会自动上传…"
+            detailed -> "正在采集详细系统故障日志；不会自动上传…"
+            else -> "正在汇总系统日志、上轮会话及崩溃证据…"
+        }
         refreshControls()
         val appContext = applicationContext
         Bg.run("system-log-preview") {
@@ -269,7 +296,11 @@ class EntryConfigActivity : AppCompatActivity() {
                     SystemLogCapture.recoveryPreview(appContext, redactor)
                 }.getOrElse { listOf("[取证状态] 重启证据读取失败，请检查本地诊断包") }
                 val shizukuReady = ShizukuGate.state(appContext) == ShizukuGate.State.READY
-                val system = if (shizukuReady) runCatching {
+                val rebootEvidence = if (reboot) runCatching {
+                    RebootEvidenceCapture.collect(appContext, redactor)
+                }.getOrElse { listOf("[重启取证] 系统重启详情读取失败，仍可检查崩溃和App轨迹") }
+                else emptyList()
+                val system = if (shizukuReady && !reboot) runCatching {
                     if (detailed) SystemLogCapture.detailedPreview(appContext, redactor)
                     else SystemLogCapture.preview(appContext, redactor)
                 }.getOrDefault(emptyList()) else emptyList()
@@ -279,10 +310,18 @@ class EntryConfigActivity : AppCompatActivity() {
                         redactor,
                     )
                     val stages = CriticalEventTrail.recentLines(appContext).map(redactor::line)
-                    val systemEvidence = if (shizukuReady && system.isEmpty()) {
+                    val systemEvidence = if (shizukuReady && system.isEmpty() && !reboot) {
                         listOf("[采样状态] 无详细系统日志；Shizuku命令失败、无权限或缓冲区为空")
                     } else system
-                    DetailedDiagnosticSelector.merge(crash, stages, appHistory, systemEvidence, shizukuReady)
+                    val criticalEvidence = if (reboot) {
+                        // Reserve room for both the new boot snapshot and dated
+                        // crash evidence; older long DropBox dumps must not evict
+                        // the current-boot property evidence.
+                        rebootEvidence.take(140) + crash.take(116)
+                    } else crash
+                    DetailedDiagnosticSelector.merge(
+                        criticalEvidence, stages, appHistory, systemEvidence, shizukuReady,
+                    )
                 } else {
                     CombinedDiagnosticSelector.merge(crash, system, shizukuReady)
                 }
@@ -329,10 +368,12 @@ class EntryConfigActivity : AppCompatActivity() {
                         shizukuReady = ShizukuGate.state(this) == ShizukuGate.State.READY,
                         uploadReady = uploadReady,
                         detailedCount = if (detailed) lines.size else null,
+                        diagnosticType = if (reboot) "重启取证" else if (detailed) "详细故障" else null,
                     ),
                     onSave = {
                         saveLocalPreview(
-                            if (detailed) OfflineDiagnosticExporter.Kind.DETAILED
+                            if (reboot) OfflineDiagnosticExporter.Kind.REBOOT
+                            else if (detailed) OfflineDiagnosticExporter.Kind.DETAILED
                             else OfflineDiagnosticExporter.Kind.DIAGNOSTIC,
                             lines,
                         )
