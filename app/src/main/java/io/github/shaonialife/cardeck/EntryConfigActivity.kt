@@ -16,6 +16,10 @@ import io.github.shaonialife.cardeck.gateway.LogRedactor
 import io.github.shaonialife.cardeck.gateway.SystemLogCapture
 import io.github.shaonialife.cardeck.gateway.CrashEvidenceSelector
 import io.github.shaonialife.cardeck.gateway.CombinedDiagnosticSelector
+import io.github.shaonialife.cardeck.gateway.DetailedDiagnosticSelector
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
+import io.github.shaonialife.cardeck.gateway.OfflineLogFormatter
+import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.gateway.OfflineDiagnosticExporter
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.service.GatewayLogService
@@ -42,6 +46,7 @@ class EntryConfigActivity : AppCompatActivity() {
     private var testRunning = false
     private lateinit var logStatus: TextView
     private lateinit var systemLogs: Button
+    private lateinit var detailedSystemLogs: Button
     private lateinit var localAppLogs: Button
     private lateinit var localBundle: Button
     private var observer: AutoCloseable? = null
@@ -69,6 +74,8 @@ class EntryConfigActivity : AppCompatActivity() {
         localBundle.setOnClickListener { exportDiagnosticBundle() }
         systemLogs = findViewById(R.id.uploadSystemLogs)
         systemLogs.setOnClickListener { previewCombinedDiagnostics() }
+        detailedSystemLogs = findViewById(R.id.uploadDetailedSystemLogs)
+        detailedSystemLogs.setOnClickListener { previewCombinedDiagnostics(detailed = true) }
         val draft = savedInstanceState?.getString("entry_address_draft")
         busy(true)
         val appContext = applicationContext
@@ -120,6 +127,7 @@ class EntryConfigActivity : AppCompatActivity() {
         localBundle.isEnabled = !captureBusy
         // Still useful after a reboot when Shizuku is not running: keep app breadcrumbs.
         systemLogs.isEnabled = !captureBusy
+        detailedSystemLogs.isEnabled = !captureBusy
     }
 
     private fun saveConfig() {
@@ -239,13 +247,14 @@ class EntryConfigActivity : AppCompatActivity() {
         refreshControls()
     }
 
-    private fun previewCombinedDiagnostics() {
+    private fun previewCombinedDiagnostics(detailed: Boolean = false) {
         val target = GatewayLogRuntime.probe
         val token = stored?.token.orEmpty()
         if (captureBusy) return
         val generation = ++previewGeneration
         captureBusy = true
-        logStatus.text = "正在汇总系统日志、上轮会话及崩溃证据…"
+        logStatus.text = if (detailed) "正在按需采集详细故障日志（含系统显示/编解码/网络），不会自动上传…" else
+            "正在汇总系统日志、上轮会话及崩溃证据…"
         refreshControls()
         val appContext = applicationContext
         Bg.run("system-log-preview") {
@@ -258,9 +267,22 @@ class EntryConfigActivity : AppCompatActivity() {
                 }.getOrElse { listOf("[取证状态] 重启证据读取失败，请检查本地诊断包") }
                 val shizukuReady = ShizukuGate.state(appContext) == ShizukuGate.State.READY
                 val system = if (shizukuReady) runCatching {
-                    SystemLogCapture.preview(appContext, redactor)
+                    if (detailed) SystemLogCapture.detailedPreview(appContext, redactor)
+                    else SystemLogCapture.preview(appContext, redactor)
                 }.getOrDefault(emptyList()) else emptyList()
-                CombinedDiagnosticSelector.merge(crash, system, shizukuReady)
+                if (detailed) {
+                    val appHistory = OfflineLogFormatter.appLines(
+                        DebugFileLog.read(appContext, currentSessionOnly = false).orEmpty(),
+                        redactor,
+                    )
+                    val stages = CriticalEventTrail.recentLines(appContext).map(redactor::line)
+                    val systemEvidence = if (shizukuReady && system.isEmpty()) {
+                        listOf("[采样状态] 无详细系统日志；Shizuku命令失败、无权限或缓冲区为空")
+                    } else system
+                    DetailedDiagnosticSelector.merge(crash, stages, appHistory, systemEvidence, shizukuReady)
+                } else {
+                    CombinedDiagnosticSelector.merge(crash, system, shizukuReady)
+                }
             }
             runOnUiThread {
                 if (generation != previewGeneration || isFinishing || isDestroyed) return@runOnUiThread
@@ -271,6 +293,8 @@ class EntryConfigActivity : AppCompatActivity() {
                     logStatus.setText(R.string.gateway_system_unavailable)
                     return@runOnUiThread
                 }
+                // A large diagnostic stays off the TextView; review only 256 selected lines.
+                val displayLines = if (detailed) DetailedDiagnosticSelector.reviewSample(lines) else lines
                 // Dated DropBox event ID is stronger than a repeated crash stack.
                 val eventId = CrashEvidenceSelector.datedCrashId(lines)
                 val crashStack = lines.filter {
@@ -296,21 +320,26 @@ class EntryConfigActivity : AppCompatActivity() {
                 previewDialog = DiagnosticPreviewDialog.show(
                     this,
                     DiagnosticPreviewDialog.Model(
-                        lines = lines,
+                        lines = displayLines,
                         eventId = eventId,
                         uploadedBefore = sameStack,
                         shizukuReady = ShizukuGate.state(this) == ShizukuGate.State.READY,
                         uploadReady = uploadReady,
+                        detailedCount = if (detailed) lines.size else null,
                     ),
                     onSave = {
-                        saveLocalPreview(OfflineDiagnosticExporter.Kind.DIAGNOSTIC, lines)
+                        saveLocalPreview(
+                            if (detailed) OfflineDiagnosticExporter.Kind.DETAILED
+                            else OfflineDiagnosticExporter.Kind.DIAGNOSTIC,
+                            lines,
+                        )
                     },
                     onUpload = {
                         val valid = target != null && GatewayLogRuntime.running &&
                             GatewayLogRuntime.probe === target &&
                             GatewayLogRuntime.snapshot?.state == GatewayProbe.State.HEALTHY &&
                             SystemClock.elapsedRealtime() <= expires
-                        val accepted = valid && target?.uploadConfirmedSystemLogs(lines) == true
+                        val accepted = valid && target?.uploadConfirmedSystemLogs(lines, detailed) == true
                         if (accepted && crashSignature != null) {
                             fingerprints.edit()
                                 .putString("last_submitted_crash_signature_v2", crashSignature)
