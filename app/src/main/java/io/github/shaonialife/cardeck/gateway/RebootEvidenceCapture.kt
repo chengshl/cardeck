@@ -35,7 +35,7 @@ internal object RebootEvidenceCapture {
             "ro.bootmode" to "getprop ro.bootmode",
             "uptime" to "cat /proc/uptime",
             "pstore.files" to "ls -l /sys/fs/pstore 2>&1 | head -c 4000",
-            "pstore.preview" to "for f in /sys/fs/pstore/console-ramoops* /sys/fs/pstore/dmesg-ramoops*; do if [ -r \"$f\" ]; then echo ====pstore====; tail -c 12000 \"$f\"; fi; done",
+            "pstore.preview" to "for f in /sys/fs/pstore/console-ramoops* /sys/fs/pstore/dmesg-ramoops*; do if [ -r \"\$f\" ]; then echo ====pstore====; tail -c 12000 \"\$f\"; fi; done",
             "last_kmsg" to "dumpsys dropbox --print SYSTEM_LAST_KMSG 2>/dev/null | tail -c 12000",
             "system_restart" to "dumpsys dropbox --print SYSTEM_RESTART 2>/dev/null | tail -c 12000",
             "system_watchdog" to "dumpsys dropbox --print system_server_watchdog 2>/dev/null | tail -c 12000",
