@@ -1,7 +1,7 @@
 package io.github.shaonialife.cardeck.update
 
 import android.app.Activity
-import androidx.appcompat.app.AlertDialog
+import io.github.shaonialife.cardeck.ui.DarkMessageDialog
 import android.app.ProgressDialog
 import android.content.Context
 import android.content.Intent
@@ -150,20 +150,26 @@ internal object ExperimentalUpdates {
                         @Suppress("DEPRECATION")
                         installed.versionCode.toLong()
                     }
-                    val items = arrayOf("停止关注实验项目") + projects.map {
-                        ExperimentProjectCatalog.name(it.sourceBranch) + "\n" +
+                    val old = UpdatePreference.selectedProject(activity)
+                    val items = listOf(ExperimentPickerDialog.Item(
+                        "停止关注实验项目", "保留试验频道，暂时不检查具体项目", old == null,
+                    )) + projects.map {
+                        ExperimentPickerDialog.Item(
+                            ExperimentProjectCatalog.name(it.sourceBranch),
                             it.newest.versionName + " · " +
-                            ExperimentProjectCatalog.installState(currentCode, it.newest)
+                                ExperimentProjectCatalog.installState(currentCode, it.newest),
+                            it.sourceBranch == old,
+                        )
                     }
-                    AlertDialog.Builder(activity)
-                        .setTitle("选择要持续跟踪的实验")
-                        .setItems(items) { _, chosen ->
-                            val source = if (chosen == 0) null else projects[chosen - 1].sourceBranch
-                            UpdatePreference.selectProject(activity, source)
-                            onChanged()
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
+                    ExperimentPickerDialog.show(
+                        activity, "选择实验项目",
+                        "选择后会一直记住；自动检查不会切换到其他项目。",
+                        items,
+                    ) { chosen ->
+                        val source = if (chosen == 0) null else projects[chosen - 1].sourceBranch
+                        UpdatePreference.selectProject(activity, source)
+                        onChanged()
+                    }
                 }
             }
         }
@@ -237,14 +243,19 @@ internal object ExperimentalUpdates {
                             "Actions 构建产物不等于公开实验 Release；没有通过签名和安全校验的版本不会出现在这里。")
                     } else {
                         val names = candidates.map {
-                            "${it.sourceBranch.substringAfterLast('/')} · ${it.versionName}\n" +
-                                ReleaseBuildTime.label("builtAt=${it.builtAt}", it.versionName)
-                        }.toTypedArray()
-                        AlertDialog.Builder(activity)
-                            .setTitle("已选实验 · 历史版本")
-                            .setItems(names) { _, index -> confirm(activity, candidates[index]) }
-                            .setNegativeButton("返回", null)
-                            .show()
+                            ExperimentPickerDialog.Item(
+                                it.versionName,
+                                ReleaseBuildTime.label("builtAt=" + it.builtAt, it.versionName) +
+                                    " · " + ExperimentProjectCatalog.installState(
+                                        installedVersion(activity), it,
+                                    ),
+                            )
+                        }
+                        ExperimentPickerDialog.show(
+                            activity, "所选项目 · 历史构建",
+                            ExperimentProjectCatalog.name(selectedSource) + " · 只显示此功能线的发布",
+                            names,
+                        ) { index -> confirm(activity, candidates[index]) }
                     }
                 }
             } catch (error: Exception) {
@@ -253,34 +264,40 @@ internal object ExperimentalUpdates {
         }
     }
 
-    private fun confirm(activity: Activity, candidate: Candidate) {
+    private fun installedVersion(activity: Activity): Long {
         val pkg = activity.packageManager.getPackageInfo(activity.packageName, 0)
-        val installed = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
+        return if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
             @Suppress("DEPRECATION")
             pkg.versionCode.toLong()
         }
-        val reason = when {
-            candidate.versionCode < installed -> "\n\n此实验包版本号低于已安装版本，Android 不允许覆盖降级。"
-            candidate.versionCode == installed -> "\n\n版本号相同，覆盖安装可能被拒绝。"
-            else -> ""
-        }
+    }
+
+    private fun confirm(activity: Activity, candidate: Candidate) {
+        val installed = installedVersion(activity)
         val allowed = candidate.versionCode > installed
-        AlertDialog.Builder(activity)
-            .setTitle("确认安装实验版本")
-            .setMessage(
-                "目标：${candidate.baseBranch}\n" +
-                    "实验：${candidate.sourceBranch}\n" +
-                    "版本：${candidate.versionName}\n" +
-                    ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName) + "\n" +
-                    "校验：官方预发布 + SHA-256 + 系统签名校验\n\n" +
-                    "更新说明：\n${candidate.notes}\n\n" +
-                    "实验包不是稳定更新。返回正式版本需等待版本号更高的正式构建，不能随意降级。" + reason,
-            )
-            .setNegativeButton("取消", null)
-            .setPositiveButton(if (allowed) "下载并安装" else "无法覆盖") { _, _ ->
-                if (allowed) download(activity, candidate)
-            }
-            .show()
+        val details = buildString {
+            append("实验项目：")
+            append(ExperimentProjectCatalog.name(candidate.sourceBranch))
+            append("\\n代码来源：")
+            append(candidate.sourceBranch)
+            append("\\n版本：")
+            append(candidate.versionName)
+            append("\\n")
+            append(ReleaseBuildTime.label("builtAt=" + candidate.builtAt, candidate.versionName))
+            append("\\n版本比较：")
+            append(ExperimentProjectCatalog.installState(installed, candidate))
+            append("\\n\\n安全校验：官方Release · APK SHA-256 · 系统签名")
+            append("\\n\\n更新说明：\\n")
+            append(candidate.notes)
+            append("\\n\\n返回正式版同样需要版本号更高的正式构建，不能直接降级。")
+        }
+        val actions = if (allowed) listOf(
+            DarkMessageDialog.Action("取消") {},
+            DarkMessageDialog.Action("下载并安装", DarkMessageDialog.Emphasis.PRIMARY) {
+                download(activity, candidate)
+            },
+        ) else listOf(DarkMessageDialog.Action("返回") {})
+        DarkMessageDialog.show(activity, "确认实验版本", details, actions)
     }
 
     private fun networks(activity: Activity): List<Route> {
@@ -411,14 +428,18 @@ internal object ExperimentalUpdates {
     private fun install(activity: Activity, apk: File) {
         if (!apk.isFile || apk.length() == 0L) return message(activity, "已验证的安装包不存在。")
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
-            AlertDialog.Builder(activity)
-                .setTitle("允许安装实验 APK")
-                .setMessage("已验证 SHA-256。请授权 CarDeck 安装未知应用，然后重新进入实验列表安装。")
-                .setNegativeButton("稍后", null)
-                .setPositiveButton("前往授权") { _, _ ->
-                    activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:${activity.packageName}")))
-                }.show()
+            DarkMessageDialog.show(
+                activity,
+                "允许安装实验 APK",
+                "已验证 SHA-256。请允许当前 CarDeck 安装未知应用，再返回软件更新页面安装。",
+                listOf(
+                    DarkMessageDialog.Action("稍后") {},
+                    DarkMessageDialog.Action("前往授权", DarkMessageDialog.Emphasis.PRIMARY) {
+                        activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:${activity.packageName}")))
+                    },
+                ),
+            )
             return
         }
         try {
@@ -436,7 +457,7 @@ internal object ExperimentalUpdates {
     }
 
     private fun message(activity: Activity, text: String) {
-        AlertDialog.Builder(activity).setTitle("CarDeck 实验版本")
-            .setMessage(text).setPositiveButton("确定", null).show()
+        DarkMessageDialog.show(activity, "CarDeck 软件更新", text,
+            listOf(DarkMessageDialog.Action("知道了") {}))
     }
 }
