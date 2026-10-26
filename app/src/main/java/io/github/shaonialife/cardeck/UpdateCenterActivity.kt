@@ -48,7 +48,6 @@ class UpdateCenterActivity : AppCompatActivity() {
             if (bold) setTypeface(typeface, Typeface.BOLD)
             setLineSpacing(dp(3).toFloat(), 1f)
             isSingleLine = false
-            breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
         }
     private fun LinearLayout.line(v: View, top: Int = 0) {
         addView(v, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top) })
