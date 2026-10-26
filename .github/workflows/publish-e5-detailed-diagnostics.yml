@@ -66,6 +66,10 @@ jobs:
               "app/src/main/java/io/github/shaonialife/cardeck/gateway/DetailedDiagnosticSelector.kt",
               "app/src/main/java/io/github/shaonialife/cardeck/ui/DiagnosticPreviewDialog.kt",
               "app/src/main/res/layout/activity_entry_config.xml",
+              "app/src/main/AndroidManifest.xml",
+              "app/src/main/java/io/github/shaonialife/cardeck/gateway/RescueTracePolicy.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/gateway/RescueTraceStore.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/service/RescueTraceService.kt",
           }
           failures = []
           inherited = []

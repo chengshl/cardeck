@@ -97,6 +97,11 @@ class RescueTraceService : Service() {
                 null, null,
             )
             killReader = { runCatching { process.destroy() } }
+            // Stop can win the race against Shizuku's process creation.
+            if (cancelled) {
+                runCatching { process.destroy() }
+                return
+            }
             val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
             store.append("[采集会话] 开始于 $stamp；只保留筛选/脱敏记录；最多4小时；重启后需重新手动启动")
             // Drain stderr in a separate daemon; never let the pipe block logcat.
