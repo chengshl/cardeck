@@ -75,7 +75,7 @@ internal object ExperimentalUpdates {
             if (!tag.startsWith(prefix) || !tag.matches(Regex("[A-Za-z0-9_-]{8,100}"))) continue
             val body = release.optString("body")
             if (ReleaseBuildTime.metadata(body, "artifactKind") != "experiment") continue
-            if (ReleaseBuildTime.metadata(body, "updaterSchema") != "1") continue
+            if (ReleaseBuildTime.metadata(body, "updaterSchema") != "2") continue
             if (ReleaseBuildTime.metadata(body, "baseBranch") != branch) continue
             val source = ReleaseBuildTime.metadata(body, "sourceBranch") ?: continue
             if (!source.startsWith(sourcePrefix) || !source.matches(Regex("experiment/[A-Za-z0-9_/-]+"))) continue
