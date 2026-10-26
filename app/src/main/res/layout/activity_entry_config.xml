@@ -5,226 +5,127 @@
     android:background="@color/m3_surface"
     android:orientation="vertical">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="12dp">
-
-        <ImageView
-            android:id="@+id/btnBack"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@drawable/bg_ripple_circle"
-            android:contentDescription="返回"
-            android:padding="12dp"
-            android:src="@drawable/ic_chev_left" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
-            android:text="@string/entry_title"
-            android:textColor="#EDF3F3"
-            android:textSize="18sp"
-            android:textStyle="bold" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center_vertical" android:padding="12dp">
+        <ImageView android:id="@+id/btnBack" android:layout_width="48dp" android:layout_height="48dp"
+            android:background="@drawable/bg_ripple_circle" android:contentDescription="返回"
+            android:padding="12dp" android:src="@drawable/ic_chev_left" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="10dp" android:text="日志与诊断"
+            android:textColor="#EDF3F3" android:textSize="18sp" android:textStyle="bold" />
     </LinearLayout>
 
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:fillViewport="true">
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1" android:fillViewport="true">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:padding="20dp">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="24dp">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="需要排查什么？" android:textColor="#EDF3F3" android:textSize="19sp"
+                android:textStyle="bold" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="5dp" android:text="选择一种即可。所有系统日志仅在点击后读取，上传前需要再次确认。"
+                android:textColor="#B0BEBE" android:textSize="12sp" />
 
-            <Button
-                android:id="@+id/saveDiagnosticBundle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="52dp"
-                android:text="导出完整诊断包 · App / 操作轨迹 / 崩溃 / 系统" />
+            <Button android:id="@+id/uploadSystemLogs" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="54dp"
+                android:layout_marginTop="16dp" android:text="快速诊断 · 精选256行" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="2dp" android:text="普通连接、崩溃和系统告警"
+                android:textColor="#B0BEBE" android:textSize="12sp" />
 
-            <Button
-                android:id="@+id/saveAppLogsLocally"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="52dp"
-                android:layout_marginTop="8dp"
-                android:text="仅保存 App 历史日志到本地" />
+            <Button android:id="@+id/uploadDetailedSystemLogs" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="54dp"
+                android:layout_marginTop="12dp" android:text="详细故障 · 最多3000行" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="2dp" android:text="视频、网络、Shizuku和系统服务异常；长堆栈分段保留"
+                android:textColor="#B0BEBE" android:textSize="12sp" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="完整诊断包包含最多50条跨重启操作轨迹、App 历史、系统崩溃与当前系统告警（若 Shizuku 可用）。无须配置 Gateway；点击保存不会上传，文件位于下载/CarDeck。"
-                android:textColor="#B0BEBE"
-                android:textSize="12sp" />
+            <Button android:id="@+id/uploadRebootEvidence" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="54dp"
+                android:layout_marginTop="12dp" android:text="手机重启 · 系统取证" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="2dp" android:text="读取当前启动原因、DropBox、pstore可访问状态；不需要Root"
+                android:textColor="#B0BEBE" android:textSize="12sp" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:labelFor="@id/entryAddress"
-                android:text="@string/entry_address_label"
-                android:textColor="#EDF3F3"
-                android:textSize="15sp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="22dp" android:text="保存到手机"
+                android:textColor="#EDF3F3" android:textSize="16sp" android:textStyle="bold" />
+            <Button android:id="@+id/saveDiagnosticBundle" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="52dp"
+                android:layout_marginTop="8dp" android:text="保存完整本地诊断包" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:text="保存至 下载/CarDeck，不向服务器发送文件"
+                android:textColor="#B0BEBE" android:textSize="12sp" />
 
-            <EditText
-                android:id="@+id/entryAddress"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:autofillHints=""
-                android:background="@drawable/bg_ssid_input_idle"
-                android:hint="@string/entry_address_hint"
-                android:importantForAutofill="no"
-                android:inputType="textUri"
-                android:maxLength="2048"
-                android:minHeight="52dp"
-                android:padding="14dp"
-                android:singleLine="true"
-                android:textColor="#EDF3F3"
-                android:textColorHint="#94A3A8"
-                android:textSize="14sp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="22dp" android:text="在线诊断服务"
+                android:textColor="#EDF3F3" android:textSize="16sp" android:textStyle="bold" />
+            <TextView android:id="@+id/gatewayStatus" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                android:accessibilityLiveRegion="polite" android:text="@string/gateway_idle"
+                android:textColor="#7EDCE6" android:textSize="13sp" />
+            <TextView android:id="@+id/gatewayLogStatus" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="6dp"
+                android:accessibilityLiveRegion="polite" android:text="@string/gateway_log_waiting"
+                android:textColor="#7EDCE6" android:textSize="13sp" />
+            <Button android:id="@+id/testEntry" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="50dp"
+                android:layout_marginTop="10dp" android:text="连接诊断服务" />
+            <Button android:id="@+id/disconnectEntry" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="48dp"
+                android:layout_marginTop="6dp" android:text="断开诊断服务" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:labelFor="@id/entryCredential"
-                android:text="@string/entry_token_label"
-                android:textColor="#EDF3F3"
-                android:textSize="15sp" />
+            <Button android:id="@+id/advancedGatewayToggle" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="48dp"
+                android:layout_marginTop="16dp" android:text="更多选项 · 服务器配置 / 单独App日志  ▾" />
 
-            <EditText
-                android:id="@+id/entryCredential"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_ssid_input_idle"
-                android:hint="@string/entry_token_hint"
-                android:importantForAutofill="no"
-                android:inputType="textPassword"
-                android:maxLength="4096"
-                android:minHeight="52dp"
-                android:padding="14dp"
-                android:saveEnabled="false"
-                android:singleLine="true"
-                android:textColor="#EDF3F3"
-                android:textColorHint="#94A3A8"
-                android:textSize="14sp" />
+            <LinearLayout android:id="@+id/advancedGatewayPanel"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:visibility="gone" android:orientation="vertical">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/entry_help"
-                android:textColor="#94A3A8"
-                android:textSize="13sp" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp" android:labelFor="@id/entryAddress"
+                    android:text="@string/entry_address_label" android:textColor="#EDF3F3" />
+                <EditText android:id="@+id/entryAddress" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                    android:autofillHints="" android:background="@drawable/bg_ssid_input_idle"
+                    android:hint="@string/entry_address_hint" android:importantForAutofill="no"
+                    android:inputType="textUri" android:maxLength="2048" android:minHeight="52dp"
+                    android:padding="14dp" android:singleLine="true" android:textColor="#EDF3F3"
+                    android:textColorHint="#94A3A8" android:textSize="14sp" />
 
-            <TextView
-                android:id="@+id/entryStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:accessibilityLiveRegion="polite"
-                android:text="@string/entry_loading"
-                android:textColor="#7EDCE6"
-                android:textSize="14sp" />
-
-            <Button
-                android:id="@+id/testEntry"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:layout_marginTop="20dp"
-                android:text="@string/gateway_test" />
-
-            <TextView
-                android:id="@+id/gatewayStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:accessibilityLiveRegion="polite"
-                android:text="@string/gateway_idle"
-                android:textColor="#7EDCE6"
-                android:textSize="14sp" />
-
-            <Button
-                android:id="@+id/disconnectEntry"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:layout_marginTop="8dp"
-                android:text="@string/gateway_disconnect" />
-
-            <TextView
-                android:id="@+id/gatewayLogStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="@string/gateway_log_waiting"
-                android:textColor="#7EDCE6"
-                android:textSize="14sp" />
-
-            <Button
-                android:id="@+id/uploadSystemLogs"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="52dp"
-                android:layout_marginTop="8dp"
-                android:text="系统诊断与崩溃取证 · 保存本地或在线上传" />
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="统一预览系统告警、当前及上次启动的崩溃记录和前次 App 阶段事件。无 Shizuku 时仍可预览本地取证；保存本地无需联网，在线上传需再次确认。"
-                android:textColor="#B0BEBE"
-                android:textSize="12sp" />
-
-            <Button
-                android:id="@+id/uploadDetailedSystemLogs"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="52dp"
-                android:layout_marginTop="14dp"
-                android:text="详细故障日志 · 按需采集/预览/上传" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="故障诊断专用，最多3000行；按需读取当前系统缓冲区中的显示、编码、Shizuku和网络事件及本地阶段记录。仅展示256行样本，保存或上传需再次手动确认；不持续采集，不保证可追溯已轮转的10分钟历史。"
-                android:textColor="#B0BEBE"
-                android:textSize="12sp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="@string/gateway_test_help"
-                android:textColor="#94A3A8"
-                android:textSize="13sp" />
-
-            <Button
-                android:id="@+id/saveEntry"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:layout_marginTop="24dp"
-                android:backgroundTint="#7EDCE6"
-                android:text="@string/entry_save"
-                android:textColor="#101418" />
-
-            <Button
-                android:id="@+id/clearEntry"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:layout_marginTop="8dp"
-                android:text="@string/entry_clear" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp" android:labelFor="@id/entryCredential"
+                    android:text="@string/entry_token_label" android:textColor="#EDF3F3" />
+                <EditText android:id="@+id/entryCredential" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_ssid_input_idle"
+                    android:hint="@string/entry_token_hint" android:importantForAutofill="no"
+                    android:inputType="textPassword" android:maxLength="4096" android:minHeight="52dp"
+                    android:padding="14dp" android:saveEnabled="false" android:singleLine="true"
+                    android:textColor="#EDF3F3" android:textColorHint="#94A3A8" android:textSize="14sp" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp" android:text="@string/entry_help"
+                    android:textColor="#94A3A8" android:textSize="12sp" />
+                <TextView android:id="@+id/entryStatus" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:layout_marginTop="12dp"
+                    android:accessibilityLiveRegion="polite" android:text="@string/entry_loading"
+                    android:textColor="#7EDCE6" android:textSize="13sp" />
+                <Button android:id="@+id/saveEntry" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="12dp"
+                    android:backgroundTint="#7EDCE6" android:text="@string/entry_save"
+                    android:textColor="#101418" />
+                <Button android:id="@+id/clearEntry" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="6dp"
+                    android:text="@string/entry_clear" />
+                <Button android:id="@+id/saveAppLogsLocally" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="12dp"
+                    android:text="仅保存App历史日志（本地）" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" android:text="@string/gateway_test_help"
+                    android:textColor="#94A3A8" android:textSize="12sp" />
+            </LinearLayout>
         </LinearLayout>
     </ScrollView>
 </LinearLayout>
