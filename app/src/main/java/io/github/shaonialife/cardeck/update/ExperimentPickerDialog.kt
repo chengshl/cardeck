@@ -113,7 +113,9 @@ internal object ExperimentPickerDialog {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             val pixels = activity.resources.displayMetrics
-            setLayout((pixels.widthPixels * .93f).toInt(), (pixels.heightPixels * .76f).toInt())
+            val contentHeight = dp(132 + items.size * 91)
+            val limit = (pixels.heightPixels * .79f).toInt()
+            setLayout((pixels.widthPixels * .93f).toInt(), minOf(contentHeight, limit))
         }
     }
 }
