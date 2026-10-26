@@ -124,14 +124,25 @@ jobs:
           APK=app/build/outputs/apk/release/app-release.apk
           AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
-          "$AAPT" dump badging "$APK" | grep -Fq "package: name='io.github.buick.e5.cardeck'"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          # Don't pipe aapt to grep -q with pipefail: grep may close early
+          # and make aapt exit SIGPIPE even when package ID is correct.
+          if ! grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"; then
+            echo "::error::签名包包名不是当前E5安装包"
+            exit 1
+          fi
           "$APKSIGNER" verify "$APK"
-          if "$APKSIGNER" verify --print-certs "$APK" | grep -qi 'CN=Android Debug'; then
+          CERT_DETAILS="$("$APKSIGNER" verify --print-certs "$APK")"
+          if grep -qi 'CN=Android Debug' <<< "$CERT_DETAILS"; then
             echo "::error::签名为Android Debug，不允许交付"
             exit 1
           fi
           AAPT_RES="$("$AAPT" dump resources "$APK")"
-          grep -Fq 'experiment/buick-e5-test-convergence' <<< "$AAPT_RES"
+          if ! grep -Fq 'experiment/buick-e5-test-convergence' <<< "$AAPT_RES"; then
+            echo "::error::APK未内嵌当前实验分支来源，拒绝发布"
+            exit 1
+          fi
+          echo "E5包名、Android签名和实验来源校验完成"
           cp "$APK" CarDeck-Buick-E5-Convergence.apk
           sha256sum CarDeck-Buick-E5-Convergence.apk > CarDeck-Buick-E5-Convergence.apk.sha256
       - name: Publish only isolated E5 experiment (never stable latest)
