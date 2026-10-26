@@ -2,7 +2,6 @@ package io.github.shaonialife.cardeck.update
 
 import android.app.Activity
 import io.github.shaonialife.cardeck.ui.DarkMessageDialog
-import android.app.ProgressDialog
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -353,13 +352,7 @@ internal object ExperimentalUpdates {
     }
 
     private fun download(activity: Activity, candidate: Candidate) {
-        val progress = ProgressDialog(activity).apply {
-            setTitle("实验版本 · 下载并验证")
-            setMessage("正在准备下载…")
-            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
-            setCancelable(false)
-            show()
-        }
+        val progress = ExperimentDownloadDialog.show(activity)
         thread(name = "experiment-apk-download") {
             val target = File(activity.cacheDir, "updates/experiments/${candidate.tag}/${candidate.apkName}")
             var problem: Exception? = null
