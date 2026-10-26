@@ -34,6 +34,12 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         }
         var safe = raw
         for (secret in secrets.filter { it.isNotEmpty() }) safe = safe.replace(secret, "[已隐藏凭证]")
+        // Mask entire Authorization/Bearer sequences before field-value masking,
+        // otherwise the word "Bearer" could be removed while its token survives.
+        safe = Regex(
+            """\bAuthorization\s*[:=]\s*(?:Bearer|Basic)\s+[^\s,;]+|\b(?:Bearer|Basic)\s+[^\s,;]+""",
+            RegexOption.IGNORE_CASE,
+        ).replace(safe, "[已隐藏认证头]")
         // Mask values rather than dropping a whole stack trace on a generic word.
         val namedSecret = Regex(
             """\b(authorization|password|passwd|access[_-]?token|refresh[_-]?token|token|secret|private[_-]?key|pairing[_-]?key|session[_-]?key|write[_-]?key|read[_-]?key|credential|nonce|salt|signature)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""",
