@@ -27,6 +27,7 @@ internal object DiagnosticPreviewDialog {
         val shizukuReady: Boolean,
         val uploadReady: Boolean,
         val detailedCount: Int? = null,
+        val diagnosticType: String? = null,
     )
 
     fun show(
@@ -79,7 +80,7 @@ internal object DiagnosticPreviewDialog {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        header.addView(text("系统诊断 · 脱敏预览", 19f, foreground, true),
+        header.addView(text((model.diagnosticType ?: "快速诊断") + " · 安全预览", 19f, foreground, true),
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         val dialog = Dialog(activity)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -106,7 +107,7 @@ internal object DiagnosticPreviewDialog {
         val countLabel = if (model.detailedCount == null) {
             "精选 ${model.lines.size} / 最多256行  ·  系统事件原始时间单独标注"
         } else {
-            "详细故障待上传 ${model.detailedCount} 行 · 仅预览 ${model.lines.size} 行"
+            "${model.diagnosticType ?: "详细故障"}：${model.detailedCount} 行 · 预览 ${model.lines.size} 行"
         }
         root.place(text(countLabel, 12f, secondary), 11)
 
@@ -146,7 +147,7 @@ internal object DiagnosticPreviewDialog {
         val summaryText = DiagnosticPreviewSummary.body(
             model.lines, model.eventId, model.uploadedBefore, model.shizukuReady,
         ) + if (model.detailedCount != null) {
-            "\n\n详细故障模式：已脱敏并限定最多3000行，本次待发送 " +
+            "\n\n用户确认的取证模式：精准脱敏、最多3000行，本次待发送 " +
                 model.detailedCount + " 行（仅展示首尾精选样本）。" +
                 "\n所含系统记录仅为当前logcat缓冲区可读取的相关事件，不保证覆盖此前10分钟。" +
                 "\n上传需逐批服务器确认；断线未确认部分不视为上传成功。"
