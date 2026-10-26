@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import io.github.shaonialife.cardeck.update.BuickUpdater
 import io.github.shaonialife.cardeck.update.ExperimentalUpdates
+import io.github.shaonialife.cardeck.update.ExperimentProjectCatalog
 import io.github.shaonialife.cardeck.update.InstalledBuildIdentity
 import io.github.shaonialife.cardeck.update.UpdatePreference
 
@@ -35,6 +36,11 @@ class UpdateCenterActivity : AppCompatActivity() {
     private lateinit var installedOriginLabel: TextView
     private lateinit var currentChannelLabel: TextView
     private lateinit var browse: TextView
+    private lateinit var projectPanel: LinearLayout
+    private lateinit var projectName: TextView
+    private lateinit var projectStatus: TextView
+    private var availableProjects: List<ExperimentProjectCatalog.Project>? = null
+    private var projectLookupError: String? = null
 
     private fun dp(n: Int) = (resources.displayMetrics.density * n + .5f).toInt()
     private fun shape(fill: Int, stroke: Int = fill): GradientDrawable =
@@ -122,6 +128,34 @@ class UpdateCenterActivity : AppCompatActivity() {
         formal.setOnClickListener { choose(UpdatePreference.Channel.FORMAL) }
         experiment.setOnClickListener { choose(UpdatePreference.Channel.EXPERIMENT) }
 
+        // 项目目录与选中功能线分开保存，空目录绝不自动订阅另一条实验线。
+        projectPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            background = shape(surface, outline)
+        }
+        projectPanel.line(txt("关注的实验项目", 15.5f, fg, true))
+        projectName = txt("尚未选择项目", 14f, accent, true)
+        projectPanel.line(projectName, 8)
+        projectStatus = txt("正在读取实验目录…", 12f, muted)
+        projectPanel.line(projectStatus, 6)
+        val chooseProject = txt("选择 / 更换实验项目", 14f, bg, true).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(48)
+            background = shape(accent)
+            setPadding(dp(9), dp(11), dp(9), dp(11))
+            isFocusable = true
+            isClickable = true
+            setOnClickListener {
+                ExperimentalUpdates.chooseProject(this@UpdateCenterActivity) {
+                    refresh()
+                    reloadProjects()
+                }
+            }
+        }
+        projectPanel.line(chooseProject, 12)
+        page.line(projectPanel, 12)
+
         val info = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(17), dp(16), dp(17), dp(14))
@@ -183,15 +217,28 @@ class UpdateCenterActivity : AppCompatActivity() {
         page.line(txt(
             "版本详情显示来源、更新内容与安装包构建完成时间（北京时间）。" +
                 "旧包无真实构建时间时会明确标注版本时间。" +
-                "\n试验版与正式版共用当前包名；版本号较高时无法直接安装更旧的正式包。",
+                "\n试验版与正式版共用当前包名；版本号较高时无法直接安装更旧的正式包。" +
+                "\n只检查你选择的具体实验功能线，不能覆盖时支持保存 APK 或重新构建更高版本。",
             12f, muted), 18)
         refresh()
+        reloadProjects()
     }
 
     private fun choose(value: UpdatePreference.Channel) {
         UpdatePreference.select(this, value)
         refresh()
+        reloadProjects()
     }
+
+    private fun reloadProjects() {
+        if (UpdatePreference.selected(this) != UpdatePreference.Channel.EXPERIMENT) return
+        ExperimentalUpdates.loadProjects(this) { projects, error ->
+            availableProjects = projects
+            projectLookupError = error
+            refresh()
+        }
+    }
+
     private fun refresh() {
         val isExperiment = UpdatePreference.selected(this) == UpdatePreference.Channel.EXPERIMENT
         formal.background = shape(if (!isExperiment) selectedSurface else surface,
@@ -201,6 +248,31 @@ class UpdateCenterActivity : AppCompatActivity() {
         formalMark.text = if (!isExperiment) "✓ 已选择" else "选择"
         experimentMark.text = if (isExperiment) "✓ 已选择" else "选择"
         currentChannelLabel.text = if (isExperiment) "当前检查通道：试验分支（与已安装来源不同）" else "当前检查通道：正式分支"
-        browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
+        projectPanel.visibility = if (isExperiment) View.VISIBLE else View.GONE
+        val source = UpdatePreference.selectedProject(this)
+        projectName.text = if (source == null) "尚未选择实验项目" else
+            ExperimentProjectCatalog.name(source) + "\n" + source
+        val projects = availableProjects
+        projectStatus.text = when {
+            !isExperiment -> ""
+            projectLookupError != null -> "实验目录读取失败：$projectLookupError"
+            projects == null -> "正在读取当前安装包的实验发布…"
+            projects.isEmpty() -> "暂无符合当前包名要求的已发布实验项目。"
+            source == null -> "有 ${projects.size} 个已发布实验项目。请选择一个，自动检查不会跨项目。"
+            else -> {
+                val found = projects.firstOrNull { it.sourceBranch == source }
+                if (found == null) "所选实验暂时没有可安装APK，不会切到其他项目。"
+                else {
+                    val info = packageManager.getPackageInfo(packageName, 0)
+                    val installed = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else {
+                        @Suppress("DEPRECATION")
+                        info.versionCode.toLong()
+                    }
+                    "已发布：${found.newest.versionName}\n" +
+                        ExperimentProjectCatalog.installState(installed, found.newest)
+                }
+            }
+        }
+        browse.visibility = if (isExperiment && source != null) View.VISIBLE else View.GONE
     }
 }
