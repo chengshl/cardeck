@@ -1,3 +1,5 @@
+> **2026-10-26 12:15 修订（以下旧规则保留历史参考）**：原 `Buick-main` 正式版更名为 `Buick`，新发布标签 `buick-latest` / `CarDeck-Buick.apk`。原 APK applicationId 与签名保持不变；持续镜像到 `buick-main-latest` 以兼容旧版更新器。Buick-Test 为过渡集成分支（将来可取消）；Buick-E5 为稳定基准兼 UI 易用性改进；experiment/* 负责高风险试验。新 Buick 实验采用 `experiment/buick-*`、`exp-buick-*`，历史旧实验不自动并入。下文包含更名之前的旧配置，不能覆盖本条。
+
 # CarDeck 多分支安装包更新与实验版本发布规范
 
 更新时间：2026-10-26（北京时间）。总清单：[#12](https://github.com/chengshl/cardeck/issues/12)；专项任务：[#17](https://github.com/chengshl/cardeck/issues/17)；音频实验：[#11](https://github.com/chengshl/cardeck/issues/11)。

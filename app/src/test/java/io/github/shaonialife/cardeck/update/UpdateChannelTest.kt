@@ -19,6 +19,14 @@ class UpdateChannelTest {
     }
 
     @Test
+    fun officialBuickChannelRejectsOtherReleaseTracks() {
+        val channel = UpdateChannel.create("chengshl/cardeck", "Buick", "buick-latest", "CarDeck-Buick.apk")
+        assertTrue(channel.acceptsSource("buick-latest", "Buick"))
+        assertFalse(channel.acceptsSource("buick-main-latest", "Buick-main"))
+        assertFalse(channel.acceptsSource("buick-test-latest", "Buick-Test"))
+    }
+
+    @Test
     fun rejectsPathsThatCouldEscapeCacheOrInjectApiUrls() {
         assertThrows(IllegalArgumentException::class.java) {
             UpdateChannel.create("chengshl/cardeck", "Buick-Test", "buick-test-latest", "../../shared.apk")

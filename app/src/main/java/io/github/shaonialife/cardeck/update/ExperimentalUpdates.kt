@@ -49,14 +49,14 @@ internal object ExperimentalUpdates {
 
     private fun owningBranch(activity: Activity): String? = when (activity.packageName) {
         "io.github.buick.e5.cardeck" -> "Buick-E5"
-        "io.github.buick.main.cardeck" -> "Buick-main"
+        "io.github.buick.main.cardeck" -> "Buick"
         "io.github.buick.test.cardeck" -> "Buick-Test"
         else -> null
     }
 
     private fun branchSlug(branch: String): String = when (branch) {
         "Buick-E5" -> "buick-e5"
-        "Buick-main" -> "buick-main"
+        "Buick" -> "buick-main"
         "Buick-Test" -> "buick-test"
         else -> ""
     }

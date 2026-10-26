@@ -54,7 +54,7 @@ class UpdateCenterActivity : AppCompatActivity() {
     }
     private fun branch(): String = when (packageName) {
         "io.github.buick.e5.cardeck" -> "Buick-E5"
-        "io.github.buick.main.cardeck" -> "Buick-main"
+        "io.github.buick.main.cardeck" -> "Buick"
         "io.github.buick.test.cardeck" -> "Buick-Test"
         else -> packageName
     }

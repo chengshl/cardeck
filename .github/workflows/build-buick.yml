@@ -1,12 +1,12 @@
-name: Build Buick-main and publish isolated update
+name: Build Buick official and publish isolated update
 
 on:
   workflow_dispatch:
   push:
-    branches: [Buick-main]
+    branches: [Buick]
 
 concurrency:
-  group: cardeck-Buick-main-isolated-release
+  group: cardeck-Buick-isolated-release
   cancel-in-progress: false
 
 jobs:
@@ -20,20 +20,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_NAME" = "Buick-main"
+          test "$GITHUB_REF_NAME" = "Buick"
           python3 - <<'PY'
           import json
           from pathlib import Path
           cfg = json.loads(Path("app/src/main/assets/config/update-channel.json").read_text())
           expected = {
               "repository": "chengshl/cardeck",
-              "branch": "Buick-main",
-              "releaseTag": "buick-main-latest",
-              "apkName": "CarDeck-Buick-main.apk",
+              "branch": "Buick",
+              "releaseTag": "buick-latest",
+              "apkName": "CarDeck-Buick.apk",
           }
-          assert cfg == expected, f"Unexpected Buick-main channel: {cfg}"
+          assert cfg == expected, f"Unexpected Buick channel: {cfg}"
           PY
-          printf 'RELEASE_TAG=%s\nAPK_NAME=%s\n' "buick-main-latest" "CarDeck-Buick-main.apk" >> "$GITHUB_ENV"
+          printf 'RELEASE_TAG=%s\nAPK_NAME=%s\n' "buick-latest" "CarDeck-Buick.apk" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -60,7 +60,7 @@ jobs:
             echo "keyPassword=$KEYSTORE_PASSWORD"
           } > keystore.properties
           chmod 600 keystore.properties
-      - name: Verify Buick-main Gateway diagnostic tests (required)
+      - name: Verify Buick Gateway diagnostic tests (required)
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest --tests '*EntryAddressTest' --tests '*GatewayProbeTest' --tests '*GatewayLogBufferVehicleTest' --tests '*LogRedactorTest' --stacktrace
@@ -79,9 +79,6 @@ jobs:
         # All other branches keep unit tests as a hard release gate.
         continue-on-error: false
         run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --stacktrace
-      - name: Warn about known Buick-E5 mock-test failures
-        if: ${{ github.ref_name == 'Buick-E5' && steps.unit_tests.outcome == 'failure' }}
-        run: echo "::warning::Buick-E5 legacy iAP2 mock tests are failing; APK build proceeds, CarPlay real-car verification still required."
       - name: Assign monotonic branch Android version
         shell: bash
         run: |
@@ -117,27 +114,27 @@ jobs:
           test -x "$AAPT"
           BADGING="$("$AAPT" dump badging "$APK")"
           grep -Fq "package: name='io.github.buick.main.cardeck'" <<< "$BADGING"
-          grep -Fq "application-label:'CarDeck-Buick-main'" <<< "$BADGING"
+          grep -Fq "application-label:'CarDeck-Buick'" <<< "$BADGING"
           MANIFEST="$("$AAPT" dump xmltree "$APK" AndroidManifest.xml)"
           grep -Fq 'io.github.shaonialife.cardeck.SenderApp' <<< "$MANIFEST"
           grep -Fq 'io.github.shaonialife.cardeck.MainActivity' <<< "$MANIFEST"
           grep -Fq 'io.github.shaonialife.cardeck.EntryConfigActivity' <<< "$MANIFEST"
           grep -Fq 'io.github.shaonialife.cardeck.service.GatewayLogService' <<< "$MANIFEST"
-          echo "Verified independent APK identity: Buick-main"
+          echo "Verified independent APK identity: Buick"
       - uses: actions/upload-artifact@v4
         with:
           name: CarDeck-${{ github.ref_name }}-${{ github.run_id }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-      - name: Publish only Buick-main update
+      - name: Publish only Buick update
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_NAME" = "Buick-main"
-          test "$RELEASE_TAG" = "buick-main-latest"
-          test "$APK_NAME" = "CarDeck-Buick-main.apk"
+          test "$GITHUB_REF_NAME" = "Buick"
+          test "$RELEASE_TAG" = "buick-latest"
+          test "$APK_NAME" = "CarDeck-Buick.apk"
           cp app/build/outputs/apk/release/app-release.apk "$APK_NAME"
           sha256sum "$APK_NAME" > "$APK_NAME.sha256"
 
@@ -164,13 +161,32 @@ jobs:
           fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" --clobber
-            gh release edit "$RELEASE_TAG" --title "CarDeck Buick-main $CARDECK_RELEASE_VERSION_NAME" \
+            gh release edit "$RELEASE_TAG" --title "CarDeck Buick $CARDECK_RELEASE_VERSION_NAME" \
               --notes-file release-notes.txt --prerelease --latest=false
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
               -f sha="$GITHUB_SHA" -F force=true >/dev/null
           else
             gh release create "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" --target "$GITHUB_SHA" \
-              --title "CarDeck Buick-main $CARDECK_RELEASE_VERSION_NAME" \
+              --title "CarDeck Buick $CARDECK_RELEASE_VERSION_NAME" \
               --notes-file release-notes.txt --prerelease --latest=false
           fi
           echo "Published isolated $GITHUB_REF_NAME -> $RELEASE_TAG / $APK_NAME"
+
+          # Legacy updater compatibility; same signed APK and original package ID.
+          LEGACY_TAG="buick-main-latest"
+          LEGACY_APK="CarDeck-Buick-main.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$LEGACY_APK"
+          sha256sum "$LEGACY_APK" > "$LEGACY_APK.sha256"
+          sed 's/^branch=Buick$/branch=Buick-main/' release-notes.txt > legacy-release-notes.txt
+          LEGACY_PREV_CODE="$(gh release view "$LEGACY_TAG" --json body --jq '.body' 2>/dev/null | sed -n 's/^versionCode=//p' | head -n 1 || true)"
+          if [[ "$LEGACY_PREV_CODE" =~ ^[0-9]+$ ]] && (( CARDECK_BUILD_VERSION_CODE <= LEGACY_PREV_CODE )); then
+            echo "Legacy release is already newer; leave it untouched"
+          elif gh release view "$LEGACY_TAG" >/dev/null 2>&1; then
+            gh release upload "$LEGACY_TAG" "$LEGACY_APK" "$LEGACY_APK.sha256" --clobber
+            gh release edit "$LEGACY_TAG" --title "CarDeck Buick (legacy channel) $CARDECK_RELEASE_VERSION_NAME" --notes-file legacy-release-notes.txt --prerelease --latest=false
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$LEGACY_TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh release create "$LEGACY_TAG" "$LEGACY_APK" "$LEGACY_APK.sha256" --target "$GITHUB_SHA" --title "CarDeck Buick (legacy channel) $CARDECK_RELEASE_VERSION_NAME" --notes-file legacy-release-notes.txt --prerelease --latest=false
+          fi
+          echo "Published Buick and Buick-main compatibility update channels"
+

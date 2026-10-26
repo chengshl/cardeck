@@ -2,9 +2,9 @@ name: Public repository privacy guard
 
 on:
   push:
-    branches: [main, Buick-main, Buick-E5, Buick-Test]
+    branches: [main, Buick, Buick-E5, Buick-Test]
   pull_request:
-    branches: [main, Buick-main, Buick-E5, Buick-Test]
+    branches: [main, Buick, Buick-E5, Buick-Test]
   workflow_dispatch:
 
 permissions:

@@ -200,7 +200,7 @@ object BuickUpdater {
                         }
                     } else {
                         AlertDialog.Builder(activity)
-                            .setTitle("发现 Buick-main 更新")
+                            .setTitle("发现 Buick 更新")
                             .setMessage(
                                 "当前版本：$installedVersionName\n" +
                                     "最新版本：$versionName\n" +
@@ -221,7 +221,7 @@ object BuickUpdater {
 
     private fun download(activity: Activity, url: String, shaUrl: String, channel: UpdateChannel) {
         val dialog = android.app.ProgressDialog(activity).apply {
-            setTitle("下载 Buick-main 更新")
+            setTitle("下载 Buick 更新")
             setMessage("正在下载…")
             setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
             setCancelable(false)

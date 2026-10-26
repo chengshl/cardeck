@@ -1,6 +1,6 @@
 {
   "repository": "chengshl/cardeck",
-  "branch": "Buick-main",
-  "releaseTag": "buick-main-latest",
-  "apkName": "CarDeck-Buick-main.apk"
+  "branch": "Buick",
+  "releaseTag": "buick-latest",
+  "apkName": "CarDeck-Buick.apk"
 }
