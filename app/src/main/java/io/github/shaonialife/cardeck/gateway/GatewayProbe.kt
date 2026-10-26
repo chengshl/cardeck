@@ -237,11 +237,14 @@ class GatewayProbe(
         systemPending = systemBatches.isNotEmpty() || pendingLog?.source == "system",
         systemUploadTotal = systemUploadTotal, systemUploadAcknowledged = systemUploadAcknowledged))
 
-    /** One explicit consent for a bounded full preview; each server packet stays <=8 lines. */
+    /** Only explicit user confirmation; both modes use the existing 8-line ACK protocol. */
     @Synchronized
-    fun uploadConfirmedSystemLogs(preview: List<String>): Boolean {
-        if (stopped || !registered || !logsSupported || heartbeatCount == 0 || systemBatches.isNotEmpty() || pendingLog?.source == "system") return false
-        if (preview.isEmpty() || preview.size > 256 || preview.any { it.isBlank() || it.length > 256 }) return false
+    fun uploadConfirmedSystemLogs(preview: List<String>, detailed: Boolean = false): Boolean {
+        if (stopped || !registered || !logsSupported || heartbeatCount == 0 ||
+            systemBatches.isNotEmpty() || pendingLog?.source == "system") return false
+        val limit = if (detailed) DetailedDiagnosticSelector.MAX_LINES else 256
+        if (preview.isEmpty() || preview.size > limit ||
+            preview.any { it.isBlank() || it.length > 256 }) return false
         systemUploadTotal = preview.size
         systemUploadAcknowledged = 0
         val confirmedVehicle = vehicleProvider()
