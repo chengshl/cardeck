@@ -91,11 +91,11 @@ object SystemLogCapture {
                             break
                         }
                         if (relevant.containsMatchIn(line)) {
-                            val redacted = redactor.line(line)
-                            if (redacted.isNotBlank() &&
-                                redacted != "[已隐藏含凭证或密钥的日志行]") {
+                            // Keep complete *redacted* exception/AVC context across
+                            // multiple transport-safe records, not the first 256 chars.
+                            redactor.forensicChunks(line).forEach { chunk ->
                                 if (lines.size == 2700) lines.removeFirst()
-                                lines.addLast(redacted)
+                                lines.addLast(chunk)
                             }
                         }
                     }
