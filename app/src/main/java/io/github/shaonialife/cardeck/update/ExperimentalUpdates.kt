@@ -108,11 +108,76 @@ internal object ExperimentalUpdates {
         return results.sortedByDescending { it.versionCode }
     }
 
+    /** 请求官方Release后整理属于当前APK的实验项目；查询失败不能伪装为空列表。 */
+    fun loadProjects(
+        activity: Activity,
+        onResult: (List<ExperimentProjectCatalog.Project>?, String?) -> Unit,
+    ) {
+        val branch = owningBranch(activity)
+        if (branch == null) {
+            onResult(emptyList(), "当前APK没有受支持的试验项目")
+            return
+        }
+        thread(name = "experiment-project-list") {
+            try {
+                val candidates = parseCandidates(
+                    requestJson(activity, "https://api.github.com/repos/$REPOSITORY/releases?per_page=100"),
+                    branch,
+                )
+                val projects = ExperimentProjectCatalog.group(candidates)
+                ui.post {
+                    if (!activity.isFinishing && !activity.isDestroyed) onResult(projects, null)
+                }
+            } catch (error: Exception) {
+                ui.post {
+                    if (!activity.isFinishing && !activity.isDestroyed)
+                        onResult(null, error.message ?: "实验目录不可用")
+                }
+            }
+        }
+    }
+
+    /** 只从可信Release发现功能线。空目录时保持空选择，不订阅任意其他项目。 */
+    fun chooseProject(activity: Activity, onChanged: () -> Unit) {
+        loadProjects(activity) { projects, error ->
+            when {
+                error != null -> message(activity, "无法读取实验目录：$error")
+                projects == null || projects.isEmpty() -> message(activity,
+                    "当前暂无已发布的实验安装包。\n实验分支入口会保留，正式更新不受影响。")
+                else -> {
+                    val installed = activity.packageManager.getPackageInfo(activity.packageName, 0)
+                    val currentCode = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode else {
+                        @Suppress("DEPRECATION")
+                        installed.versionCode.toLong()
+                    }
+                    val items = arrayOf("停止关注实验项目") + projects.map {
+                        ExperimentProjectCatalog.name(it.sourceBranch) + "\n" +
+                            it.newest.versionName + " · " +
+                            ExperimentProjectCatalog.installState(currentCode, it.newest)
+                    }
+                    AlertDialog.Builder(activity)
+                        .setTitle("选择要持续跟踪的实验")
+                        .setItems(items) { _, chosen ->
+                            val source = if (chosen == 0) null else projects[chosen - 1].sourceBranch
+                            UpdatePreference.selectProject(activity, source)
+                            onChanged()
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+            }
+        }
+    }
+
     /** 软件更新页手动浏览历史试验包，不更改已保存的渠道选择。 */
     fun browse(activity: Activity) {
         val branch = owningBranch(activity)
-        if (branch == null) message(activity, "当前APK没有受支持的试验分支。")
-        else browse(activity, branch)
+        val source = UpdatePreference.selectedProject(activity)
+        when {
+            branch == null -> message(activity, "当前APK没有受支持的试验分支。")
+            source == null -> message(activity, "请先在软件更新页选择要跟踪的实验项目。")
+            else -> browse(activity, branch, source)
+        }
     }
 
     /**
@@ -121,15 +186,16 @@ internal object ExperimentalUpdates {
      */
     fun check(activity: Activity, silent: Boolean = false) {
         val branch = owningBranch(activity)
-        if (branch == null) {
-            if (!silent) message(activity, "当前APK没有受支持的试验分支。")
+        val selectedSource = UpdatePreference.selectedProject(activity)
+        if (branch == null || selectedSource == null) {
+            if (!silent) message(activity, "请先在软件更新页选择要跟踪的实验项目。")
             return
         }
         thread(name = "experiment-release-check") {
             try {
                 val releases = requestJson(activity,
                     "https://api.github.com/repos/$REPOSITORY/releases?per_page=100")
-                val newest = parseCandidates(releases, branch).firstOrNull()
+                val newest = ExperimentProjectCatalog.latest(parseCandidates(releases, branch), selectedSource)
                 val pkg = activity.packageManager.getPackageInfo(activity.packageName, 0)
                 val installed = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
                     @Suppress("DEPRECATION")
@@ -138,13 +204,15 @@ internal object ExperimentalUpdates {
                 ui.post {
                     if (activity.isFinishing || activity.isDestroyed) return@post
                     when {
-                        newest == null -> if (!silent) message(activity, "$branch 目前没有可安装的试验版本。")
+                        newest == null -> if (!silent) message(activity, "当前关注的实验项目尚未发布符合要求的APK。\n不会自动选择其他项目。")
                         newest.versionCode > installed -> confirm(activity, newest)
                         !silent -> message(activity,
                             "已安装版本：" + (pkg.versionName ?: installed.toString()) + "\n" +
-                            "试验分支最新版本：" + newest.versionName + "\n" +
+                            "所选项目：" + ExperimentProjectCatalog.name(selectedSource) + "\n" +
+                            "已发布版本：" + newest.versionName + "\n" +
                             ReleaseBuildTime.label("builtAt=" + newest.builtAt, newest.versionName) +
-                            "\n目前没有可覆盖安装的更新。")
+                            "\n" + ExperimentProjectCatalog.installState(installed, newest) +
+                            "\n按方案B可从该实验源码重新构建更高版本号的签名包，无需卸载。")
                     }
                 }
             } catch (error: Exception) {
@@ -156,15 +224,16 @@ internal object ExperimentalUpdates {
         }
     }
 
-    private fun browse(activity: Activity, branch: String) {
+    private fun browse(activity: Activity, branch: String, selectedSource: String) {
         thread(name = "experiment-release-list") {
             try {
                 val json = requestJson(activity, "https://api.github.com/repos/$REPOSITORY/releases?per_page=100")
                 val candidates = parseCandidates(json, branch)
+                    .filter { it.sourceBranch == selectedSource }
                 ui.post {
                     if (activity.isFinishing || activity.isDestroyed) return@post
                     if (candidates.isEmpty()) {
-                        message(activity, "当前 $branch 暂无已发布的可安装实验包。\n" +
+                        message(activity, "所选项目 ${ExperimentProjectCatalog.name(selectedSource)} 暂无已发布的实验APK。\n" +
                             "Actions 构建产物不等于公开实验 Release；没有通过签名和安全校验的版本不会出现在这里。")
                     } else {
                         val names = candidates.map {
@@ -172,7 +241,7 @@ internal object ExperimentalUpdates {
                                 ReleaseBuildTime.label("builtAt=${it.builtAt}", it.versionName)
                         }.toTypedArray()
                         AlertDialog.Builder(activity)
-                            .setTitle("$branch · 实验版本（手动安装）")
+                            .setTitle("已选实验 · 历史版本")
                             .setItems(names) { _, index -> confirm(activity, candidates[index]) }
                             .setNegativeButton("返回", null)
                             .show()
