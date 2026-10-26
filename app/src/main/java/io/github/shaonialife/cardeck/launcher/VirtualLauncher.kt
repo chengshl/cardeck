@@ -975,14 +975,31 @@ object VirtualLauncher {
                 orientationIds.forEach { runCatching { setIgnoreOrientationRequest(it, false, verify = false) } }
             }
         }
+        // T65: verify the *outcome* of display release, not only that a call
+        // was attempted. Log car-display classes and booleans; never package
+        // names, user task content or raw dumpsys output.
+        val releaseContext = appContextRef
+        val releasedDisplayIds = intArrayOf(dockDisplayId, appDisplayId, appHiDisplayId, mapDisplayId)
+            .filter { it >= 0 }
         if (displaysViaService) {
             val svc = CarInputClient.service
             if (svc != null) {
-                if (dockDisplayId >= 0) runCatching { svc.releaseDisplay(dockDisplayId) }
-                if (appDisplayId >= 0) runCatching { svc.releaseDisplay(appDisplayId) }
-                if (appHiDisplayId >= 0) runCatching { svc.releaseDisplay(appHiDisplayId) }
-                // 地图屏同样由 shell 持有：不释放会在断开后残留（重装后由启动检测兜底发现）
-                if (mapDisplayId >= 0) runCatching { svc.releaseDisplay(mapDisplayId) }
+                fun releaseOwned(label: String, id: Int) {
+                    if (id < 0) return
+                    runCatching { svc.releaseDisplay(id) }
+                        .onSuccess { result ->
+                            logSink?.invoke("LIFECYCLE T65: release $label result=$result")
+                        }
+                        .onFailure { error ->
+                            logSink?.invoke("LIFECYCLE T65: release $label error=${error.javaClass.simpleName}")
+                        }
+                }
+                releaseOwned("dock", dockDisplayId)
+                releaseOwned("app", appDisplayId)
+                releaseOwned("appHi", appHiDisplayId)
+                releaseOwned("map", mapDisplayId)
+            } else {
+                logSink?.invoke("LIFECYCLE T65: service unavailable; ownedScreenCount=${releasedDisplayIds.size}")
             }
             displaysViaService = false
         }
@@ -1003,6 +1020,20 @@ object VirtualLauncher {
         appHiDisplay = null
         runCatching { mapDisplay?.release() }
         mapDisplay = null
+        if (releasedDisplayIds.isNotEmpty() && releaseContext != null) {
+            // Asynchronous read-only check. No shell command on the UI thread
+            // and no process/task removal; it proves display IDs vanished,
+            // but does NOT claim that Android Recents entries were deleted.
+            Bg.run("display-release-verify") {
+                Thread.sleep(450)
+                val manager = releaseContext.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+                val remaining = manager?.displays?.count { it.displayId in releasedDisplayIds }
+                logSink?.invoke(
+                    "LIFECYCLE T65: display-release-verify targetCount=${releasedDisplayIds.size} " +
+                        "remaining=${remaining ?: -1} (recentsNotChecked)",
+                )
+            }
+        }
         dockDisplayId = -1
         appDisplayId = -1
         appHiDisplayId = -1
