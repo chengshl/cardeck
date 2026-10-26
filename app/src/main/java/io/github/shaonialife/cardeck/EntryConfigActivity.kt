@@ -232,6 +232,9 @@ class EntryConfigActivity : AppCompatActivity() {
                 else if (snapshot.systemUploadTotal > 0)
                     "\n本次已确认上传：${snapshot.systemUploadAcknowledged}/${snapshot.systemUploadTotal} 行"
                 else ""
+        } else if (snapshot.state == GatewayProbe.State.FAILED && snapshot.systemUploadTotal > 0) {
+            "诊断上传中断：服务器已确认 ${snapshot.systemUploadAcknowledged}/${snapshot.systemUploadTotal} 行。" +
+                "其余行不能视为上传成功；修复连接后须重新采样并确认。"
         } else getString(if (snapshot.state == GatewayProbe.State.HEALTHY) R.string.gateway_log_unsupported else R.string.gateway_log_waiting)
         testRunning = GatewayLogRuntime.running
         refreshControls()
