@@ -1,3 +1,8 @@
+> **2026-10-26 · Buick-E5 独立 UI 优化（仅本分支）**：软件更新页摘要展示“当前已安装版本”，另显示目前的检查渠道。实验列表/版本详情/下载进度/提示改为与主页面一致的深色圆角界面；操作按钮不会随长更新说明滚出视野。
+>
+> 实验 APK 的 versionCode 不高于当前已安装版本时，改为“仅下载 APK”，从 GitHub 官方预发布获取并完成 SHA-256、包名、versionCode 校验后写到 Android 公共 **下载/CarDeck** 目录（MediaStore），供用户日后手动处理。普通手动安装不会绕过 Android 降级限制；需要卸载高版本时应提示数据及授权丢失。新版本仍可正常下载并触发系统安装。
+>
+> 此提交不改变 CarPlay/iAP2、视频、音频与其他分支的行为；Buick、Buick-Test、main、experiment 均不修改。
 # CarDeck 多分支安装包更新与实验版本发布规范
 
 更新时间：2026-10-26（北京时间）。总清单：[#12](https://github.com/chengshl/cardeck/issues/12)；专项任务：[#17](https://github.com/chengshl/cardeck/issues/17)；音频实验：[#11](https://github.com/chengshl/cardeck/issues/11)。

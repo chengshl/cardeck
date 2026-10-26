@@ -1,9 +1,10 @@
 package io.github.shaonialife.cardeck.update
 
 import android.app.Activity
-import androidx.appcompat.app.AlertDialog
-import android.app.ProgressDialog
 import android.content.Context
+import android.content.ContentValues
+import android.os.Environment
+import android.provider.MediaStore
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
@@ -138,13 +139,9 @@ internal object ExperimentalUpdates {
                 ui.post {
                     if (activity.isFinishing || activity.isDestroyed) return@post
                     when {
-                        newest == null -> if (!silent) message(activity, "$branch 目前没有可安装的试验版本。")
+                        newest == null -> if (!silent) message(activity, "$branch 暂无已验证的试验版本。")
                         newest.versionCode > installed -> confirm(activity, newest)
-                        !silent -> message(activity,
-                            "已安装版本：" + (pkg.versionName ?: installed.toString()) + "\n" +
-                            "试验分支最新版本：" + newest.versionName + "\n" +
-                            ReleaseBuildTime.label("builtAt=" + newest.builtAt, newest.versionName) +
-                            "\n目前没有可覆盖安装的更新。")
+                        !silent -> confirm(activity, newest)
                     }
                 }
             } catch (error: Exception) {
@@ -167,15 +164,24 @@ internal object ExperimentalUpdates {
                         message(activity, "当前 $branch 暂无已发布的可安装实验包。\n" +
                             "Actions 构建产物不等于公开实验 Release；没有通过签名和安全校验的版本不会出现在这里。")
                     } else {
-                        val names = candidates.map {
-                            "${it.sourceBranch.substringAfterLast('/')} · ${it.versionName}\n" +
-                                ReleaseBuildTime.label("builtAt=${it.builtAt}", it.versionName)
-                        }.toTypedArray()
-                        AlertDialog.Builder(activity)
-                            .setTitle("$branch · 实验版本（手动安装）")
-                            .setItems(names) { _, index -> confirm(activity, candidates[index]) }
-                            .setNegativeButton("返回", null)
-                            .show()
+                        val pkg = activity.packageManager.getPackageInfo(activity.packageName, 0)
+                        val installed = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
+                            @Suppress("DEPRECATION")
+                            pkg.versionCode.toLong()
+                        }
+                        val choices = candidates.map { candidate ->
+                            val status = if (ExperimentInstallPolicy.mode(installed, candidate.versionCode) ==
+                                ExperimentInstallPolicy.Mode.UPGRADE) "可升级" else "仅下载"
+                            UpdateDialogUi.Choice(
+                                title = candidate.sourceBranch.substringAfterLast('/'),
+                                detail = candidate.versionName + "\n" +
+                                    ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName),
+                                status = status,
+                                selected = { confirm(activity, candidate) },
+                            )
+                        }
+                        UpdateDialogUi.choices(activity, "$branch · 实验版本",
+                            "已安装：${pkg.versionName ?: installed.toString()} · 选择版本查看详情", choices)
                     }
                 }
             } catch (error: Exception) {
@@ -190,28 +196,31 @@ internal object ExperimentalUpdates {
             @Suppress("DEPRECATION")
             pkg.versionCode.toLong()
         }
-        val reason = when {
-            candidate.versionCode < installed -> "\n\n此实验包版本号低于已安装版本，Android 不允许覆盖降级。"
-            candidate.versionCode == installed -> "\n\n版本号相同，覆盖安装可能被拒绝。"
-            else -> ""
+        val saveOnly = ExperimentInstallPolicy.mode(installed, candidate.versionCode) ==
+            ExperimentInstallPolicy.Mode.SAVE_ONLY
+        val warning = if (saveOnly) {
+            "这份 APK 的 versionCode 不高于当前已安装版本。可以保存到下载/CarDeck 文件夹，" +
+                "但手动打开也不能绕过 Android 降级限制；卸载当前应用再安装会丢失应用数据和授权。"
+        } else {
+            "这是实验版本，可能不稳定。返回正式版本须等待 versionCode 更高的正式构建。"
         }
-        val allowed = candidate.versionCode > installed
-        AlertDialog.Builder(activity)
-            .setTitle("确认安装实验版本")
-            .setMessage(
-                "目标：${candidate.baseBranch}\n" +
-                    "实验：${candidate.sourceBranch}\n" +
-                    "版本：${candidate.versionName}\n" +
-                    ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName) + "\n" +
-                    "校验：官方预发布 + SHA-256 + 系统签名校验\n\n" +
-                    "更新说明：\n${candidate.notes}\n\n" +
-                    "实验包不是稳定更新。返回正式版本需等待版本号更高的正式构建，不能随意降级。" + reason,
-            )
-            .setNegativeButton("取消", null)
-            .setPositiveButton(if (allowed) "下载并安装" else "无法覆盖") { _, _ ->
-                if (allowed) download(activity, candidate)
-            }
-            .show()
+        UpdateDialogUi.details(
+            a = activity,
+            title = "实验版本详情",
+            subtitle = if (saveOnly) "版本较旧 · 只提供 APK 下载" else "可覆盖升级 · 安装前会断开车机连接",
+            fields = listOf(
+                "所属分支" to candidate.baseBranch,
+                "实验来源" to candidate.sourceBranch,
+                "当前版本" to (pkg.versionName ?: installed.toString()),
+                "目标版本" to candidate.versionName,
+                "构建完成" to ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName),
+                "校验方式" to "官方预发布 · SHA-256 · APK 包名/版本 · 系统签名",
+            ),
+            notes = candidate.notes,
+            warning = warning,
+            primary = if (saveOnly) "下载 APK" else "下载并安装",
+            onPrimary = { download(activity, candidate, saveOnly) },
+        )
     }
 
     private fun networks(activity: Activity): List<Route> {
@@ -266,14 +275,8 @@ internal object ExperimentalUpdates {
         throw IllegalStateException("全部网络线路失败：${problem?.message}", problem)
     }
 
-    private fun download(activity: Activity, candidate: Candidate) {
-        val progress = ProgressDialog(activity).apply {
-            setTitle("实验版本 · 下载并验证")
-            setMessage("正在准备下载…")
-            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
-            setCancelable(false)
-            show()
-        }
+    private fun download(activity: Activity, candidate: Candidate, saveOnly: Boolean) {
+        val progress = UpdateDialogUi.progress(activity, "下载并验证实验 APK")
         thread(name = "experiment-apk-download") {
             val target = File(activity.cacheDir, "updates/experiments/${candidate.tag}/${candidate.apkName}")
             var problem: Exception? = null
@@ -282,44 +285,48 @@ internal object ExperimentalUpdates {
             for (route in networks(activity)) {
                 try {
                     target.delete()
-                    val expected = connection(candidate.shaUrl, route).let { c ->
+                    val expected = connection(candidate.shaUrl, route).let { connection ->
                         try {
-                            require(c.responseCode == 200) { "SHA256 HTTP ${c.responseCode}" }
-                            c.inputStream.bufferedReader().use { it.readText().trim().split(Regex("\\s+")).first().lowercase(Locale.US) }
-                        } finally { c.disconnect() }
+                            require(connection.responseCode == 200) { "SHA256 HTTP ${connection.responseCode}" }
+                            connection.inputStream.bufferedReader().use {
+                                it.readText().trim().split(Regex("\\s+")).first().lowercase(Locale.US)
+                            }
+                        } finally { connection.disconnect() }
                     }
                     require(expected.matches(Regex("[0-9a-f]{64}"))) { "校验值不完整" }
-                    val actual = connection(candidate.apkUrl, route).let { c ->
+                    val actual = connection(candidate.apkUrl, route).let { connection ->
                         try {
-                            require(c.responseCode == 200) { "APK HTTP ${c.responseCode}" }
+                            require(connection.responseCode == 200) { "APK HTTP ${connection.responseCode}" }
                             val digest = MessageDigest.getInstance("SHA-256")
-                            val total = c.contentLengthLong
-                            c.inputStream.use { input ->
+                            val total = connection.contentLengthLong
+                            connection.inputStream.use { input ->
                                 target.outputStream().use { output ->
                                     val buffer = ByteArray(65536)
-                                    var readTotal = 0L
+                                    var totalRead = 0L
                                     while (true) {
                                         val n = input.read(buffer)
                                         if (n < 0) break
                                         output.write(buffer, 0, n)
                                         digest.update(buffer, 0, n)
-                                        readTotal += n
-                                        if (total > 0) ui.post { progress.progress = (readTotal * 100 / total).toInt() }
+                                        totalRead += n
+                                        if (total > 0) ui.post {
+                                            progress.setProgress((totalRead * 100 / total).toInt())
+                                        }
                                     }
                                 }
                             }
                             digest.digest().joinToString("") { "%02x".format(it) }
-                        } finally { c.disconnect() }
+                        } finally { connection.disconnect() }
                     }
                     require(actual == expected) { "APK SHA-256 校验失败" }
                     val archive = activity.packageManager.getPackageArchiveInfo(target.absolutePath, 0)
                         ?: throw IllegalStateException("不是有效 APK")
-                    require(archive.packageName == activity.packageName) { "包名与当前分支不一致" }
+                    require(archive.packageName == activity.packageName) { "APK 包名与当前 E5 应用不同" }
                     val archiveVersion = if (Build.VERSION.SDK_INT >= 28) archive.longVersionCode else {
                         @Suppress("DEPRECATION")
                         archive.versionCode.toLong()
                     }
-                    require(archiveVersion == candidate.versionCode) { "APK版本号与发布元数据不一致" }
+                    require(archiveVersion == candidate.versionCode) { "APK 版本号与发布元数据不一致" }
                     verified = true
                     break
                 } catch (error: Exception) {
@@ -327,29 +334,85 @@ internal object ExperimentalUpdates {
                     target.delete()
                 }
             }
+            // Only verified bytes go to publicly accessible Downloads.
+            val exported = if (verified && saveOnly) runCatching {
+                saveToDownloads(activity, target, candidate.apkName)
+            } else null
             ui.post {
                 progress.dismiss()
                 if (activity.isFinishing || activity.isDestroyed) return@post
-                if (!verified) {
-                    message(activity, "实验包下载/校验失败：${problem?.message}")
-                } else {
-                    install(activity, target)
+                when {
+                    !verified -> message(activity, "APK 下载或校验失败：${problem?.message}")
+                    saveOnly && exported?.isSuccess == true -> {
+                        val saved = exported.getOrThrow()
+                        UpdateDialogUi.details(
+                            a = activity,
+                            title = "APK 已保存",
+                            subtitle = "下载 / CarDeck / ${candidate.apkName}",
+                            notes = "安装包已验证 SHA-256、应用包名与版本号，可以在手机文件管理器中找到。",
+                            warning = "旧版本无法直接覆盖。卸载当前应用再安装将丢失应用数据和授权，请自行备份。",
+                            primary = "打开 APK",
+                            onPrimary = { openSavedApk(activity, saved) },
+                            secondary = "完成",
+                        )
+                    }
+                    saveOnly -> message(activity,
+                        "APK 已校验，但保存到下载目录失败：${exported?.exceptionOrNull()?.message}")
+                    else -> install(activity, target)
                 }
             }
+        }
+    }
+
+    private fun saveToDownloads(activity: Activity, apk: File, name: String): Uri {
+        val resolver = activity.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CarDeck")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("无法在下载目录创建文件")
+        try {
+            val stream = resolver.openOutputStream(uri) ?: throw IllegalStateException("无法写入下载目录")
+            stream.use { output -> apk.inputStream().use { input -> input.copyTo(output) } }
+            resolver.update(uri, ContentValues().apply {
+                put(MediaStore.MediaColumns.IS_PENDING, 0)
+            }, null, null)
+            return uri
+        } catch (error: Exception) {
+            resolver.delete(uri, null, null)
+            throw error
+        }
+    }
+
+    private fun openSavedApk(activity: Activity, uri: Uri) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            activity.startActivity(Intent.createChooser(intent, "手动打开已下载 APK"))
+        } catch (error: Exception) {
+            message(activity, "无法打开 APK：${error.message}。请使用文件管理器进入 下载/CarDeck。")
         }
     }
 
     private fun install(activity: Activity, apk: File) {
         if (!apk.isFile || apk.length() == 0L) return message(activity, "已验证的安装包不存在。")
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
-            AlertDialog.Builder(activity)
-                .setTitle("允许安装实验 APK")
-                .setMessage("已验证 SHA-256。请授权 CarDeck 安装未知应用，然后重新进入实验列表安装。")
-                .setNegativeButton("稍后", null)
-                .setPositiveButton("前往授权") { _, _ ->
+            UpdateDialogUi.details(
+                a = activity,
+                title = "允许安装实验 APK",
+                notes = "校验已通过。请允许 CarDeck 安装未知应用，然后从实验列表再次安装。文件已缓存在应用内。",
+                primary = "前往授权",
+                onPrimary = {
                     activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                         Uri.parse("package:${activity.packageName}")))
-                }.show()
+                },
+                secondary = "稍后",
+            )
             return
         }
         try {
@@ -367,7 +430,6 @@ internal object ExperimentalUpdates {
     }
 
     private fun message(activity: Activity, text: String) {
-        AlertDialog.Builder(activity).setTitle("CarDeck 实验版本")
-            .setMessage(text).setPositiveButton("确定", null).show()
+        UpdateDialogUi.message(activity, "CarDeck 实验版本", text)
     }
 }

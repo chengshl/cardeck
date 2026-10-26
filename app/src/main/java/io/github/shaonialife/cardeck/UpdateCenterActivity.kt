@@ -31,6 +31,7 @@ class UpdateCenterActivity : AppCompatActivity() {
     private lateinit var formalMark: TextView
     private lateinit var experimentMark: TextView
     private lateinit var selectedLabel: TextView
+    private lateinit var currentChannelLabel: TextView
     private lateinit var browse: TextView
 
     private fun dp(n: Int) = (resources.displayMetrics.density * n + .5f).toInt()
@@ -125,10 +126,11 @@ class UpdateCenterActivity : AppCompatActivity() {
             background = shape(surface, outline)
         }
         page.line(info, 21)
-        selectedLabel = txt("", 14.5f, fg, true)
-        info.line(selectedLabel)
         val apk = packageManager.getPackageInfo(packageName, 0)
-        info.line(txt("已安装：${apk.versionName ?: "未知"}", 12.5f, muted), 7)
+        selectedLabel = txt("当前已安装：${apk.versionName ?: "未知"}", 16f, fg, true)
+        info.line(selectedLabel)
+        currentChannelLabel = txt("", 12.5f, muted)
+        info.line(currentChannelLabel, 7)
 
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -190,7 +192,7 @@ class UpdateCenterActivity : AppCompatActivity() {
             if (isExperiment) accent else outline)
         formalMark.text = if (!isExperiment) "✓ 已选择" else "选择"
         experimentMark.text = if (isExperiment) "✓ 已选择" else "选择"
-        selectedLabel.text = if (isExperiment) "当前已选择：试验分支" else "当前已选择：正式分支"
+        currentChannelLabel.text = if (isExperiment) "更新检查通道：试验分支" else "更新检查通道：正式分支"
         browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
     }
 }
