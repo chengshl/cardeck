@@ -6,7 +6,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="horizontal"
-    android:background="#FF000000">
+    android:background="@drawable/bg_e5_settings_shell">
 
     <!-- ===================== 左栏：菜单 ===================== -->
     <LinearLayout

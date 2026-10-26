@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- T67: one Settings panel with round corners. Background behind the
+     clipped panel is the user's actual wallpaper, not opaque black. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#F41A2234"/>
+    <stroke android:width="0.5dp" android:color="#55E3EDFA"/>
+    <corners android:radius="24dp"/>
+</shape>

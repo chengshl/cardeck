@@ -92,11 +92,9 @@ class DualDisplayComposer(
         private const val TAG = "DualComposer"
         private const val EGL_RECORDABLE_ANDROID = 0x3142
 
-        // Rounded edges belong to separate dashboard cards only.
+        // Independent Dashboard card uses a tighter radius; a full third-party
+        // app gets ONE large rounded content region, not nested mini-windows.
         private const val TILE_CORNER_RADIUS = 32f
-        // Fullscreen third-party apps are functional surfaces, not card widgets.
-        // Disabling corner clipping keeps their native rectangle, without changing
-        // virtual display dimensions or touch coordinates.
         private const val APP_CORNER_RADIUS = 40f
 
         /** 2D 纹理程序用的单位纹理矩阵（Bitmap 已按目标方向摆好顶点）。 */
@@ -640,7 +638,12 @@ class DualDisplayComposer(
             }
             val activeInput = if (activeAppHi) hi else app
             val fitted = if (!dockAtBottom) standaloneFit else null
-            if (fitted != null) drawFittedWallpaper()
+            // E5 fullscreen apps are rounded by the GL clip shader. Previously
+            // their discarded corners exposed glClearColor (near black), giving
+            // a dark wedge/strip at the bottom. Always paint the *same unblurred*
+            // wallpaper canvas under both app and map on landscape displays.
+            // Texture upload is cached; this adds only one reused background quad.
+            if (!dockAtBottom) drawFittedWallpaper()
             if (dockAtBottom) {
                 // 竖屏：dock 横条贴底（GL 坐标 y=0 为底边），app 在其余区域；
                 // 仪表盘时地图卡叠在应用区上半（地图上/音乐下），全屏盖满应用区。

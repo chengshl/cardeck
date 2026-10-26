@@ -54,6 +54,12 @@ class SettingsActivity :
             return
         }
         setContentView(R.layout.activity_settings)
+        // Clip the whole Settings surface as ONE rounded shell. The matching
+        // unblurred wallpaper slice behind it must remain visible at corners.
+        findViewById<FrameLayout>(android.R.id.content)
+            .getChildAt(0)?.apply {
+                clipToOutline = true
+            }
         // T35: T34 expanded the left Dock to place home controls after the
         // receiver's curved corner. The Settings Activity runs on the separate
         // app display, so it needs ONLY the remaining right/top/bottom insets.
@@ -72,12 +78,14 @@ class SettingsActivity :
             // entire unsafe right edge into a conspicuous black rectangle.
             // Use actual view margins instead and paint the matching wallpaper
             // slice BEHIND it. App content still avoids the curved corners.
-            if (root != null && (insets.right > 0 || insets.top > 0 || insets.bottom > 0)) {
+            if (root != null) {
                 val params = root.layoutParams as FrameLayout.LayoutParams
                 params.topMargin = insets.top
                 params.rightMargin = insets.right
                 params.bottomMargin = insets.bottom
                 root.layoutParams = params
+                // Also paint the wallpaper where the rounded settings shell is
+                // transparent, even when the receiver reports zero safe insets.
                 showReceiverSafeBorderWallpaper(content)
             }
             VirtualLauncher.logSink?.invoke(

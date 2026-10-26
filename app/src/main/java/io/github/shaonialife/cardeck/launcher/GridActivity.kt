@@ -310,8 +310,8 @@ class GridActivity : AppCompatActivity() {
                             }
                         }
                 }
-                // Tap art to open the first-party media presentation, not a new task.
-                cover.setOnClickListener { openFullscreenMedia() }
+                // Tap artwork to bring back the actually playing application.
+                cover.setOnClickListener { openNowPlayingOrFallback() }
             } else {
                 // 占位不消失（INVISIBLE）：封面异步加载/切歌间隙内容不上下跳动
                 cover.visibility = View.INVISIBLE
@@ -321,6 +321,23 @@ class GridActivity : AppCompatActivity() {
         // 进度显示需要持续走秒：渲染尾部续调度（防重：先移除）
         tickHandler.removeCallbacks(mediaTick)
         tickHandler.postDelayed(mediaTick, 1_000)
+    }
+
+    /** T67: keep Dashboard controls, but prefer the real playback app.
+     * Do not create an extra CarDeck fullscreen presentation when a media
+     * source already exposes a launchable application. The old page is
+     * retained as a local fallback for inaccessible players. */
+    private fun openNowPlayingOrFallback() {
+        val pkg = MediaSessionsState.nowPlaying?.pkg
+        val component = pkg?.let {
+            packageManager.getLaunchIntentForPackage(it)?.component
+        }
+        if (component != null) {
+            mediaFullscreen?.visibility = View.GONE
+            Bg.run("open-playing-app") { VirtualLauncher.launchApp(component) }
+        } else {
+            openFullscreenMedia()
+        }
     }
 
     /** T59: toggle fullscreen media without touching the audio stream or
@@ -850,7 +867,7 @@ class GridActivity : AppCompatActivity() {
                 }
             panel.clipToOutline = true
             panel.findViewById<View>(R.id.dashMediaCard)?.setOnClickListener {
-                openFullscreenMedia()
+                openNowPlayingOrFallback()
             }
             panel.findViewById<View>(R.id.dashMapShortcut)?.setOnClickListener {
                 val component = VirtualLauncher.defaultMapComponent(this@GridActivity)
