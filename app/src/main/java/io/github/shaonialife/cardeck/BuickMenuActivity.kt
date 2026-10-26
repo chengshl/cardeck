@@ -6,12 +6,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import io.github.shaonialife.cardeck.update.BuickUpdater
-import io.github.shaonialife.cardeck.update.ExperimentalUpdates
 
 /** Buick-only menu. Keep diagnostics and updates out of upstream SettingsMenus. */
 class BuickMenuActivity : AppCompatActivity() {
@@ -23,14 +21,14 @@ class BuickMenuActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@BuickMenuActivity)
             adapter = BuickMenuAdapter()
         }
-        if (BuickUpdater.autoEnabled(this)) BuickUpdater.check(this, silent = true)
+        if (BuickUpdater.autoEnabled(this)) BuickUpdater.checkSelected(this, silent = true)
     }
 
     private inner class BuickMenuAdapter : RecyclerView.Adapter<MenuHolder>() {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MenuHolder =
             MenuHolder(layoutInflater.inflate(R.layout.item_phone_settings_menu, parent, false))
 
-        override fun getItemCount() = 4
+        override fun getItemCount() = 3
 
         override fun onBindViewHolder(holder: MenuHolder, position: Int) {
             holder.itemView.setOnLongClickListener(null)
@@ -53,24 +51,10 @@ class BuickMenuActivity : AppCompatActivity() {
                 }
                 2 -> {
                     holder.icon.setImageResource(android.R.drawable.stat_sys_download)
-                    holder.title.text = "在线更新"
-                    holder.desc.text = "正式更新 · 实验版本手动选择 · 构建时间"
-                    holder.itemView.setOnClickListener { ExperimentalUpdates.showChannelPicker(this@BuickMenuActivity) }
-                }
-                else -> {
-                    val enabled = BuickUpdater.autoEnabled(this@BuickMenuActivity)
-                    holder.icon.setImageResource(android.R.drawable.ic_popup_sync)
-                    holder.title.text = "自动检查更新"
-                    holder.desc.text = if (enabled) "已开启 · 点击关闭" else "已关闭 · 点击开启"
+                    holder.title.text = "软件更新"
+                    holder.desc.text = "正式 / 试验分支 · 自动检查 · 构建时间"
                     holder.itemView.setOnClickListener {
-                        val newEnabled = !BuickUpdater.autoEnabled(this@BuickMenuActivity)
-                        BuickUpdater.setAutoEnabled(this@BuickMenuActivity, newEnabled)
-                        Toast.makeText(
-                            this@BuickMenuActivity,
-                            if (newEnabled) "自动检查更新已开启" else "自动检查更新已关闭",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                        notifyItemChanged(position)
+                        startActivity(Intent(this@BuickMenuActivity, UpdateCenterActivity::class.java))
                     }
                 }
             }
