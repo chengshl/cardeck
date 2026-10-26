@@ -278,18 +278,18 @@ internal object ExperimentalUpdates {
         val details = buildString {
             append("实验项目：")
             append(ExperimentProjectCatalog.name(candidate.sourceBranch))
-            append("\\n代码来源：")
+            append("\n代码来源：")
             append(candidate.sourceBranch)
-            append("\\n版本：")
+            append("\n版本：")
             append(candidate.versionName)
-            append("\\n")
+            append("\n")
             append(ReleaseBuildTime.label("builtAt=" + candidate.builtAt, candidate.versionName))
-            append("\\n版本比较：")
+            append("\n版本比较：")
             append(ExperimentProjectCatalog.installState(installed, candidate))
-            append("\\n\\n安全校验：官方Release · APK SHA-256 · 系统签名")
-            append("\\n\\n更新说明：\\n")
+            append("\n\n安全校验：官方Release · APK SHA-256 · 系统签名")
+            append("\n\n更新说明：\n")
             append(candidate.notes)
-            append("\\n\\n返回正式版同样需要版本号更高的正式构建，不能直接降级。")
+            append("\n\n返回正式版同样需要版本号更高的正式构建，不能直接降级。")
         }
         val actions = if (allowed) listOf(
             DarkMessageDialog.Action("取消") {},
