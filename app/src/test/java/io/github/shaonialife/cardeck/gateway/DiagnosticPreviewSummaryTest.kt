@@ -32,6 +32,15 @@ class DiagnosticPreviewSummaryTest {
             DiagnosticPreviewSummary.headline(null, false))
     }
 
+    @Test fun appStagesOnlyAreNotCountedAsNewSystemCrash() {
+        val text = DiagnosticPreviewSummary.body(
+            listOf("[阶段事件] stage=APPLICATION_START process=abcd"),
+            null, false, false,
+        )
+        assertTrue(text.contains("阶段记录 1 行"))
+        assertTrue(text.contains("不代表没有发生系统故障"))
+    }
+
     @Test fun previouslyUnsubmittedRecordStillNotAssumedNew() {
         val text = DiagnosticPreviewSummary.body(emptyList(),
             "system_server_crash@2026-10-20 11:00:00", false, true)
