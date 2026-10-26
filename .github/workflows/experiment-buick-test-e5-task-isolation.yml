@@ -1,4 +1,4 @@
-name: E5 task isolation in Buick-Test - no APK release
+name: Buick-Test E5 task isolation - signed isolated experiment
 
 on:
   push:
@@ -6,21 +6,104 @@ on:
       - experiment/buick-test-e5-task-isolation
   workflow_dispatch:
 
+concurrency:
+  group: buick-test-e5-task-experiment
+  cancel-in-progress: false
+
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  unit-test-and-compile:
+  verify-and-publish-experiment:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Verify tests and compile only (no upload or release)
+      - name: Verify branch identity and build without release
+        shell: bash
         run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-e5-task-isolation"
+          grep -Fq 'applicationId = "io.github.buick.test.cardeck"' app/build.gradle.kts
+          grep -Fq '"branch": "Buick-Test"' app/src/main/assets/config/update-channel.json
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Restore Test signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-task-experiment.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-task-experiment.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-task-experiment.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Select greater-than-latest Android version code
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BUILD_EPOCH="$(date -u +%s)"
+          CODE="$(( BUILD_EPOCH - 1704067200 ))"
+          VERSION="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
+          test "$CODE" -gt 0 && test "$CODE" -lt 2147483647
+          PREVIOUS="$(gh release view buick-test-latest --repo "$GITHUB_REPOSITORY" --json body --jq '.body' | sed -n 's/^versionCode=//p' | head -n 1)"
+          [[ "$PREVIOUS" =~ ^[0-9]+$ ]] && test "$CODE" -gt "$PREVIOUS"
+          echo "CARDECK_BUILD_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
+          echo "Experiment code=$CODE > official Test latest=$PREVIOUS"
+      - name: Build correctly signed Test APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleRelease --stacktrace
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          "$AAPT" dump badging "$APK" | grep -Fq "package: name='io.github.buick.test.cardeck'"
+          "$AAPT" dump badging "$APK" | grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'"
+          "$APKSIGNER" verify "$APK"
+          if "$APKSIGNER" verify --print-certs "$APK" | grep -qi 'CN=Android Debug'; then
+            echo "::error::不允许发布Debug签名的实验APK"
+            exit 1
+          fi
+          cp "$APK" CarDeck-Buick-Test-E5-Task-Isolation.apk
+          sha256sum CarDeck-Buick-Test-E5-Task-Isolation.apk > CarDeck-Buick-Test-E5-Task-Isolation.apk.sha256
+      - name: Publish isolated prerelease only, not stable Test
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-e5-task-isolation"
+          TAG="exp-buick-test-task-$CARDECK_RELEASE_VERSION_NAME"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          APK="CarDeck-Buick-Test-E5-Task-Isolation.apk"
+          test -s "$APK" && test -s "$APK.sha256"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## 实验说明\n'
+            printf 'E5→Test T62/T66: 新建车机任务不在手机最近任务列表显示，已启动车机任务尽量复用。\n'
+            printf '仅任务隔离试验，不修改音频、iAP2、Shizuku 虚拟屏销毁。CI不代表实车通过。\n'
+            printf '安装本试验会覆盖相同包名的Buick-Test；Android不允许直接降级回旧正式版。\n'
+          } > task-experiment-release.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Buick-Test E5 任务隔离实验 $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file task-experiment-release.txt --prerelease --latest=false
