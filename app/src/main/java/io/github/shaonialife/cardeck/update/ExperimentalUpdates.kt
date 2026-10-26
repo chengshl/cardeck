@@ -1,7 +1,7 @@
 package io.github.shaonialife.cardeck.update
 
 import android.app.Activity
-import android.app.AlertDialog
+import androidx.appcompat.app.AlertDialog
 import android.app.ProgressDialog
 import android.content.Context
 import android.content.Intent
@@ -75,7 +75,7 @@ internal object ExperimentalUpdates {
             if (!tag.startsWith(prefix) || !tag.matches(Regex("[A-Za-z0-9_-]{8,100}"))) continue
             val body = release.optString("body")
             if (ReleaseBuildTime.metadata(body, "artifactKind") != "experiment") continue
-            if (ReleaseBuildTime.metadata(body, "updaterSchema") != "1") continue
+            if (ReleaseBuildTime.metadata(body, "updaterSchema") != "2") continue
             if (ReleaseBuildTime.metadata(body, "baseBranch") != branch) continue
             val source = ReleaseBuildTime.metadata(body, "sourceBranch") ?: continue
             if (!source.startsWith(sourcePrefix) || !source.matches(Regex("experiment/[A-Za-z0-9_/-]+"))) continue
@@ -108,19 +108,52 @@ internal object ExperimentalUpdates {
         return results.sortedByDescending { it.versionCode }
     }
 
-    fun showChannelPicker(activity: Activity) {
+    /** 软件更新页手动浏览历史试验包，不更改已保存的渠道选择。 */
+    fun browse(activity: Activity) {
+        val branch = owningBranch(activity)
+        if (branch == null) message(activity, "当前APK没有受支持的试验分支。")
+        else browse(activity, branch)
+    }
+
+    /**
+     * 自动检查只读取当前包名对应最新合法实验预发布，不自动下载或安装。
+     * 用户仍可通过browse选择任一可覆盖安装的历史实验包。
+     */
+    fun check(activity: Activity, silent: Boolean = false) {
         val branch = owningBranch(activity)
         if (branch == null) {
-            message(activity, "当前包未配置独立的别克更新通道。")
+            if (!silent) message(activity, "当前APK没有受支持的试验分支。")
             return
         }
-        AlertDialog.Builder(activity)
-            .setTitle("在线更新 · $branch")
-            .setItems(arrayOf("正式版本 · 当前分支自动更新通道", "实验版本 · 手动查看和安装（不会自动升级）")) { _, selected ->
-                if (selected == 0) BuickUpdater.check(activity) else browse(activity, branch)
+        thread(name = "experiment-release-check") {
+            try {
+                val releases = requestJson(activity,
+                    "https://api.github.com/repos/$REPOSITORY/releases?per_page=100")
+                val newest = parseCandidates(releases, branch).firstOrNull()
+                val pkg = activity.packageManager.getPackageInfo(activity.packageName, 0)
+                val installed = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
+                    @Suppress("DEPRECATION")
+                    pkg.versionCode.toLong()
+                }
+                ui.post {
+                    if (activity.isFinishing || activity.isDestroyed) return@post
+                    when {
+                        newest == null -> if (!silent) message(activity, "$branch 目前没有可安装的试验版本。")
+                        newest.versionCode > installed -> confirm(activity, newest)
+                        !silent -> message(activity,
+                            "已安装版本：" + (pkg.versionName ?: installed.toString()) + "\n" +
+                            "试验分支最新版本：" + newest.versionName + "\n" +
+                            ReleaseBuildTime.label("builtAt=" + newest.builtAt, newest.versionName) +
+                            "\n目前没有可覆盖安装的更新。")
+                    }
+                }
+            } catch (error: Exception) {
+                ui.post {
+                    if (!silent && !activity.isFinishing && !activity.isDestroyed)
+                        message(activity, "检查试验分支失败：" + error.message)
+                }
             }
-            .setNegativeButton("取消", null)
-            .show()
+        }
     }
 
     private fun browse(activity: Activity, branch: String) {
@@ -131,11 +164,11 @@ internal object ExperimentalUpdates {
                 ui.post {
                     if (activity.isFinishing || activity.isDestroyed) return@post
                     if (candidates.isEmpty()) {
-                        message(activity, "当前 $branch 暂无已发布的可安装实验包。\\n" +
+                        message(activity, "当前 $branch 暂无已发布的可安装实验包。\n" +
                             "Actions 构建产物不等于公开实验 Release；没有通过签名和安全校验的版本不会出现在这里。")
                     } else {
                         val names = candidates.map {
-                            "${it.sourceBranch.substringAfterLast('/')} · ${it.versionName}\\n" +
+                            "${it.sourceBranch.substringAfterLast('/')} · ${it.versionName}\n" +
                                 ReleaseBuildTime.label("builtAt=${it.builtAt}", it.versionName)
                         }.toTypedArray()
                         AlertDialog.Builder(activity)
@@ -158,20 +191,20 @@ internal object ExperimentalUpdates {
             pkg.versionCode.toLong()
         }
         val reason = when {
-            candidate.versionCode < installed -> "\\n\\n此实验包版本号低于已安装版本，Android 不允许覆盖降级。"
-            candidate.versionCode == installed -> "\\n\\n版本号相同，覆盖安装可能被拒绝。"
+            candidate.versionCode < installed -> "\n\n此实验包版本号低于已安装版本，Android 不允许覆盖降级。"
+            candidate.versionCode == installed -> "\n\n版本号相同，覆盖安装可能被拒绝。"
             else -> ""
         }
         val allowed = candidate.versionCode > installed
         AlertDialog.Builder(activity)
             .setTitle("确认安装实验版本")
             .setMessage(
-                "目标：${candidate.baseBranch}\\n" +
-                    "实验：${candidate.sourceBranch}\\n" +
-                    "版本：${candidate.versionName}\\n" +
-                    ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName) + "\\n" +
-                    "校验：官方预发布 + SHA-256 + 系统签名校验\\n\\n" +
-                    "更新说明：\\n${candidate.notes}\\n\\n" +
+                "目标：${candidate.baseBranch}\n" +
+                    "实验：${candidate.sourceBranch}\n" +
+                    "版本：${candidate.versionName}\n" +
+                    ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName) + "\n" +
+                    "校验：官方预发布 + SHA-256 + 系统签名校验\n\n" +
+                    "更新说明：\n${candidate.notes}\n\n" +
                     "实验包不是稳定更新。返回正式版本需等待版本号更高的正式构建，不能随意降级。" + reason,
             )
             .setNegativeButton("取消", null)
