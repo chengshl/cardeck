@@ -14,15 +14,12 @@ internal object BuickStandaloneFit {
         streamWidth: Int,
         streamHeight: Int,
     ): BuickViewport? {
-        if (safe == null || dockWidth < 0 || dockWidth >= streamWidth ||
-            streamWidth <= 0 || streamHeight <= 0) return null
-        val x0 = maxOf(dockWidth, safe.left)
-        val x1 = minOf(streamWidth, safe.left + safe.width)
-        val y0 = maxOf(0, safe.top)
-        val y1 = minOf(streamHeight, safe.top + safe.height)
-        val availableW = x1 - x0
-        val availableH = y1 - y0
-        if (availableW < 320 || availableH < 160) return null
+        val outer = BuickStandaloneFrame.resolve(safe, dockWidth, streamWidth, streamHeight)
+            ?: return null
+        val x0 = outer.left
+        val y0 = outer.top
+        val availableW = outer.width
+        val availableH = outer.height
         val appW = streamWidth - dockWidth
         val scale = min(availableW.toDouble() / appW, availableH.toDouble() / streamHeight)
         if (!scale.isFinite() || scale <= 0.0 || scale > 1.0) return null

@@ -86,6 +86,8 @@ class DualDisplayComposer(
 
     /** Standalone fullscreen application only; null retains original presentation. */
     @Volatile var standaloneFit: io.github.shaonialife.cardeck.buick.BuickViewport? = null
+    /** T68 实验视觉外框，和 Settings 共享接收端安全矩形；触摸仍按 standaloneFit。 */
+    @Volatile var standaloneFrame: io.github.shaonialife.cardeck.buick.BuickViewport? = null
     @Volatile var safeBackgroundBitmap: android.graphics.Bitmap? = null
 
     companion object {
@@ -531,6 +533,61 @@ class DualDisplayComposer(
             )
         }
 
+        // T68：离屏生成一次轻透明安全框，缓存 GL 纹理。无模糊、无地图裁切；
+        // 只在 safe-fit 独立应用前绘制。即使 GL 初始化失败也不影响地图主纹理。
+        var visualFrameTexture = 0
+        var visualFrameBitmap: android.graphics.Bitmap? = null
+        var visualFrameCard: OverlayCard? = null
+        var visualFrameSize = Pair(0, 0)
+        fun drawSafeVisualFrame(frame: io.github.shaonialife.cardeck.buick.BuickViewport) {
+            if (safeBackgroundBitmap == null || frame.width <= 0 || frame.height <= 0) return
+            if (visualFrameTexture == 0 || visualFrameSize != (frame.width to frame.height)) {
+                val bitmap = android.graphics.Bitmap.createBitmap(
+                    frame.width, frame.height, android.graphics.Bitmap.Config.ARGB_8888,
+                )
+                val canvas = android.graphics.Canvas(bitmap)
+                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                val rounded = android.graphics.RectF(
+                    1.5f, 1.5f, frame.width - 1.5f, frame.height - 1.5f,
+                )
+                // 透明蓝色玻璃底而非黑色遮罩。地图无法等比例填满的上下区域
+                // 只露出同一张清晰紫色壁纸，外框视觉与 Settings 一致。
+                paint.color = android.graphics.Color.argb(26, 48, 67, 108)
+                canvas.drawRoundRect(rounded, 36f, 36f, paint)
+                paint.style = android.graphics.Paint.Style.STROKE
+                paint.strokeWidth = 1.8f
+                paint.color = android.graphics.Color.argb(94, 223, 234, 252)
+                canvas.drawRoundRect(rounded, 36f, 36f, paint)
+                if (visualFrameTexture == 0) {
+                    val ids = IntArray(1)
+                    GLES20.glGenTextures(1, ids, 0)
+                    visualFrameTexture = ids[0]
+                }
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, visualFrameTexture)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+                visualFrameBitmap?.recycle()
+                visualFrameBitmap = bitmap
+                visualFrameSize = frame.width to frame.height
+                visualFrameCard = OverlayCard(
+                    bitmap, frame.left.toFloat(), frame.top.toFloat(),
+                    (frame.left + frame.width).toFloat(),
+                    (frame.top + frame.height).toFloat(),
+                )
+            }
+            val card = visualFrameCard ?: return
+            drawOverlay(
+                card,
+                frame.left.toFloat(), frame.top.toFloat(),
+                (frame.left + frame.width).toFloat(),
+                (frame.top + frame.height).toFloat(),
+                visualFrameTexture,
+            )
+        }
+
         /** [u0]/[u1]：横向纹理采样区间（地图分屏时采样缓冲中央带区用）。 */
         fun drawInputUV(
             input: Input,
@@ -644,6 +701,11 @@ class DualDisplayComposer(
             // wallpaper canvas under both app and map on landscape displays.
             // Texture upload is cached; this adds only one reused background quad.
             if (!dockAtBottom) drawFittedWallpaper()
+            // T68 实验仅给已启用 safe-fit 的独立 App/全屏地图绘制一层
+            // 与设置页同边界的薄玻璃外框；不额外开启模糊或触摸覆盖。
+            if (!dockAtBottom && fitted != null && standaloneFrame != null) {
+                drawSafeVisualFrame(standaloneFrame!!)
+            }
             if (dockAtBottom) {
                 // 竖屏：dock 横条贴底（GL 坐标 y=0 为底边），app 在其余区域；
                 // 仪表盘时地图卡叠在应用区上半（地图上/音乐下），全屏盖满应用区。
@@ -818,6 +880,13 @@ class DualDisplayComposer(
                 fittedWallpaperTexture = 0
                 fittedWallpaperUploaded = null
             }
+            if (visualFrameTexture != 0) {
+                runCatching { GLES20.glDeleteTextures(1, intArrayOf(visualFrameTexture), 0) }
+                visualFrameTexture = 0
+            }
+            visualFrameBitmap?.recycle()
+            visualFrameBitmap = null
+            visualFrameCard = null
             runCatching { dock.surface.release() }
             runCatching { app.surface.release() }
             runCatching { dock.surfaceTexture.release() }

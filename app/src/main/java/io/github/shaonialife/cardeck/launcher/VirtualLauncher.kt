@@ -195,11 +195,16 @@ object VirtualLauncher {
     /** Only standalone 3rd-party apps and fullscreen map use this fitted GL rect. */
     @Volatile var standaloneFit: BuickViewport? = null
         private set
+    /** T68 实验：同 Settings 的统一可见外框，纯装饰、不作为触摸命中区域。 */
+    @Volatile var standaloneFrame: BuickViewport? = null
+        private set
     @Volatile private var lastFullscreenMapPackage: String? = null
 
     private fun resetStandaloneFit() {
         standaloneFit = null
+        standaloneFrame = null
         composer?.standaloneFit = null
+        composer?.standaloneFrame = null
     }
 
     private fun selectStandaloneFit(packageName: String) {
@@ -211,8 +216,15 @@ object VirtualLauncher {
         val rect = if (mode == "safe") {
             BuickStandaloneFit.resolve(safe, dockWidthPx, streamWidthPx, streamHeightPx)
         } else null
+        val frame = if (rect != null) {
+            io.github.shaonialife.cardeck.buick.BuickStandaloneFrame.resolve(
+                safe, dockWidthPx, streamWidthPx, streamHeightPx,
+            )
+        } else null
         standaloneFit = rect
+        standaloneFrame = frame
         composer?.standaloneFit = rect
+        composer?.standaloneFrame = frame
         logSink?.invoke(
             "BUICK T38: 独立应用 mode=$mode fit=${rect ?: "full"} " +
                 "背景就绪=${composer?.safeBackgroundBitmap != null} (不改变视频编码尺寸)"
