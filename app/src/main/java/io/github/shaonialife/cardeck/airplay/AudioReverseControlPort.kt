@@ -18,6 +18,27 @@ internal class AudioReverseControlPort(
 ) : AutoCloseable {
     @Volatile private var socket: DatagramSocket? = null
     private val received = AtomicInteger(0)
+    @Volatile private var openedAtNanos = 0L
+    @Volatile private var lastReceiveNanos = 0L
+
+    /** 仅解析头部；不存储音频控制报文负载、IP或设备标识。 */
+    internal data class ControlHeader(val version: Int, val packetType: Int, val declaredBytes: Int?)
+
+    companion object {
+        internal fun inspectHeader(bytes: ByteArray, length: Int): ControlHeader? {
+            if (length < 2 || length > bytes.size) return null
+            val version = (bytes[0].toInt() and 0xFF) ushr 6
+            val packetType = bytes[1].toInt() and 0xFF
+            val declaredBytes =
+                if (length >= 4) {
+                    val words = ((bytes[2].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF)
+                    (words + 1) * 4
+                } else {
+                    null
+                }
+            return ControlHeader(version, packetType, declaredBytes)
+        }
+    }
 
     val port: Int get() = socket?.takeUnless { it.isClosed }?.localPort ?: 0
 
@@ -39,20 +60,37 @@ internal class AudioReverseControlPort(
             return 0
         }
         socket = datagram
+        openedAtNanos = System.nanoTime()
+        lastReceiveNanos = 0L
         log("AUDIO T73: 手机反向 RTCP UDP 已监听 localControlPort=${datagram.localPort}")
         Thread({
-            val buffer = ByteArray(1_500)
+            val buffer = ByteArray(2_048)
+            var nextReportSecond = 1L
+            fun reportWindow() {
+                val now = System.nanoTime()
+                val elapsedSecond = ((now - openedAtNanos) / 1_000_000_000L).coerceAtLeast(0L)
+                if (elapsedSecond < nextReportSecond || elapsedSecond > 30L) return
+                nextReportSecond = elapsedSecond + 1L
+                val last = lastReceiveNanos
+                val gap = if (last == 0L) "none" else ((now - last) / 1_000_000L).toString()
+                log("AUDIO T75: 反向RTCP t=${elapsedSecond}s 接收累计=${received.get()} 距最后接收=${gap}ms")
+            }
             while (!datagram.isClosed) {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
                     datagram.receive(packet)
+                    lastReceiveNanos = System.nanoTime()
                     val n = received.incrementAndGet()
                     if (n <= 8 || n % 30 == 0) {
-                        val pt = if (packet.length >= 2) buffer[1].toInt() and 0xff else -1
-                        log("AUDIO T73: 收到车机反向音频控制包 #${n} size=${packet.length} pt=${pt}")
+                        val header = inspectHeader(buffer, packet.length)
+                        log("AUDIO T75: 反向RTCP包 #${n} size=${packet.length} " +
+                            "version=${header?.version ?: -1} pt=${header?.packetType ?: -1} " +
+                            "declaredBytes=${header?.declaredBytes ?: -1}")
                     }
+                    reportWindow()
                 } catch (_: SocketTimeoutException) {
-                    // Loop until the owning CarPlay audio stream is closed.
+                    // 在30秒高风险窗口内，连0包也如实记录；没有包不等于协议错误。
+                    reportWindow()
                 } catch (error: SocketException) {
                     if (!datagram.isClosed) {
                         log("AUDIO T73: 反向 RTCP 套接字异常：${error.javaClass.simpleName}")
@@ -74,6 +112,9 @@ internal class AudioReverseControlPort(
         val active = socket ?: return
         socket = null
         active.close()
-        log("AUDIO T73: 手机反向 RTCP 监听已关闭，累计接收=${received.get()}")
+        val now = System.nanoTime()
+        val activeMs = if (openedAtNanos == 0L) 0L else ((now - openedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        val lastGap = if (lastReceiveNanos == 0L) "none" else ((now - lastReceiveNanos) / 1_000_000L).toString()
+        log("AUDIO T75: 手机反向 RTCP 监听关闭 elapsedMs=$activeMs received=${received.get()} lastGapMs=$lastGap")
     }
 }
