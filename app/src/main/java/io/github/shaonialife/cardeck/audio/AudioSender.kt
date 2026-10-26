@@ -201,6 +201,13 @@ class AudioSender(
     private var lastCaptureDiagnosticAt = 0L
     private var readFailures = 0
 
+    // T74: Android-side observations only; UDP send() success is not receiver ACK.
+    private var t74BestRssi: Int? = null
+    private var t74LowRssiSamples = 0
+    private var t74SignalWarned = false
+    private var t74MaxUdpSendMs = 0L
+    private var t74SlowUdpSends = 0L
+
     val isRunning: Boolean get() = running.get()
 
     /** 静音前的手机媒体音量 index（-1 = 未静音）。 */
@@ -602,6 +609,7 @@ class AudioSender(
                     now - diagnosticStartedAt <= 45_000L
                 val logInterval = if (inTrialWindow) 1_000L else 30_000L
                 if (now - lastLogAt >= logInterval) {
+                    if (inTrialWindow) logT74AndroidLinkMetrics()
                     val elapsedMs = if (diagnosticStartedAt > 0L) now - diagnosticStartedAt else -1L
                     val label = if (inTrialWindow) "AUDIO T13: B233 RTP" else "AUDIO: 推流中"
                     val recordState = if (inTrialWindow) " RECORD确认=$syncRecordAccepted" else ""
@@ -630,7 +638,13 @@ class AudioSender(
         nonceCounter++
         val client = socket ?: return false
         return try {
+            val startedNs = System.nanoTime()
             client.send(DatagramPacket(wire, wire.size))
+            if (verboseStartupDiagnostics) {
+                val sendMs = ((System.nanoTime() - startedNs) / 1_000_000L).coerceAtLeast(0L)
+                t74MaxUdpSendMs = maxOf(t74MaxUdpSendMs, sendMs)
+                if (sendMs >= BuickAudioNetworkPolicy.SLOW_UDP_SEND_MS) t74SlowUdpSends++
+            }
             packetsSent++
             bytesSent += wire.size
             true
@@ -638,6 +652,51 @@ class AudioSender(
             log("AUDIO: UDP 发送失败 - ${error.message}")
             false
         }
+    }
+
+    /**
+     * T74: sample the Android transmitter's vehicle Wi-Fi (NOT the iPhone's
+     * sysdiagnose driver counters). RSSI is read once per second, if available.
+     * No SSID, IP address or raw hardware identifiers are logged.
+     */
+    private fun logT74AndroidLinkMetrics() {
+        val rssi = runCatching {
+            val manager = context?.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                as? android.net.ConnectivityManager
+            val capabilities = vehicleNetwork?.let { manager?.getNetworkCapabilities(it) }
+            if (capabilities?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) != true) {
+                null
+            } else {
+                (capabilities.transportInfo as? android.net.wifi.WifiInfo)?.rssi
+                    ?.takeIf { it in -100..-1 }
+            }
+        }.getOrNull()
+        if (rssi != null) {
+            val best = maxOf(t74BestRssi ?: rssi, rssi)
+            t74BestRssi = best
+            val drop = BuickAudioNetworkPolicy.dropDb(best, rssi)
+            if (drop != null && drop >= BuickAudioNetworkPolicy.RSSI_DROP_WARN_DB) {
+                t74LowRssiSamples++
+            } else {
+                t74LowRssiSamples = 0
+                t74SignalWarned = false
+            }
+            if (!t74SignalWarned &&
+                BuickAudioNetworkPolicy.shouldWarnForRssi(drop, t74LowRssiSamples)
+            ) {
+                t74SignalWarned = true
+                log("AUDIO T74: Android车机Wi-Fi RSSI持续下降 ${drop}dB；仅标记风险，" +
+                    "不据此推断车机缓存满/ACK停止，不自动修改音频协议")
+            }
+        }
+        log(
+            "AUDIO T74: Android Wi-Fi RSSI=${rssi?.toString() ?: "unavailable"}dBm " +
+                "best=${t74BestRssi?.toString() ?: "unavailable"}dBm " +
+                "UDP send max=${t74MaxUdpSendMs}ms slow=$t74SlowUdpSends；" +
+                "发送耗时≠802.11 ACK，iPhone rxACKUcount/VI不可由本App读取",
+        )
+        t74MaxUdpSendMs = 0L
+        t74SlowUdpSends = 0L
     }
 
     /** PCM directly checks capture; only AAC requires platform decoder self-test. */
