@@ -635,12 +635,8 @@ object VirtualLauncher {
                     // （新宽度/新 surface 不生效——2026-10-11 dock 改宽后视觉无变化的根因）
                     val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
                     dm.displays
-                        .filter {
-                            it.name == "CarPlayDock" ||
-                                it.name == "CarPlayApp" ||
-                                it.name == "CarPlayAppHi" ||
-                                it.name == "CarPlayMap"
-                        }.forEach { stale ->
+                        .filter { CarPlayDisplayScope.owns(it.name, context.packageName) }
+                        .forEach { stale ->
                             runCatching { svc!!.releaseDisplay(stale.displayId) }
                                 .onSuccess { log("LAUNCHER: 已释放残留虚拟屏 ${stale.name}#${stale.displayId}") }
                         }
@@ -649,7 +645,7 @@ object VirtualLauncher {
                     CriticalEventTrail.mark(context, "CREATE_DOCK_BEGIN")
                     val dockId =
                         svc!!.createDisplay(
-                            "CarPlayDock",
+                            CarPlayDisplayScope.name("CarPlayDock", context.packageName),
                             dockWidthPx,
                             dockHeightPx,
                             dockDensityDpi,
@@ -660,7 +656,7 @@ object VirtualLauncher {
                     CriticalEventTrail.mark(context, "CREATE_APP_BEGIN")
                     val appId =
                         svc!!.createDisplay(
-                            "CarPlayApp",
+                            CarPlayDisplayScope.name("CarPlayApp", context.packageName),
                             appWidth,
                             appHeightPx,
                             appNativeDensity,
@@ -672,7 +668,7 @@ object VirtualLauncher {
                     val appHiId =
                         if (appHiSurface != null) {
                             svc!!.createDisplay(
-                                "CarPlayAppHi",
+                                CarPlayDisplayScope.name("CarPlayAppHi", context.packageName),
                                 appHiWidth,
                                 appHiHeight,
                                 appHiDensity,
@@ -686,7 +682,7 @@ object VirtualLauncher {
                     val mapId =
                         if (mapSurface != null) {
                             svc!!.createDisplay(
-                                "CarPlayMap",
+                                CarPlayDisplayScope.name("CarPlayMap", context.packageName),
                                 appWidth,
                                 appHeightPx,
                                 200,
@@ -763,7 +759,7 @@ object VirtualLauncher {
                 val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
                 dockDisplay =
                     dm.createVirtualDisplay(
-                        "CarPlayDock",
+                        CarPlayDisplayScope.name("CarPlayDock", context.packageName),
                         dockWidthPx,
                         dockHeightPx,
                         dockDensityDpi,
@@ -776,7 +772,7 @@ object VirtualLauncher {
                     )
                 appDisplay =
                     dm.createVirtualDisplay(
-                        "CarPlayApp",
+                        CarPlayDisplayScope.name("CarPlayApp", context.packageName),
                         appWidth,
                         appHeightPx,
                         appNativeDensity,
@@ -790,7 +786,7 @@ object VirtualLauncher {
                 if (appHiSurface != null) {
                     appHiDisplay =
                         dm.createVirtualDisplay(
-                            "CarPlayAppHi",
+                            CarPlayDisplayScope.name("CarPlayAppHi", context.packageName),
                             appHiWidth,
                             appHiHeight,
                             appHiDensity,
@@ -812,7 +808,7 @@ object VirtualLauncher {
                 if (mapSurface != null) {
                     mapDisplay =
                         dm.createVirtualDisplay(
-                            "CarPlayMap",
+                            CarPlayDisplayScope.name("CarPlayMap", context.packageName),
                             appWidth,
                             appHeightPx,
                             MAP_DISPLAY_DPI,
