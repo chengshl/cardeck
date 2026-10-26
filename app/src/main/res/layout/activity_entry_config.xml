@@ -186,6 +186,22 @@
                 android:textColor="#B0BEBE"
                 android:textSize="12sp" />
 
+            <Button
+                android:id="@+id/uploadDetailedSystemLogs"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
+                android:layout_marginTop="14dp"
+                android:text="详细故障日志 · 按需采集/预览/上传" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="故障诊断专用，最多3000行；按需读取当前系统缓冲区中的显示、编码、Shizuku和网络事件及本地阶段记录。仅展示256行样本，保存或上传需再次手动确认；不持续采集，不保证可追溯已轮转的10分钟历史。"
+                android:textColor="#B0BEBE"
+                android:textSize="12sp" />
+
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
