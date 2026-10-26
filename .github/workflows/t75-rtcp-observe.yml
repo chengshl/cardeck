@@ -4,6 +4,10 @@ on:
     branches:
       - experiment/buick-test-t75-rtcp-observe
   workflow_dispatch:
+concurrency:
+  group: isolated-t75-rtcp-build-and-prerelease
+  cancel-in-progress: true
+
 permissions:
   contents: write
 jobs:
