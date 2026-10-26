@@ -42,7 +42,7 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         ).replace(safe, "[已隐藏认证头]")
         // Mask values rather than dropping a whole stack trace on a generic word.
         val namedSecret = Regex(
-            """\b(authorization|password|passwd|access[_-]?token|refresh[_-]?token|token|secret|private[_-]?key|pairing[_-]?key|session[_-]?key|write[_-]?key|read[_-]?key|credential|nonce|salt|signature)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""",
+            """\b(authorization|password|passwd|access[_-]?token|refresh[_-]?token|token|secret|private[_-]?key|pairing[_-]?key|session[_-]?key|write[_-]?key|read[_-]?key|credential|nonce|salt|signature|密码|凭证)(?:"|')?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""",
             RegexOption.IGNORE_CASE,
         )
         safe = namedSecret.replace(safe) { it.groupValues[1] + "=[已隐藏]" }
@@ -60,7 +60,7 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         safe = Regex("""\b(ssid|serial|device.?id|vin|latitude|longitude)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""", RegexOption.IGNORE_CASE)
             .replace(safe) { it.groupValues[1] + "=[已隐藏]" }
         safe = safe.map { if (it.code < 32 || it.code == 127) ' ' else it }.joinToString("")
-        return safe.chunked(224).take(36).mapIndexed { i, chunk ->
+        return safe.chunked(200).take(42).mapIndexed { i, chunk ->
             "[取证" + (i + 1) + "] " + chunk
         }
     }
