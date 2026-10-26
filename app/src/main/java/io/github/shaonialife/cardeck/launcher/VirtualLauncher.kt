@@ -1366,10 +1366,11 @@ object VirtualLauncher {
             } else {
                 component.flattenToShortString()
             }
-        // Reuse an already successful map task. Do not delete the target's
-        // own task before reopening it; NEW_TASK|MULTIPLE_TASK only on first use.
+        // Reuse a successful map task without EXCLUDE_FROM_RECENTS; the first
+        // car-only instance is NEW_TASK|MULTIPLE_TASK|EXCLUDE_FROM_RECENTS.
+        // Do not delete the target's own task before reopening it.
         val known = activeMapTaskPackage == component.packageName
-        val launchFlags = if (known) "0x10000000" else "0x18000000"
+        val launchFlags = CarTaskLaunchFlags.shellFlags(newCarTask = !known)
         val result =
             Shell.exec(
                 "am start -n $target --display $mapDisplayId -f $launchFlags",
@@ -1452,8 +1453,12 @@ object VirtualLauncher {
         // Dashboard changes map geometry, not the currently running map app.
         // Repeated shell launches make otherwise simple page transitions stall.
         if (activeMapTaskPackage == component.packageName) return
-        // 不带 MULTIPLE_TASK：任务已在地图屏时等价于带回前台
-        val result = Shell.exec("am start -n $target --display $mapDisplayId", timeoutMs = 8000)
+        // The first Dashboard map is a car-only task. Force a separate task
+        // even if the same map is already running on the physical phone;
+        // exclude this newly-created car task from Android Recents.
+        // Once created we cache the map and never add this flag on reuse.
+        val flags = CarTaskLaunchFlags.shellFlags(newCarTask = true)
+        val result = Shell.exec("am start -n $target --display $mapDisplayId -f $flags", timeoutMs = 8000)
         if (result.ok && result.output.contains("Starting:", ignoreCase = true)) {
             activeMapTaskPackage = component.packageName
         }
@@ -1475,7 +1480,7 @@ object VirtualLauncher {
      * `am stack remove <taskId>`（本版本 RootTask id == taskId）。可靠做法：
      *  1) 目标屏已有该包任务 → 普通启动带回前台（复用，保留任务栈）
      *  2) 目标屏没有 → 先清掉该包在**另一个应用屏**上的任务（偏好切换后避免双实例），
-     *     再 `-f 0x18000000`（NEW_TASK|MULTIPLE_TASK）在目标屏新建实例
+     *     再以 NEW_TASK|MULTIPLE_TASK|EXCLUDE_FROM_RECENTS 在目标车机屏新建实例
      *
      * 已知局限（2026-10-10 实测）：应用在手机侧也有实例时，进程基准密度停留在
      * 手机屏（560dpi），车机屏渲染文字偏大（≈2.2 倍）。唯一根治是强制重启该进程，
@@ -1521,15 +1526,20 @@ object VirtualLauncher {
         val result =
             if (onTarget || rememberedTarget) {
                 // Previously successful target: prefer bringing task forward, no MULTIPLE_TASK.
-                Shell.exec("am start -n $target --display $targetDisplay -f 0x10000000", timeoutMs = 8000)
+                val flags = CarTaskLaunchFlags.shellFlags(newCarTask = false)
+                Shell.exec("am start -n $target --display $targetDisplay -f $flags", timeoutMs = 8000)
             } else {
-                // MULTIPLE_TASK：即使该应用在其他屏有任务，也强制在目标屏新建实例
-                Shell.exec("am start -n $target --display $targetDisplay -f 0x18000000", timeoutMs = 8000)
+                // New car-only task: do not expose a duplicate tile in phone Recents.
+                // This only affects the task created by CarDeck on a car display.
+                val flags = CarTaskLaunchFlags.shellFlags(newCarTask = true)
+                Shell.exec("am start -n $target --display $targetDisplay -f $flags", timeoutMs = 8000)
             }
         var ok = result.ok && result.output.contains("Starting:", ignoreCase = true)
         if (!ok && (onTarget || rememberedTarget)) {
-            // 复用路径失败（任务可能已被系统移走）：退回 MULTIPLE_TASK 新建
-            val retry = Shell.exec("am start -n $target --display $targetDisplay -f 0x18000000", timeoutMs = 8000)
+            // A failed reuse can require a new car-only task. This fallback
+            // must also exclude *only the new task* from phone Recents.
+            val flags = CarTaskLaunchFlags.shellFlags(newCarTask = true)
+            val retry = Shell.exec("am start -n $target --display $targetDisplay -f $flags", timeoutMs = 8000)
             ok = retry.ok && retry.output.contains("Starting:", ignoreCase = true)
         }
         logSink?.invoke(
