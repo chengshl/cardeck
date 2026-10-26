@@ -1,0 +1,109 @@
+name: E5 Test convergence - signed isolated experiment
+on:
+  push:
+    branches:
+      - experiment/buick-e5-test-convergence
+    paths-ignore:
+      - 'docs/**'
+      - 'AGENTS.md'
+  workflow_dispatch:
+concurrency:
+  group: e5-test-convergence-signed-prerelease
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  signed-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify isolated source and E5 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-test-convergence"
+          grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
+          grep -Fq 'private const val RELEASE_TAG = "buick-e5-latest"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify updater tests, lint and debug
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Restore existing release signing identity
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-convergence.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-convergence.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-convergence.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Assign monotonic Android version and accurate experiment provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_EPOCH="$(date -u +%s)"
+          BUILD_CODE=$(( BUILD_EPOCH - 1704067200 ))
+          (( BUILD_CODE > 0 && BUILD_CODE <= 2100000000 ))
+          VERSION="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
+          echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
+          echo "SOURCE_BRANCH=experiment/buick-e5-test-convergence" >> "$GITHUB_ENV"
+      - name: Build existing-key signed experiment APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify E5 package, signing, and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          "$AAPT" dump badging "$APK" | grep -Fq "package: name='io.github.buick.e5.cardeck'"
+          "$APKSIGNER" verify "$APK"
+          if "$APKSIGNER" verify --print-certs "$APK" | grep -qi 'CN=Android Debug'; then
+            echo "::error::签名为Android Debug，不允许交付"
+            exit 1
+          fi
+          AAPT_RES="$("$AAPT" dump resources "$APK")"
+          grep -Fq 'experiment/buick-e5-test-convergence' <<< "$AAPT_RES"
+          cp "$APK" CarDeck-Buick-E5-Convergence.apk
+          sha256sum CarDeck-Buick-E5-Convergence.apk > CarDeck-Buick-E5-Convergence.apk.sha256
+      - name: Publish only isolated E5 experiment (never stable latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-test-convergence"
+          test "$SOURCE_BRANCH" = "$GITHUB_REF_NAME"
+          APK=CarDeck-Buick-E5-Convergence.apk
+          test -s "$APK" && test -s "$APK.sha256"
+          TAG="exp-buick-e5-test-convergence-$CARDECK_RELEASE_VERSION_NAME"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## 更新说明\n'
+            printf 'Buick-Test→Buick-E5 融合第1批：引入Updater-B精确订阅试验功能线与深色项目选择。保留E5已安装包来源标识、低版本APK仅下载到Downloads/CarDeck、SHA256和版本/签名安全检查。未改CarPlay音频、蓝牙、GL、触摸和虚拟屏。专项#27，来源Test PR#26。\n'
+            printf '\n## 尚未验收\n本实验APK不等于正式E5；请按#27验收清单测试更新中心、实验选择保持和视频/触控回归。若同包覆盖导致versionCode更高，等待更高版本正式包才可覆盖回退。\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Buick-E5 Test融合第1批 $CARDECK_RELEASE_VERSION_NAME（实验）" \
+            --notes-file release-notes.txt --prerelease --latest=false
