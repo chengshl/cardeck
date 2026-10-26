@@ -23,7 +23,7 @@ class ForensicRedactionTest {
     }
 
     @Test fun longStackTraceKeepsBothHeadAndTailInBoundedChunks() {
-        val raw = "Start trace " + "A".repeat(700) + " End cause"
+        val raw = "Start trace " + "at VendorService.dispatch(Event.java:231); ".repeat(24) + " End cause"
         val chunks = redactor.forensicChunks(raw)
         assertTrue(chunks.size >= 3)
         assertTrue(chunks.first().contains("Start trace"))
