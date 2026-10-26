@@ -28,7 +28,7 @@ internal object DiagnosticPreviewSummary {
         return buildString {
             append((diagnosticType ?: "快速诊断") + "：已准备 " + count + " 行")
             if (fullCount != null && fullCount > lines.size) append("（仅预览 " + lines.size + " 行）")
-            append("\n" + parts)
+            append("\n样本构成：" + parts)
             append("\n系统权限：" + if (shizukuReady) "Shizuku已就绪" else "Shizuku未就绪，只有部分本地记录")
             if (eventTime != null) append("\n崩溃证据原始时间：" + eventTime)
             if (uploadedBefore) append("\n相同证据曾上传；不是重新发生崩溃的证明")
