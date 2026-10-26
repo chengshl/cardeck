@@ -137,12 +137,23 @@ jobs:
             echo "::error::签名为Android Debug，不允许交付"
             exit 1
           fi
-          AAPT_RES="$("$AAPT" dump resources "$APK")"
-          if ! grep -Fq 'experiment/buick-e5-test-convergence' <<< "$AAPT_RES"; then
-            echo "::error::APK未内嵌当前实验分支来源，拒绝发布"
+          # aapt's default resource dump prints resource names but typically
+          # omits the compiled STRING VALUES. Use --values explicitly; the
+          # updater reads this value from the APK at runtime.
+          if ! AAPT_RES="$("$AAPT" dump --values resources "$APK")"; then
+            echo "::error::无法读取 APK 编译资源值，拒绝发布"
             exit 1
           fi
-          echo "E5包名、Android签名和实验来源校验完成"
+          if ! grep -Fq 'cardeck_installed_build_origin' <<< "$AAPT_RES"; then
+            echo "::error::APK内不存在安装来源资源名称，拒绝发布"
+            exit 1
+          fi
+          if ! grep -Fq 'experiment/buick-e5-test-convergence' <<< "$AAPT_RES"; then
+            echo "::error::APK的来源资源值不是当前实验分支，拒绝发布"
+            grep 'cardeck_installed_build_origin' <<< "$AAPT_RES" | head -n 3 || true
+            exit 1
+          fi
+          echo "E5包名、Android签名和APK内实验来源资源值校验完成"
           cp "$APK" CarDeck-Buick-E5-Convergence.apk
           sha256sum CarDeck-Buick-E5-Convergence.apk > CarDeck-Buick-E5-Convergence.apk.sha256
       - name: Publish only isolated E5 experiment (never stable latest)
