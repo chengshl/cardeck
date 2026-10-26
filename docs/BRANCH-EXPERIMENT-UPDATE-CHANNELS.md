@@ -1,3 +1,9 @@
+> **2026-10-26 · Buick-E5 软件更新 UI 第二轮**：正式发布更新弹窗也统一为深色卡片，包括“已是最新”、发现更新、下载进度、未知应用安装权限及失败重试。原来的系统粉红色 `AlertDialog`、`ProgressDialog` 不再用于正式更新。
+>
+> 新的 Buick-E5 APK 在构建时将**真正的构建来源**写入 `cardeck_installed_build_origin` 资源：正式发布工作流 `CARDECK_RELEASE_BRANCH=Buick-E5` 标记为正式版；E5 实验发布工作流通过 `SOURCE_BRANCH=experiment/buick-e5-*` 标记为试验版；其他无明确来源构建标记为 `unmarked`，绝不从用户选择的检查通道倒推安装包来源。页面同时显示当前安装包来源、已安装版本、当前检查通道三个不同概念。旧版APK因未内嵌标识，须升级到此版后才可可靠显示来源。
+>
+> 本次仅更新 Buick-E5 源码，不修改 Buick / Buick-Test / main / 试验分支。
+
 > **2026-10-26 · Buick-E5 独立 UI 优化（仅本分支）**：软件更新页摘要展示“当前已安装版本”，另显示目前的检查渠道。实验列表/版本详情/下载进度/提示改为与主页面一致的深色圆角界面；操作按钮不会随长更新说明滚出视野。
 >
 > 实验 APK 的 versionCode 不高于当前已安装版本时，改为“仅下载 APK”，从 GitHub 官方预发布获取并完成 SHA-256、包名、versionCode 校验后写到 Android 公共 **下载/CarDeck** 目录（MediaStore），供用户日后手动处理。普通手动安装不会绕过 Android 降级限制；需要卸载高版本时应提示数据及授权丢失。新版本仍可正常下载并触发系统安装。

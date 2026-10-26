@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import io.github.shaonialife.cardeck.update.BuickUpdater
 import io.github.shaonialife.cardeck.update.ExperimentalUpdates
+import io.github.shaonialife.cardeck.update.InstalledBuildIdentity
 import io.github.shaonialife.cardeck.update.UpdatePreference
 
 /** 当前APK独立软件更新页：更新渠道、自动检查、构建信息及实验历史统一入口。 */
@@ -31,6 +32,7 @@ class UpdateCenterActivity : AppCompatActivity() {
     private lateinit var formalMark: TextView
     private lateinit var experimentMark: TextView
     private lateinit var selectedLabel: TextView
+    private lateinit var installedOriginLabel: TextView
     private lateinit var currentChannelLabel: TextView
     private lateinit var browse: TextView
 
@@ -101,7 +103,7 @@ class UpdateCenterActivity : AppCompatActivity() {
             setOnClickListener { finish() }
         })
         page.line(txt("软件更新", 27f, fg, true), 7)
-        page.line(txt("当前应用：${branch()}\n每个安装包独立保存更新分支，不跨别克包名安装。", 12.5f, muted), 9)
+        page.line(txt("当前应用：${branch()}\n当前安装包来源与更新检查通道分别展示，互不混淆。", 12.5f, muted), 9)
 
         page.line(txt("更新分支", 17f, fg, true), 25)
         page.line(txt("点击选择并保存。自动检查将以已选分支为准。", 12f, muted), 5)
@@ -127,8 +129,14 @@ class UpdateCenterActivity : AppCompatActivity() {
         }
         page.line(info, 21)
         val apk = packageManager.getPackageInfo(packageName, 0)
-        selectedLabel = txt("当前已安装：${apk.versionName ?: "未知"}", 16f, fg, true)
-        info.line(selectedLabel)
+        info.line(txt("当前安装包", 12f, muted, true))
+        installedOriginLabel = txt(
+            InstalledBuildIdentity.description(getString(R.string.cardeck_installed_build_origin)),
+            14.5f, accent, true
+        )
+        info.line(installedOriginLabel, 7)
+        selectedLabel = txt("已安装版本：${apk.versionName ?: "未知"}", 14f, fg, true)
+        info.line(selectedLabel, 9)
         currentChannelLabel = txt("", 12.5f, muted)
         info.line(currentChannelLabel, 7)
 
@@ -192,7 +200,7 @@ class UpdateCenterActivity : AppCompatActivity() {
             if (isExperiment) accent else outline)
         formalMark.text = if (!isExperiment) "✓ 已选择" else "选择"
         experimentMark.text = if (isExperiment) "✓ 已选择" else "选择"
-        currentChannelLabel.text = if (isExperiment) "更新检查通道：试验分支" else "更新检查通道：正式分支"
+        currentChannelLabel.text = if (isExperiment) "当前检查通道：试验分支（与已安装来源不同）" else "当前检查通道：正式分支"
         browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
     }
 }

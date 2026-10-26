@@ -1,7 +1,6 @@
 package io.github.shaonialife.cardeck.update
 
 import android.app.Activity
-import androidx.appcompat.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -192,27 +191,43 @@ object BuickUpdater {
                 val shaUrl = digestUrl ?: throw IllegalStateException("Release 未提供 SHA256")
                 main.post {
                     if (activity.isFinishing || activity.isDestroyed) return@post
+                    val from = InstalledBuildIdentity.description(
+                        activity.getString(io.github.shaonialife.cardeck.R.string.cardeck_installed_build_origin)
+                    )
+                    val fields = listOf(
+                        "当前安装包" to from,
+                        "已安装版本" to installedVersionName,
+                        "正式版最新版本" to versionName,
+                        "发布来源" to branch,
+                        "构建时间" to buildTimeLabel,
+                    )
                     if (code <= installed) {
                         if (!silent) {
-                            info(
-                                activity,
-                                "已是最新版本（$installedVersionName）\n" +
-                                    "发布分支：$branch\n$buildTimeLabel\n\n更新说明：\n$changeNotes",
+                            val exact = code == installed
+                            UpdateDialogUi.details(
+                                a = activity,
+                                title = if (exact) "已是最新正式版" else "正式版暂无可覆盖更新",
+                                subtitle = if (exact) "当前版本与正式发布版本一致" else
+                                    "当前版本号高于正式版，Android 不支持直接降级",
+                                fields = fields,
+                                notes = changeNotes,
+                                primary = "完成",
+                                secondary = "关闭",
                             )
                         }
                     } else {
-                        AlertDialog.Builder(activity)
-                            .setTitle("发现 Buick-E5 更新")
-                            .setMessage(
-                                "当前版本：$installedVersionName\n" +
-                                    "最新版本：$versionName\n" +
-                                    "来源分支：$branch\n$buildTimeLabel\n\n" +
-                                    "更新说明：\n$changeNotes",
-                            )
-                            .setNegativeButton("取消", null)
-                            .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity)) }
-                            .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl) }
-                            .show()
+                        UpdateDialogUi.details(
+                            a = activity,
+                            title = "发现 Buick-E5 更新",
+                            subtitle = "正式分支 · 可覆盖升级",
+                            fields = fields,
+                            notes = changeNotes,
+                            primary = "下载并安装",
+                            onPrimary = { download(activity, url, shaUrl) },
+                            secondary = "取消",
+                            tertiary = if (downloadedApk(activity).isFile) "安装已下载包" else null,
+                            onTertiary = { install(activity, downloadedApk(activity)) },
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -222,13 +237,7 @@ object BuickUpdater {
     }
 
     private fun download(activity: Activity, url: String, shaUrl: String) {
-        val dialog = android.app.ProgressDialog(activity).apply {
-            setTitle("下载 Buick-E5 更新")
-            setMessage("正在下载…")
-            setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
-            setCancelable(false)
-            show()
-        }
+        val dialog = UpdateDialogUi.progress(activity, "下载 Buick-E5 正式更新", "正式分支 · SHA-256 校验")
         thread(name = "buick-update-download") {
             val target = downloadedApk(activity)
             try {
@@ -238,7 +247,7 @@ object BuickUpdater {
                     // mistake an incomplete APK from another route for success.
                     target.delete()
                     main.post {
-                        dialog.progress = 0
+                        dialog.setProgress(0)
                         dialog.setMessage("正在通过${route.label}下载…")
                     }
                     val shaConn = openHttp(shaUrl, route, 15_000, 20_000)
@@ -268,7 +277,7 @@ object BuickUpdater {
                                     count += n
                                     if (total > 0) {
                                         val progress = (count * 100 / total).toInt()
-                                        main.post { dialog.progress = progress }
+                                        main.post { dialog.setProgress(progress) }
                                     }
                                 }
                             }
@@ -305,17 +314,21 @@ object BuickUpdater {
             return
         }
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
-            AlertDialog.Builder(activity).setTitle("允许安装更新")
-                .setMessage("安装包已下载并通过 SHA-256 校验。请允许 CarDeck 安装未知应用，返回后重新点击检查更新，即可继续安装，无需重新下载。")
-                .setNegativeButton("稍后", null)
-                .setPositiveButton("前往授权") { _, _ ->
+            UpdateDialogUi.details(
+                a = activity,
+                title = "允许安装正式更新",
+                notes = "APK 已经通过 SHA-256 校验。请允许 CarDeck 安装未知应用，返回后重新检查更新，即可安装缓存的 APK，无需再次下载。",
+                primary = "前往授权",
+                onPrimary = {
                     try {
                         activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                             Uri.parse("package:${activity.packageName}")))
-                    } catch (e: Exception) {
-                        info(activity, "无法打开安装权限设置：${e.message}")
+                    } catch (error: Exception) {
+                        info(activity, "无法打开授权设置：${error.message}")
                     }
-                }.show()
+                },
+                secondary = "稍后",
+            )
             return
         }
         try {
@@ -327,16 +340,18 @@ object BuickUpdater {
             }
             activity.startActivity(Intent.createChooser(intent, "选择安装程序"))
         } catch (e: Exception) {
-            AlertDialog.Builder(activity).setTitle("无法打开安装窗口")
-                .setMessage("安装包已保留，无需重新下载。\n原因：${e.message}")
-                .setNegativeButton("稍后", null)
-                .setPositiveButton("重试安装") { _, _ -> install(activity, target) }
-                .show()
+            UpdateDialogUi.details(
+                a = activity,
+                title = "无法打开安装窗口",
+                notes = "安装包已保留，无需重新下载。\n原因：${e.message}",
+                primary = "重试安装",
+                onPrimary = { install(activity, target) },
+                secondary = "稍后",
+            )
         }
     }
 
     private fun info(activity: Activity, message: String) {
-        AlertDialog.Builder(activity).setTitle("CarDeck 在线更新")
-            .setMessage(message).setPositiveButton("确定", null).show()
+        UpdateDialogUi.message(activity, "CarDeck 在线更新", message)
     }
 }

@@ -127,6 +127,7 @@ internal object UpdateDialogUi {
         fields: List<Pair<String, String>> = emptyList(), notes: String = "", warning: String = "",
         primary: String = "确定", onPrimary: () -> Unit = {},
         secondary: String = "取消", onSecondary: () -> Unit = {},
+        tertiary: String? = null, onTertiary: () -> Unit = {},
     ) {
         val root = panel(a, title, subtitle)
         val body = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
@@ -153,14 +154,17 @@ internal object UpdateDialogUi {
         actions.addView(button(a, primary, true) { dlg?.dismiss(); onPrimary() },
             LinearLayout.LayoutParams(0, -2, 1.2f).apply { marginStart = dp(a, 9) })
         root.line(a, actions, 16)
+        if (!tertiary.isNullOrBlank()) {
+            root.line(a, button(a, tertiary, false) { dlg?.dismiss(); onTertiary() }, 8)
+        }
         dlg = show(a, root)
     }
 
     fun message(a: Activity, title: String, text: String) =
         details(a, title, notes = text, primary = "确定", secondary = "关闭")
 
-    fun progress(a: Activity, title: String): DownloadProgress {
-        val root = panel(a, title, "官方预发布 · SHA-256 校验")
+    fun progress(a: Activity, title: String, subtitle: String = "官方预发布 · SHA-256 校验"): DownloadProgress {
+        val root = panel(a, title, subtitle)
         val detail = label(a, "正在准备下载…", 13f, muted)
         root.line(a, detail, 20)
         val progress = ProgressBar(a, null, android.R.attr.progressBarStyleHorizontal).apply {

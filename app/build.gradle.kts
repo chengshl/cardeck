@@ -44,6 +44,15 @@ android {
         // Human-readable release version is Beijing time yyyyMMddHHmmss.
         // The integer versionCode stays separate for Android upgrade ordering.
         versionName = System.getenv("CARDECK_RELEASE_VERSION_NAME") ?: appVersionName
+        // 构建时写入APK自身的来源，而非读取用户当前选择的更新检查通道。
+        // 实验发布workflow向构建环境传入SOURCE_BRANCH；正式构建传入CARDECK_RELEASE_BRANCH。
+        val experimentSource = System.getenv("SOURCE_BRANCH").orEmpty()
+        val installedOrigin = when {
+            experimentSource.startsWith("experiment/buick-e5-") -> experimentSource
+            System.getenv("CARDECK_RELEASE_BRANCH") == "Buick-E5" -> "Buick-E5"
+            else -> "unmarked"
+        }
+        resValue("string", "cardeck_installed_build_origin", installedOrigin)
     }
 
     signingConfigs {
