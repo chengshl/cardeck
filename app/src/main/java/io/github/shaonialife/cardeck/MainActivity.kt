@@ -30,6 +30,7 @@ import androidx.core.graphics.drawable.DrawableCompat
 import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.TargetDevicePrefs
 import io.github.shaonialife.cardeck.input.TouchRouter
+import io.github.shaonialife.cardeck.launcher.CarPlayDisplayScope
 import io.github.shaonialife.cardeck.launcher.VirtualLauncher
 import io.github.shaonialife.cardeck.launcher.settings.AppOrientationCompat
 import io.github.shaonialife.cardeck.legal.DisclaimerDialog
@@ -2013,16 +2014,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 解析 dumpsys display 中的 CarPlay 虚拟屏：返回 (displayId, 名称)。
-     * 注意 uniqueId 形如 virtual:com.android.shell,2000,CarPlayDock,36——尾数 36 是
-     * 代次计数器而非显示屏 ID；真实 ID 在 "displayId=39, uniqueId='…'" 段里。
+     * 只识别displayName中确实带有本包名的虚拟屏。
+     * 旧版CarPlayDock等无归属标记无法与其它分支区分，禁止判作本包残留。
+     * Shizuku屏的uniqueId owner=android.shell，不能靠UID区分各安装包。
      */
     private fun parseCarPlayDisplays(dump: String): List<Pair<Int, String>> =
-        Regex("displayId=(\\d+), uniqueId='[^']*CarPlay(Dock|AppHi|App|Map)")
-            .findAll(dump)
-            .map { it.groupValues[1].toInt() to "CarPlay${it.groupValues[2]}" }
-            .distinctBy { it.first }
-            .toList()
+        CarPlayDisplayScope.parseOwned(dump, packageName)
 
     /** 读取 shell 全局状态（后台线程 + UI 回填）。[startupCheck] 时顺带做残留虚拟屏检测。 */
     private fun refreshShellState(startupCheck: Boolean = false) {
@@ -2063,7 +2060,7 @@ class MainActivity : AppCompatActivity() {
                     appendLine("overlay_display_devices: $overlay  （叠加屏实验残留；应为 null）")
                     appendLine("wm size: $wmSize")
                     appendLine("wm density: $wmDensity")
-                    appendLine("CarPlay 虚拟屏: " + displays.trim().replace("\n", ", ").ifEmpty { "无" })
+                    appendLine("本包虚拟屏: " + displays.trim().replace("\n", ", ").ifEmpty { "无" })
                     appendLine("screen_off_timeout: $timeout  （App 常亮功能管理）")
                 }
             runOnUiThread { shellStateText.text = text.trim() }
@@ -2071,7 +2068,7 @@ class MainActivity : AppCompatActivity() {
                 var residual = carDisplays.filter { it.first !in currentSessionDisplayIds() }
                 if (residual.isNotEmpty()) {
                     log(
-                        "SHELL: 启动检测到 ${residual.size} 个残留虚拟屏: " +
+                        "SHELL: 启动检测到本包 ${residual.size} 个残留虚拟屏: " +
                             residual.joinToString(", ") { "${it.second}(${it.first})" },
                     )
                     // 残留屏 = 上次会话异常退出（进程被杀）：横屏覆盖的会话末复原
@@ -2141,7 +2138,7 @@ class MainActivity : AppCompatActivity() {
         val names = residual.joinToString("\n") { "· ${it.second}（displayId=${it.first}）" }
         DarkMessageDialog.show(
             activity = this,
-            title = "检测到残留虚拟屏",
+            title = "检测到本应用残留虚拟屏",
             message =
                 "发现 ${residual.size} 个上次会话遗留的 CarPlay 虚拟屏：\n$names\n\n" +
                     "残留屏会持续占用显示资源，并可能影响下次连接。是否立即清理？",
