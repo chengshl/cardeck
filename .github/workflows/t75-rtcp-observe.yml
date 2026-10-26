@@ -87,12 +87,13 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-test-t75-rtcp-observe"
+          test -s app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt
           TAG="exp-buick-test-t75-$CARDECK_RELEASE_VERSION_NAME"
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           APK="CarDeck-Buick-Test-T75-RTCP-OBS.apk"
           test -s "$APK" && test -s "$APK.sha256"
           {
-            printf 'artifactKind=experiment\nbaseBranch=Buick-Test\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+            printf 'artifactKind=experiment\nupdaterSchema=1\nbaseBranch=Buick-Test\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
             printf '\n## 更新说明\n'
             printf 'T75只读音频诊断：记录反向RTCP头部、累计包数和连接后前30秒的间隔。尚未解决20秒断连，待B233实车验证。\n'
