@@ -87,6 +87,7 @@
              不声明 configChanges：这两页是短暂的工具页，旋转重建无状态损失；
              首页才是要保留滚动/折叠/已填内容的长驻操作台。 -->
         <activity android:name="io.github.shaonialife.cardeck.BuickMenuActivity" android:exported="false" />
+        <activity android:name="io.github.shaonialife.cardeck.UpdateCenterActivity" android:exported="false" />
         <activity android:name="io.github.shaonialife.cardeck.BuickSettingsActivity" android:exported="false" />
         <activity android:name="io.github.shaonialife.cardeck.BuickAppDisplayActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity
