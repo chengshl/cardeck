@@ -18,6 +18,7 @@ internal object OfflineDiagnosticExporter {
         APP("app", "应用历史日志"), SYSTEM("system", "系统警告与错误"),
         RECOVERY("crash", "重启崩溃取证"), DIAGNOSTIC("diagnostic", "系统诊断与崩溃取证"),
         DETAILED("fault", "详细故障诊断"),
+        REBOOT("reboot", "手机重启系统取证"),
         BUNDLE("bundle", "完整离线诊断包"),
     }
     data class Result(val uri: Uri, val fileName: String, val displayPath: String, val bytes: Int)
@@ -28,7 +29,7 @@ internal object OfflineDiagnosticExporter {
     }
 
     fun exportPreview(context: Context, kind: Kind, redactedLines: List<String>): Result? {
-        val limit = if (kind == Kind.DETAILED) DetailedDiagnosticSelector.MAX_LINES else 256
+        val limit = if (kind == Kind.DETAILED || kind == Kind.REBOOT) DetailedDiagnosticSelector.MAX_LINES else 256
         if (kind == Kind.APP || kind == Kind.BUNDLE || redactedLines.isEmpty() ||
             redactedLines.size > limit || redactedLines.any { it.isBlank() || it.length > 256 }) return null
         return save(context, kind, redactedLines)
