@@ -11,6 +11,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import io.github.shaonialife.cardeck.update.BuickUpdater
+import io.github.shaonialife.cardeck.update.ExperimentalUpdates
 
 /** Buick-only menu. Keep diagnostics and updates out of upstream SettingsMenus. */
 class BuickMenuActivity : AppCompatActivity() {
@@ -53,8 +54,8 @@ class BuickMenuActivity : AppCompatActivity() {
                 2 -> {
                     holder.icon.setImageResource(android.R.drawable.stat_sys_download)
                     holder.title.text = "在线更新"
-                    holder.desc.text = "仅检查当前应用的独立更新渠道"
-                    holder.itemView.setOnClickListener { BuickUpdater.check(this@BuickMenuActivity) }
+                    holder.desc.text = "正式更新 · 实验版本手动选择 · 构建时间"
+                    holder.itemView.setOnClickListener { ExperimentalUpdates.showChannelPicker(this@BuickMenuActivity) }
                 }
                 else -> {
                     val enabled = BuickUpdater.autoEnabled(this@BuickMenuActivity)
