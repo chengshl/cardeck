@@ -4,6 +4,13 @@ on:
   workflow_dispatch:
   push:
     branches: [Buick-Test]
+    # Pure governance/doc commits must never publish another APK.
+    paths-ignore:
+      - 'docs/**'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'SECURITY.md'
+      - 'DISCLAIMER.md'
 
 concurrency:
   group: cardeck-buick-test-latest

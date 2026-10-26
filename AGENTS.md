@@ -1,5 +1,8 @@
 # AGENTS.md — 给 AI 编码助手的项目指引
 
+> **本项目统一管理约定（2026-10-26 起）**：先阅读 [`docs/PROJECT-GOVERNANCE.md`](docs/PROJECT-GOVERNANCE.md)。**唯一权威版本在 `Buick` 分支**，`Buick-E5` / `Buick-Test` 为同步副本；上游 `main` 不参与。文档规则变更应同步三条活跃长期分支，且不得仅因文档更新触发 APK 构建。下方旧技术细节若与统一规则冲突，以统一规则为准。
+
+
 让一台未 root 的 Android 手机（荣耀 Magic7 Pro）扮演 **CarPlay 发送端（iPhone 角色）**：
 自绘车机桌面 → H.264 编码推流 → 奥迪车机 / DiPlay 测试台（Redmi K40 上的接收端）显示，
 车机触摸经 Shizuku（shell 权限）回注虚拟屏。协议链路：蓝牙 iAP2 → 车机热点 → mDNS →
