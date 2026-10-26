@@ -8,6 +8,35 @@ internal object DiagnosticPreviewSummary {
         else -> "尚未识别带发生时间的系统崩溃事件"
     }
 
+    /** A compact one-screen synopsis; detailed legacy body remains unchanged. */
+    fun compact(
+        lines: List<String>,
+        eventId: String?,
+        uploadedBefore: Boolean,
+        shizukuReady: Boolean,
+        fullCount: Int? = null,
+        diagnosticType: String? = null,
+    ): String {
+        val count = fullCount ?: lines.size
+        val eventTime = eventId?.substringAfter('@')?.takeIf { it.isNotBlank() }
+        val parts = listOf(
+            "App " + lines.count { it.startsWith("[App历史]") || it.startsWith("[上轮App") },
+            "阶段 " + lines.count { it.startsWith("[阶段事件]") },
+            "系统 " + lines.count { it.startsWith("[当前系统]") || it.startsWith("[取证") },
+            "崩溃 " + lines.count { it.startsWith("[DropBox:") },
+        ).joinToString(" · ")
+        return buildString {
+            append((diagnosticType ?: "快速诊断") + "：已准备 " + count + " 行")
+            if (fullCount != null && fullCount > lines.size) append("（仅预览 " + lines.size + " 行）")
+            append("\n" + parts)
+            append("\n系统权限：" + if (shizukuReady) "Shizuku已就绪" else "Shizuku未就绪，只有部分本地记录")
+            if (eventTime != null) append("\n崩溃证据原始时间：" + eventTime)
+            if (uploadedBefore) append("\n相同证据曾上传；不是重新发生崩溃的证明")
+            append("\n\n保存只在手机；上传需确认并等待全部批次回执")
+            if (fullCount != null) append("\nLogcat缓冲区可能已轮转，不能保证完整覆盖事故前历史")
+        }
+    }
+
     fun body(
         lines: List<String>,
         eventId: String?,
