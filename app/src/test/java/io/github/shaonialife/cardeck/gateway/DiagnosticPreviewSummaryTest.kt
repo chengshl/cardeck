@@ -13,11 +13,11 @@ class DiagnosticPreviewSummaryTest {
             "[当前系统] warning",
         )
         val id = "SYSTEM_TOMBSTONE@2026-10-24 14:07:18"
-        assertEquals("历史证据 · 已上传过相同崩溃记录",
+        assertEquals("历史证据 · 此前提交过相同崩溃记录",
             DiagnosticPreviewSummary.headline(id, true))
         val text = DiagnosticPreviewSummary.body(lines, id, true, true)
         assertTrue(text.contains("原始发生时间：2026-10-24 14:07:18"))
-        assertTrue(text.contains("重复证据"))
+        assertTrue(text.contains("重复证据"))\n        assertTrue(text.contains("不代表所有批次都已被服务器确认"))
         assertTrue(text.contains("上限256行，并非完整历史日志量"))
         assertTrue(text.contains("前次App 1 行"))
         assertTrue(text.contains("Shizuku 已就绪"))
