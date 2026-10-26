@@ -26,6 +26,7 @@ internal object DiagnosticPreviewDialog {
         val uploadedBefore: Boolean,
         val shizukuReady: Boolean,
         val uploadReady: Boolean,
+        val detailedCount: Int? = null,
     )
 
     fun show(
@@ -102,7 +103,12 @@ internal object DiagnosticPreviewDialog {
             background = shape(selected)
         }
         root.place(badge, 13)
-        root.place(text("精选 ${model.lines.size} / 最多256行  ·  系统事件原始时间单独标注", 12f, secondary), 11)
+        val countLabel = if (model.detailedCount == null) {
+            "精选 ${model.lines.size} / 最多256行  ·  系统事件原始时间单独标注"
+        } else {
+            "详细故障待上传 ${model.detailedCount} 行 · 仅预览 ${model.lines.size} 行"
+        }
+        root.place(text(countLabel, 12f, secondary), 11)
 
         val tabRow = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -139,7 +145,12 @@ internal object DiagnosticPreviewDialog {
         })
         val summaryText = DiagnosticPreviewSummary.body(
             model.lines, model.eventId, model.uploadedBefore, model.shizukuReady,
-        )
+        ) + if (model.detailedCount != null) {
+            "\n\n详细故障模式：已脱敏并限定最多3000行，本次待发送 " +
+                model.detailedCount + " 行（仅展示首尾精选样本）。" +
+                "\n所含系统记录仅为当前logcat缓冲区可读取的相关事件，不保证覆盖此前10分钟。" +
+                "\n上传需逐批服务器确认；断线未确认部分不视为上传成功。"
+        } else ""
         fun showTab(raw: Boolean) {
             summaryTab.background = shape(if (raw) surface else selected, if (raw) surface else accent)
             rawTab.background = shape(if (raw) selected else surface, if (raw) accent else surface)
@@ -152,7 +163,14 @@ internal object DiagnosticPreviewDialog {
         rawTab.setOnClickListener { showTab(true) }
         showTab(false)
 
-        val note = text("保存只在本地；在线上传必须手动确认，分批上报不包含完整2MB历史。", 11.5f, secondary)
+        val note = text(
+            if (model.detailedCount != null) {
+                "保存详细文件只在本地；上传需手动确认，诊断发送可能较长，不会自动重传。"
+            } else {
+                "保存只在本地；在线上传必须手动确认，分批上报不包含完整2MB历史。"
+            },
+            11.5f, secondary,
+        )
         root.place(note, 11)
 
         val actions = LinearLayout(activity).apply {
