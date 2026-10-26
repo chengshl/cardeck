@@ -1,7 +1,7 @@
 package io.github.shaonialife.cardeck.update
 
 import android.app.Activity
-import android.app.AlertDialog
+import androidx.appcompat.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -125,6 +125,14 @@ object BuickUpdater {
 
     fun setAutoEnabled(activity: Activity, enabled: Boolean) {
         activity.getSharedPreferences(PREF, 0).edit().putBoolean(KEY_AUTO, enabled).apply()
+    }
+
+    /** 进入别克设置时的自动检查与软件更新页手动检查必须使用同一选定渠道。 */
+    fun checkSelected(activity: Activity, silent: Boolean = false) {
+        when (UpdatePreference.selected(activity)) {
+            UpdatePreference.Channel.FORMAL -> check(activity, silent)
+            UpdatePreference.Channel.EXPERIMENT -> ExperimentalUpdates.check(activity, silent)
+        }
     }
 
     fun check(activity: Activity, silent: Boolean = false) {
