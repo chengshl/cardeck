@@ -312,7 +312,15 @@ class GatewayProbe(
         timer.shutdownNow()
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()
-        observer(snapshot)
+        // A detailed upload can take many ACK batches. If the connection dies,
+        // report the confirmed count instead of implying all lines arrived.
+        val withProgress = if (snapshot.state == State.FAILED && systemUploadTotal > 0) {
+            snapshot.copy(
+                systemUploadTotal = systemUploadTotal,
+                systemUploadAcknowledged = systemUploadAcknowledged,
+            )
+        } else snapshot
+        observer(withProgress)
     }
 
     @Synchronized
