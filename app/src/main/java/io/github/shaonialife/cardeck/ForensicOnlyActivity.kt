@@ -3,6 +3,8 @@ package io.github.shaonialife.cardeck
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
+import io.github.shaonialife.cardeck.update.CollectorUpdater
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -13,13 +15,15 @@ import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 
 /**
  * Collector-only launcher. Deliberately never touches SessionController,
- * CarPlayService, Bluetooth, virtual display, Gateway, or updater.
+ * CarPlayService, Bluetooth, virtual display, or Gateway.
+ * The separate updater only checks the collector release on this foreground page.
  */
 class ForensicOnlyActivity : AppCompatActivity() {
     private lateinit var current: TextView
     private lateinit var start: Button
     private lateinit var stop: Button
     private lateinit var export: Button
+    private lateinit var autoUpdate: CheckBox
     private val collector get() = RescueTraceStore.forApp(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,6 +84,17 @@ class ForensicOnlyActivity : AppCompatActivity() {
                 }
             }, "forensic-export").start()
         }
+        heading("软件更新 · 只订阅本取证助手", 17f)
+        autoUpdate = CheckBox(this).apply {
+            text = "打开取证助手时自动检查更新（每30分钟最多一次）"
+            isChecked = CollectorUpdater.autoEnabled(this@ForensicOnlyActivity)
+            setOnCheckedChangeListener { _, checked ->
+                CollectorUpdater.setAutoEnabled(this@ForensicOnlyActivity, checked)
+            }
+            holder.addView(this)
+        }
+        button("立即检查本取证版更新") { CollectorUpdater.check(this, silent = false) }
+        button("安装已验证的缓存更新") { CollectorUpdater.installCached(this) }
         heading("注意：不设4小时自动停止，但系统仍可能终止进程；重启后Shizuku通常需要重新启动。\n"
             + "已经写入的日志重启后仍保留；卸载此App或清除数据之前务必先导出。"
             + "\n如果原来安装过Buick-Test，本版将使用同一个Test包名覆盖安装；不影响E5包。", 13f)
@@ -93,6 +108,8 @@ class ForensicOnlyActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refresh()
+        // Foreground-only metadata check; no hidden network requests while collecting.
+        if (CollectorUpdater.autoEnabled(this)) CollectorUpdater.autoCheck(this)
     }
 
     private fun refresh() {

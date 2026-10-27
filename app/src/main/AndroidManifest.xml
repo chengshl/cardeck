@@ -4,6 +4,10 @@
      It can coexist with the Buick-E5 app because it uses the Test applicationId.
      It is NEVER a build of the frozen Buick-Test source branch. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Network access is exclusively for user-configurable foreground update checks.
+         Collector FGS has no network calls and never uploads log files. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -17,6 +21,14 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.CarPlaySender">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updatefiles"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/buick_update_paths" />
+        </provider>
         <activity android:name="io.github.shaonialife.cardeck.ForensicOnlyActivity"
             android:exported="true">
             <intent-filter>

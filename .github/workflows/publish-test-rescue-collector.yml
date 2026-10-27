@@ -26,11 +26,13 @@ jobs:
           grep -Fq 'applicationId = "io.github.buick.test.cardeck"' app/build.gradle.kts
           grep -Fq 'ForensicOnlyActivity' app/src/main/AndroidManifest.xml
           grep -Fq 'RescueTraceService' app/src/main/AndroidManifest.xml
+          grep -Fq 'CollectorReleasePolicy' app/src/main/java/io/github/shaonialife/cardeck/update/CollectorUpdater.kt
+          grep -Fq 'CarDeck-Test-Rescue-Collector.apk' app/src/main/java/io/github/shaonialife/cardeck/update/CollectorReleasePolicy.kt
           if grep -Eq 'name="[^"]*(CarPlayService|GatewayLogService|SenderApp|MainActivity|DockActivity|GridActivity)"' app/src/main/AndroidManifest.xml; then
             echo "::error::Collector must not expose CarPlay, Gateway or legacy app startup components"
             exit 1
           fi
-          if grep -Eq 'uses-permission.*(BLUETOOTH|ACCESS_WIFI|RECORD_AUDIO|INTERNET)' app/src/main/AndroidManifest.xml; then
+          if grep -Eq 'uses-permission.*(BLUETOOTH|ACCESS_WIFI|RECORD_AUDIO)' app/src/main/AndroidManifest.xml; then
             echo "::error::Unexpected remote or car interface permission"
             exit 1
           fi
@@ -59,7 +61,9 @@ jobs:
           if not candidates:
               sys.exit("::error::Lint has no XML report")
           root = ET.parse(candidates[-1]).getroot()
-          changed = ("ForensicOnlyActivity.kt", "RescueTraceService.kt", "AndroidManifest.xml")
+          changed = ("ForensicOnlyActivity.kt", "RescueTraceService.kt", "AndroidManifest.xml",
+                     "LogRedactor.kt", "RescueTraceStore.kt", "RescueTraceContext.kt",
+                     "CollectorUpdater.kt", "CollectorReleasePolicy.kt")
           fatal = [item for item in root.findall("issue")
                    if item.get("severity") == "Error" and
                    any(any((loc.get("file") or "").endswith(p) for p in changed)
@@ -138,7 +142,7 @@ jobs:
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$SOURCE_BRANCH" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
             printf '\n## 取证专用版说明\n'
-            printf 'Test Android包名（与E5可共存），源自E5已验证过的独立取证代码；不修改冻结的Buick-Test主分支。本包仅提供Shizuku读取系统异常的本地循环留存和手动导出，没CarPlay/蓝牙/Wi-Fi功能入口，不做后台网络上传，不设应用自己的4小时自动停止；约2MB自动覆盖旧记录，重启后已留存日志仍在，但采集需重新手动启动。\n'
+            printf 'Test包名独立取证版：修复AVC SELinux字段误脱敏，关键异常保留前4后12行、独立512KiB关键证据+普通2MiB滚动日志，10分钟采集心跳、版本来源标记及分段编号。手动开始/停止、手动导出，无4小时停止，不自动上传。增加仅在打开取证界面时自动检查本项目签名预发布，用户确认后下载、SHA256/包名/签名校验及系统安装；不进行后台静默更新，不连接车机/蓝牙/音频。\n'
             printf '\n## 安装与验收\n'
             printf '若已有同包名的Buick-Test，本版将覆盖Test（保留数据要求同签名且较高versionCode）；卸载或清除Test数据会删未导出证据。E5程序独立不受安装影响。请在Shizuku里给Test包名重新授权，开始取证，核实通知、停止、下载/CarDeck导出、E5连接与升级不影响后台采集。此版是实验包，尚未手机验收。\n'
           } > release-notes.txt
