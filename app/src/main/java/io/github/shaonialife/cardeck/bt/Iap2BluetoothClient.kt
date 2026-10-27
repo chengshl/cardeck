@@ -128,10 +128,8 @@ class Iap2BluetoothClient(
             } ?: return
         var lastFailureLogAt = 0L
         // T39: retain Buick-specific Bluetooth profile safety, but remove T35's bounded retry cap.
-        val t35Buick = targetProvider()?.let {
-            it.name.contains("BUICK", ignoreCase = true) &&
-                it.address.equals("30:DF:17:9F:AE:4C", ignoreCase = true)
-        } == true
+        // T22: only a narrow B233-family hint controls existing Buick retry pacing.
+        val t35Buick = BuickB233Route.isKnownReceiver(targetProvider()?.name)
         var t35Attempts = 0
         while (running && generation.get() == myGeneration) {
             // T35's two successful RFCOMM sessions used to stop this entire client.
@@ -162,11 +160,29 @@ class Iap2BluetoothClient(
                         null
                     } ?: device.address
                 runCatching { adapter.cancelDiscovery() }
+                // T22 per candidate: protect only a B233 hint or a matching explicitly
+                // selected receiver. Do not exempt unrelated bonded headphones.
+                val selected = targetProvider()
+                val protectB233 = BuickB233Route.shouldProtectProfiles(
+                    advertisedName = name,
+                    selectedName = selected?.name,
+                    selectedMatchesDevice = selected != null &&
+                        TargetDevicePrefs.matches(selected, device.address),
+                )
                 // 「只配对、不连接」：奥迪 MIB3 实测手机与车机处于蓝牙已连接状态
                 // （HFP/A2DP 在线）时，车机不开放无线 CarPlay 的 iAP2 服务窗口——
                 // 表现为每 3s 连接失败。iAP2 是独立的 SDP 直连服务，与这些配置文件
                 // 无关，断开后不影响 CarPlay 本身（声音走 WiFi 的 AirPlay）。
-                if (!t35Buick) run {
+                if (protectB233) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
+                        lastProfileLogAt = now
+                        val profiles = BtProfiles.connectedNames(context, device.address)
+                        log("BT-C T22: B233，保留HFP/A2DP/LE；未主动请求配置文件断开；" +
+                            "当前配置文件=" +
+                            if (profiles.isEmpty()) "无" else profiles.joinToString("/"))
+                    }
+                } else run {
                     val dropped = BtProfiles.disconnect(context, device)
                     if (dropped.isNotEmpty()) {
                         val now = android.os.SystemClock.uptimeMillis()
