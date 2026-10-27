@@ -26,8 +26,9 @@ import java.util.Locale
 import kotlin.concurrent.thread
 
 /**
- * 各 Buick 正式分支共用的实验包手动选择入口。
- * 正式自动检查仍由 BuickUpdater 独立控制；本类不持久化/修改自动更新通道。
+ * E5诊断实验和各Buick安装包共用的受限GitHub实验更新入口。
+ * 自动/手动检查共享更新渠道配置；安装来源为实验包时只检查同源实验，
+ * 防止其他E5实验依靠更高versionCode误抢占更新。
  * 实验包只从带受限元数据、APK + SHA256 的独立 GitHub prerelease 获取。
  */
 internal object ExperimentalUpdates {
@@ -130,7 +131,14 @@ internal object ExperimentalUpdates {
             try {
                 val releases = requestJson(activity,
                     "https://api.github.com/repos/$REPOSITORY/releases?per_page=100")
-                val newest = parseCandidates(releases, branch).firstOrNull()
+                val installedOrigin = activity.getString(
+                    io.github.shaonialife.cardeck.R.string.cardeck_installed_build_origin
+                )
+                val sourceOnly = installedOrigin.takeIf {
+                    it.startsWith("experiment/" + branchSlug(branch) + "-")
+                }
+                val newest = parseCandidates(releases, branch)
+                    .firstOrNull { sourceOnly == null || it.sourceBranch == sourceOnly }
                 val pkg = activity.packageManager.getPackageInfo(activity.packageName, 0)
                 val installed = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
                     @Suppress("DEPRECATION")
