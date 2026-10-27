@@ -24,6 +24,8 @@
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Only for the user-enabled, long-lived local diagnostics monitor. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -105,11 +107,15 @@
             android:name="io.github.shaonialife.cardeck.service.GatewayLogService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-        <!-- Opt-in, low-volume, local-only pre-reboot trace; never boot auto-start. -->
+        <!-- User-initiated continuous local forensic capture. No application timeout and no reboot auto-start. -->
         <service
             android:name="io.github.shaonialife.cardeck.service.RescueTraceService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started continuous on-device Shizuku crash and RescueParty log preservation, no data transfer" />
+        </service>
 
         <service
             android:name="io.github.shaonialife.cardeck.service.CarPlayService"

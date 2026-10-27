@@ -88,7 +88,7 @@
                 android:textColor="#EDF3F3" android:textSize="16sp" android:textStyle="bold" />
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="仅主动开启后在通知栏持续运行；筛选并脱敏后保存本机，最多2MB/4小时；不自动上传。卸载或清除数据会删除未导出文件。"
+                android:text="手动开启后持续留存，无4小时自动停止；最多2MB循环覆盖、脱敏、仅本机，不自动上传。系统重启或Shizuku断开会中止；卸载/清除数据前请先导出。"
                 android:textColor="#B0BEBE" android:textSize="12sp" />
             <Button android:id="@+id/startRescueTrace" android:layout_width="match_parent"
                 android:layout_height="wrap_content" android:layout_marginTop="8dp"

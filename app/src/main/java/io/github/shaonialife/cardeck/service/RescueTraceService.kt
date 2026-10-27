@@ -27,7 +27,9 @@ import java.util.concurrent.Executors
 /**
  * L3 opt-in foreground capture. Local-only and no auto-start after reboot.
  * An Android reboot terminates this reader but keeps app-private rotated files.
- * Stop manually, or automatically at four hours; Shizuku must be ready first.
+ * Runs until the user stops it, Shizuku disconnects, or Android terminates the process.
+ * There is deliberately no application-defined timeout: failures may occur hours later.
+ * This specialized local diagnostic monitor is an opt-in specialUse foreground service.
  */
 class RescueTraceService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
@@ -35,11 +37,6 @@ class RescueTraceService : Service() {
     @Volatile private var cancelled = false
     @Volatile private var killReader: (() -> Unit)? = null
     private var started = false
-    private val autoStop = Runnable {
-        description = "已达4小时采集上限，文件已保留"
-        stopSelf()
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -63,19 +60,18 @@ class RescueTraceService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("CarDeck · 本地保留重启前日志")
-            .setContentText("仅本地循环保存，最多2MB；点按可返回诊断页")
+            .setContentText("持续本地留存，最多2MB；手动停止")
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(0, "停止采集", stop)
             .build()
         ServiceCompat.startForeground(
-            this, NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            this, NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
         )
         if (!started) {
             started = true
             running = true
-            description = "采集中 · 脱敏、仅保存本机、不上传"
-            handler.postDelayed(autoStop, FOUR_HOURS_MS)
+            description = "采集中 · 不限时、仅本机、脱敏、不上传"
             executor.execute { record() }
         }
         return START_NOT_STICKY
@@ -103,7 +99,7 @@ class RescueTraceService : Service() {
                 return
             }
             val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
-            store.append("[采集会话] 开始于 $stamp；只保留筛选/脱敏记录；最多4小时；重启后需重新手动启动")
+            store.append("[采集会话] 开始于 $stamp；无应用时长限制；只保留筛选/脱敏记录；重启后需重新手动启动")
             // Drain stderr in a separate daemon; never let the pipe block logcat.
             Thread({
                 runCatching {
@@ -145,7 +141,6 @@ class RescueTraceService : Service() {
 
     override fun onDestroy() {
         cancelled = true
-        handler.removeCallbacks(autoStop)
         killReader?.invoke()
         executor.shutdownNow()
         running = false
@@ -156,7 +151,6 @@ class RescueTraceService : Service() {
         private const val CHANNEL = "cardeck_rescue_trace"
         private const val NOTIFICATION_ID = 36
         private const val STOP = "cardeck.rescue.STOP"
-        private const val FOUR_HOURS_MS = 4L * 60 * 60 * 1000
         @Volatile var running = false
             private set
         @Volatile var description: String = "未运行 · 已保存文件仍可导出"

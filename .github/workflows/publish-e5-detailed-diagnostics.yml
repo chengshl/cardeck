@@ -178,8 +178,8 @@ jobs:
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
             printf '\n## 更新说明\n'
-            printf 'E5详细故障取证：保留原256行快速精选，另提供手动采集最多3000行含系统编解码/显示/网络、阶段记录的详细模式。只预览256行样本、逐批8行确认上传，可单独保存本地。只读系统采集，未改CarPlay核心连接、音视频、蓝牙及虚拟屏。专项#28，实验PR#30。\n'
-            printf '\n## 尚未验收\n本实验APK不是正式E5；需手机确认：普通256行入口无回归、详细日志采集/脱敏/保存、最多3000行逐批ACK、离线/无Shizuku提示、车机视频/触控/A2DP回归。若同包覆盖导致versionCode更高，必须等待更高版本E5包才可覆盖退回；不可卸载当成无损回退。\n'
+            printf 'E5详细故障取证与重启前连续留存：保留原256行快速精选和最多3000行详细故障模式，用户确认后才经Gateway逐批8行ACK上传。更多选项中可经Shizuku手动开启本地连续系统异常取证，取消原4小时自动停止，采用specialUse前台服务；筛选脱敏后仅保存在手机，最多2MB滚动覆盖，可手动停止与导出，不自动上传或重启后自行恢复。系统/Shizuku仍可能中断取证。本实验不改CarPlay连接、音视频、蓝牙和虚拟屏。实验PR#30。\n'
+            printf '\n## 尚未验收\n本实验APK不是正式E5；需手机检查：Shizuku授权、常驻通知、持续采集运行超过4小时不主动停止、手动停止和离线导出、2MB上限/脱敏、异常后留存、E5视频触控A2DP及普通/详细日志上传ACK均正常。升级将保留已存应用数据但替换运行程序，建议先导出旧取证文件；同包更高versionCode无法无损降级，不要卸载来回退。\n'
           } > release-notes.txt
           gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
