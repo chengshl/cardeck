@@ -209,7 +209,15 @@ class UpdateCenterActivity : AppCompatActivity() {
             if (isExperiment) accent else outline)
         formalMark.text = if (!isExperiment) "✓ 已选择" else "选择"
         experimentMark.text = if (isExperiment) "✓ 已选择" else "选择"
-        currentChannelLabel.text = if (isExperiment) "当前检查通道：试验分支（与已安装来源不同）" else "当前检查通道：正式分支"
+        val ownOrigin = getString(R.string.cardeck_installed_build_origin)
+        val ownProject = ownOrigin.takeIf { it.startsWith("experiment/buick-e5-") }
+        currentChannelLabel.text = if (!isExperiment) {
+            "当前检查通道：正式分支（你手动选择的渠道优先）"
+        } else if (ownProject != null) {
+            "当前检查通道：试验分支\n自动关注：$ownProject"
+        } else {
+            "当前检查通道：试验分支\n未指定项目：自动检查可能选择不同的E5实验，请手动确认"
+        }
         browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
     }
 }

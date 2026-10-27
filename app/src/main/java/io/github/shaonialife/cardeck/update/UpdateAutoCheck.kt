@@ -27,7 +27,7 @@ internal object UpdateAutoCheck {
         val packageInfo = activity.packageManager.getPackageInfo(activity.packageName, 0)
         val version = if (Build.VERSION.SDK_INT >= 28) packageInfo.longVersionCode
             else { @Suppress("DEPRECATION") packageInfo.versionCode.toLong() }
-        val key = track(channel.key, origin, version)
+        val key = track(channel.key, origin, version) + "|" + activity.javaClass.simpleName
         val prefs = activity.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         synchronized(this) {
