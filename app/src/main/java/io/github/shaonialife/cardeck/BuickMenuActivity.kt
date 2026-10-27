@@ -9,7 +9,6 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import io.github.shaonialife.cardeck.update.BuickUpdater
 
 /** Buick-only menu. Keep diagnostics and updates out of upstream SettingsMenus. */
 class BuickMenuActivity : AppCompatActivity() {
@@ -21,7 +20,6 @@ class BuickMenuActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@BuickMenuActivity)
             adapter = BuickMenuAdapter()
         }
-        if (BuickUpdater.autoEnabled(this)) BuickUpdater.checkSelected(this, silent = true)
     }
 
     private inner class BuickMenuAdapter : RecyclerView.Adapter<MenuHolder>() {

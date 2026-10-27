@@ -47,6 +47,7 @@ import io.github.shaonialife.cardeck.ui.ScreenDimmer
 import io.github.shaonialife.cardeck.ui.SignalWavesView
 import io.github.shaonialife.cardeck.ui.WallpaperStore
 import io.github.shaonialife.cardeck.util.Bg
+import io.github.shaonialife.cardeck.update.UpdateAutoCheck
 import io.github.shaonialife.cardeck.util.LogExporter
 import java.util.Locale
 
@@ -2288,6 +2289,14 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         mainHandler.post(heroTick)
+        // Non-invasive update notice only on the idle main screen.
+        // Does not use background timers, download APK or modify CarPlay routing.
+        mainHandler.postDelayed({
+            if (!isFinishing && !isDestroyed && hasWindowFocus() &&
+                heroState == HeroState.IDLE && activeDisclaimer?.isShowing != true) {
+                UpdateAutoCheck.checkWhenForeground(this)
+            }
+        }, 1800L)
         // 旋转/重建后尚未接受：用原截止时刻续弹（不重新等 10 秒）
         if (needsDisclaimerAtLaunch(
                 DisclaimerPrefs.acceptedVersion(this),

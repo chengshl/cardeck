@@ -1,0 +1,96 @@
+package io.github.shaonialife.cardeck.gateway
+
+import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/**
+ * App-private bounded log ring. Survives a device reboot; uninstall or clear-data deletes it.
+ * All lines MUST already be filtered and redacted before append(). No network access.
+ */
+internal class RescueTraceStore(private val directory: File) {
+    companion object {
+        private const val SLOT_BYTES = 512 * 1024L
+        private const val SLOTS = 4
+        private const val PREFIX = "rescue-trace-"
+
+        fun forApp(context: Context) = RescueTraceStore(File(context.filesDir, "rescue-trace"))
+
+        /** Manual export only. Never called automatically by the monitor. */
+        fun export(context: Context): OfflineDiagnosticExporter.Result? {
+            val store = forApp(context)
+            val files = store.oldestToNewest()
+            if (files.isEmpty()) return null
+            val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+            val name = "CarDeck-PreReboot-$timestamp.txt"
+            val relative = Environment.DIRECTORY_DOWNLOADS + "/CarDeck"
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relative)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri: Uri = resolver.insert(
+                MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values,
+            ) ?: return null
+            return try {
+                var length = 0
+                resolver.openOutputStream(uri)?.use { output ->
+                    files.forEach { file ->
+                        val separator = ("\n====== " + file.name + " ======\n").toByteArray()
+                        output.write(separator)
+                        length += separator.size
+                        file.inputStream().use { input ->
+                            length += input.copyTo(output).toInt()
+                        }
+                    }
+                } ?: error("no output")
+                check(resolver.update(uri, ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }, null, null) > 0)
+                OfflineDiagnosticExporter.Result(
+                    uri, name, "/storage/emulated/0/$relative/$name", length,
+                )
+            } catch (_: Exception) {
+                runCatching { resolver.delete(uri, null, null) }
+                null
+            }
+        }
+    }
+
+    private fun slot(i: Int) = File(directory, PREFIX + i + ".log")
+    private fun oldestToNewest() = (SLOTS - 1 downTo 0).map(::slot).filter { it.isFile && it.length() > 0L }
+
+    fun retainedBytes(): Long = oldestToNewest().sumOf { it.length() }
+
+    @Synchronized
+    fun append(safeLine: String, critical: Boolean = false) {
+        require(safeLine.length <= 256) { "unbounded capture" }
+        val bytes = (safeLine + "\n").toByteArray(Charsets.UTF_8)
+        if (bytes.size > 1024) return
+        if (!directory.exists() && !directory.mkdirs()) error("failed to create evidence directory")
+        var current = slot(0)
+        if (current.length() + bytes.size > SLOT_BYTES) {
+            slot(SLOTS - 1).delete()
+            for (i in SLOTS - 2 downTo 0) {
+                val old = slot(i)
+                if (old.exists() && !old.renameTo(slot(i + 1))) error("evidence rotation failed")
+            }
+            current = slot(0)
+        }
+        // Closing the stream on every selected event means there is no large user-space
+        // buffer to lose during a sudden RescueParty reboot.
+        FileOutputStream(current, true).use {
+            it.write(bytes)
+            if (critical) it.fd.sync()
+        }
+    }
+}

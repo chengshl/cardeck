@@ -46,6 +46,76 @@ object SystemLogCapture {
         }
     }
     /**
+     * On-demand detailed fault capture: no watcher and no implicit upload.
+     * Only retain relevant system lines; a bounded pipe and deadline prevent
+     * logcat from blocking CarPlay or loading an unbounded log buffer.
+     * This is the newest available logcat slice, not a guaranteed ten-minute
+     * recording (OEM buffers may already have rotated).
+     */
+    fun detailedPreview(context: Context, redactor: LogRedactor): List<String> {
+        check(ShizukuGate.state(context) == ShizukuGate.State.READY)
+        val binder = rikka.shizuku.Shizuku.getBinder() ?: error("unavailable")
+        val process = IShizukuService.Stub.asInterface(binder).newProcess(
+            arrayOf("logcat", "-d", "-t", "12000", "-b", "main", "-b", "system",
+                "-v", "threadtime", "*:I"), null, null,
+        )
+        val relevant = Regex(
+            "MediaCodec|CCodec|OMX|Surface|BufferQueue|DisplayManager|VirtualDisplay|" +
+                "WindowManager|ActivityTaskManager|ActivityManager|AndroidRuntime|" +
+                "Shizuku|Connectivity|NetworkMonitor|Wifi|Wi-Fi|Vpn|netd|" +
+                "CarDeck|carplay|H264|codec|system_server|binder|Fatal|ANR|crash|SIGABRT|" +
+                "SELinux|avc: denied|SettingsProvider|systemhelper|reboot|shutdown|bootreason|pstore|watchdog",
+            RegexOption.IGNORE_CASE,
+        )
+        val timer = Executors.newSingleThreadScheduledExecutor()
+        val deadline = timer.schedule({ runCatching { process.destroy() } }, 12, TimeUnit.SECONDS)
+        try {
+            Bg.run("detailed-system-stderr") {
+                runCatching {
+                    process.errorStream.use { descriptor ->
+                        FileInputStream(descriptor.fileDescriptor).use { stream ->
+                            stream.read(ByteArray(4096))
+                        }
+                    }
+                }
+            }
+            val lines = ArrayDeque<String>()
+            var inputChars = 0
+            var bounded = false
+            process.inputStream.use { descriptor ->
+                FileInputStream(descriptor.fileDescriptor).bufferedReader().use { reader ->
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        inputChars += line.length
+                        if (inputChars > 2_000_000) {
+                            bounded = true
+                            break
+                        }
+                        if (relevant.containsMatchIn(line)) {
+                            // Keep complete *redacted* exception/AVC context across
+                            // multiple transport-safe records, not the first 256 chars.
+                            redactor.forensicChunks(line).forEach { chunk ->
+                                if (lines.size == 2700) lines.removeFirst()
+                                lines.addLast(chunk)
+                            }
+                        }
+                    }
+                }
+            }
+            if (!bounded) {
+                check(process.waitForTimeout(1000, TimeUnit.MILLISECONDS.toString()) &&
+                    process.exitValue() == 0)
+            }
+            if (bounded) lines.addLast("[采样状态] 系统日志达到2MB读取上限，最近记录可能不完整")
+            return lines.toList()
+        } finally {
+            deadline.cancel(false)
+            runCatching { process.destroy() }
+            timer.shutdownNow()
+        }
+    }
+
+    /**
      * T43: user-triggered post-reboot crash evidence preview. No upload and no
      * background collection. Uses the persistent app debug file plus two Android
      * boot evidence sources unavailable to the former 120-line warning sampler.

@@ -1,6 +1,7 @@
 package io.github.shaonialife.cardeck
 
 import android.os.Bundle
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
@@ -16,9 +17,16 @@ import io.github.shaonialife.cardeck.gateway.LogRedactor
 import io.github.shaonialife.cardeck.gateway.SystemLogCapture
 import io.github.shaonialife.cardeck.gateway.CrashEvidenceSelector
 import io.github.shaonialife.cardeck.gateway.CombinedDiagnosticSelector
+import io.github.shaonialife.cardeck.gateway.DetailedDiagnosticSelector
+import io.github.shaonialife.cardeck.gateway.RebootEvidenceCapture
+import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
+import io.github.shaonialife.cardeck.gateway.OfflineLogFormatter
+import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.gateway.OfflineDiagnosticExporter
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.service.GatewayLogService
+import io.github.shaonialife.cardeck.service.RescueTraceService
+import io.github.shaonialife.cardeck.gateway.RescueTraceStore
 import android.app.Dialog
 import io.github.shaonialife.cardeck.ui.DiagnosticPreviewDialog
 import androidx.appcompat.app.AlertDialog
@@ -42,6 +50,11 @@ class EntryConfigActivity : AppCompatActivity() {
     private var testRunning = false
     private lateinit var logStatus: TextView
     private lateinit var systemLogs: Button
+    private lateinit var detailedSystemLogs: Button
+    private lateinit var rebootSystemLogs: Button
+    private lateinit var advancedPanel: View
+    private lateinit var advancedToggle: Button
+    private var advancedExpanded = false
     private lateinit var localAppLogs: Button
     private lateinit var localBundle: Button
     private var observer: AutoCloseable? = null
@@ -67,8 +80,48 @@ class EntryConfigActivity : AppCompatActivity() {
         localAppLogs.setOnClickListener { exportAppLogsLocally() }
         localBundle = findViewById(R.id.saveDiagnosticBundle)
         localBundle.setOnClickListener { exportDiagnosticBundle() }
+        findViewById<Button>(R.id.startRescueTrace).setOnClickListener {
+            if (ShizukuGate.state(this) != ShizukuGate.State.READY) {
+                findViewById<TextView>(R.id.rescueTraceStatus).text =
+                    "Shizuku未就绪，未开始采集；请先启动并授权Shizuku"
+            } else {
+                runCatching { RescueTraceService.start(this) }.onSuccess {
+                    findViewById<TextView>(R.id.rescueTraceStatus).text =
+                        "已申请开始本地采集；查看常驻通知或返回页面核实状态"
+                }.onFailure {
+                    findViewById<TextView>(R.id.rescueTraceStatus).text =
+                        "启动失败：" + (it.message ?: "系统不允许前台服务")
+                }
+            }
+        }
+        findViewById<Button>(R.id.stopRescueTrace).setOnClickListener {
+            RescueTraceService.stop(this)
+            updateRescueTraceStatus()
+        }
+        findViewById<Button>(R.id.exportRescueTrace).setOnClickListener {
+            findViewById<TextView>(R.id.rescueTraceStatus).text = "正在复制已脱敏日志到 下载/CarDeck…"
+            val app = applicationContext
+            Bg.run("rescue-trace-export") {
+                val result = runCatching { RescueTraceStore.export(app) }.getOrNull()
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) showLocalSaveResult(result)
+                }
+            }
+        }
         systemLogs = findViewById(R.id.uploadSystemLogs)
         systemLogs.setOnClickListener { previewCombinedDiagnostics() }
+        detailedSystemLogs = findViewById(R.id.uploadDetailedSystemLogs)
+        detailedSystemLogs.setOnClickListener { previewCombinedDiagnostics(detailed = true) }
+        rebootSystemLogs = findViewById(R.id.uploadRebootEvidence)
+        rebootSystemLogs.setOnClickListener { previewCombinedDiagnostics(detailed = true, reboot = true) }
+        advancedPanel = findViewById(R.id.advancedGatewayPanel)
+        advancedToggle = findViewById(R.id.advancedGatewayToggle)
+        advancedExpanded = savedInstanceState?.getBoolean("gateway_advanced_expanded", false) ?: false
+        updateAdvancedVisibility()
+        advancedToggle.setOnClickListener {
+            advancedExpanded = !advancedExpanded
+            updateAdvancedVisibility()
+        }
         val draft = savedInstanceState?.getString("entry_address_draft")
         busy(true)
         val appContext = applicationContext
@@ -99,7 +152,14 @@ class EntryConfigActivity : AppCompatActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("entry_address_draft", address.text.toString())
+        outState.putBoolean("gateway_advanced_expanded", advancedExpanded)
         super.onSaveInstanceState(outState)
+    }
+
+    private fun updateAdvancedVisibility() {
+        advancedPanel.visibility = if (advancedExpanded) View.VISIBLE else View.GONE
+        advancedToggle.text = if (advancedExpanded) "收起更多选项  ▴"
+            else "更多选项 · 服务器配置 / 单独App日志  ▾"
     }
 
     private fun busy(value: Boolean) {
@@ -120,6 +180,8 @@ class EntryConfigActivity : AppCompatActivity() {
         localBundle.isEnabled = !captureBusy
         // Still useful after a reboot when Shizuku is not running: keep app breadcrumbs.
         systemLogs.isEnabled = !captureBusy
+        detailedSystemLogs.isEnabled = !captureBusy
+        rebootSystemLogs.isEnabled = !captureBusy
     }
 
     private fun saveConfig() {
@@ -224,6 +286,9 @@ class EntryConfigActivity : AppCompatActivity() {
                 else if (snapshot.systemUploadTotal > 0)
                     "\n本次已确认上传：${snapshot.systemUploadAcknowledged}/${snapshot.systemUploadTotal} 行"
                 else ""
+        } else if (snapshot.state == GatewayProbe.State.FAILED && snapshot.systemUploadTotal > 0) {
+            "诊断上传中断：服务器已确认 ${snapshot.systemUploadAcknowledged}/${snapshot.systemUploadTotal} 行。" +
+                "其余行不能视为上传成功；修复连接后须重新采样并确认。"
         } else getString(if (snapshot.state == GatewayProbe.State.HEALTHY) R.string.gateway_log_unsupported else R.string.gateway_log_waiting)
         testRunning = GatewayLogRuntime.running
         refreshControls()
@@ -239,13 +304,17 @@ class EntryConfigActivity : AppCompatActivity() {
         refreshControls()
     }
 
-    private fun previewCombinedDiagnostics() {
+    private fun previewCombinedDiagnostics(detailed: Boolean = false, reboot: Boolean = false) {
         val target = GatewayLogRuntime.probe
         val token = stored?.token.orEmpty()
         if (captureBusy) return
         val generation = ++previewGeneration
         captureBusy = true
-        logStatus.text = "正在汇总系统日志、上轮会话及崩溃证据…"
+        logStatus.text = when {
+            reboot -> "正在只读采集重启原因、系统DropBox及操作轨迹；不会自动上传…"
+            detailed -> "正在采集详细系统故障日志；不会自动上传…"
+            else -> "正在汇总系统日志、上轮会话及崩溃证据…"
+        }
         refreshControls()
         val appContext = applicationContext
         Bg.run("system-log-preview") {
@@ -257,10 +326,35 @@ class EntryConfigActivity : AppCompatActivity() {
                     SystemLogCapture.recoveryPreview(appContext, redactor)
                 }.getOrElse { listOf("[取证状态] 重启证据读取失败，请检查本地诊断包") }
                 val shizukuReady = ShizukuGate.state(appContext) == ShizukuGate.State.READY
-                val system = if (shizukuReady) runCatching {
-                    SystemLogCapture.preview(appContext, redactor)
+                val rebootEvidence = if (reboot) runCatching {
+                    RebootEvidenceCapture.collect(appContext, redactor)
+                }.getOrElse { listOf("[重启取证] 系统重启详情读取失败，仍可检查崩溃和App轨迹") }
+                else emptyList()
+                val system = if (shizukuReady && !reboot) runCatching {
+                    if (detailed) SystemLogCapture.detailedPreview(appContext, redactor)
+                    else SystemLogCapture.preview(appContext, redactor)
                 }.getOrDefault(emptyList()) else emptyList()
-                CombinedDiagnosticSelector.merge(crash, system, shizukuReady)
+                if (detailed) {
+                    val appHistory = OfflineLogFormatter.appLines(
+                        DebugFileLog.read(appContext, currentSessionOnly = false).orEmpty(),
+                        redactor,
+                    )
+                    val stages = CriticalEventTrail.recentLines(appContext).map(redactor::line)
+                    val systemEvidence = if (shizukuReady && system.isEmpty() && !reboot) {
+                        listOf("[采样状态] 无详细系统日志；Shizuku命令失败、无权限或缓冲区为空")
+                    } else system
+                    val criticalEvidence = if (reboot) {
+                        // Reserve room for both the new boot snapshot and dated
+                        // crash evidence; older long DropBox dumps must not evict
+                        // the current-boot property evidence.
+                        rebootEvidence.take(140) + crash.take(116)
+                    } else crash
+                    DetailedDiagnosticSelector.merge(
+                        criticalEvidence, stages, appHistory, systemEvidence, shizukuReady,
+                    )
+                } else {
+                    CombinedDiagnosticSelector.merge(crash, system, shizukuReady)
+                }
             }
             runOnUiThread {
                 if (generation != previewGeneration || isFinishing || isDestroyed) return@runOnUiThread
@@ -271,6 +365,8 @@ class EntryConfigActivity : AppCompatActivity() {
                     logStatus.setText(R.string.gateway_system_unavailable)
                     return@runOnUiThread
                 }
+                // A large diagnostic stays off the TextView; review only 256 selected lines.
+                val displayLines = if (detailed) DetailedDiagnosticSelector.reviewSample(lines) else lines
                 // Dated DropBox event ID is stronger than a repeated crash stack.
                 val eventId = CrashEvidenceSelector.datedCrashId(lines)
                 val crashStack = lines.filter {
@@ -296,21 +392,28 @@ class EntryConfigActivity : AppCompatActivity() {
                 previewDialog = DiagnosticPreviewDialog.show(
                     this,
                     DiagnosticPreviewDialog.Model(
-                        lines = lines,
+                        lines = displayLines,
                         eventId = eventId,
                         uploadedBefore = sameStack,
                         shizukuReady = ShizukuGate.state(this) == ShizukuGate.State.READY,
                         uploadReady = uploadReady,
+                        detailedCount = if (detailed) lines.size else null,
+                        diagnosticType = if (reboot) "重启取证" else if (detailed) "详细故障" else null,
                     ),
                     onSave = {
-                        saveLocalPreview(OfflineDiagnosticExporter.Kind.DIAGNOSTIC, lines)
+                        saveLocalPreview(
+                            if (reboot) OfflineDiagnosticExporter.Kind.REBOOT
+                            else if (detailed) OfflineDiagnosticExporter.Kind.DETAILED
+                            else OfflineDiagnosticExporter.Kind.DIAGNOSTIC,
+                            lines,
+                        )
                     },
                     onUpload = {
                         val valid = target != null && GatewayLogRuntime.running &&
                             GatewayLogRuntime.probe === target &&
                             GatewayLogRuntime.snapshot?.state == GatewayProbe.State.HEALTHY &&
                             SystemClock.elapsedRealtime() <= expires
-                        val accepted = valid && target?.uploadConfirmedSystemLogs(lines) == true
+                        val accepted = valid && target?.uploadConfirmedSystemLogs(lines, detailed) == true
                         if (accepted && crashSignature != null) {
                             fingerprints.edit()
                                 .putString("last_submitted_crash_signature_v2", crashSignature)
@@ -398,6 +501,12 @@ class EntryConfigActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun updateRescueTraceStatus() {
+        val retainedKb = RescueTraceStore.forApp(this).retainedBytes() / 1024
+        findViewById<TextView>(R.id.rescueTraceStatus).text =
+            RescueTraceService.description + "；已留存约 " + retainedKb + "KB（卸载前请先导出）"
+    }
+
     override fun onStart() {
         super.onStart()
         observer = GatewayLogRuntime.subscribe { snapshot ->
@@ -405,6 +514,7 @@ class EntryConfigActivity : AppCompatActivity() {
         }
         testRunning = GatewayLogRuntime.running
         refreshControls()
+        updateRescueTraceStatus()
     }
 
     override fun onStop() {

@@ -129,7 +129,7 @@ object BuickUpdater {
         activity.getSharedPreferences(PREF, 0).edit().putBoolean(KEY_AUTO, enabled).apply()
     }
 
-    /** 进入别克设置时的自动检查与软件更新页手动检查必须使用同一选定渠道。 */
+    /** 前台自动检查与软件更新页手动检查共用用户所选渠道；不会自动下载安装。 */
     fun checkSelected(activity: Activity, silent: Boolean = false) {
         when (UpdatePreference.selected(activity)) {
             UpdatePreference.Channel.FORMAL -> check(activity, silent)

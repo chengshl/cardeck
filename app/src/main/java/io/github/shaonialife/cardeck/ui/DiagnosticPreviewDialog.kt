@@ -26,6 +26,8 @@ internal object DiagnosticPreviewDialog {
         val uploadedBefore: Boolean,
         val shizukuReady: Boolean,
         val uploadReady: Boolean,
+        val detailedCount: Int? = null,
+        val diagnosticType: String? = null,
     )
 
     fun show(
@@ -78,7 +80,7 @@ internal object DiagnosticPreviewDialog {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        header.addView(text("系统诊断 · 脱敏预览", 19f, foreground, true),
+        header.addView(text((model.diagnosticType ?: "快速诊断") + " · 安全预览", 19f, foreground, true),
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         val dialog = Dialog(activity)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -102,7 +104,12 @@ internal object DiagnosticPreviewDialog {
             background = shape(selected)
         }
         root.place(badge, 13)
-        root.place(text("精选 ${model.lines.size} / 最多256行  ·  系统事件原始时间单独标注", 12f, secondary), 11)
+        val countLabel = if (model.detailedCount == null) {
+            "精选 ${model.lines.size} / 最多256行  ·  系统事件原始时间单独标注"
+        } else {
+            "${model.diagnosticType ?: "详细故障"}：${model.detailedCount} 行 · 预览 ${model.lines.size} 行"
+        }
+        root.place(text(countLabel, 12f, secondary), 11)
 
         val tabRow = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -137,8 +144,9 @@ internal object DiagnosticPreviewDialog {
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f).apply {
             topMargin = dp(8)
         })
-        val summaryText = DiagnosticPreviewSummary.body(
+        val summaryText = DiagnosticPreviewSummary.compact(
             model.lines, model.eventId, model.uploadedBefore, model.shizukuReady,
+            model.detailedCount, model.diagnosticType,
         )
         fun showTab(raw: Boolean) {
             summaryTab.background = shape(if (raw) surface else selected, if (raw) surface else accent)
@@ -152,7 +160,14 @@ internal object DiagnosticPreviewDialog {
         rawTab.setOnClickListener { showTab(true) }
         showTab(false)
 
-        val note = text("保存只在本地；在线上传必须手动确认，分批上报不包含完整2MB历史。", 11.5f, secondary)
+        val note = text(
+            if (model.detailedCount != null) {
+                "保存详细文件只在本地；上传需手动确认，诊断发送可能较长，不会自动重传。"
+            } else {
+                "保存只在本地；在线上传必须手动确认，分批上报不包含完整2MB历史。"
+            },
+            11.5f, secondary,
+        )
         root.place(note, 11)
 
         val actions = LinearLayout(activity).apply {
