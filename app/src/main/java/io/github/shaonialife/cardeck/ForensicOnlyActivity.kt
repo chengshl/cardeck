@@ -74,7 +74,7 @@ class ForensicOnlyActivity : AppCompatActivity() {
                         export.isEnabled = true
                         current.text = if (saved == null)
                             "没有可导出的记录，或保存失败；先开始采集。"
-                        else "已导出：${saved.displayName}（${saved.sizeBytes} bytes）\n${saved.displayPath}"
+                        else "已导出：${saved.fileName}（${saved.bytes} bytes）\n${saved.displayPath}"
                         // Keep the exact generated path visible without auto-sharing it.
                     }
                 }
