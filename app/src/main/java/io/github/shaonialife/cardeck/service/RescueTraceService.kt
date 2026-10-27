@@ -12,7 +12,7 @@ import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import io.github.shaonialife.cardeck.EntryConfigActivity
+import io.github.shaonialife.cardeck.ForensicOnlyActivity
 import io.github.shaonialife.cardeck.gateway.LogRedactor
 import io.github.shaonialife.cardeck.gateway.RescueTracePolicy
 import io.github.shaonialife.cardeck.gateway.RescueTraceStore
@@ -50,7 +50,7 @@ class RescueTraceService : Service() {
             CHANNEL, "CarDeck 重启前日志留存", NotificationManager.IMPORTANCE_LOW,
         ))
         val open = PendingIntent.getActivity(
-            this, 6, Intent(this, EntryConfigActivity::class.java),
+            this, 6, Intent(this, ForensicOnlyActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val stop = PendingIntent.getService(
@@ -59,7 +59,7 @@ class RescueTraceService : Service() {
         )
         val notification = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("CarDeck · 本地保留重启前日志")
+            .setContentTitle("取证助手 · 本地保存系统异常")
             .setContentText("持续本地留存，最多2MB；手动停止")
             .setContentIntent(open)
             .setOngoing(true)
