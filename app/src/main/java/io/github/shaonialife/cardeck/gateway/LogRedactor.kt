@@ -48,6 +48,21 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         safe = namedSecret.replace(safe) { it.groupValues[1] + "=[已隐藏]" }
         safe = Regex("""\b(?:Bearer|Basic)\s+[^\s,;]+""", RegexOption.IGNORE_CASE)
             .replace(safe, "[已隐藏认证头]")
+        // Preserve *structural* AVC policy identifiers across generic IPv6 masking:
+        // "u:r:..." SELinux contexts and HAL interface strings are not IP addresses.
+        // Strict field allowlist avoids exempting arbitrary log text from redaction.
+        val preservedFields = ArrayList<String>()
+        if (Regex("""\bavc:\s*denied\b""", RegexOption.IGNORE_CASE).containsMatchIn(safe)) {
+            val policyField = Regex(
+                """\b(?:interface|scontext|tcontext|tclass|sid|permissive)=[A-Za-z0-9_./:,-]{1,160}""",
+                RegexOption.IGNORE_CASE,
+            )
+            safe = policyField.replace(safe) { hit ->
+                val id = preservedFields.size
+                preservedFields.add(hit.value)
+                "~CARDECK_AVC_" + id + "~"
+            }
+        }
         val preservedTimes = ArrayList<String>()
         safe = clockTime.replace(safe) { hit ->
             preservedTimes.add(hit.value)
@@ -57,11 +72,15 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         for ((i, t) in preservedTimes.withIndex()) {
             safe = safe.replace("~CARDECK_TIME_" + i + "~", t)
         }
+        for ((i, field) in preservedFields.withIndex()) {
+            safe = safe.replace("~CARDECK_AVC_" + i + "~", field)
+        }
         safe = Regex("""\b(ssid|serial|device.?id|vin|latitude|longitude)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""", RegexOption.IGNORE_CASE)
             .replace(safe) { it.groupValues[1] + "=[已隐藏]" }
         safe = safe.map { if (it.code < 32 || it.code == 127) ' ' else it }.joinToString("")
-        return safe.chunked(200).take(42).mapIndexed { i, chunk ->
-            "[取证" + (i + 1) + "] " + chunk
+        val parts = safe.chunked(190).take(42)
+        return parts.mapIndexed { index, chunk ->
+            "[片段" + (index + 1) + "/" + parts.size + "] " + chunk
         }
     }
 

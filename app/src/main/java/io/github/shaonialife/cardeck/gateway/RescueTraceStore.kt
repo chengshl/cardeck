@@ -20,13 +20,17 @@ internal class RescueTraceStore(private val directory: File) {
         private const val SLOT_BYTES = 512 * 1024L
         private const val SLOTS = 4
         private const val PREFIX = "rescue-trace-"
+        // Critical records have their own bounded retention in addition to the
+        // existing 2 MiB rolling general trail, so harmless noisy AVCs cannot evict them.
+        private const val CRITICAL_BYTES = 512 * 1024L
+        private const val CRITICAL_PREFIX = "critical-trace-"
 
         fun forApp(context: Context) = RescueTraceStore(File(context.filesDir, "rescue-trace"))
 
         /** Manual export only. Never called automatically by the monitor. */
         fun export(context: Context): OfflineDiagnosticExporter.Result? {
             val store = forApp(context)
-            val files = store.oldestToNewest()
+            val files = store.oldestToNewest() + store.criticalOldestToNewest()
             if (files.isEmpty()) return null
             val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             val name = "CarDeck-PreReboot-$timestamp.txt"
@@ -68,8 +72,10 @@ internal class RescueTraceStore(private val directory: File) {
 
     private fun slot(i: Int) = File(directory, PREFIX + i + ".log")
     private fun oldestToNewest() = (SLOTS - 1 downTo 0).map(::slot).filter { it.isFile && it.length() > 0L }
+    private fun criticalSlot(i: Int) = File(directory, CRITICAL_PREFIX + i + ".log")
+    private fun criticalOldestToNewest() = (1 downTo 0).map(::criticalSlot).filter { it.isFile && it.length() > 0L }
 
-    fun retainedBytes(): Long = oldestToNewest().sumOf { it.length() }
+    fun retainedBytes(): Long = (oldestToNewest() + criticalOldestToNewest()).sumOf { it.length() }
 
     @Synchronized
     fun append(safeLine: String, critical: Boolean = false) {
@@ -91,6 +97,22 @@ internal class RescueTraceStore(private val directory: File) {
         FileOutputStream(current, true).use {
             it.write(bytes)
             if (critical) it.fd.sync()
+        }
+        if (critical) {
+            // Separate 2 x 256 KiB slots; rotate without deleting main trail.
+            val each = CRITICAL_BYTES / 2
+            var vital = criticalSlot(0)
+            if (vital.length() + bytes.size > each) {
+                criticalSlot(1).delete()
+                if (vital.exists() && !vital.renameTo(criticalSlot(1))) {
+                    error("critical evidence rotation failed")
+                }
+                vital = criticalSlot(0)
+            }
+            FileOutputStream(vital, true).use {
+                it.write(bytes)
+                it.fd.sync()
+            }
         }
     }
 }

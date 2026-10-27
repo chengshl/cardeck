@@ -16,6 +16,8 @@ import io.github.shaonialife.cardeck.ForensicOnlyActivity
 import io.github.shaonialife.cardeck.gateway.LogRedactor
 import io.github.shaonialife.cardeck.gateway.RescueTracePolicy
 import io.github.shaonialife.cardeck.gateway.RescueTraceStore
+import io.github.shaonialife.cardeck.gateway.RescueTraceContext
+import io.github.shaonialife.cardeck.R
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import moe.shizuku.server.IShizukuService
 import java.io.FileInputStream
@@ -37,6 +39,18 @@ class RescueTraceService : Service() {
     @Volatile private var cancelled = false
     @Volatile private var killReader: (() -> Unit)? = null
     private var started = false
+    private val heartbeat = object : Runnable {
+        override fun run() {
+            if (!running || cancelled) return
+            runCatching {
+                val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+                RescueTraceStore.forApp(this@RescueTraceService).append(
+                    "[采集心跳] $stamp 监控进程存活；不表示系统无异常",
+                )
+            }
+            handler.postDelayed(this, 10 * 60 * 1000L)
+        }
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -73,6 +87,7 @@ class RescueTraceService : Service() {
             running = true
             description = "采集中 · 不限时、仅本机、脱敏、不上传"
             executor.execute { record() }
+            handler.postDelayed(heartbeat, 10 * 60 * 1000L)
         }
         return START_NOT_STICKY
     }
@@ -80,6 +95,7 @@ class RescueTraceService : Service() {
     private fun record() {
         val store = RescueTraceStore.forApp(this)
         val redactor = LogRedactor()
+        val context = RescueTraceContext()
         try {
             check(ShizukuGate.state(this) == ShizukuGate.State.READY) { "Shizuku未就绪" }
             val binder = rikka.shizuku.Shizuku.getBinder() ?: error("Shizuku已断开")
@@ -99,7 +115,10 @@ class RescueTraceService : Service() {
                 return
             }
             val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
-            store.append("[采集会话] 开始于 $stamp；无应用时长限制；只保留筛选/脱敏记录；重启后需重新手动启动")
+            val pkg = packageManager.getPackageInfo(packageName, 0)
+            val origin = getString(R.string.cardeck_installed_build_origin)
+            store.append("[采集会话] $stamp 包名=$packageName 版本=${pkg.versionName} 来源=$origin；无限时；重启后手动恢复")
+            store.append("[取证规则] 普通2MiB循环＋关键512KiB；SELinux上下文保留；关键事件前4后12行")
             // Drain stderr in a separate daemon; never let the pipe block logcat.
             Thread({
                 runCatching {
@@ -116,16 +135,15 @@ class RescueTraceService : Service() {
                     var accepted = 0
                     for (raw in reader.lineSequence()) {
                         if (cancelled) break
-                        if (!RescueTracePolicy.keep(raw)) continue
-                        val important = raw.contains("RescueParty", true) ||
-                            raw.contains("denied { add }", true) ||
-                            raw.contains("failed to complete startup", true)
-                        redactor.forensicChunks(raw).take(6).forEach { chunk ->
-                            store.append(chunk, important)
+                        if (raw.isBlank() || raw.length > 8192 || raw.startsWith("---------")) continue
+                        // All queued context is redacted in memory BEFORE storage.
+                        val safe = redactor.forensicChunks(raw).take(42)
+                        val entries = context.accept(raw, safe)
+                        for ((entry, vital) in entries) store.append(entry, vital)
+                        accepted += entries.size
+                        if (accepted > 0 && accepted % 50 == 0) {
+                            description = "已保留取证分段 $accepted；本机约 ${store.retainedBytes() / 1024} KB"
                         }
-                        accepted++
-                        if (accepted % 50 == 0) description = "已保留关键事件 " +
-                            accepted + " 条；本地约 " + (store.retainedBytes() / 1024) + "KB"
                     }
                 }
             }
@@ -141,6 +159,7 @@ class RescueTraceService : Service() {
 
     override fun onDestroy() {
         cancelled = true
+        handler.removeCallbacks(heartbeat)
         killReader?.invoke()
         executor.shutdownNow()
         running = false
