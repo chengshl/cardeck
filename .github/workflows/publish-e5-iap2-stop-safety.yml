@@ -1,0 +1,200 @@
+name: E5 iAP2 stop cancellation safety - signed experiment
+on:
+  push:
+    branches:
+      - experiment/buick-e5-iap2-stop-safety
+    paths-ignore:
+      - 'docs/**'
+      - 'AGENTS.md'
+  workflow_dispatch:
+concurrency:
+  group: e5-iap2-stop-safety-signed-prerelease
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  signed-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify isolated source and E5 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-iap2-stop-safety"
+          grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
+          grep -Fq 'private const val RELEASE_TAG = "buick-e5-latest"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+          grep -Fq 'BuickB233Route.shouldProtectProfiles(' app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt
+          grep -Fq 'Iap2InterruptibleWait.sleep(1500L)' app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt
+          grep -Fq 'Iap2InterruptibleWait.sleep(600)' app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt
+          if grep -Fq '30:DF:17:9F:AE:4C' app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt; then
+            echo "::error::Private Bluetooth address hardcoding is forbidden"
+            exit 1
+          fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify all Android tests and debug build
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Lint report and changed T22-file error gate
+        shell: bash
+        run: |
+          set +e
+          ./gradlew :app:lintDebug
+          lint_rc=$?
+          set -e
+          if (( lint_rc != 0 )); then
+            # This E5 base predates the Test Lint baseline. Existing unrelated
+            # L3 virtual-display flags can trigger WrongConstant. We must not
+            # change Shizuku/display behavior or rewrite its baseline just to
+            # ship an isolated L2 updater experiment. Keep full lint visible,
+            # but FAIL if any changed updater source has a new error.
+            python3 - <<'PY'
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+          files = sorted(pathlib.Path("app/build/reports").glob("lint-results-debug*.xml"))
+          if not files:
+              print("::error::Lint failed and no XML report was generated")
+              sys.exit(1)
+          root = ET.parse(files[-1]).getroot()
+          affected = {
+              "app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWait.kt",
+              "app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWaitTest.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt",
+              "app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/EntryConfigActivity.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/gateway/SystemLogCapture.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/gateway/GatewayProbe.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/gateway/OfflineDiagnosticExporter.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/gateway/DetailedDiagnosticSelector.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/ui/DiagnosticPreviewDialog.kt",
+              "app/src/main/res/layout/activity_entry_config.xml",
+              "app/src/main/AndroidManifest.xml",
+              "app/src/main/java/io/github/shaonialife/cardeck/gateway/RescueTracePolicy.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/gateway/RescueTraceStore.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/service/RescueTraceService.kt",
+          }
+          failures = []
+          inherited = []
+          for issue in root.findall("issue"):
+              if issue.get("severity") != "Error":
+                  continue
+              details = [
+                  (loc.get("file") or "").replace("\\", "/")
+                  for loc in issue.findall("location")
+              ]
+              if any(any(f.endswith(path) for path in affected) for f in details):
+                  failures.append((issue.get("id"), details))
+              else:
+                  inherited.append((issue.get("id"), details))
+          for item in failures:
+              print("::error::Detailed diagnostics source has lint error:", item)
+          print(f"Existing unrelated E5 lint errors: {len(inherited)}; new detailed diagnostics errors: {len(failures)}")
+          if failures:
+              sys.exit(1)
+          print("::warning::Full-project lint is NOT clean; unrelated pre-existing errors are documented, not marked as passed")
+          PY
+          fi
+      - name: Restore existing release signing identity
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-diagnostics.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-diagnostics.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-diagnostics.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Assign monotonic Android version and accurate experiment provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_EPOCH="$(date -u +%s)"
+          BUILD_CODE=$(( BUILD_EPOCH - 1704067200 ))
+          (( BUILD_CODE > 0 && BUILD_CODE <= 2100000000 ))
+          VERSION="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
+          echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
+          echo "SOURCE_BRANCH=experiment/buick-e5-iap2-stop-safety" >> "$GITHUB_ENV"
+      - name: Build existing-key signed experiment APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify E5 package, signing, and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          # Don't pipe aapt to grep -q with pipefail: grep may close early
+          # and make aapt exit SIGPIPE even when package ID is correct.
+          if ! grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"; then
+            echo "::error::签名包包名不是当前E5安装包"
+            exit 1
+          fi
+          "$APKSIGNER" verify "$APK"
+          CERT_DETAILS="$("$APKSIGNER" verify --print-certs "$APK")"
+          if grep -qi 'CN=Android Debug' <<< "$CERT_DETAILS"; then
+            echo "::error::签名为Android Debug，不允许交付"
+            exit 1
+          fi
+          # aapt's default resource dump prints resource names but typically
+          # omits the compiled STRING VALUES. Use --values explicitly; the
+          # updater reads this value from the APK at runtime.
+          if ! AAPT_RES="$("$AAPT" dump --values resources "$APK")"; then
+            echo "::error::无法读取 APK 编译资源值，拒绝发布"
+            exit 1
+          fi
+          if ! grep -Fq 'cardeck_installed_build_origin' <<< "$AAPT_RES"; then
+            echo "::error::APK内不存在安装来源资源名称，拒绝发布"
+            exit 1
+          fi
+          if ! grep -Fq 'experiment/buick-e5-iap2-stop-safety' <<< "$AAPT_RES"; then
+            echo "::error::APK的来源资源值不是当前实验分支，拒绝发布"
+            grep 'cardeck_installed_build_origin' <<< "$AAPT_RES" | head -n 3 || true
+            exit 1
+          fi
+          echo "E5包名、Android签名和APK内实验来源资源值校验完成"
+          cp "$APK" CarDeck-Buick-E5-Stop-Safety.apk
+          sha256sum CarDeck-Buick-E5-Stop-Safety.apk > CarDeck-Buick-E5-Stop-Safety.apk.sha256
+      - name: Publish only isolated E5 experiment (never stable latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-iap2-stop-safety"
+          test "$SOURCE_BRANCH" = "$GITHUB_REF_NAME"
+          APK=CarDeck-Buick-E5-Stop-Safety.apk
+          test -s "$APK" && test -s "$APK.sha256"
+          TAG="exp-buick-e5-iap2-stop-safety-$CARDECK_RELEASE_VERSION_NAME"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## 更新说明\n'
+            printf 'E5 #34 stop-safety 单项修复：基于已发布E5 T22实验，在不更改1.5秒T37等待时长、0x4300/0x4301、HFP/A2DP与蓝牙重试行为的前提下，把Thread.sleep被stop()中断转换为可正常捕获的IOException，并保留线程中断状态，最终finally释放socket/channel。修复旧版iap2-bt-client InterruptedException未捕获导致应用进程崩溃问题；保留T22蓝牙保护和已手机验收的A/B更新诊断。\n'
+            printf '\n## 尚未验收\n该版只通过了自动化编译和模拟线程中断单测，不等于手机实车通过。停车测试：建立连接或等待0x4300时点停止，App不得闪退；重复3轮停止/重启连接；确认Test取证助手未捕获新的iap2-bt-client FATAL，T22仍不主动断HFP/A2DP。#33 ACK109未确认和0x4301未到仍是独立P0，当前并未修复；测试时切勿无限自动重试。旧版低versionCode不能无损覆盖回退，升级前导出E5诊断证据。\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Buick-E5 iAP2 停止安全修复 $CARDECK_RELEASE_VERSION_NAME（实验）" \
+            --notes-file release-notes.txt --prerelease --latest=false
