@@ -84,7 +84,7 @@ class ForensicOnlyActivity : AppCompatActivity() {
             + "已经写入的日志重启后仍保留；卸载此App或清除数据之前务必先导出。"
             + "\n如果原来安装过Buick-Test，本版将使用同一个Test包名覆盖安装；不影响E5包。", 13f)
         val scroll = ScrollView(this).apply {
-            fillViewport = true
+            isFillViewport = true
             addView(holder)
         }
         setContentView(scroll)
@@ -99,10 +99,12 @@ class ForensicOnlyActivity : AppCompatActivity() {
         if (!::current.isInitialized) return
         val ready = ShizukuGate.state(this)
         val sizeKb = collector.retainedBytes() / 1024
-        current.text = "Shizuku：${ready.name}\n"
-            + "采集：${RescueTraceService.description}\n"
-            + "当前留存：${sizeKb} KB / 2048 KB\n"
-            + "本机连续取证，不限制4小时，不自动上传"
+        current.text = buildString {
+            appendLine("Shizuku：${ready.name}")
+            appendLine("采集：${RescueTraceService.description}")
+            appendLine("当前留存：${sizeKb} KB / 2048 KB")
+            append("本机连续取证，不限制4小时，不自动上传")
+        }
     }
 
     private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
