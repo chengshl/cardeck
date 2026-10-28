@@ -77,6 +77,8 @@ class AudioSender(
     private val onStopped: (() -> Unit)? = null,
     /** T76: observation-only per-AirPlay-session monotonic timeline. */
     private val failureTrace: AudioFailureTrace? = null,
+    /** T77: user-selected B233-only 35s test signal, default false. Never enabled silently. */
+    private val diagnosticToneEnabled: Boolean = false,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -518,6 +520,15 @@ class AudioSender(
         val recorder = record ?: return
         val frameBytes = framePcmBytes
         val pcm = ByteArray(frameBytes)
+        // T77: uses AudioRecord only as a pacing clock, never changes RTP codec/SETUP/RTCP.
+        // Injection happens only after the user expressly chooses the diagnostic-signal option.
+        val diagnosticTone = if (diagnosticToneEnabled) DiagnosticPcmTone(sampleRate) else null
+        val toneStartedAtMs = android.os.SystemClock.uptimeMillis()
+        var toneStopLogged = false
+        if (diagnosticTone != null) {
+            log("AUDIO T77: 用户明确选择 440Hz 低幅度诊断音；仅首35秒替换本地捕获的 PCM，音量峰值=1000/32768，不代表手机外部音乐被捕获")
+            failureTrace?.event("diagnostic_tone_started", "hz=440 peak=1000 durationMs=35000")
+        }
         // 诊断抽样节拍：PCM 约 125 包/s（每 20s 一次）；AAC 约 47 帧/s
         val diagnosticStride = if (codec == AudioCodec.AAC_LC) 600 else 1875
         try {
@@ -540,6 +551,15 @@ class AudioSender(
                 }
                 if (read < frameBytes) continue // 残包（缓冲尾部）：丢弃，等下一个整包
                 readFailures = 0
+                if (diagnosticTone != null) {
+                    if (android.os.SystemClock.uptimeMillis() - toneStartedAtMs < 35_000L) {
+                        diagnosticTone.fill(pcm, read)
+                    } else if (!toneStopLogged) {
+                        toneStopLogged = true
+                        log("AUDIO T77: 35秒低幅度测试音窗口结束，恢复原 AudioPlaybackCapture 音源")
+                        failureTrace?.event("diagnostic_tone_finished")
+                    }
+                }
 
                 // 内容诊断（2026-10-17）：播放捕获可能拿到全零（app 禁止捕获 / 音频路由
                 // 到蓝牙 / 无音频播放）。全零时车机静音但手机仍在响，用户会报「声音在
@@ -571,6 +591,7 @@ class AudioSender(
                         } else ""
                     log(
                         "AUDIO: 采集样本 seq=$sequence 非零$percent% 峰值=$peak$activity" +
+                            if (diagnosticTone != null && !toneStopLogged) " source=T77_opt_in_tone" else "" +
                             if (peak == 0) "（⚠ 全零：音乐可能未播放、来源禁止捕获或走了其他音频路由）" else "",
                     )
                 }
