@@ -1731,6 +1731,7 @@ class AirPlayClient(
                 val reverse = AudioReverseControlPort(
                     bindNetwork = { udp -> network.bindSocket(udp) },
                     log = log,
+                    failureTrace = audioFailureTrace,
                 )
                 val port = reverse.start()
                 if (port == 0) return null
