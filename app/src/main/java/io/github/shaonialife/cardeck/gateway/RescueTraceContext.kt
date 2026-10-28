@@ -14,12 +14,14 @@ internal class RescueTraceContext {
         val selected = RescueTracePolicy.keep(raw)
         val result = mutableListOf<Pair<String, Boolean>>()
         if (critical) {
-            before.forEach { chunks -> chunks.forEach { result.add(it to false) } }
+            // Duplicate crash context into the fsync-protected critical lane. All bytes were redacted upstream.
+            before.forEach { chunks -> chunks.forEach { result.add(it to true) } }
             before.clear()
             safeChunks.forEach { result.add(it to true) }
             after = 12
         } else if (selected || after > 0) {
-            safeChunks.forEach { result.add(it to false) }
+            // Preserve the first 12 lines of the fatal stack in critical storage as well.
+            safeChunks.forEach { result.add(it to (after > 0)) }
             if (after > 0) after--
         } else {
             before.addLast(safeChunks)
