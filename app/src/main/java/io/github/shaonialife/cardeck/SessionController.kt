@@ -558,6 +558,7 @@ object SessionController {
         val retiredVideo = videoSender
         videoSender = null
         val retiredClient = currentClient
+        retiredClient?.audioFailureTrace?.event("session_retire_requested")
         currentClient = null
         retiredClient?.cancelled = true
         // T28: finish EGL producer before stopping/releasing MediaCodec input Surface.
@@ -637,18 +638,21 @@ object SessionController {
         host: String?,
     ): Boolean {
         if (currentClient !== client || connectCancelled) {
+            client.audioFailureTrace?.event("audio_start_aborted", "session_changed_or_cancelled")
             appendLog("AUDIO T70: 会话已改变或被取消，忽略迟到的音频启动")
             return false
         }
         if (audioSender?.isRunning == true) return true
         if (!startAudioChannel(context, client, sharedSecret, host)) return false
         val owningSender = audioSender ?: return false
+        client.audioFailureTrace?.event("audio_record_request")
         appendLog("AUDIO T70: 音频流后加入会话，补发 RECORD 激活（首次/晚授权共用）")
         return io.github.shaonialife.cardeck.audio.AudioStreamActivation.finish(
             isBuickB233 = client.currentEndpoint.isBuickB233,
             record = { client.record() },
             onConfirmed = {
                 if (currentClient === client && audioSender === owningSender) {
+                    client.audioFailureTrace?.event("audio_record_confirmed")
                     owningSender.activateSyncAfterRecord()
                 } else {
                     appendLog("AUDIO T70: RECORD 返回时会话已退役，忽略旧音频同步激活")
@@ -656,6 +660,7 @@ object SessionController {
             },
             onRejected = {
                 if (currentClient === client && audioSender === owningSender) {
+                    client.audioFailureTrace?.event("audio_record_rejected")
                     appendLog("AUDIO T70: B233 音频 RECORD 未确认，停止音频、保留视频")
                     audioSender = null
                     activeAudioProfile = null
@@ -1441,6 +1446,7 @@ object SessionController {
                     codec = profile.codec,
                     streamType = profile.streamType,
                     adtsFrames = tuning.adts,
+                    failureTrace = client.audioFailureTrace,
                     vehicleNetwork =
                         if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                     // T71/B233 type=102 media: catplay modern TX does not actively
@@ -2578,6 +2584,7 @@ object SessionController {
                                                 if (videoSender !== owningSender || currentClient !== client) {
                                                     appendLog("SESSION T7: 忽略已退役视频流的迟到 onEnded")
                                                 } else {
+                                                    client.audioFailureTrace?.event("video_on_ended")
                                                     appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
                                                     BtSessionGate.sessionActive = false
                                                     ScreenDimmer.setSessionActive(false)
@@ -2620,6 +2627,7 @@ object SessionController {
                                                             // audio. Retire it and give the car time
                                                             // to reopen its 0x4300/0x4301 slot;
                                                             // preserve Wi-Fi and all other cars.
+                                                            client.audioFailureTrace?.event("iap2_recovery_requested", "audio_teardown")
                                                             bluetoothClient?.recoverAfterB233AudioTeardown()
                                                             phaseHint = "音频异常断开；车机握手冷却后自动重试…"
                                                         } else {
