@@ -64,6 +64,7 @@ jobs:
           root = ET.parse(candidates[-1]).getroot()
           changed = ("ForensicOnlyActivity.kt", "RescueTraceService.kt", "AndroidManifest.xml",
                      "LogRedactor.kt", "RescueTraceStore.kt", "RescueTraceContext.kt",
+                     "RescueCaptureHealth.kt",
                      "CollectorUpdater.kt", "CollectorReleasePolicy.kt")
           fatal = [item for item in root.findall("issue")
                    if item.get("severity") == "Error" and
