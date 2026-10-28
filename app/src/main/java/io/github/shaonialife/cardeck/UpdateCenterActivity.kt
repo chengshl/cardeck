@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import io.github.shaonialife.cardeck.update.BuickUpdater
 import io.github.shaonialife.cardeck.update.ExperimentalUpdates
+import io.github.shaonialife.cardeck.update.ExperimentProjectCatalog
 import io.github.shaonialife.cardeck.update.InstalledBuildIdentity
 import io.github.shaonialife.cardeck.update.UpdatePreference
 
@@ -34,7 +35,10 @@ class UpdateCenterActivity : AppCompatActivity() {
     private lateinit var selectedLabel: TextView
     private lateinit var installedOriginLabel: TextView
     private lateinit var currentChannelLabel: TextView
+    private lateinit var autoToggle: SwitchCompat
     private lateinit var browse: TextView
+    private lateinit var projectPanel: LinearLayout
+    private lateinit var projectName: TextView
 
     private fun dp(n: Int) = (resources.displayMetrics.density * n + .5f).toInt()
     private fun shape(fill: Int, stroke: Int = fill): GradientDrawable =
@@ -106,7 +110,7 @@ class UpdateCenterActivity : AppCompatActivity() {
         page.line(txt("当前应用：${branch()}\n当前安装包来源与更新检查通道分别展示，互不混淆。", 12.5f, muted), 9)
 
         page.line(txt("更新分支", 17f, fg, true), 25)
-        page.line(txt("点击选择并保存。自动检查将以已选分支为准。", 12f, muted), 5)
+        page.line(txt("正式版仅在打开 App 时自动检查；实验版只手动检查。", 12f, muted), 5)
 
         val a = card("正式分支", "当前 ${branch()} 的独立正式更新通道",
             "适合日常使用 · 检查此应用的正式安装包")
@@ -121,6 +125,24 @@ class UpdateCenterActivity : AppCompatActivity() {
         page.line(experiment, 11)
         formal.setOnClickListener { choose(UpdatePreference.Channel.FORMAL) }
         experiment.setOnClickListener { choose(UpdatePreference.Channel.EXPERIMENT) }
+
+        projectPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            background = shape(surface, outline)
+        }
+        projectPanel.line(txt("关注的实验项目", 15f, fg, true))
+        projectName = txt("", 13f, accent, true)
+        projectPanel.line(projectName, 7)
+        projectPanel.line(txt("选择 / 更换 / 停止关注", 14f, bg, true).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(48)
+            background = shape(accent)
+            setOnClickListener {
+                ExperimentalUpdates.chooseProject(this@UpdateCenterActivity) { refresh() }
+            }
+        }, 12)
+        page.line(projectPanel, 12)
 
         val info = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -145,8 +167,8 @@ class UpdateCenterActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val rowText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        rowText.line(txt("自动检查更新", 15f, fg, true))
-        rowText.line(txt("仅检查当前选中分支，安装仍需确认", 12f, muted), 5)
+        rowText.line(txt("正式版启动时检查更新", 15f, fg, true))
+        rowText.line(txt("仅正式频道生效；实验版不自动检查", 12f, muted), 5)
         val autoState = txt(if (BuickUpdater.autoEnabled(this)) "状态：已开启" else "状态：已关闭", 12.5f, muted, true)
         rowText.line(autoState, 6)
         row.addView(rowText, LinearLayout.LayoutParams(0, -2, 1f))
@@ -156,12 +178,14 @@ class UpdateCenterActivity : AppCompatActivity() {
                 intArrayOf(accent, muted),
             )
             isChecked = BuickUpdater.autoEnabled(this@UpdateCenterActivity)
-            contentDescription = "自动检查当前选中更新分支"
+            isEnabled = UpdatePreference.selected(this@UpdateCenterActivity) == UpdatePreference.Channel.FORMAL
+            contentDescription = "正式版启动时自动检查"
             setOnCheckedChangeListener { _, checked ->
                 BuickUpdater.setAutoEnabled(this@UpdateCenterActivity, checked)
                 autoState.text = if (checked) "状态：已开启" else "状态：已关闭"
             }
         }
+        autoToggle = toggle
         row.addView(toggle)
         info.line(row, 15)
 
@@ -200,7 +224,20 @@ class UpdateCenterActivity : AppCompatActivity() {
             if (isExperiment) accent else outline)
         formalMark.text = if (!isExperiment) "✓ 已选择" else "选择"
         experimentMark.text = if (isExperiment) "✓ 已选择" else "选择"
-        currentChannelLabel.text = if (isExperiment) "当前检查通道：试验分支（与已安装来源不同）" else "当前检查通道：正式分支"
+        val ownOrigin = getString(R.string.cardeck_installed_build_origin)
+        val ownProject = ownOrigin.takeIf { it.startsWith("experiment/buick-e5-") }
+        currentChannelLabel.text = if (!isExperiment) {
+            "当前检查通道：正式分支（你手动选择的渠道优先）"
+        } else if (ownProject != null) {
+            "当前检查通道：试验分支\n自动关注：$ownProject"
+        } else {
+            "当前检查通道：试验分支（仅手动检查）"
+        }
+        projectPanel.visibility = if (isExperiment) View.VISIBLE else View.GONE
+        val subscribed = UpdatePreference.selectedProject(this)
+        projectName.text = if (subscribed == null) "未手动订阅（手动检查沿用安装来源）"
+            else ExperimentProjectCatalog.name(subscribed) + "\n" + subscribed
         browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
+        autoToggle.isEnabled = !isExperiment
     }
 }
