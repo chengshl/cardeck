@@ -591,8 +591,8 @@ class AudioSender(
                         } else ""
                     log(
                         "AUDIO: 采集样本 seq=$sequence 非零$percent% 峰值=$peak$activity" +
-                            if (diagnosticTone != null && !toneStopLogged) " source=T77_opt_in_tone" else "" +
-                            if (peak == 0) "（⚠ 全零：音乐可能未播放、来源禁止捕获或走了其他音频路由）" else "",
+                            (if (diagnosticTone != null && !toneStopLogged) " source=T77_opt_in_tone" else "") +
+                            (if (peak == 0) "（⚠ 全零：音乐可能未播放、来源禁止捕获或走了其他音频路由）" else ""),
                     )
                 }
 
