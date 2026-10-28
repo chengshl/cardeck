@@ -77,6 +77,28 @@ class ResourceOwnershipReplayTest {
         assertEquals(before, review.projected)
     }
 
+    @Test fun suppliedIPhoneAudioBorrowThenTakeBeforeAacPlayback() {
+        // Separate decoded 2026-10-24 iPhone reference, Beijing time:
+        // 22:32:13 screen iOS, mainAudio permanently Car.
+        // 22:33:48.434 iOS borrows mainAudio: current iOS / permanent Car.
+        // 22:33:48.567 iOS takes mainAudio: current iOS / permanent iOS.
+        // 22:33:48.606 AAC starts. The latter timing is NOT proof of causation.
+        val initial = ResourceOwnershipReplay.State(owned(C, C), owned(A, A))
+        val borrowed = ResourceOwnershipReplay.State(owned(C, C), owned(C, A))
+        val acquired = ResourceOwnershipReplay.State(owned(C, C), owned(C, C))
+        val borrowByPhone = ResourceOwnershipReplay.Request(C, audio, borrow)
+        val takeByPhone = ResourceOwnershipReplay.Request(C, audio, take)
+        assertEquals(
+            ResourceOwnershipReplay.Verdict.MATCHES_OBSERVED_STATE,
+            ResourceOwnershipReplay.review(initial, borrowByPhone, borrowed).verdict,
+        )
+        assertEquals(
+            ResourceOwnershipReplay.Verdict.MATCHES_OBSERVED_STATE,
+            ResourceOwnershipReplay.review(borrowed, takeByPhone, acquired).verdict,
+        )
+        assertEquals(initial.screen, acquired.screen)
+    }
+
     @Test fun unborrowAlreadyReturnedOrNotHeldDoesNotStealResource() {
         val before = ResourceOwnershipReplay.State(owned(C, C), owned(C, C))
         val review = ResourceOwnershipReplay.review(
