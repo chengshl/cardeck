@@ -44,8 +44,10 @@ class RescueTraceService : Service() {
             if (!running || cancelled) return
             runCatching {
                 val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+                val gap = RescueCaptureHealth.heartbeat(this@RescueTraceService)
                 RescueTraceStore.forApp(this@RescueTraceService).append(
-                    "[采集心跳] $stamp 监控进程存活；不表示系统无异常",
+                    "[采集心跳] $stamp 监控进程存活；不表示系统无异常" +
+                        if (gap >= 15L) "；调度间隔约${gap}分钟（可能休眠）" else "",
                 )
             }
             handler.postDelayed(this, 10 * 60 * 1000L)
@@ -56,6 +58,7 @@ class RescueTraceService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == STOP) {
             description = "已手动停止；文件仍保存在手机"
+            RescueCaptureHealth.stopped(this, description)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -74,7 +77,7 @@ class RescueTraceService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("取证助手 · 本地保存系统异常")
-            .setContentText("持续本地留存，最多2MB；手动停止")
+            .setContentText("服务运行中 · 普通2MiB＋关键512KiB，本地保存")
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(0, "停止采集", stop)
@@ -86,6 +89,7 @@ class RescueTraceService : Service() {
             started = true
             running = true
             description = "采集中 · 不限时、仅本机、脱敏、不上传"
+            RescueCaptureHealth.started(this)
             executor.execute { record() }
             handler.postDelayed(heartbeat, 10 * 60 * 1000L)
         }
@@ -140,6 +144,7 @@ class RescueTraceService : Service() {
                         val safe = redactor.forensicChunks(raw).take(42)
                         val entries = context.accept(raw, safe)
                         for ((entry, vital) in entries) store.append(entry, vital)
+                        if (entries.isNotEmpty()) RescueCaptureHealth.matchedLog(this)
                         accepted += entries.size
                         if (accepted > 0 && accepted % 50 == 0) {
                             description = "已保留取证分段 $accepted；本机约 ${store.retainedBytes() / 1024} KB"
@@ -147,9 +152,13 @@ class RescueTraceService : Service() {
                     }
                 }
             }
-            if (!cancelled) description = "Shizuku/Logcat已结束；已留存文件可导出"
+            if (!cancelled) {
+                description = "Shizuku/Logcat已结束；已留存文件可导出"
+                RescueCaptureHealth.stopped(this, description)
+            }
         } catch (error: Exception) {
             description = "采集停止：" + (error.message?.take(80) ?: "无法读取Shizuku日志")
+            RescueCaptureHealth.stopped(this, description)
         } finally {
             killReader?.invoke()
             killReader = null
@@ -163,6 +172,9 @@ class RescueTraceService : Service() {
         killReader?.invoke()
         executor.shutdownNow()
         running = false
+        if (RescueCaptureHealth.snapshot(this).lastStopReason.isBlank()) {
+            RescueCaptureHealth.stopped(this, "采集服务已退出；请确认Shizuku状态")
+        }
         super.onDestroy()
     }
 
@@ -181,6 +193,7 @@ class RescueTraceService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, RescueTraceService::class.java))
             description = "已停止 · 已保留日志可导出"
+            RescueCaptureHealth.stopped(context, description)
         }
     }
 }
