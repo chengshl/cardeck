@@ -8,6 +8,7 @@ import android.os.SystemClock
 import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioSender
+import io.github.shaonialife.cardeck.audio.AudioControlLiveness
 import io.github.shaonialife.cardeck.audio.AudioFailureTrace
 import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.audio.BuickAudioTimingPolicy
@@ -121,6 +122,9 @@ class AirPlayClient(
 
     /** T76 scoped to this AirPlay connection, not the global Test installation. */
     @Volatile internal var audioFailureTrace: AudioFailureTrace? = null
+
+    /** T82 read-only: counts B233 event replies and progressing receiver audio clock. */
+    private val audioControlLiveness = AudioControlLiveness()
 
     /** T79: assigned only after this client's current AudioSender has been selected. */
     @Volatile internal var audioRtpSentCountProvider: (() -> Long?)? = null
@@ -454,6 +458,19 @@ class AirPlayClient(
             while (isSessionAlive()) {
                 try {
                     val (status, body) = request("POST", "/feedback", ByteArray(0))
+                    if (endpoint.isBuickB233 && status.contains("200")) {
+                        val sampleTime = runCatching {
+                            val parsed = BinaryPlist.parse(body) as? Map<*, *>
+                            val streams = parsed?.get("streams") as? List<*>
+                            (streams?.firstOrNull { (it as? Map<*, *>)?.get("type") == 102L ||
+                                (it as? Map<*, *>)?.get("type") == 102 } as? Map<*, *>)
+                                ?.get("sampleTime").let { it as? Number }?.toLong()
+                        }.getOrNull()
+                        audioControlLiveness.onFeedback(sampleTime)
+                        if (audioFailureTrace != null && sent + 1 in listOf(5, 10, 15, 20, 25)) {
+                            log("AUDIO T82: feedback #${sent + 1} ${audioControlLiveness.summary()}")
+                        }
+                    }
                     val now = SystemClock.uptimeMillis()
                     val gap = if (lastSuccessAt == 0L) 0L else now - lastSuccessAt
                     lastSuccessAt = now
@@ -654,8 +671,8 @@ class AirPlayClient(
      * 回出畸形行 "OK 200 OK"；我们再回 → 无限回声，日志雪崩且空耗加密通道。
      * 通道写与 postEventCommand 共用一把锁，避免两线程加密帧交叉。
      */
-    private fun respondEventRequest(cseq: String?) {
-        val socket = eventCommandSocket ?: return
+    private fun respondEventRequest(cseq: String?): Boolean {
+        val socket = eventCommandSocket ?: return false
         val cipher = eventCommandCipher
         try {
             synchronized(eventCommandLock) {
@@ -668,7 +685,12 @@ class AirPlayClient(
                     flush()
                 }
             }
-        } catch (_: IOException) {
+            return true
+        } catch (error: IOException) {
+            if (audioFailureTrace != null) {
+                audioFailureTrace?.event("event_reply_write_error", error.javaClass.simpleName)
+            }
+            return false
         }
     }
 
@@ -2289,6 +2311,10 @@ class AirPlayClient(
                             }
                         if (count < 0) {
                             log("EVENT: 通道关闭（EOF）")
+                            if (audioFailureTrace != null) {
+                                audioFailureTrace?.event("event_channel_eof")
+                                log("AUDIO T82: event_eof ${audioControlLiveness.summary()}")
+                            }
                             break
                         }
                         pending += buffer.copyOf(count)
@@ -2315,7 +2341,9 @@ class AirPlayClient(
                             if (!isRequest) continue
                             // 车机请求：立即回 200（echo 请求 CSeq）；/command 走分发，其余节流留痕
                             val cseq = CSEQ_REGEX.find(message.head)?.groupValues?.get(1)
-                            respondEventRequest(cseq)
+                            if (endpoint.isBuickB233) audioControlLiveness.onEventRequest()
+                            val acked = respondEventRequest(cseq)
+                            if (endpoint.isBuickB233) audioControlLiveness.onEventAck(acked)
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
                                 if (unknownEventRequests <= 10) {
@@ -2369,6 +2397,10 @@ class AirPlayClient(
                     }
                 } catch (error: IOException) {
                     log("EVENT: 读取结束 - ${error.message}")
+                    if (audioFailureTrace != null) {
+                        audioFailureTrace?.event("event_channel_read_error", error.javaClass.simpleName)
+                        log("AUDIO T82: event_read_error ${audioControlLiveness.summary()}")
+                    }
                 }
             }, "event-reader").apply {
                 isDaemon = true
@@ -2670,7 +2702,11 @@ class AirPlayClient(
             while (true) {
                 val count = input.read(chunk)
                 if (count < 0) {
-                    if (generation == readerGeneration) audioFailureTrace?.event("rtsp_peer_eof")
+                    if (generation == readerGeneration && audioFailureTrace != null) {
+                        audioFailureTrace?.event("rtsp_peer_eof")
+                        log("AUDIO T82: rtsp_eof ${audioControlLiveness.summary()} " +
+                            "localSocketClosed=${client.isClosed}")
+                    }
                     break
                 }
                 val encryption = cipher
