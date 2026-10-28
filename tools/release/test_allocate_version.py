@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timezone
-from tools.release.allocate_version import choose_version
+from tools.release.allocate_version import choose_version, published_apk_codes
 
 
 class VersionAllocationTest(unittest.TestCase):
@@ -47,6 +47,15 @@ class VersionAllocationTest(unittest.TestCase):
         name_b, _, _ = choose_version([], now, branch_b)
         self.assertNotEqual(name_a, name_b)
         self.assertRegex(name_a, r"^EXP-[A-Z0-9-]+-[0-9A-F]{12}-[0-9]{9}$")
+
+    def test_all_signed_apk_release_pages_are_baseline(self):
+        pages = [[{"tag_name": "notes-only", "body": "", "assets": []}],
+                 [{"tag_name": "exp-rescue-rollback", "body": "versionCode=89141720",
+                   "assets": [{"name": "CarDeck-Rescue.apk"}]}]]
+        self.assertEqual(published_apk_codes(pages), [89141720])
+        with self.assertRaises(ValueError):
+            published_apk_codes([[{"tag_name": "bad-signed", "body": "",
+                                  "assets": [{"name": "Broken.apk"}]}]])
 
     def test_sequence_limit(self):
         now = datetime(2026, 10, 28, 14, 30, tzinfo=timezone.utc)
