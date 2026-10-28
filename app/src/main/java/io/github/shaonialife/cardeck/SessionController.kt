@@ -2411,6 +2411,9 @@ object SessionController {
                                     }
 
                                     "changeModes" -> {
+                                        // T84 numeric-only, bounded evidence before existing T26 behavior.
+                                        // No change to event ACK, resource decision, or modesChanged.
+                                        if (client.currentEndpoint.isBuickB233) client.auditB233ModeRequest(command)
                                         // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
                                         // T26: B233 video-only/A2DP should not take
                                         // ownership of CarPlay main audio on reassert.
