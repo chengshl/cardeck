@@ -13,7 +13,7 @@ on:
       - 'DISCLAIMER.md'
 
 concurrency:
-  group: cardeck-Buick-isolated-release
+  group: cardeck-global-signed-release-version
   cancel-in-progress: false
 
 jobs:
@@ -86,30 +86,11 @@ jobs:
         # All other branches keep unit tests as a hard release gate.
         continue-on-error: false
         run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --stacktrace
-      - name: Assign monotonic branch Android version
+      - name: Assign shared Beijing daily version number
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: |
-          set -euo pipefail
-          # Keep time-based Android versionCode, but isolate tags, APKs and caches.
-          # 2024-01-01 UTC remains the code epoch.
-          BUILD_EPOCH="$(date -u +%s)"
-          CODE=$(( BUILD_EPOCH - 1704067200 ))
-          # Human-facing APK versionName: Beijing time YYYYMMDDHHMMSS.
-          # Android versionCode remains a monotonic 32-bit integer and must
-          # never be set to this 14-digit timestamp.
-          RELEASE_VERSION_NAME="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
-          if [[ ! "$RELEASE_VERSION_NAME" =~ ^[0-9]{14}$ ]]; then
-            echo "::error::Invalid datetime versionName: $RELEASE_VERSION_NAME"
-            exit 1
-          fi
-          if (( CODE < 300000 || CODE > 2100000000 )); then
-            echo "::error::Computed Android versionCode out of range: $CODE"
-            exit 1
-          fi
-          echo "CARDECK_BUILD_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
-          echo "CARDECK_RELEASE_VERSION_NAME=$RELEASE_VERSION_NAME" >> "$GITHUB_ENV"
-          echo "CARDECK_RELEASE_BRANCH=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
-          echo "Branch versionName=$RELEASE_VERSION_NAME versionCode=$CODE branch=$GITHUB_REF_NAME"
+        run: python3 tools/release/allocate_version.py
       - name: Build signed release APK
         run: ./gradlew :app:assembleRelease --stacktrace
       - name: Verify APK package ID, visible app label and entry components
