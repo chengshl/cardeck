@@ -16,15 +16,17 @@ import io.github.shaonialife.cardeck.R
 
 /** App内安装包下载的深色进度视图；不更改网络请求、文件校验和安装流程。 */
 internal object ExperimentDownloadDialog {
-    class Handle(private val dialog: Dialog, private val bar: ProgressBar) {
+    class Handle(private val dialog: Dialog, private val bar: ProgressBar, private val status: TextView) {
         var progress: Int
             get() = bar.progress
             set(value) { bar.progress = value.coerceIn(0, 100) }
 
+        fun setStatus(message: String) { status.text = message }
+
         fun dismiss() = dialog.dismiss()
     }
 
-    fun show(activity: Activity): Handle {
+    fun show(activity: Activity, title: String = "正在下载实验安装包"): Handle {
         val density = activity.resources.displayMetrics.density
         fun dp(n: Int) = (n * density + .5f).toInt()
         val fg = activity.getColor(R.color.m3_on_surface)
@@ -42,7 +44,7 @@ internal object ExperimentDownloadDialog {
             }
         }
         card.addView(TextView(activity).apply {
-            text = "正在下载实验安装包"
+            text = title
             textSize = 18f
             setTextColor(fg)
             setTypeface(typeface, Typeface.BOLD)
@@ -58,11 +60,12 @@ internal object ExperimentDownloadDialog {
             progressTintList = ColorStateList.valueOf(accent)
         }
         card.addView(bar, LinearLayout.LayoutParams(-1, dp(10)).apply { topMargin = dp(20) })
-        card.addView(TextView(activity).apply {
+        val status = TextView(activity).apply {
             text = "请保持网络连接，验证完成后会提示安装。"
             textSize = 12f
             setTextColor(muted)
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(11) })
+        }
+        card.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(11) })
         dialog.setContentView(card)
         dialog.setCancelable(false)
         dialog.show()
@@ -72,6 +75,6 @@ internal object ExperimentDownloadDialog {
             setLayout((activity.resources.displayMetrics.widthPixels * .9f).toInt(),
                 WindowManager.LayoutParams.WRAP_CONTENT)
         }
-        return Handle(dialog, bar)
+        return Handle(dialog, bar, status)
     }
 }
