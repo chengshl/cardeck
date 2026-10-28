@@ -49,6 +49,8 @@ android {
         val experimentSource = System.getenv("SOURCE_BRANCH").orEmpty()
         val installedOrigin = when {
             experimentSource == "experiment/cardeck-rescue-standalone" -> experimentSource
+            // Same stable collector code, purpose-built rollback package with real source identity.
+            experimentSource == "experiment/cardeck-rescue-rollback-20261029" -> experimentSource
             experimentSource.startsWith("experiment/buick-e5-") -> experimentSource
             System.getenv("CARDECK_RELEASE_BRANCH") == "Buick-E5" -> "Buick-E5"
             else -> "unmarked"
