@@ -1,0 +1,38 @@
+name: Rescue standalone global version and updater compatibility (#39)
+on:
+  push:
+    branches: [fix/rescue-standalone-global-version-39]
+  pull_request:
+    branches: [experiment/cardeck-rescue-standalone]
+    paths:
+      - 'tools/release/**'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/update/CollectorReleasePolicy.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/update/CollectorReleasePolicyTest.kt'
+      - '.github/workflows/publish-rescue-standalone.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python-allocator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test shared release allocator
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
+  android-release-parser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test standalone channel and metadata
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests '*CollectorReleasePolicyTest' --tests '*ReleaseBuildTimeTest' --stacktrace
