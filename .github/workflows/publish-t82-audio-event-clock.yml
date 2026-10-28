@@ -1,0 +1,151 @@
+name: T82 B233 Event ACK / Feedback Clock Observe Signed
+on:
+  push:
+    branches:
+      - experiment/buick-test-t76-aac-causality-observe
+    paths:
+      - '.github/workflows/publish-t82-audio-event-clock.yml'
+  workflow_dispatch:
+concurrency:
+  group: publish-t82-aac-causality
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  signed-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: T82只允许音频控制与事件活跃度只读探针
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin 806e9f0c6914f04662825a7b75aca5911a7853d8
+          CHANGED="$(git diff --name-only 806e9f0c6914f04662825a7b75aca5911a7853d8 HEAD)"
+          printf '%s\n' "$CHANGED"
+          BAD="$(printf '%s\n' "$CHANGED" | grep -Ev '^(\.github/workflows/publish-t82-audio-event-clock\.yml|app/src/main/java/io/github/shaonialife/cardeck/(airplay/AirPlayClient|audio/AudioControlLiveness)\.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/AudioControlLivenessTest\.kt)$' || true)"
+          test -z "$BAD" || { echo "::error::发现非更新器代码变更：$BAD"; exit 1; }
+          grep -Fq 'audioControlLiveness.onEventRequest()' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          grep -Fq 'audioControlLiveness.onFeedback(sampleTime)' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          grep -Fq 'AUDIO T82: rtsp_eof' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          test -s app/src/main/java/io/github/shaonialife/cardeck/audio/AudioControlLiveness.kt
+          test -s app/src/test/java/io/github/shaonialife/cardeck/audio/AudioControlLivenessTest.kt
+      - name: 验证 Android 单元测试、Lint 和 Debug 编译
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: 载入 Buick-Test 既有发布签名
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-t82.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-t82.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-t82.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: 设置版本号（大于旧 Test 取证安装版本）
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_EPOCH="$(date -u +%s)"
+          BUILD_CODE=$(( BUILD_EPOCH - 1704067200 ))
+          test "$BUILD_CODE" -gt 89099503
+          echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)" >> "$GITHUB_ENV"
+      - name: 构建原签名 Release APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: 校验 Test 包名、版本、签名并与 T75 证书比对
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -s "$APK"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$CARDECK_BUILD_VERSION_CODE'" | grep -F "versionName='$CARDECK_RELEASE_VERSION_NAME'"
+          test -s app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioRetransmitRequest.kt
+          test -s app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioRetransmitRequestTest.kt
+          grep -Fq "selectedProject" app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt
+          grep -Fq "chooseProject" app/src/main/java/io/github/shaonialife/cardeck/UpdateCenterActivity.kt
+          grep -Fq 'reverse_audio_resend_request' app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt
+          grep -Fq 'sentPacketCountSnapshot' app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt
+          echo "开始验证新签名 APK"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/t82-cert-details.txt"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t82-cert-details.txt" | head -n 1)"
+          if [ -z "$NEW_CERT" ]; then
+            echo "::error::已通过基础签名检查，但未找到证书 SHA-256 信息；停止发布"
+            exit 1
+          fi
+          if grep -qi 'CN=Android Debug' "$RUNNER_TEMP/t82-cert-details.txt"; then
+            echo "::error::检测到 Android Debug 签名，不发布"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/t75-reference"
+          gh release download exp-buick-test-t75-20261026122056 \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'CarDeck-Buick-Test-T75-RTCP-OBS.apk' \
+            --dir "$RUNNER_TEMP/t75-reference"
+          OLD_APK="$RUNNER_TEMP/t75-reference/CarDeck-Buick-Test-T75-RTCP-OBS.apk"
+          "$APKSIGNER" verify --verbose --print-certs "$OLD_APK" | tee "$RUNNER_TEMP/t75-cert-details.txt"
+          OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t75-cert-details.txt" | head -n 1)"
+          if [ -z "$OLD_CERT" ]; then
+            echo "::error::旧版 T75 证书摘要无法解析，停止发布"
+            exit 1
+          fi
+          test "$NEW_CERT" = "$OLD_CERT" || {
+            echo "::error::新签名与原 T75 Test 发布证书不一致，不允许覆盖升级"
+            exit 1
+          }
+          cp "$APK" CarDeck-Buick-Test-T82-EVENT-CLOCK-OBS.apk
+          sha256sum CarDeck-Buick-Test-T82-EVENT-CLOCK-OBS.apk > CarDeck-Buick-Test-T82-EVENT-CLOCK-OBS.apk.sha256
+          echo "T82 Test APK 包名/版本/签名连续性验证成功"
+      - name: 上传签名 APK 和 SHA256
+        uses: actions/upload-artifact@v4
+        with:
+          name: Buick-Test-T82-SIGNED-${{ github.run_id }}
+          path: |
+            CarDeck-Buick-Test-T82-EVENT-CLOCK-OBS.apk
+            CarDeck-Buick-Test-T82-EVENT-CLOCK-OBS.apk.sha256
+          if-no-files-found: error
+      - name: 发布独立 T82 音频观测 prerelease，不更改 stable latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-t76-aac-causality-observe"
+          TAG="exp-buick-test-t82-$CARDECK_RELEASE_VERSION_NAME"
+          APK="CarDeck-Buick-Test-T82-EVENT-CLOCK-OBS.apk"
+          test -s "$APK" && test -s "$APK.sha256"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\napplicationId=io.github.buick.test.cardeck\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## T82：音频20秒EOF事件通道/反馈时钟只读活跃度实验（L3）\n'
+            printf '源于T77收到D5仍20.044秒EOF、T80未收到D5仍20.073秒EOF，T80最后sampleTime=918960证明车机音频时钟在推进。只增加B233事件TCP接收请求与200回复成功/失败计数、最后事件/ACK年龄、RTSP feedback声频sampleTime推进/停滞、每5次feedback一次快照，以及RTSP EOF和事件EOF的独立同时间线终值。不会输出控制payload、媒体数据、IP/标识/密钥，不增加协议报文、主动回复、RTP缓存、RTCP同步或改变AAC/RTSP/0xD5重传/看门狗/TEARDOWN/重连。此版只为区分事件通道活跃度缺失与音频时钟缺失，一次实车采样后再决策；不是20秒断连修复，未实车验收。更新器T81功能不改。\n'
+            printf '\n## 安装风险\n'
+            printf 'Test applicationId 与旧 Test 取证 App 相同，安装会覆盖旧取证程序。覆盖前先导出日志并停止采集。新独立 Rescue Standalone 包名不同，不会被覆盖。旧版本不能直接覆盖更新的 versionCode。\n'
+          } > t82-experiment-release.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Buick-Test T82 Audio Event ACK Clock Observe $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file t82-experiment-release.txt --prerelease --latest=false
