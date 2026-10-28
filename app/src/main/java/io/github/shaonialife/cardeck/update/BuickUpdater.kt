@@ -165,14 +165,10 @@ object BuickUpdater {
                     .firstOrNull { it.startsWith("versionCode=") }
                     ?.substringAfter("=")?.trim()?.toLongOrNull()
                     ?: throw IllegalStateException("Release 缺少 versionCode")
-                val versionName = release.optString("body").lineSequence()
-                    .firstOrNull { it.startsWith("versionName=") }
-                    ?.substringAfter("=")?.trim()
-                    ?.takeIf { it.matches(Regex("[0-9]{14}")) }
-                    ?: code.toString()
                 val branch = release.optString("body").lineSequence()
                     .firstOrNull { it.startsWith("branch=") }
                     ?.substringAfter("=")?.trim().orEmpty()
+                val versionName = ReleaseVersionName.display(release.optString("body"), branch, code)
                 val changeNotes = UpdateNotes.extract(release.optString("body"))
                 val buildTimeLabel = ReleaseBuildTime.label(release.optString("body"), versionName)
                 require(channel.acceptsSource(release.optString("tag_name"), branch)) {
