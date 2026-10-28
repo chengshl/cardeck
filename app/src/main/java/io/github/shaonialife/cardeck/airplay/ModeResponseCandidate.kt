@@ -39,5 +39,5 @@ internal object ModeResponseCandidate {
      * normal legacy BinaryPlist.encode callers preserve their existing behavior.
      */
     fun encode(state: ResourceOwnershipReplay.State, speech: Speech): ByteArray =
-        BinaryPlist.encode(body(state, speech), appleNegativeIntegers = true)
+        BinaryPlist.encode(body(state, speech), appleNegativeIntegers = true, appleInternScalars = true)
 }
