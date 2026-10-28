@@ -1,6 +1,6 @@
 # CarDeck 项目统一开发与协作规则
 
-> **统一规范版本：2026-10-28 / v2.0**  
+> **统一规范版本：2026-10-28 / v2.1**  
 > **唯一权威来源**：`Buick:docs/PROJECT-GOVERNANCE.md`。本文件在 `Buick-E5`、`Buick-Test` 是完全一致的只读同步副本，不允许各分支单独改写规则。与历史 `AGENTS.md`、旧版分支文档、Issue 快照冲突时，按本规则及用户最新明确决定执行。
 
 ## 一、仓库与分支边界
@@ -69,6 +69,17 @@
 4. **独立发布闭环**：风险 **L3**，工作流 `.github/workflows/publish-rescue-standalone.yml` 只能在该实验分支执行，验证 `applicationId`、编译、JUnit、lint、禁用连接组件、非Debug签名、独立来源和 SHA256。APK 名 `CarDeck-Rescue-Standalone.apk`，独立 prerelease tag `exp-cardeck-rescue-standalone-YYYYMMDDHHmmss`；自动更新只接受此来源、标签、APK、摘要；不得误选旧 Test 取证版、Test 音频版、E5 或 Buick 正式版本。版本来源 `sourceBranch` 写真实分支，`baseBranch=Buick-E5` 表示最早诊断能力来源。
 5. **手机迁移验收门禁**：旧日志已导出、新旧包不互相覆盖、新 Shizuku 授权及通知、开始/停止/导出与脱敏、关键事件保存及心跳、恢复后持续、独立更新选择/包签名、E5和Test音频并存且正常；不可主动制造系统重启。构建/Release 成功不等于手机验收；只有用户完成手机验收后才视为可替换日用旧取证 App。
 6. **维护记录**：#30 记录取证代码/构建/手机验收，#11 继续音频独立实验，#27 只记迁移归属，#12 进度索引，#31 保留系统事件证据。原 Test 取证历史是追溯而非最新安装推荐；不因取证独立化推迟 #11 音频修复。
+
+### 废弃预发布通道退役与历史保留（v2.1，2026-10-28 用户明确要求）
+
+**用户批准清理不再使用的预发布通道。执行策略为「停止自动发版、退出手机内实验订阅、保留历史APK/校验文件/标签/日志证据」，而不是删除已引用的源代码与Release。** 不影响在用正式渠道、P0音频、E5稳定性试验和已签名独立取证版本。
+
+1. **允许在旧版本元数据执行受控归档**：仅对已确认替代或停用、不会再用作当前升级/重连排障测试入口的版本，将其GitHub Release正文机器字段 `artifactKind=experiment` 调整为 `artifactKind=historical`，补 `originalArtifactKind=experiment` / `retiredChannel=true` / 日期说明。更新器只接受 `artifactKind=experiment`，故无需修改线上APK即可阻止这些旧版本重新出现在实验安装列表。**不更改APK、SHA256、tag、源码SHA、原发布内容其他字段和资源可下载性**。此标记是2026-10-28的当前归档状态，原曾作为实验交付的事实仍然成立。
+2. **本次已归档六个签名预发布**：旧 Test 包名取证 `exp-buick-test-rescue-collector-20261027150931`、`exp-buick-test-rescue-collector-20261027200625`（由第三独立包名 `experiment/cardeck-rescue-standalone` 替代）；Test Updater-B `exp-buick-test-updater-b-20261026170331`、`...180307`、`...180738`（功能向 E5 集中）；Test任务隔离 `exp-buick-test-task-20261026144650`（Test非音频功能已冻结/迁往E5）。独立一次性归档工作流 `maintenance/archive-unused-prereleases-20261028`，Actions run `40611787076` completed/success；六份APK和SHA256资源已复核存在。对应三个过时签名发布工作流已从其原试验分支移除，但不删除历史提交。
+3. **继续保留可用渠道**：正式 `buick-latest`、`buick-e5-latest`、`buick-test-latest`；E5 #24 蓝牙、#34 iAP2 stop、安全/诊断与Test→E5迁移试验按专项门禁继续；音频 #11 的 T75历史有效schema2版本在 T76获得签名可试验版本前不归档；第三独立取证唯一 `exp-cardeck-rescue-standalone-*` 继续签名发行。旧schema1 T75本已因不满足schema2而从现行选择器隐藏，保留其原始Release不重复变更。
+4. **不触碰的历史固定标签**：`buick-main-latest`、`main-latest`、`cardeck-latest` 可能仍被旧客户端或上游代码引用；本轮仅分类为历史/兼容，不删除 Release/tag，也不通过改写其版本元数据制造安装失败。上游 `main` 不参与改动；`Buick-main` 分支已退役，不重启构建。
+5. **发布权限与重复清理安全**：旧发布工作流只删除现行分支中的workflow文件，Git历史可追溯；独立取证工作流只由其应用代码、Gradle和自身workflow改变触发，不因旧workflow/docs删除产生新包。归档仅限精确列表且要求原sourceBranch/schema、prerelease、APK及SHA256匹配，支持再次运行时识别已归档。**若将来恢复某专项，必须明确取消归档决策、重新做L2/L3验证并提供新独立签名版本，不简单恢复过期安装源。**
+6. **记录**：更新专项 #17、迁移 #27、取证 #30、总索引 #12。CI/Release归档不是用户手机新版本验收，也不解决 T76 AAC约20秒断连；仍禁止无验收合并运行代码。
 
 ## 二、规则更新：一个权威版本、立即同步
 
