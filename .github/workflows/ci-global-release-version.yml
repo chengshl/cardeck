@@ -1,7 +1,7 @@
 name: Global release version allocator tests
 on:
   push:
-    branches: [feature/global-build-version-sequence]
+    branches: [feature/global-build-version-sequence, fix/e5-buick-global-version-baseline]
   workflow_dispatch:
 permissions:
   contents: read
