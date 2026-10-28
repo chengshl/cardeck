@@ -32,6 +32,13 @@ class VersionAllocationTest(unittest.TestCase):
             ["refs/tags/cardeck-build/v1/261028001-c89133957"], now, "Buick-E5")
         self.assertGreater(code, 89133957)
 
+    def test_distinct_branch_aliases(self):
+        now = datetime(2026, 10, 28, 14, 30, tzinfo=timezone.utc)
+        for branch, prefix in (("Buick-E5", "E5-"), ("Buick-Test", "E5-TEST-"),
+                               ("experiment/buick-e5-updater-b-minimal", "EXP-")):
+            name, _, _ = choose_version([], now, branch)
+            self.assertTrue(name.startswith(prefix))
+
     def test_sequence_limit(self):
         now = datetime(2026, 10, 28, 14, 30, tzinfo=timezone.utc)
         with self.assertRaises(ValueError):
