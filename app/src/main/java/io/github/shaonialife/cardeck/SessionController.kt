@@ -152,6 +152,17 @@ object SessionController {
         // （2026-10-18 实测 216 个），这里替换成可见占位符——顺带让「字符串里有脏字节」
         // 在日志上直接可见，而不是隐形成 InetSocketAddress 的解析失败。
         val clean = if (message.indexOf('\u0000') >= 0) message.replace("\u0000", "␀") else message
+        // T76 observes the first video/BT error on its originating thread,
+        // before onEnded and cleanup can obscure cause/effect ordering.
+        // T76's own event lines do not match these prefixes (no recursion).
+        if (clean.startsWith("VIDEO: 推流中止") ||
+            clean.startsWith("VIDEO: 编码器取帧异常") ||
+            clean.startsWith("VIDEO: 数据端口连接失败")
+        ) {
+            currentClient?.audioFailureTrace?.event("video_failure_observed")
+        } else if (clean.startsWith("BT-C: 已主动断开当前控制会话")) {
+            currentClient?.audioFailureTrace?.event("iap2_detach_observed")
+        }
         android.util.Log.i("CarPlaySender", clean)
         appContext?.let {
             DebugFileLog
