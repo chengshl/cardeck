@@ -33,6 +33,8 @@ class ExperimentProjectCatalogTest {
         assertEquals(2, projects.size)
         assertEquals(105L, projects.first { it.sourceBranch == source }.newest.versionCode)
         assertEquals("T75 · 音频 RTCP", ExperimentProjectCatalog.name(source))
+        assertEquals("CarPlay 音频 · 20秒断连实验",
+            ExperimentProjectCatalog.name("experiment/buick-test-t76-aac-causality-observe"))
     }
 
     @Test fun noExperimentAndLowerVersionAreExplicitStates() {
