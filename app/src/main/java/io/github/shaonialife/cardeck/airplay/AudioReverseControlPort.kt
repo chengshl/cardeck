@@ -108,15 +108,15 @@ internal class AudioReverseControlPort(
                                         "firstMissingSeq=${f.firstMissingSeq} count=${f.count} " +
                                         "lastMissingSeq=${f.lastMissingSeq} seqWrap=${f.wrapsRtpSequence} " +
                                         "sentCount=${sent ?: "unknown"} coverage=$coverage (未响应)")
+                                    failureTrace?.event("reverse_audio_resend_request",
+                                        "req=${f.requestSeq} first=${f.firstMissingSeq} count=${f.count} inSent=$coverage")
                                 }
-                                failureTrace?.event("reverse_audio_resend_request",
-                                    "req=${f.requestSeq} first=${f.firstMissingSeq} count=${f.count} inSent=$coverage")
                             }
                             is AudioRetransmitRequest.Parse.Invalid -> {
                                 if (n <= 32 || n % 30 == 0) {
                                     log("AUDIO T79: 反向0xD5报文 #$n 拒绝解析 reason=${decoded.reason} size=${packet.length}")
+                                    failureTrace?.event("reverse_audio_resend_invalid", decoded.reason)
                                 }
-                                failureTrace?.event("reverse_audio_resend_invalid", decoded.reason)
                             }
                         }
                     }
