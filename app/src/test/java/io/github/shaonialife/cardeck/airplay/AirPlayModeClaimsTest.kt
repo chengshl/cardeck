@@ -44,7 +44,7 @@ class AirPlayModeClaimsTest {
             sameClient = sameClient,
             cancelled = cancelled,
             videoRunning = runningVideo,
-            audioStreamNegotiated = negotiated,
+            audioSetupMayHaveCreatedStream = negotiated,
         )
         assertTrue(eligible()) // All audio SETUP candidates failed; screen survives.
         assertFalse(eligible(isBuick = false)) // Other receivers are untouched.
