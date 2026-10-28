@@ -1,127 +1,333 @@
 package io.github.shaonialife.cardeck
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
-import android.widget.CheckBox
-import io.github.shaonialife.cardeck.update.CollectorUpdater
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import io.github.shaonialife.cardeck.gateway.RescueTraceStore
+import io.github.shaonialife.cardeck.service.RescueCaptureHealth
 import io.github.shaonialife.cardeck.service.RescueTraceService
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
+import io.github.shaonialife.cardeck.update.CollectorUpdater
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * Collector-only launcher. Deliberately never touches SessionController,
- * CarPlayService, Bluetooth, virtual display, or Gateway.
- * The separate updater only checks the collector release on this foreground page.
+ * Collector-only dashboard. No CarPlay, Bluetooth, virtual display or Gateway action.
+ * User explicitly starts/stops the local foreground service.
  */
 class ForensicOnlyActivity : AppCompatActivity() {
-    private lateinit var current: TextView
+    private val bg = Color.rgb(10, 16, 29)
+    private val surface = Color.rgb(21, 31, 49)
+    private val outline = Color.rgb(43, 59, 80)
+    private val accent = Color.rgb(93, 227, 194)
+    private val white = Color.rgb(241, 247, 252)
+    private val muted = Color.rgb(156, 174, 197)
+    private val amber = Color.rgb(255, 197, 103)
+    private val danger = Color.rgb(255, 127, 135)
+
+    private lateinit var status: TextView
+    private lateinit var subtitle: TextView
+    private lateinit var shizuku: TextView
+    private lateinit var notification: TextView
+    private lateinit var heartbeat: TextView
+    private lateinit var matched: TextView
+    private lateinit var capacity: TextView
+    private lateinit var progress: ProgressBar
+    private lateinit var feedback: TextView
     private lateinit var start: Button
     private lateinit var stop: Button
     private lateinit var export: Button
-    private lateinit var autoUpdate: CheckBox
     private val collector get() = RescueTraceStore.forApp(this)
+    // UI-only refresh. It never starts logcat or works while the Activity is in background.
+    private val refreshTicker = object : Runnable {
+        override fun run() {
+            if (!isFinishing && !isDestroyed && ::status.isInitialized) {
+                refresh()
+                status.postDelayed(this, 15_000L)
+            }
+        }
+    }
+
+    private val requestNotifications = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startCapture()
+        else {
+            feedback.text = "通知未授权，尚未启动。请允许通知，以便观察持续采集状态。"
+            refresh()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val holder = LinearLayout(this).apply {
+        window.statusBarColor = bg
+        window.navigationBarColor = bg
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24.dp, 28.dp, 24.dp, 30.dp)
+            setPadding(20.dp, 26.dp, 20.dp, 30.dp)
         }
-        fun heading(message: String, size: Float) = TextView(this).apply {
-            text = message
-            textSize = size
-            setPadding(0, 0, 0, 18.dp)
-            holder.addView(this)
-        }
-        heading("CarDeck · 独立系统取证", 23f)
-        heading("专职读取 Sony / Android 系统异常；不连接 CarPlay，不执行蓝牙、Wi-Fi 或投屏操作。\n"
-            + "必须由你主动开始，记录脱敏后保存在本应用，普通2MiB＋关键512KiB滚动保存；不自动上传。", 14f)
-        current = TextView(this).apply {
-            textSize = 14f
-            setPadding(0, 10.dp, 0, 12.dp)
-            holder.addView(this)
-        }
-        fun button(title: String, act: () -> Unit): Button = Button(this).apply {
-            text = title
-            isAllCaps = false
-            holder.addView(this)
-            setOnClickListener { act() }
-        }
-        start = button("开始持续留存") {
-            if (ShizukuGate.state(this) != ShizukuGate.State.READY) {
-                current.text = "Shizuku未就绪：请先启动Shizuku并为【CarDeck 取证助手】单独授权。"
-            } else {
-                runCatching { RescueTraceService.start(this) }.onSuccess {
-                    current.text = "已请求启动。确认通知栏出现「本地保存系统异常」常驻通知。"
-                }.onFailure { error ->
-                    current.text = "启动失败：${error.message ?: "系统拒绝前台服务"}"
-                }
-            }
-        }
-        stop = button("手动停止采集") {
-            RescueTraceService.stop(this)
-            refresh()
-        }
-        export = button("导出已留存日志到下载/CarDeck") {
-            export.isEnabled = false
-            current.text = "正在导出已保存的脱敏记录…"
-            val app = applicationContext
-            Thread({
-                val saved = runCatching { RescueTraceStore.export(app) }.getOrNull()
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) {
-                        export.isEnabled = true
-                        current.text = if (saved == null)
-                            "没有可导出的记录，或保存失败；先开始采集。"
-                        else "已导出：${saved.fileName}（${saved.bytes} bytes）\n${saved.displayPath}"
-                        // Keep the exact generated path visible without auto-sharing it.
-                    }
-                }
-            }, "forensic-export").start()
-        }
-        heading("软件更新 · 只订阅本取证助手", 17f)
-        autoUpdate = CheckBox(this).apply {
-            text = "打开取证助手时自动检查更新（每30分钟最多一次）"
-            isChecked = CollectorUpdater.autoEnabled(this@ForensicOnlyActivity)
-            setOnCheckedChangeListener { _, checked ->
-                CollectorUpdater.setAutoEnabled(this@ForensicOnlyActivity, checked)
-            }
-            holder.addView(this)
-        }
-        button("立即检查本取证版更新") { CollectorUpdater.check(this, silent = false) }
-        button("安装已验证的缓存更新") { CollectorUpdater.installCached(this) }
-        heading("注意：不设4小时自动停止，但系统仍可能终止进程；重启后Shizuku通常需要重新启动。\n"
-            + "已经写入的日志重启后仍保留；卸载此App或清除数据之前务必先导出。"
-            + "\n本版使用第三个独立包名，可与Buick-E5及Buick-Test音频版并存。\n" + "旧Test取证数据不会自动迁移：请先在旧App导出日志并停止旧采集，避免双重监控。", 13f)
         val scroll = ScrollView(this).apply {
+            setBackgroundColor(bg)
             isFillViewport = true
-            addView(holder)
+            clipToPadding = false
+            addView(root)
         }
         setContentView(scroll)
+
+        root.addView(label("CARDECK  /  RESCUE", 12f, accent, bold = true))
+        root.addView(gap(9))
+        root.addView(label("独立取证助手", 29f, white, bold = true))
+        root.addView(gap(6))
+        root.addView(label("只读监测系统异常 · 本地脱敏保存 · 不连接车机", 13f, muted))
+        root.addView(gap(22))
+
+        val statusCard = panel()
+        root.addView(statusCard)
+        statusCard.addView(label("实时状态", 12f, muted, bold = true))
+        statusCard.addView(gap(10))
+        status = label("未采集", 23f, white, bold = true)
+        statusCard.addView(status)
+        statusCard.addView(gap(5))
+        subtitle = label("检查 Shizuku 与通知权限后手动启动", 13f, muted)
+        statusCard.addView(subtitle)
+        statusCard.addView(gap(17))
+        statusCard.addView(rule())
+        statusCard.addView(gap(14))
+        val permissionRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        statusCard.addView(permissionRow)
+        shizuku = label("Shizuku  ···", 13f, muted)
+        notification = label("通知  ···", 13f, muted)
+        permissionRow.addView(shizuku, LinearLayout.LayoutParams(0, -2, 1f))
+        permissionRow.addView(notification, LinearLayout.LayoutParams(0, -2, 1f))
+        statusCard.addView(gap(13))
+        heartbeat = label("最近心跳  —", 13f, white)
+        matched = label("最近异常记录  —", 13f, white)
+        statusCard.addView(heartbeat)
+        statusCard.addView(gap(8))
+        statusCard.addView(matched)
+
+        root.addView(gap(16))
+        root.addView(label("采集控制", 16f, white, bold = true))
+        root.addView(gap(10))
+        val controlRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(controlRow)
+        start = actionButton("开始采集", accent, bg) { requestStart() }
+        stop = actionButton("停止采集", surface, white) {
+            RescueTraceService.stop(this)
+            feedback.text = "已发送停止请求；已写入的取证日志仍保留在本机。"
+            refresh()
+            status.postDelayed({ if (!isFinishing && !isDestroyed) refresh() }, 600L)
+        }
+        controlRow.addView(start, LinearLayout.LayoutParams(0, 52.dp, 1f))
+        controlRow.addView(gap(10, horizontal = true))
+        controlRow.addView(stop, LinearLayout.LayoutParams(0, 52.dp, 1f))
+        root.addView(gap(12))
+
+        val storageCard = panel()
+        root.addView(storageCard)
+        storageCard.addView(label("本地证据库", 16f, white, bold = true))
+        storageCard.addView(gap(8))
+        capacity = label("读取中…", 13f, muted)
+        storageCard.addView(capacity)
+        storageCard.addView(gap(10))
+        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 2560
+            progressTintList = ColorStateList.valueOf(accent)
+            progressBackgroundTintList = ColorStateList.valueOf(outline)
+        }
+        storageCard.addView(progress, LinearLayout.LayoutParams(-1, 7.dp))
+        storageCard.addView(gap(14))
+        export = actionButton("导出脱敏日志  ↗", outline, white) { exportLogs() }
+        storageCard.addView(export, LinearLayout.LayoutParams(-1, 50.dp))
+        storageCard.addView(gap(8))
+        storageCard.addView(label("保存到 下载/CarDeck · 手动导出，不会自动上传", 12f, muted))
+        root.addView(gap(12))
+
+        feedback = label("提示：系统休眠可能延迟心跳；心跳不代表全部 Logcat 事件已保存。", 12f, muted)
+        feedback.setPadding(5.dp, 4.dp, 5.dp, 5.dp)
+        root.addView(feedback)
+        root.addView(gap(21))
+
+        val updateCard = panel()
+        root.addView(updateCard)
+        updateCard.addView(label("应用更新", 16f, white, bold = true))
+        updateCard.addView(gap(5))
+        updateCard.addView(label("仅手动检查本助手更新 · 不会更新 E5 / Test", 12f, muted))
+        updateCard.addView(gap(8))
+        val updateRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        updateCard.addView(updateRow)
+        updateRow.addView(actionButton("检查更新", outline, white) {
+            CollectorUpdater.check(this)
+        }, LinearLayout.LayoutParams(0, 45.dp, 1f))
+        updateRow.addView(gap(10, horizontal = true))
+        updateRow.addView(actionButton("安装已缓存版", outline, white) {
+            CollectorUpdater.installCached(this)
+        }, LinearLayout.LayoutParams(0, 45.dp, 1f))
+        root.addView(gap(16))
+        root.addView(label(
+            "安全说明  ·  不自动启动、不限制4小时。划掉界面通常不影响前台服务；强制停止、系统杀进程或重启可能中断采集。"
+                + "日志保留在应用私有目录；清除数据或卸载之前请先导出。",
+            12f, muted,
+        ))
+    }
+
+    private fun requestStart() {
+        if (ShizukuGate.state(this) != ShizukuGate.State.READY) {
+            feedback.text = "Shizuku 尚未就绪：先启动 Shizuku，并单独授权「CarDeck 取证助手」。"
+            return
+        }
+        if (!notificationsAllowed() && Build.VERSION.SDK_INT >= 33) {
+            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        startCapture()
+    }
+
+    private fun startCapture() {
+        runCatching { RescueTraceService.start(this) }
+            .onSuccess { feedback.text = "已请求启动；请查看常驻通知，稍后确认最近心跳。" }
+            .onFailure { feedback.text = "启动失败：${it.message ?: "系统拒绝前台服务"}" }
+        refresh()
+        status.postDelayed({ if (!isFinishing && !isDestroyed) refresh() }, 600L)
+    }
+
+    private fun exportLogs() {
+        export.isEnabled = false
+        feedback.text = "正在导出已保存的脱敏记录…"
+        val app = applicationContext
+        Thread({
+            val saved = runCatching { RescueTraceStore.export(app) }.getOrNull()
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) {
+                    export.isEnabled = true
+                    feedback.text = if (saved == null) {
+                        "没有可导出的记录，或导出失败。请检查本机存储。"
+                    } else {
+                        "导出成功：${saved.fileName}（${saved.bytes / 1024} KiB）\n${saved.displayPath}"
+                    }
+                    refresh()
+                }
+            }
+        }, "forensic-export").start()
     }
 
     override fun onResume() {
         super.onResume()
-        refresh()
-        // Foreground-only metadata check; no hidden network requests while collecting.
-        if (CollectorUpdater.autoEnabled(this)) CollectorUpdater.autoCheck(this)
+        if (::status.isInitialized) {
+            refresh()
+            status.removeCallbacks(refreshTicker)
+            status.postDelayed(refreshTicker, 15_000L)
+        }
+    }
+
+    override fun onPause() {
+        if (::status.isInitialized) status.removeCallbacks(refreshTicker)
+        super.onPause()
     }
 
     private fun refresh() {
-        if (!::current.isInitialized) return
-        val ready = ShizukuGate.state(this)
-        val sizeKb = collector.retainedBytes() / 1024
-        current.text = buildString {
-            appendLine("Shizuku：${ready.name}")
-            appendLine("采集：${RescueTraceService.description}")
-            appendLine("当前留存：${sizeKb} KB / 2560 KB")
-            append("本机连续取证，不限制4小时，不自动上传")
+        val health = RescueCaptureHealth.snapshot(this)
+        val running = RescueTraceService.running
+        val now = System.currentTimeMillis()
+        val ageMin = if (health.lastHeartbeatAt > 0L) {
+            (now - health.lastHeartbeatAt).coerceAtLeast(0L) / 60_000L
+        } else null
+        status.text = when {
+            running && ageMin != null && ageMin > 20L -> "服务存活 · 心跳延迟"
+            running -> "采集服务运行中"
+            health.lastStopReason.isNotBlank() -> "采集已停止"
+            health.startedAt > 0L -> "未检测到采集服务"
+            else -> "尚未开始采集"
         }
+        status.setTextColor(if (running && (ageMin == null || ageMin <= 20L)) accent else amber)
+        subtitle.text = when {
+            running && ageMin != null && ageMin > 20L ->
+                "前台服务仍在，但心跳已超过20分钟；可能是休眠，请导出核对"
+            running -> "前台服务存活；不能单凭通知证明 Logcat 读取正常"
+            health.lastStopReason.isNotBlank() -> health.lastStopReason
+            health.startedAt > 0L -> "上次运行状态未能确认；需要时可手动重新启动"
+            else -> "手动开始后，将在本机轮转保留系统异常"
+        }
+        val ready = ShizukuGate.state(this) == ShizukuGate.State.READY
+        shizuku.text = if (ready) "● Shizuku 已授权" else "● Shizuku 未就绪"
+        shizuku.setTextColor(if (ready) accent else amber)
+        val notices = notificationsAllowed()
+        notification.text = if (notices) "● 通知已允许" else "● 通知未授权"
+        notification.setTextColor(if (notices) accent else danger)
+        heartbeat.text = "最近心跳  ${formatTime(health.lastHeartbeatAt)}" +
+            if (health.previousGapMinutes >= 15L) "  · 上次间隔${health.previousGapMinutes}分钟" else ""
+        matched.text = "最近匹配的系统记录  ${formatTime(health.lastMatchedLogAt)}"
+        val kb = collector.retainedBytes() / 1024L
+        capacity.text = "普通 2 MiB ＋ 关键 512 KiB  ·  已留存 ${kb} / 2560 KiB"
+        progress.progress = kb.coerceIn(0L, 2560L).toInt()
+        start.isEnabled = !running
+        stop.isEnabled = running
+    }
+
+    private fun notificationsAllowed(): Boolean =
+        Build.VERSION.SDK_INT < 33 ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    private fun formatTime(value: Long): String =
+        if (value <= 0L) "尚无记录"
+        else SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(value))
+
+    private fun panel(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(18.dp, 18.dp, 18.dp, 18.dp)
+        background = shape(surface, 20.dp, outline)
+    }
+
+    private fun label(value: String, sp: Float, color: Int, bold: Boolean = false): TextView =
+        TextView(this).apply {
+            text = value
+            textSize = sp
+            setTextColor(color)
+            if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setLineSpacing(1.dp.toFloat(), 1.06f)
+        }
+
+    private fun actionButton(textValue: String, fill: Int, textColor: Int, onClick: () -> Unit): Button =
+        Button(this).apply {
+            text = textValue
+            isAllCaps = false
+            textSize = 14f
+            setTextColor(textColor)
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            backgroundTintList = ColorStateList.valueOf(fill)
+            background = shape(fill, 13.dp, if (fill == surface) outline else fill)
+            setOnClickListener { onClick() }
+        }
+
+    private fun shape(color: Int, radius: Int, stroke: Int): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = radius.toFloat()
+            setStroke(1.dp, stroke)
+        }
+
+    private fun rule(): View = View(this).apply {
+        setBackgroundColor(outline)
+        layoutParams = LinearLayout.LayoutParams(-1, 1.dp)
+    }
+
+    private fun gap(value: Int, horizontal: Boolean = false): View = View(this).apply {
+        layoutParams = if (horizontal) LinearLayout.LayoutParams(value.dp, 1)
+        else LinearLayout.LayoutParams(1, value.dp)
     }
 
     private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()

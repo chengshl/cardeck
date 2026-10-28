@@ -1,0 +1,37 @@
+name: Global signed release allocator regression (ui #39)
+on:
+  push:
+    branches: [fix/rescue-ui-global-version-39]
+  pull_request:
+    branches: [experiment/cardeck-rescue-ui-reliability]
+    paths:
+      - 'tools/release/**'
+      - '.github/workflows/publish-rescue-ui-review.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  allocator-and-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run allocator and GitHub API simulation regression
+        run: |
+          python3 -m compileall -q tools/release
+          python3 -m unittest discover -s tools/release -p 'test_*.py' -v
+      - name: Verify workflow uses global lock and never auto-publishes on workflow-only edits
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/publish-rescue-ui-review.yml')
+          text = p.read_text()
+          assert 'group: cardeck-global-signed-release-version' in text
+          assert 'cancel-in-progress: false' in text
+          assert 'GH_TOKEN:' in text
+          assert 'python3 tools/release/allocate_version.py' in text
+          assert "'app/src/**'" in text
+          assert "      - '.github/workflows/publish-rescue-ui-review.yml'" not in text
+          PY

@@ -1,0 +1,154 @@
+name: Rescue UI review - signed L3 phone validation
+on:
+  push:
+    branches:
+      - experiment/cardeck-rescue-ui-reliability
+    paths:
+      - 'app/src/**'
+      - 'app/build.gradle.kts'
+  workflow_dispatch:
+concurrency:
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  signed-collector:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify standalone package and forbidden CarPlay components
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/cardeck-rescue-ui-reliability"
+          grep -Fq 'applicationId = "io.github.cardeck.rescue.collector"' app/build.gradle.kts
+          grep -Fq 'ForensicOnlyActivity' app/src/main/AndroidManifest.xml
+          grep -Fq 'RescueTraceService' app/src/main/AndroidManifest.xml
+          grep -Fq 'CollectorReleasePolicy' app/src/main/java/io/github/shaonialife/cardeck/update/CollectorUpdater.kt
+          grep -Fq 'CarDeck-Rescue-Standalone.apk' app/src/main/java/io/github/shaonialife/cardeck/update/CollectorReleasePolicy.kt
+          grep -Fq 'CollectorUpdater.check(this)' app/src/main/java/io/github/shaonialife/cardeck/ForensicOnlyActivity.kt
+          if grep -Eq 'autoCheck|autoEnabled|setAutoEnabled|CheckBox' app/src/main/java/io/github/shaonialife/cardeck/ForensicOnlyActivity.kt app/src/main/java/io/github/shaonialife/cardeck/update/CollectorUpdater.kt; then
+            echo "::error::Rescue update checks must be manually triggered"
+            exit 1
+          fi
+          if grep -Eq 'name="[^"]*(CarPlayService|GatewayLogService|SenderApp|MainActivity|DockActivity|GridActivity)"' app/src/main/AndroidManifest.xml; then
+            echo "::error::Collector must not expose CarPlay, Gateway or legacy app startup components"
+            exit 1
+          fi
+          if grep -Eq 'uses-permission.*(BLUETOOTH|ACCESS_WIFI|RECORD_AUDIO)' app/src/main/AndroidManifest.xml; then
+            echo "::error::Unexpected remote or car interface permission"
+            exit 1
+          fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Kotlin/JVM unit tests and Debug APK
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Diagnose project lint; collector modified-file gate
+        shell: bash
+        run: |
+          set +e
+          ./gradlew :app:lintDebug
+          lint_rc=$?
+          set -e
+          if (( lint_rc != 0 )); then
+            python3 - <<'PY'
+          import pathlib, sys, xml.etree.ElementTree as ET
+          candidates = sorted(pathlib.Path("app/build/reports").glob("lint-results-debug*.xml"))
+          if not candidates:
+              sys.exit("::error::Lint has no XML report")
+          root = ET.parse(candidates[-1]).getroot()
+          changed = ("ForensicOnlyActivity.kt", "RescueTraceService.kt", "AndroidManifest.xml",
+                     "LogRedactor.kt", "RescueTraceStore.kt", "RescueTraceContext.kt",
+                     "RescueCaptureHealth.kt",
+                     "CollectorUpdater.kt", "CollectorReleasePolicy.kt")
+          fatal = [item for item in root.findall("issue")
+                   if item.get("severity") == "Error" and
+                   any(any((loc.get("file") or "").endswith(p) for p in changed)
+                       for loc in item.findall("location"))]
+          for item in fatal:
+              print("::error::Collector lint error", item.get("id"))
+          print(f"Collector lint errors: {len(fatal)}")
+          if fatal:
+              sys.exit(1)
+          print("::warning::Existing unrelated baseline lint errors remain")
+          PY
+          fi
+      - name: Restore existing trusted release signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-rescue-standalone.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-rescue-standalone.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-rescue-standalone.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Assign global signed release version (#39)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/release/allocate_version.py
+          echo "SOURCE_BRANCH=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+      - name: Build signed standalone collector APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify package, signature and compiled origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.cardeck.rescue.collector'" <<< "$BADGING" || { echo "::error::Not the standalone collector package"; exit 1; }
+          "$APKSIGNER" verify "$APK"
+          CERT="$("$APKSIGNER" verify --print-certs "$APK")"
+          if grep -qi 'CN=Android Debug' <<< "$CERT"; then
+            echo "::error::Refusing debug-signed experiment"
+            exit 1
+          fi
+          ORIGIN="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$ORIGIN"
+          grep -Fq 'experiment/cardeck-rescue-ui-reliability' <<< "$ORIGIN"
+          cp "$APK" CarDeck-Rescue-UI-Review.apk
+          sha256sum CarDeck-Rescue-UI-Review.apk > CarDeck-Rescue-UI-Review.apk.sha256
+      - name: Publish collector as independent prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/cardeck-rescue-ui-reliability"
+          test "$SOURCE_BRANCH" = "$GITHUB_REF_NAME"
+          APK=CarDeck-Rescue-UI-Review.apk
+          TAG="exp-cardeck-rescue-ui-review-$CARDECK_RELEASE_VERSION_NAME"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$SOURCE_BRANCH" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## 取证专用版说明\n'
+            printf '用户明确要求只取消自动检查更新，仍保留手动检查及已缓存更新安装。打开页面不再联网检查，没有自动检查开关；手动触发的所有更新弹窗统一深色取证风格，保留SHA-256、包名、签名、versionCode和用户确认的更新边界。采集健康仪表盘、独立关键堆栈保存、轮转锁、一致性导出均保持，禁止自动上传和CarPlay连接。此Tag仅用于L3手机验收，不混入正式渠道。\n'
+            printf '\n## 安装与验收\n'
+            printf '本次仅手动安装测试。它与当前独立取证应用使用同包名和既有签名，安装会覆盖旧版（数据正常情况下保留），但新versionCode更高，旧APK通常无法无损降级覆盖。安装前先导出日志至下载/CarDeck，停止采集，留存旧文件；卸载/清除数据会删除应用私有日志。允许通知并确认Shizuku授权，逐项复核15分钟后台/息屏、状态、关键堆栈、脱敏、导出及E5和Test应用并存；不要主动触发系统崩溃。手机尚未验收，未经批准不得合并到日常取证分支。\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "CarDeck Rescue UI $CARDECK_RELEASE_VERSION_NAME（L3手机待验）" \
+            --notes-file release-notes.txt --prerelease --latest=false
