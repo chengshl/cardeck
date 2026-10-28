@@ -1,0 +1,182 @@
+name: E5 Updater-B minimal - signed isolated experiment
+on:
+  push:
+    branches:
+      - experiment/buick-e5-updater-b-minimal
+    paths-ignore:
+      - 'docs/**'
+      - 'AGENTS.md'
+  workflow_dispatch:
+concurrency:
+  group: e5-updater-b-minimal-signed-prerelease
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  signed-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify isolated source and E5 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-updater-b-minimal"
+          grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
+          grep -Fq 'private const val RELEASE_TAG = "buick-e5-latest"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+          grep -Fq 'fun selectedProject(context: Context)' app/src/main/java/io/github/shaonialife/cardeck/update/UpdatePreference.kt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify all Android tests and debug build
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Lint report and strict gate for files modified by this experiment
+        shell: bash
+        run: |
+          set +e
+          ./gradlew :app:lintDebug
+          lint_rc=$?
+          set -e
+          if (( lint_rc != 0 )); then
+            # This E5 base predates the Test Lint baseline. Existing unrelated
+            # L3 virtual-display flags can trigger WrongConstant. We must not
+            # change Shizuku/display behavior or rewrite its baseline just to
+            # ship an isolated L2 updater experiment. Keep full lint visible,
+            # but FAIL if any changed updater source has a new error.
+            python3 - <<'PY'
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+          files = sorted(pathlib.Path("app/build/reports").glob("lint-results-debug*.xml"))
+          if not files:
+              print("::error::Lint failed and no XML report was generated")
+              sys.exit(1)
+          root = ET.parse(files[-1]).getroot()
+          affected = {
+              "app/src/main/java/io/github/shaonialife/cardeck/UpdateCenterActivity.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/update/UpdatePreference.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentPickerDialog.kt",
+          }
+          failures = []
+          inherited = []
+          for issue in root.findall("issue"):
+              if issue.get("severity") != "Error":
+                  continue
+              details = [
+                  (loc.get("file") or "").replace("\\", "/")
+                  for loc in issue.findall("location")
+              ]
+              if any(any(f.endswith(path) for path in affected) for f in details):
+                  failures.append((issue.get("id"), details))
+              else:
+                  inherited.append((issue.get("id"), details))
+          for item in failures:
+              print("::error::Updater-B source has lint error:", item)
+          print(f"Existing non-updater E5 lint errors: {len(inherited)}; new updater errors: {len(failures)}")
+          if failures:
+              sys.exit(1)
+          print("::warning::Full-project lint is NOT clean; unrelated pre-existing errors are documented, not marked as passed")
+          PY
+          fi
+      - name: Restore existing release signing identity
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-updater-b-minimal.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-updater-b-minimal.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-updater-b-minimal.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Assign monotonic Android version and accurate experiment provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_EPOCH="$(date -u +%s)"
+          BUILD_CODE=$(( BUILD_EPOCH - 1704067200 ))
+          (( BUILD_CODE > 0 && BUILD_CODE <= 2100000000 ))
+          VERSION="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
+          echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
+          echo "SOURCE_BRANCH=experiment/buick-e5-updater-b-minimal" >> "$GITHUB_ENV"
+      - name: Build existing-key signed experiment APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify E5 package, signing, and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          # Don't pipe aapt to grep -q with pipefail: grep may close early
+          # and make aapt exit SIGPIPE even when package ID is correct.
+          if ! grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"; then
+            echo "::error::签名包包名不是当前E5安装包"
+            exit 1
+          fi
+          "$APKSIGNER" verify "$APK"
+          CERT_DETAILS="$("$APKSIGNER" verify --print-certs "$APK")"
+          if grep -qi 'CN=Android Debug' <<< "$CERT_DETAILS"; then
+            echo "::error::签名为Android Debug，不允许交付"
+            exit 1
+          fi
+          # aapt's default resource dump prints resource names but typically
+          # omits the compiled STRING VALUES. Use --values explicitly; the
+          # updater reads this value from the APK at runtime.
+          if ! AAPT_RES="$("$AAPT" dump --values resources "$APK")"; then
+            echo "::error::无法读取 APK 编译资源值，拒绝发布"
+            exit 1
+          fi
+          if ! grep -Fq 'cardeck_installed_build_origin' <<< "$AAPT_RES"; then
+            echo "::error::APK内不存在安装来源资源名称，拒绝发布"
+            exit 1
+          fi
+          if ! grep -Fq 'experiment/buick-e5-updater-b-minimal' <<< "$AAPT_RES"; then
+            echo "::error::APK的来源资源值不是当前实验分支，拒绝发布"
+            grep 'cardeck_installed_build_origin' <<< "$AAPT_RES" | head -n 3 || true
+            exit 1
+          fi
+          echo "E5包名、Android签名和APK内实验来源资源值校验完成"
+          cp "$APK" CarDeck-Buick-E5-UpdaterB-Minimal.apk
+          sha256sum CarDeck-Buick-E5-UpdaterB-Minimal.apk > CarDeck-Buick-E5-UpdaterB-Minimal.apk.sha256
+      - name: Publish only isolated E5 experiment (never stable latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-updater-b-minimal"
+          test "$SOURCE_BRANCH" = "$GITHUB_REF_NAME"
+          APK=CarDeck-Buick-E5-UpdaterB-Minimal.apk
+          test -s "$APK" && test -s "$APK.sha256"
+          TAG="exp-buick-e5-updater-b-minimal-$CARDECK_RELEASE_VERSION_NAME"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## 更新说明\n'
+            printf '稳定E5基线最小融合Updater-B：精确订阅与深色项目选择；保留E5原有正式频道默认行为及手动跨项目浏览、旧版仅下载、SHA256、签名/网络保护。未修改CarPlay连接、视频、音频、蓝牙或触摸。专项#27，最小移植PR#38。\n'
+            printf '\n## 尚未验收\n本实验APK不等于正式E5；仅验证最小移植的更新中心项目选择、频道切换及历史浏览，不要求重复全套实车测试。若同包覆盖导致versionCode更高，等待更高版本正式包才可覆盖回退。\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Buick-E5 Test融合第1批 $CARDECK_RELEASE_VERSION_NAME（实验）" \
+            --notes-file release-notes.txt --prerelease --latest=false
