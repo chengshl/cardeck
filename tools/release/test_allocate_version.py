@@ -39,6 +39,15 @@ class VersionAllocationTest(unittest.TestCase):
             name, _, _ = choose_version([], now, branch)
             self.assertTrue(name.startswith(prefix))
 
+    def test_unknown_branches_with_same_tail_have_distinct_aliases(self):
+        now = datetime(2026, 10, 28, 14, 30, tzinfo=timezone.utc)
+        branch_a = "experiment/first-team-a-very-long-shared-suffix"
+        branch_b = "experiment/other-team-b-very-long-shared-suffix"
+        name_a, _, _ = choose_version([], now, branch_a)
+        name_b, _, _ = choose_version([], now, branch_b)
+        self.assertNotEqual(name_a, name_b)
+        self.assertRegex(name_a, r"^EXP-[A-Z0-9-]+-[0-9A-F]{12}-[0-9]{9}$")
+
     def test_sequence_limit(self):
         now = datetime(2026, 10, 28, 14, 30, tzinfo=timezone.utc)
         with self.assertRaises(ValueError):
