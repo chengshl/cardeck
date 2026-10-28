@@ -1,0 +1,134 @@
+name: T77 B233 AAC 诊断签名实验发布
+on:
+  push:
+    branches:
+      - experiment/buick-test-t77-aac-causality-observe
+    paths:
+      - '.github/workflows/publish-t77-audio-probe.yml'
+  workflow_dispatch:
+concurrency:
+  group: publish-t77-aac-causality
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  signed-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: 验证 Android 单元测试、Lint 和 Debug 编译
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: 载入 Buick-Test 既有发布签名
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-t77.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-t77.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-t77.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: 设置版本号（大于旧 Test 取证安装版本）
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_EPOCH="$(date -u +%s)"
+          BUILD_CODE=$(( BUILD_EPOCH - 1704067200 ))
+          test "$BUILD_CODE" -gt 89082292
+          echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)" >> "$GITHUB_ENV"
+      - name: 构建原签名 Release APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: 校验 Test 包名、版本、签名并与 T75 证书比对
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -s "$APK"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$CARDECK_BUILD_VERSION_CODE'" | grep -F "versionName='$CARDECK_RELEASE_VERSION_NAME'"
+          test -s app/src/main/java/io/github/shaonialife/cardeck/audio/DiagnosticPcmTone.kt
+          grep -Fq "diagnosticToneEnabled" app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt
+          grep -Fq "testTone = true" app/src/main/java/io/github/shaonialife/cardeck/MainActivity.kt
+          echo "开始验证新签名 APK"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/t77-cert-details.txt"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t77-cert-details.txt" | head -n 1)"
+          if [ -z "$NEW_CERT" ]; then
+            echo "::error::已通过基础签名检查，但未找到证书 SHA-256 信息；停止发布"
+            exit 1
+          fi
+          if grep -qi 'CN=Android Debug' "$RUNNER_TEMP/t77-cert-details.txt"; then
+            echo "::error::检测到 Android Debug 签名，不发布"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/t75-reference"
+          gh release download exp-buick-test-t75-20261026122056 \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'CarDeck-Buick-Test-T75-RTCP-OBS.apk' \
+            --dir "$RUNNER_TEMP/t75-reference"
+          OLD_APK="$RUNNER_TEMP/t75-reference/CarDeck-Buick-Test-T75-RTCP-OBS.apk"
+          "$APKSIGNER" verify --verbose --print-certs "$OLD_APK" | tee "$RUNNER_TEMP/t75-cert-details.txt"
+          OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t75-cert-details.txt" | head -n 1)"
+          if [ -z "$OLD_CERT" ]; then
+            echo "::error::旧版 T75 证书摘要无法解析，停止发布"
+            exit 1
+          fi
+          test "$NEW_CERT" = "$OLD_CERT" || {
+            echo "::error::新签名与原 T75 Test 发布证书不一致，不允许覆盖升级"
+            exit 1
+          }
+          cp "$APK" CarDeck-Buick-Test-T77-TONE-PROBE.apk
+          sha256sum CarDeck-Buick-Test-T77-TONE-PROBE.apk > CarDeck-Buick-Test-T77-TONE-PROBE.apk.sha256
+          echo "T77 Test APK 包名/版本/签名连续性验证成功"
+      - name: 上传签名 APK 和 SHA256
+        uses: actions/upload-artifact@v4
+        with:
+          name: Buick-Test-T77-SIGNED-${{ github.run_id }}
+          path: |
+            CarDeck-Buick-Test-T77-TONE-PROBE.apk
+            CarDeck-Buick-Test-T77-TONE-PROBE.apk.sha256
+          if-no-files-found: error
+      - name: 发布独立 T77 prerelease，不更改 stable latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-t77-aac-causality-observe"
+          TAG="exp-buick-test-t77-$CARDECK_RELEASE_VERSION_NAME"
+          APK="CarDeck-Buick-Test-T77-TONE-PROBE.apk"
+          test -s "$APK" && test -s "$APK.sha256"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\napplicationId=io.github.buick.test.cardeck\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## T77：低幅度、显式选择的非静音音轨实验（L3）\n'
+            printf '基于T76：用户只有在启动连接弹窗选择「T77：音频+35秒低音量测试音」时，才在AudioRecord正常读取节拍下把同期PCM替换为峰值1000/32768的440Hz信号，最多35秒，然后回归手机采集。所有其它启动选项原样；不修改AAC/SETUP/RTP/RTCP、退役与重连逻辑。验收重点：确证nonzero_pcm_first_seen、AAC本地短窗自检、首RTP、feedback/RTCP、20秒EOF先后及车机实际出声。尚未实车验证，并非修复。\n'
+            printf '\n## 安装风险\n'
+            printf 'Test applicationId 与旧 Test 取证 App 相同，安装会覆盖旧取证程序。覆盖前先导出日志并停止采集。新独立 Rescue Standalone 包名不同，不会被覆盖。旧版本不能直接覆盖更新的 versionCode。\n'
+          } > t77-experiment-release.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Buick-Test T77 音频因果诊断 $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file t77-experiment-release.txt --prerelease --latest=false
