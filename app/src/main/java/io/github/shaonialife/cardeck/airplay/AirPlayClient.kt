@@ -130,6 +130,12 @@ class AirPlayClient(
     // fields only; no raw plist, reason text or identifiers. Read-only diagnostics.
     private var b233ModeRequestAuditCount: Int = 0
 
+    // T85: initialized false for each AirPlayClient. Only after all audio
+    // prerequisites and an actual audio SETUP candidate exist may B233 begin
+    // claiming mainAudio. Keep the incoming changeModes reassertion consistent
+    // with that same decision (rather than the user's initial audio preference).
+    @Volatile internal var b233AudioClaimPrepared: Boolean = false
+
     fun auditB233ModeRequest(command: Map<*, *>) {
         if (!endpoint.isBuickB233) return
         val ordinal = synchronized(this) {
