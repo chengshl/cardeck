@@ -399,7 +399,7 @@ class AudioSender(
      */
     fun stop() {
         if (!stopped.compareAndSet(false, true)) return
-        failureTrace?.event("audio_sender_stop_requested")
+        failureTrace?.event("audio_sender_stop_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         running.set(false)
         runCatching { record?.stop() }
         runCatching { record?.release() }
