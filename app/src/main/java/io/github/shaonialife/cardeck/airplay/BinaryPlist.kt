@@ -10,10 +10,10 @@ import java.io.ByteArrayOutputStream
 object BinaryPlist {
     // ---- 编码：Map<String,Any?>/List/String/Long/Int/Boolean/Double/ByteArray ----
 
-    fun encode(value: Any?): ByteArray {
+    fun encode(value: Any?, appleNegativeIntegers: Boolean = false): ByteArray {
         val objects = ArrayList<ByteArray>()
         val totalObjects = countObjects(value)
-        val rootRef = encodeObject(value, objects, totalObjects)
+        val rootRef = encodeObject(value, objects, totalObjects, appleNegativeIntegers)
         var offset = 8
         val offsets = IntArray(objects.size)
         objects.forEachIndexed { index, bytes ->
@@ -120,26 +120,27 @@ object BinaryPlist {
         value: Any?,
         objects: ArrayList<ByteArray>,
         total: Int,
+        appleNegativeIntegers: Boolean,
     ): Int {
         val bytes =
             when (value) {
                 null -> byteArrayOf(0x00)
                 is Boolean -> byteArrayOf(if (value) 0x09 else 0x08)
-                is Int -> encodeInt(value.toLong())
-                is Long -> encodeInt(value)
+                is Int -> encodeInt(value.toLong(), appleNegativeIntegers)
+                is Long -> encodeInt(value, appleNegativeIntegers)
                 is Double -> byteArrayOf(0x23) + value.toRawBits().toBytes(8)
                 is ByteArray -> withLength(0x40, value)
                 is String -> encodeString(value)
                 is List<*> -> {
-                    val refs = value.map { encodeObject(it, objects, total) }
+                    val refs = value.map { encodeObject(it, objects, total, appleNegativeIntegers) }
                     withLength(0xA0, refsToBytes(refs, total), refs.size)
                 }
 
                 is Map<*, *> -> {
                     @Suppress("UNCHECKED_CAST")
                     val map = value as Map<String, Any?>
-                    val keyRefs = map.keys.map { encodeObject(it, objects, total) }
-                    val valueRefs = map.values.map { encodeObject(it, objects, total) }
+                    val keyRefs = map.keys.map { encodeObject(it, objects, total, appleNegativeIntegers) }
+                    val valueRefs = map.values.map { encodeObject(it, objects, total, appleNegativeIntegers) }
                     withLength(0xD0, refsToBytes(keyRefs + valueRefs, total), map.size)
                 }
 
@@ -166,9 +167,10 @@ object BinaryPlist {
      * 变成负值——接收端可能直接拒绝或绑定到错误端口。单测 `SessionSetupBodyTest`
      * 即由此发现。
      */
-    private fun encodeInt(value: Long): ByteArray {
+    private fun encodeInt(value: Long, appleNegativeIntegers: Boolean = false): ByteArray {
         val size =
             when {
+                appleNegativeIntegers && value < 0L -> 8
                 value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE -> 1
                 value >= Short.MIN_VALUE && value <= Short.MAX_VALUE -> 2
                 value >= Int.MIN_VALUE && value <= Int.MAX_VALUE -> 4
