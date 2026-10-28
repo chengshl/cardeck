@@ -1720,6 +1720,16 @@ class AirPlayClient(
      * 格式：优先 PCM 48k 立体声（bit15），车机只声明 44.1k 时退 bit11；采样率下发给
      * [AudioSender] 保持一致。
      */
+    /**
+     * Conservative lifetime evidence, per AirPlay connection. Once an audio SETUP
+     * has returned 200 or its outcome was not observed (I/O error/timeout), the
+     * receiver might retain an audio stream even if runAudioStream returns null.
+     * Never release main-audio ownership based solely on that null result.
+     */
+    @Volatile
+    var audioSetupMayHaveCreatedStream: Boolean = false
+        private set
+
     fun runAudioStream(
         sharedSecret: ByteArray,
         profile: AudioProfile,
@@ -1822,10 +1832,17 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
+                // No authoritative response: conservatively assume the receiver
+                // may have created a stream before the read/write failure.
+                audioSetupMayHaveCreatedStream = true
                 closeReverseAudioControlPort()
                 log("AIRPLAY: 音频流协商失败 - ${error.message}")
                 return null
             }
+        if (statusLine.contains("200")) {
+            // A 200 with a missing/malformed body remains a possible stream.
+            audioSetupMayHaveCreatedStream = true
+        }
         log("AIRPLAY: 音频 SETUP 往返 ${SystemClock.uptimeMillis() - startedAt}ms [$statusLine]")
         if (!statusLine.contains("200")) {
             closeReverseAudioControlPort()
