@@ -47,19 +47,20 @@ def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     sha = os.environ["GITHUB_SHA"]
     branch = os.environ["GITHUB_REF_NAME"]
-    legacy_codes = []
-    for tag in ("buick-e5-latest", "buick-test-latest"):
-        try:
-            release = gh(f"repos/{repo}/releases/tags/{tag}")
-        except subprocess.CalledProcessError as exc:
-            if "404" in (exc.stderr or ""):
-                continue
-            raise
-        match = re.search(r"^versionCode=(\\d+)$", release.get("body") or "", re.MULTILINE)
-        if match:
-            legacy_codes.append(int(match.group(1)))
+    # 已发布的历史包必须保持可覆盖：每次抢号均重新读取发布基线。
     for _ in range(12):
         now = datetime.now(timezone.utc)
+        legacy_codes = []
+        for tag in ("buick-e5-latest", "buick-test-latest"):
+            try:
+                release = gh(f"repos/{repo}/releases/tags/{tag}")
+            except subprocess.CalledProcessError as exc:
+                if "404" in (exc.stderr or ""):
+                    continue
+                raise
+            match = re.search(r"^versionCode=(\\d+)$", release.get("body") or "", re.MULTILINE)
+            if match:
+                legacy_codes.append(int(match.group(1)))
         refs = gh(f"repos/{repo}/git/matching-refs/tags/cardeck-build/v1")
         name, code, ref = choose_version([item["ref"] for item in refs], now, branch)
         code = max(code, max(legacy_codes, default=0) + 1)
