@@ -1562,6 +1562,11 @@ object SessionController {
                         },
                 )
             audioSender = sender
+            // T79: observe only this live sender's successful RTP sequence window.
+            // No media packet retention or retransmission; stale sender -> no snapshot.
+            client.audioRtpSentCountProvider = {
+                if (audioSender === sender) sender.sentPacketCountSnapshot() else null
+            }
             if (!sender.start(projection)) {
                 client.closeReverseAudioControlPort()
                 audioSender = null
