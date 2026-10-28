@@ -55,6 +55,22 @@ def parse_release_code(body, tag):
     return int(match.group(1))
 
 
+def published_apk_codes(pages):
+    """所有历史已发布签名 APK 都是 versionCode 基线，含独立实验和取证回滚包。"""
+    codes = []
+    for page in pages:
+        for release in page:
+            assets = release.get("assets") or []
+            if not any(asset.get("name", "").endswith(".apk") for asset in assets):
+                continue
+            tag = release.get("tag_name") or "<unknown>"
+            code = parse_release_code(release.get("body"), tag)
+            if not 1 <= code <= 2100000000:
+                raise ValueError(f"发布 {tag} 含无效 Android versionCode")
+            codes.append(code)
+    return codes
+
+
 def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     sha = os.environ["GITHUB_SHA"]
@@ -71,6 +87,10 @@ def main():
                     continue
                 raise
             legacy_codes.append(parse_release_code(release.get("body"), tag))
+        # 独立实验、取证和回滚发布可能比四条 latest 通道更新。
+        # 必须遍历所有 Release 页，不可只读取第一页或仅四个正式标签。
+        release_pages = gh("--paginate", "--slurp", f"repos/{repo}/releases?per_page=100")
+        legacy_codes.extend(published_apk_codes(release_pages))
         # --paginate --slurp collects every page, including >100 historical builds.
         pages = gh("--paginate", "--slurp",
                    f"repos/{repo}/git/matching-refs/tags/cardeck-build/v1?per_page=100")
