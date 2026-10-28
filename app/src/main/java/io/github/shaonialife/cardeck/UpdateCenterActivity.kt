@@ -107,6 +107,7 @@ class UpdateCenterActivity : AppCompatActivity() {
         })
         page.line(txt("软件更新", 27f, fg, true), 7)
         page.line(txt("当前应用：${branch()}\n每个安装包独立保存更新分支，不跨别克包名安装。", 12.5f, muted), 9)
+        page.line(txt("提示：这里选的是检查更新的渠道，并不代表当前安装包是正式版或试验版。手动安装实验APK后，请选试验分支及对应项目。", 12f, muted), 5)
 
         page.line(txt("更新分支", 17f, fg, true), 25)
         page.line(txt("点击选择并保存。自动检查将以已选分支为准。", 12f, muted), 5)
