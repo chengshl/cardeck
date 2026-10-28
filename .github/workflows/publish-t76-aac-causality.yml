@@ -67,10 +67,14 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
           test -s "$APK"
           "$AAPT" dump badging "$APK" | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$CARDECK_BUILD_VERSION_CODE'" | grep -F "versionName='$CARDECK_RELEASE_VERSION_NAME'"
-          "$APKSIGNER" verify "$APK"
-          NEW_CERT="$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
-          test -n "$NEW_CERT"
-          if "$APKSIGNER" verify --print-certs "$APK" | grep -qi 'CN=Android Debug'; then
+          echo "开始验证新签名 APK"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/t76-cert-details.txt"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t76-cert-details.txt" | head -n 1)"
+          if [ -z "$NEW_CERT" ]; then
+            echo "::error::已通过基础签名检查，但未找到证书 SHA-256 信息；停止发布"
+            exit 1
+          fi
+          if grep -qi 'CN=Android Debug' "$RUNNER_TEMP/t76-cert-details.txt"; then
             echo "::error::检测到 Android Debug 签名，不发布"
             exit 1
           fi
@@ -80,9 +84,12 @@ jobs:
             --pattern 'CarDeck-Buick-Test-T75-RTCP-OBS.apk' \
             --dir "$RUNNER_TEMP/t75-reference"
           OLD_APK="$RUNNER_TEMP/t75-reference/CarDeck-Buick-Test-T75-RTCP-OBS.apk"
-          "$APKSIGNER" verify "$OLD_APK"
-          OLD_CERT="$("$APKSIGNER" verify --print-certs "$OLD_APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
-          test -n "$OLD_CERT"
+          "$APKSIGNER" verify --verbose --print-certs "$OLD_APK" | tee "$RUNNER_TEMP/t75-cert-details.txt"
+          OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t75-cert-details.txt" | head -n 1)"
+          if [ -z "$OLD_CERT" ]; then
+            echo "::error::旧版 T75 证书摘要无法解析，停止发布"
+            exit 1
+          fi
           test "$NEW_CERT" = "$OLD_CERT" || {
             echo "::error::新签名与原 T75 Test 发布证书不一致，不允许覆盖升级"
             exit 1
