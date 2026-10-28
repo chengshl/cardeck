@@ -13,6 +13,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import io.github.shaonialife.cardeck.update.BuickUpdater
+import io.github.shaonialife.cardeck.update.UpdatePreference
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -61,6 +63,8 @@ class MainActivity : AppCompatActivity() {
 
     /** 连接中的默认副标题（无阶段提示时）。 */
     private companion object {
+        // Once per app process; returning from settings never checks again.
+        private val formalStartupCheckClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
         const val DEFAULT_CONNECTING_HINT = "蓝牙 iAP2 握手 → 加入车机热点 → 建立 CarPlay 会话"
         const val KEY_DISCLAIMER_DEADLINE = "disclaimer_deadline"
     }
@@ -543,6 +547,12 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // Only a fresh app launch checks formal releases; returning from settings does not.
+        if (BuickUpdater.autoEnabled(this) &&
+            UpdatePreference.selected(this) == UpdatePreference.Channel.FORMAL &&
+            formalStartupCheckClaimed.compareAndSet(false, true)) {
+            BuickUpdater.check(this, silent = true)
+        }
         // 旋转/重建：沿用原倒计时截止时刻（onResume 据此续弹）
         disclaimerDeadlineAt = savedInstanceState?.getLong(KEY_DISCLAIMER_DEADLINE, 0L) ?: 0L
 
