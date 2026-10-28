@@ -59,14 +59,12 @@ import java.util.Locale
  * 销毁重建不影响会话，重进界面日志自动续显；连接状态由 1s 轮询对账。
  */
 class MainActivity : AppCompatActivity() {
-    companion object {
-        // Reset only when the app process exits, not when an Activity resumes or is recreated.
-        private val formalStartupCheckClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
-    }
     private enum class HeroState { IDLE, CONNECTING, CONNECTED }
 
     /** 连接中的默认副标题（无阶段提示时）。 */
     private companion object {
+        // Once per app process; returning from settings never checks again.
+        private val formalStartupCheckClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
         const val DEFAULT_CONNECTING_HINT = "蓝牙 iAP2 握手 → 加入车机热点 → 建立 CarPlay 会话"
         const val KEY_DISCLAIMER_DEADLINE = "disclaimer_deadline"
     }
