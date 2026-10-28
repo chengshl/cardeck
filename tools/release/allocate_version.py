@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """为 CarDeck 签名发布分配跨分支统一版本号。仅供发布工作流调用。"""
+import hashlib
 import json
 import os
 import re
@@ -33,7 +34,8 @@ def choose_version(refs, now, branch):
     alias = ALIASES.get(branch)
     if alias is None:
         slug = re.sub(r"[^A-Z0-9]+", "-", branch.upper()).strip("-")
-        alias = "EXP-" + slug[-24:]
+        digest = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:12].upper()
+        alias = "EXP-" + slug[-14:] + "-" + digest
     name = f"{alias}-{day}{sequence:03d}"
     ref = f"{PREFIX}{day}{sequence:03d}-c{code}"
     return name, code, ref
