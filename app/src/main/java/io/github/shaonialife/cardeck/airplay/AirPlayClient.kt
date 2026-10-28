@@ -122,10 +122,14 @@ class AirPlayClient(
     /** T76 scoped to this AirPlay connection, not the global Test installation. */
     @Volatile internal var audioFailureTrace: AudioFailureTrace? = null
 
+    /** T79: assigned only after this client's current AudioSender has been selected. */
+    @Volatile internal var audioRtpSentCountProvider: (() -> Long?)? = null
+
     @Synchronized
     fun closeReverseAudioControlPort() {
         reverseAudioControlPort?.close()
         reverseAudioControlPort = null
+        audioRtpSentCountProvider = null
     }
 
     /** pair-verify 之后启用：所有后续 RTSP 报文整体加密封装。 */
@@ -1732,6 +1736,7 @@ class AirPlayClient(
                     bindNetwork = { udp -> network.bindSocket(udp) },
                     log = log,
                     failureTrace = audioFailureTrace,
+                    currentSentRtpCount = { audioRtpSentCountProvider?.invoke() },
                 )
                 val port = reverse.start()
                 if (port == 0) return null
