@@ -11,7 +11,8 @@ from tools.release import allocate_version
 
 
 class AllocatorIntegrationTest(unittest.TestCase):
-    def run_allocator(self, branch="Buick-E5", collision=False, invalid_legacy=False):
+    def run_allocator(self, branch="Buick-E5", collision=False, invalid_legacy=False,
+                      extra_release_code=None, invalid_signed_release=False):
         refs = []
         writes = []
         calls = []
@@ -35,6 +36,19 @@ class AllocatorIntegrationTest(unittest.TestCase):
                     return {"body": "versionCode=88927204\\n".replace("\\n", "\n")}
                 if args[0] == "--paginate":
                     self.assertEqual(args[1], "--slurp")
+                    if "/releases?" in args[2]:
+                        latest = [{"tag_name": "exp-rescue-latest",
+                                   "body": "versionCode=89141720\\n".replace("\\n", "\n"),
+                                   "assets": [{"name": "CarDeck-Rescue.apk"}]}]
+                        extra = ([{"tag_name": "exp-rescue-old-page",
+                                   "body": "versionCode=" + str(extra_release_code),
+                                   "assets": [{"name": "CarDeck-Rescue-Older.apk"}]}]
+                                 if extra_release_code is not None else [])
+                        if invalid_signed_release:
+                            extra.append({"tag_name": "bad-signed-release", "body": "",
+                                          "assets": [{"name": "Bad.apk"}]})
+                        extra.append({"tag_name": "notes-only", "body": "", "assets": []})
+                        return [latest, extra]
                     return [[{"ref": ref} for ref in refs]]
                 if args[:2] == ("-X", "POST"):
                     tag = next(arg.split("=", 1)[1] for arg in args if arg.startswith("ref="))
@@ -48,7 +62,7 @@ class AllocatorIntegrationTest(unittest.TestCase):
                 raise AssertionError(f"Unexpected call: {args}")
 
             with patch.dict(os.environ, settings), patch.object(allocate_version, "gh", side_effect=fake_gh):
-                if invalid_legacy:
+                if invalid_legacy or invalid_signed_release:
                     with self.assertRaises(ValueError):
                         allocate_version.main()
                     self.assertFalse(output.exists())
@@ -57,11 +71,15 @@ class AllocatorIntegrationTest(unittest.TestCase):
                 allocate_version.main()
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(values["CARDECK_RELEASE_BRANCH"], branch)
-        self.assertGreater(int(values["CARDECK_BUILD_VERSION_CODE"]), 89133957)
+        self.assertGreater(int(values["CARDECK_BUILD_VERSION_CODE"]),
+                           max(89141720, extra_release_code or 0))
         self.assertRegex(values["CARDECK_RELEASE_VERSION_NAME"],
                          r"^(E5|E5-TEST|BUICK|EXP-[A-Z0-9-]+-[0-9A-F]{12})-\d{9}$")
         self.assertEqual(len(refs), 2 if collision else 1)
-        self.assertTrue(any(call[0] == "--paginate" for call in calls))
+        self.assertTrue(any(call[0] == "--paginate" and "/releases?" in call[2]
+                            for call in calls))
+        self.assertTrue(any(call[0] == "--paginate" and "/matching-refs/" in call[2]
+                            for call in calls))
         if collision:
             self.assertIn("002-c", writes[-1])
 
@@ -82,6 +100,12 @@ class AllocatorIntegrationTest(unittest.TestCase):
 
     def test_malformed_legacy_release_fails_closed(self):
         self.run_allocator(invalid_legacy=True)
+
+    def test_old_second_page_experiment_release_is_a_baseline(self):
+        self.run_allocator(extra_release_code=150000000)
+
+    def test_incomplete_signed_release_fails_before_allocating(self):
+        self.run_allocator(invalid_signed_release=True)
 
 
 if __name__ == "__main__":
