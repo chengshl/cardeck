@@ -1,0 +1,23 @@
+name: Updater-B all-signed-APK version baseline (#39)
+on:
+  push:
+    branches: [fix/updater-b-all-signed-release-baselines-39]
+  pull_request:
+    branches: [experiment/buick-e5-updater-b-minimal]
+    paths:
+      - 'tools/release/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python-version-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test allocator and historical APK metadata
+        run: |
+          python3 -m compileall -q tools/release
+          python3 -m unittest discover -s tools/release -p 'test_*.py' -v
