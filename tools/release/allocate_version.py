@@ -28,6 +28,8 @@ def choose_version(refs, now, branch):
     code = max(int(now.timestamp()) - EPOCH, max(codes, default=0) + 1)
     if not 300000 <= code <= 2100000000:
         raise ValueError("Android versionCode 超出允许范围")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,120}", branch):
+        raise ValueError("不支持的发布分支名称")
     alias = ALIASES.get(branch)
     if alias is None:
         slug = re.sub(r"[^A-Z0-9]+", "-", branch.upper()).strip("-")
