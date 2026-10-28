@@ -9,8 +9,19 @@ package io.github.shaonialife.cardeck.airplay
  * explicit CarPlay-audio mode.
  */
 internal object AirPlayModeClaims {
-    fun claimAudio(isBuickB233: Boolean, audioEnabledForSession: Boolean): Boolean =
-        !isBuickB233 || audioEnabledForSession
+    /**
+     * T85 single-variable experiment: defer B233's mainAudio declaration until
+     * audio SETUP is about to be attempted. The receiver's mainScreen ownership
+     * remains declared from the start; non-B233 receivers preserve T84 behavior.
+     *
+     * Default true keeps legacy callers/tests compatible; B233 runtime call
+     * sites must explicitly provide the per-client preparation flag.
+     */
+    fun claimAudio(
+        isBuickB233: Boolean,
+        audioEnabledForSession: Boolean,
+        b233AudioClaimPrepared: Boolean = true,
+    ): Boolean = !isBuickB233 || (audioEnabledForSession && b233AudioClaimPrepared)
 
 
     /**
