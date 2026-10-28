@@ -42,6 +42,7 @@ import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.ui.ScreenDimmer
 import io.github.shaonialife.cardeck.util.Bg
+import io.github.shaonialife.cardeck.audio.AudioFailureTrace
 import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.video.VideoSender
 import io.github.shaonialife.cardeck.video.SafeDiagnosticFrameSource
@@ -1275,6 +1276,10 @@ object SessionController {
                     "现在点「申请投屏权限」也可即时补启（无需重连）；注意「断开连接」会停服务并连带失效投屏授权",
             )
             return false
+        }
+        if (client.currentEndpoint.isBuickB233 && client.audioFailureTrace == null) {
+            client.audioFailureTrace = AudioFailureTrace(::appendLog)
+            client.audioFailureTrace?.event("audio_attempt_begin")
         }
         return try {
             // 车机身份 → 只用于「本车机哪些音频档位踩过雷」的持久化记忆。
