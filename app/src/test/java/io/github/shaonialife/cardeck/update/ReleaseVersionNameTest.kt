@@ -12,10 +12,11 @@ class ReleaseVersionNameTest {
     }
 
     @Test fun buickAcceptsOfficialAndLegacyChannelNames() {
-        assertEquals(("BUICK-" + "261029004"),
-            ReleaseVersionName.display("versionName=BUICK-261029004", "Buick", 89134004))
-        assertEquals(("BUICK-" + "261029004"),
-            ReleaseVersionName.display("versionName=BUICK-261029004", "Buick-main", 89134004))
+        val name = "BUICK-" + "261029004"
+        assertEquals(name,
+            ReleaseVersionName.display("versionName=" + name, "Buick", 89134004))
+        assertEquals(name,
+            ReleaseVersionName.display("versionName=" + name, "Buick-main", 89134004))
         assertEquals("89134004",
             ReleaseVersionName.display("versionName=E5-261029001", "Buick", 89134004))
     }
