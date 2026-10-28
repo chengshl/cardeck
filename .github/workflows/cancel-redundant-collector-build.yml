@@ -1,0 +1,31 @@
+name: Cancel redundant collector build from channel cleanup
+on:
+  push:
+    branches:
+      - maintenance/archive-unused-prereleases-20261028
+    paths:
+      - '.github/workflows/cancel-redundant-collector-build.yml'
+permissions:
+  actions: write
+  contents: read
+jobs:
+  cancel-exact-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel only redundant non-app-source cleanup run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "maintenance/archive-unused-prereleases-20261028"
+          run_id=40611567656
+          expected_sha="9c39b0c37ab66c4f3763f50230166c4ae0358c83"
+          actual_sha="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json headSha --jq '.headSha')"
+          test "$actual_sha" = "$expected_sha"
+          status="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json status --jq '.status')"
+          echo "cleanup-only run status=$status"
+          if [[ "$status" == "queued" || "$status" == "in_progress" || "$status" == "waiting" || "$status" == "pending" ]]; then
+            gh run cancel "$run_id" --repo "$GITHUB_REPOSITORY"
+          fi
