@@ -1,7 +1,7 @@
 name: Global release version allocator tests
 on:
   push:
-    branches: [feature/test-global-build-version-sequence]
+    branches: [feature/test-global-build-version-sequence, fix/test-experiment-hash-version-alias]
   workflow_dispatch:
 permissions:
   contents: read
