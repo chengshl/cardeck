@@ -22,14 +22,28 @@ internal object ExperimentProjectCatalog {
             .maxByOrNull { it.versionCode }
     }
 
-    fun name(sourceBranch: String): String = when {
-        sourceBranch.contains("t75") -> "T75 · 音频 RTCP"
-        sourceBranch.contains("t74") -> "T74 · 音频实验"
-        sourceBranch.contains("t68") -> "T68 · 显示适配"
-        sourceBranch.contains("task-isolation") -> "任务隔离实验"
-        sourceBranch.contains("touch") -> "触摸恢复实验"
-        sourceBranch.contains("updater-b") -> "B方案 · 更新器测试"
-        else -> sourceBranch.substringAfterLast('/').replace('-', ' ')
+    /** 仅转换显示名称；sourceBranch 本身保持原值，用于订阅、来源与签名校验。 */
+    fun name(sourceBranch: String): String {
+        val slug = sourceBranch.substringAfterLast('/')
+        return when (slug) {
+            "buick-e5-bluetooth-a2dp-preserve" -> "蓝牙音源保护（A2DP/HFP）"
+            "buick-e5-detailed-diagnostics" -> "详细故障诊断与日志"
+            "buick-e5-iap2-stop-safety" -> "iAP2 安全退出"
+            "buick-e5-session-teardown" -> "CarPlay 会话退出与重连"
+            "buick-e5-updater-b-minimal" -> "更新器方案 B · 最小融合"
+            "buick-e5-t78-updater-b-convergence" -> "更新器融合 · T78 联调"
+            "buick-e5-test-convergence" -> "Test → E5 功能融合"
+            "buick-test-t76-aac-causality-observe" -> "CarPlay 音频 · AAC 断连分析"
+            else -> when {
+                slug.contains("t75") -> "T75 · 音频 RTCP"
+                slug.contains("t74") -> "T74 · 音频实验"
+                slug.contains("t68") -> "T68 · 显示适配"
+                slug.contains("task-isolation") -> "任务隔离实验"
+                slug.contains("touch") -> "触摸恢复实验"
+                slug.contains("updater-b") -> "更新器方案 B · 功能验证"
+                else -> "其他实验 · " + slug.replace('-', ' ')
+            }
+        }
     }
 
     fun installState(installed: Long, candidate: ExperimentalUpdates.Candidate): String =
