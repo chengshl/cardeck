@@ -29,6 +29,11 @@ jobs:
           grep -Fq 'RescueTraceService' app/src/main/AndroidManifest.xml
           grep -Fq 'CollectorReleasePolicy' app/src/main/java/io/github/shaonialife/cardeck/update/CollectorUpdater.kt
           grep -Fq 'CarDeck-Rescue-Standalone.apk' app/src/main/java/io/github/shaonialife/cardeck/update/CollectorReleasePolicy.kt
+          grep -Fq 'CollectorUpdater.check(this)' app/src/main/java/io/github/shaonialife/cardeck/ForensicOnlyActivity.kt
+          if grep -Eq 'autoCheck|autoEnabled|setAutoEnabled|CheckBox' app/src/main/java/io/github/shaonialife/cardeck/ForensicOnlyActivity.kt app/src/main/java/io/github/shaonialife/cardeck/update/CollectorUpdater.kt; then
+            echo "::error::Rescue update checks must be manually triggered"
+            exit 1
+          fi
           if grep -Eq 'name="[^"]*(CarPlayService|GatewayLogService|SenderApp|MainActivity|DockActivity|GridActivity)"' app/src/main/AndroidManifest.xml; then
             echo "::error::Collector must not expose CarPlay, Gateway or legacy app startup components"
             exit 1
@@ -144,7 +149,7 @@ jobs:
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$SOURCE_BRANCH" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
             printf '\n## 取证专用版说明\n'
-            printf '本轮为PR #45独立手机验收包：深色取证仪表盘、通知权限申请、最近心跳/匹配事件显示、长心跳间隔提示；关键崩溃前4后12片段同步保存在512KiB关键区；跨线程轮转互斥、手动导出的一致性快照。维持普通2MiB+关键512KiB、Logcat筛选脱敏、Shizuku手动启停、无自动上传、无CarPlay连接能力。此Tag仅用于L3手机验收，独立更新器不会推荐或自动订阅该审查版本。\n'
+            printf '用户明确要求只取消自动检查更新，仍保留手动检查及已缓存更新安装。打开页面不再联网检查，没有自动检查开关；手动触发的所有更新弹窗统一深色取证风格，保留SHA-256、包名、签名、versionCode和用户确认的更新边界。采集健康仪表盘、独立关键堆栈保存、轮转锁、一致性导出均保持，禁止自动上传和CarPlay连接。此Tag仅用于L3手机验收，不混入正式渠道。\n'
             printf '\n## 安装与验收\n'
             printf '本次仅手动安装测试。它与当前独立取证应用使用同包名和既有签名，安装会覆盖旧版（数据正常情况下保留），但新versionCode更高，旧APK通常无法无损降级覆盖。安装前先导出日志至下载/CarDeck，停止采集，留存旧文件；卸载/清除数据会删除应用私有日志。允许通知并确认Shizuku授权，逐项复核15分钟后台/息屏、状态、关键堆栈、脱敏、导出及E5和Test应用并存；不要主动触发系统崩溃。手机尚未验收，未经批准不得合并到日常取证分支。\n'
           } > release-notes.txt

@@ -10,7 +10,6 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -167,23 +166,12 @@ class ForensicOnlyActivity : AppCompatActivity() {
         root.addView(updateCard)
         updateCard.addView(label("应用更新", 16f, white, bold = true))
         updateCard.addView(gap(5))
-        updateCard.addView(label("只检查本独立取证助手，不会更新 E5 / Test", 12f, muted))
+        updateCard.addView(label("仅手动检查本助手更新 · 不会更新 E5 / Test", 12f, muted))
         updateCard.addView(gap(8))
-        val autoUpdate = CheckBox(this).apply {
-            text = "打开页面时检查更新"
-            textSize = 13f
-            setTextColor(white)
-            buttonTintList = ColorStateList.valueOf(accent)
-            isChecked = CollectorUpdater.autoEnabled(this@ForensicOnlyActivity)
-            setOnCheckedChangeListener { _, checked ->
-                CollectorUpdater.setAutoEnabled(this@ForensicOnlyActivity, checked)
-            }
-        }
-        updateCard.addView(autoUpdate)
         val updateRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         updateCard.addView(updateRow)
         updateRow.addView(actionButton("检查更新", outline, white) {
-            CollectorUpdater.check(this, silent = false)
+            CollectorUpdater.check(this)
         }, LinearLayout.LayoutParams(0, 45.dp, 1f))
         updateRow.addView(gap(10, horizontal = true))
         updateRow.addView(actionButton("安装已缓存版", outline, white) {
@@ -244,7 +232,6 @@ class ForensicOnlyActivity : AppCompatActivity() {
             status.removeCallbacks(refreshTicker)
             status.postDelayed(refreshTicker, 15_000L)
         }
-        if (CollectorUpdater.autoEnabled(this)) CollectorUpdater.autoCheck(this)
     }
 
     override fun onPause() {
