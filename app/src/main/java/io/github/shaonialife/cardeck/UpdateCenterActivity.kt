@@ -35,6 +35,7 @@ class UpdateCenterActivity : AppCompatActivity() {
     private lateinit var selectedLabel: TextView
     private lateinit var installedOriginLabel: TextView
     private lateinit var currentChannelLabel: TextView
+    private lateinit var autoToggle: SwitchCompat
     private lateinit var browse: TextView
     private lateinit var projectPanel: LinearLayout
     private lateinit var projectName: TextView
@@ -177,12 +178,14 @@ class UpdateCenterActivity : AppCompatActivity() {
                 intArrayOf(accent, muted),
             )
             isChecked = BuickUpdater.autoEnabled(this@UpdateCenterActivity)
+            isEnabled = UpdatePreference.selected(this@UpdateCenterActivity) == UpdatePreference.Channel.FORMAL
             contentDescription = "正式版启动时自动检查"
             setOnCheckedChangeListener { _, checked ->
                 BuickUpdater.setAutoEnabled(this@UpdateCenterActivity, checked)
                 autoState.text = if (checked) "状态：已开启" else "状态：已关闭"
             }
         }
+        autoToggle = toggle
         row.addView(toggle)
         info.line(row, 15)
 
@@ -235,5 +238,6 @@ class UpdateCenterActivity : AppCompatActivity() {
         projectName.text = if (subscribed == null) "未手动订阅（手动检查沿用安装来源）"
             else ExperimentProjectCatalog.name(subscribed) + "\n" + subscribed
         browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
+        autoToggle.isEnabled = !isExperiment
     }
 }
