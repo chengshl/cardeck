@@ -673,7 +673,7 @@ class AudioSender(
                 log(
                     "AUDIO T76: 自检 frames=${frames.size} queued=${result.queuedFrames} " +
                         "decodedSamples=${result.decodedSamples} peak=${result.peak} " +
-                        "csdPresent=${!csd0.isNullOrEmpty()} error=${result.errorKind ?: "none"} " +
+                        "csdPresent=${csd0 != null && csd0.isNotEmpty()} error=${result.errorKind ?: "none"} " +
                         "（仅证明本机明文AAC解码，不代表车机解密/播放）",
                 )
                 failureTrace?.event(
