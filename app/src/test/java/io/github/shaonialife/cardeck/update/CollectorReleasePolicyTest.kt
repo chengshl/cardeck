@@ -7,8 +7,8 @@ import org.junit.Test
 
 class CollectorReleasePolicyTest {
     private fun release(source: String = CollectorReleasePolicy.SOURCE,
-                        apk: String = CollectorReleasePolicy.APK, code: Long = 90010001L): JSONObject {
-        val version = "20261027194500"
+                        apk: String = CollectorReleasePolicy.APK, code: Long = 90010001L,
+                        version: String = "20261027194500"): JSONObject {
         val tag = "exp-cardeck-rescue-standalone-$version"
         val prefix = "https://github.com/chengshl/cardeck/releases/download/$tag/"
         return JSONObject().apply {
@@ -46,6 +46,28 @@ apkName=$apk
         assertNull(CollectorReleasePolicy.parse(release(code = 0L)))
         valid.put("prerelease", false)
         assertNull(CollectorReleasePolicy.parse(valid))
+    }
+
+    @Test fun fingerprintedVersionIsAcceptedOnlyForExactCollectorChannel() {
+        val source = CollectorReleasePolicy.SOURCE
+        val normalized = source.uppercase(java.util.Locale.ROOT)
+            .replace(Regex("[^A-Z0-9]+"), "-").trim('-')
+        val bytes = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(source.toByteArray(Charsets.UTF_8))
+        val hash = bytes.take(6).joinToString("") {
+            "%02X".format(java.util.Locale.ROOT, it.toInt() and 0xff)
+        }
+        val modern = "EXP-" + normalized.takeLast(14) + "-" + hash + "-261029008"
+        assertNotNull(CollectorReleasePolicy.parse(release(version = modern)))
+        val oldExp = "EXP-" + normalized.takeLast(24) + "-261029008"
+        assertNotNull(CollectorReleasePolicy.parse(release(version = oldExp)))
+        assertNull(CollectorReleasePolicy.parse(release(version = "EXP-OTHER-" + hash + "-261029008")))
+        assertNull(CollectorReleasePolicy.parse(release(version = "EXP-" + normalized.takeLast(14) +
+            "-000000000000-261029008")))
+        assertNull(CollectorReleasePolicy.parse(release(source = "experiment/other", version = modern)))
+        val mismatchedTag = release(version = modern)
+        mismatchedTag.put("tag_name", "exp-cardeck-rescue-standalone-20261027194500")
+        assertNull(CollectorReleasePolicy.parse(mismatchedTag))
     }
 
     @Test fun newestByCode() {
