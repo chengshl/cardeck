@@ -23,7 +23,7 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Scope lock: B233 unnegotiated audio resource only
+      - name: B233 unnegotiated audio resource scope lock
         shell: bash
         run: |
           set -euo pipefail
