@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 PREFIX = "refs/tags/cardeck-build/v1/"
 EPOCH = 1704067200
 ALIASES = {"Buick-E5": "E5", "Buick-Test": "E5-TEST", "Buick-main": "BUICK"}
-REF_RE = re.compile(r"^refs/tags/cardeck-build/v1/(\\d{6})(\\d{3})-c(\\d+)$")
+REF_RE = re.compile(r"^refs/tags/cardeck-build/v1/(\d{6})(\d{3})-c(\d+)$")
 
 
 def choose_version(refs, now, branch):
@@ -65,7 +65,7 @@ def main():
              f"CARDECK_RELEASE_BRANCH={branch}"]
     if output:
         with open(output, "a", encoding="utf-8") as f:
-            f.write("\\n".join(lines) + "\\n")
+            f.write("\n".join(lines) + "\n")
     print(f"已分配版本 {name}（内部版本号 {code}），登记 {ref}")
 
 
