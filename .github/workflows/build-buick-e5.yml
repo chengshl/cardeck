@@ -134,7 +134,7 @@ jobs:
             in_notes && NF > 0 { print }
           ')"
           if [[ -z "$COMMIT_NOTES" ]]; then
-            COMMIT_NOTES="- 本次更新包含稳定性与功能维护，具体变更请查看项目发布记录。\n- 若已安装当前版本，可无需重复升级。"
+            COMMIT_NOTES="$(printf '%s\n%s' '- 本次更新包含稳定性与功能维护，具体变更请查看项目发布记录。' '- 若已安装当前版本，可无需重复升级。')"
           fi
           {
             printf 'versionName=%s\nversionCode=%s\nbranch=%s\ncommit=%s\nbuiltAt=%s\ntimezone=Asia/Shanghai\n' \
