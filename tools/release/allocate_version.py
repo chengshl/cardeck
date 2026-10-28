@@ -63,7 +63,10 @@ def main():
             match = re.search(r"^versionCode=(\\d+)$", release.get("body") or "", re.MULTILINE)
             if match:
                 legacy_codes.append(int(match.group(1)))
-        refs = gh(f"repos/{repo}/git/matching-refs/tags/cardeck-build/v1")
+        # --paginate --slurp collects every page, including >100 historical builds.
+        pages = gh("--paginate", "--slurp",
+                   f"repos/{repo}/git/matching-refs/tags/cardeck-build/v1?per_page=100")
+        refs = [item for page in pages for item in page]
         name, code, ref = choose_version([item["ref"] for item in refs], now, branch)
         code = max(code, max(legacy_codes, default=0) + 1)
         ref = f"{PREFIX}{name.rsplit('-', 1)[-1]}-c{code}"
