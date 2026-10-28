@@ -3,11 +3,11 @@ package io.github.shaonialife.cardeck.update
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** A strict single-purpose update channel: NEVER accept other Test/E5 APKs. */
+/** Standalone-only release channel. Never accept Test audio, E5 or legacy collector APKs. */
 internal object CollectorReleasePolicy {
-    const val SOURCE = "experiment/buick-test-rescue-collector"
-    const val APK = "CarDeck-Test-Rescue-Collector.apk"
-    private const val PREFIX = "exp-buick-test-rescue-collector-"
+    const val SOURCE = "experiment/cardeck-rescue-standalone"
+    const val APK = "CarDeck-Rescue-Standalone.apk"
+    private const val PREFIX = "exp-cardeck-rescue-standalone-"
     private const val ROOT = "https://github.com/chengshl/cardeck/releases/download/"
 
     data class Candidate(
@@ -23,7 +23,7 @@ internal object CollectorReleasePolicy {
     fun parse(release: JSONObject?): Candidate? {
         if (release == null || release.optBoolean("draft") || !release.optBoolean("prerelease")) return null
         val tag = release.optString("tag_name")
-        if (!tag.matches(Regex("exp-buick-test-rescue-collector-[0-9]{14}"))) return null
+        if (!tag.matches(Regex("exp-cardeck-rescue-standalone-[0-9]{14}"))) return null
         val body = release.optString("body")
         fun field(key: String) = body.lineSequence()
             .firstOrNull { it.startsWith("$key=") }?.substringAfter('=').orEmpty().trim()

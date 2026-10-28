@@ -86,7 +86,7 @@ internal object CollectorUpdater {
             connectTimeout = 15000
             readTimeout = 45000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "CarDeck-Test-Collector")
+            setRequestProperty("User-Agent", "CarDeck-Rescue-Standalone")
             setRequestProperty("Accept", "application/vnd.github+json")
         }
         return try {
@@ -123,7 +123,7 @@ internal object CollectorUpdater {
                     connectTimeout = 15000
                     readTimeout = 60000
                     instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", "CarDeck-Test-Collector")
+                    setRequestProperty("User-Agent", "CarDeck-Rescue-Standalone")
                 }
                 val digest = MessageDigest.getInstance("SHA-256")
                 try {

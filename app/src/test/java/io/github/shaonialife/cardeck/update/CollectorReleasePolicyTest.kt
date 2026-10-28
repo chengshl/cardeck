@@ -9,7 +9,7 @@ class CollectorReleasePolicyTest {
     private fun release(source: String = CollectorReleasePolicy.SOURCE,
                         apk: String = CollectorReleasePolicy.APK, code: Long = 90010001L): JSONObject {
         val version = "20261027194500"
-        val tag = "exp-buick-test-rescue-collector-$version"
+        val tag = "exp-cardeck-rescue-standalone-$version"
         val prefix = "https://github.com/chengshl/cardeck/releases/download/$tag/"
         return JSONObject().apply {
             put("prerelease", true)
@@ -39,6 +39,10 @@ apkName=$apk
         assertNotNull(CollectorReleasePolicy.parse(valid))
         assertNull(CollectorReleasePolicy.parse(release("experiment/buick-e5-detailed-diagnostics")))
         assertNull(CollectorReleasePolicy.parse(release(apk = "CarDeck-Buick-Test.apk")))
+        assertNull(CollectorReleasePolicy.parse(release(apk = "CarDeck-Test-Rescue-Collector.apk")))
+        val previousCollector = release()
+        previousCollector.put("tag_name", "exp-buick-test-rescue-collector-20261027194500")
+        assertNull(CollectorReleasePolicy.parse(previousCollector))
         assertNull(CollectorReleasePolicy.parse(release(code = 0L)))
         valid.put("prerelease", false)
         assertNull(CollectorReleasePolicy.parse(valid))

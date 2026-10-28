@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- This collector variant intentionally has NO Bluetooth, Wi-Fi, CarPlay,
      microphone, projection, notification-listener or exported launcher services.
-     It can coexist with the Buick-E5 app because it uses the Test applicationId.
-     It is NEVER a build of the frozen Buick-Test source branch. -->
+     It uses a third standalone Android applicationId, alongside Buick-E5 and Buick-Test.
+     This is NEVER the runtime of any CarPlay branch. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Network access is exclusively for user-configurable foreground update checks.
          Collector FGS has no network calls and never uploads log files. -->
