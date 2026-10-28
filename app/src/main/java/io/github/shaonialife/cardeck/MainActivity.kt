@@ -59,6 +59,10 @@ import java.util.Locale
  * 销毁重建不影响会话，重进界面日志自动续显；连接状态由 1s 轮询对账。
  */
 class MainActivity : AppCompatActivity() {
+    companion object {
+        // Reset only when the app process exits, not when an Activity resumes or is recreated.
+        private val formalStartupCheckClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
+    }
     private enum class HeroState { IDLE, CONNECTING, CONNECTED }
 
     /** 连接中的默认副标题（无阶段提示时）。 */
@@ -546,8 +550,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         // Only a fresh app launch checks formal releases; returning from settings does not.
-        if (savedInstanceState == null && BuickUpdater.autoEnabled(this) &&
-            UpdatePreference.selected(this) == UpdatePreference.Channel.FORMAL) {
+        if (BuickUpdater.autoEnabled(this) &&
+            UpdatePreference.selected(this) == UpdatePreference.Channel.FORMAL &&
+            formalStartupCheckClaimed.compareAndSet(false, true)) {
             BuickUpdater.check(this, silent = true)
         }
         // 旋转/重建：沿用原倒计时截止时刻（onResume 据此续弹）
