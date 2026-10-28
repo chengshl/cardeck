@@ -26,6 +26,12 @@ class VersionAllocationTest(unittest.TestCase):
         self.assertEqual(name, "E5-261028002")
         self.assertEqual(code, 100000000)
 
+    def test_previous_release_code_must_be_exceeded(self):
+        now = datetime(2026, 10, 28, 14, 30, tzinfo=timezone.utc)
+        _, code, _ = choose_version(
+            ["refs/tags/cardeck-build/v1/261028001-c89133957"], now, "Buick-E5")
+        self.assertGreater(code, 89133957)
+
     def test_sequence_limit(self):
         now = datetime(2026, 10, 28, 14, 30, tzinfo=timezone.utc)
         with self.assertRaises(ValueError):
