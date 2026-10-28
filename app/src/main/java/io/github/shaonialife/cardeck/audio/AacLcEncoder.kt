@@ -188,7 +188,7 @@ class AacLcEncoder(
             try {
                 val format = MediaFormat.createAudioFormat(MIME, sampleRate, channels)
                 format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                if (!csd0.isNullOrEmpty()) {
+                if (csd0 != null && csd0.isNotEmpty()) {
                     format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(csd0))
                 }
                 val active = MediaCodec.createDecoderByType(MIME)
