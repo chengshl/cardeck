@@ -23,6 +23,7 @@ internal object ExperimentProjectCatalog {
     }
 
     fun name(sourceBranch: String): String = when {
+        sourceBranch.contains("t76-aac-causality-observe") -> "CarPlay 音频 · 20秒断连实验"
         sourceBranch.contains("t75") -> "T75 · 音频 RTCP"
         sourceBranch.contains("t74") -> "T74 · 音频实验"
         sourceBranch.contains("t68") -> "T68 · 显示适配"
