@@ -35,6 +35,7 @@ class UpdateCenterActivity : AppCompatActivity() {
     private lateinit var selectedLabel: TextView
     private lateinit var installedOriginLabel: TextView
     private lateinit var currentChannelLabel: TextView
+    private lateinit var autoToggle: SwitchCompat
     private lateinit var browse: TextView
     private lateinit var projectPanel: LinearLayout
     private lateinit var projectName: TextView
@@ -109,7 +110,7 @@ class UpdateCenterActivity : AppCompatActivity() {
         page.line(txt("当前应用：${branch()}\n当前安装包来源与更新检查通道分别展示，互不混淆。", 12.5f, muted), 9)
 
         page.line(txt("更新分支", 17f, fg, true), 25)
-        page.line(txt("点击选择并保存。自动检查将以已选分支为准。", 12f, muted), 5)
+        page.line(txt("正式版仅在打开 App 时自动检查；实验版只手动检查。", 12f, muted), 5)
 
         val a = card("正式分支", "当前 ${branch()} 的独立正式更新通道",
             "适合日常使用 · 检查此应用的正式安装包")
@@ -166,8 +167,8 @@ class UpdateCenterActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val rowText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        rowText.line(txt("自动检查更新", 15f, fg, true))
-        rowText.line(txt("仅检查当前选中分支，安装仍需确认", 12f, muted), 5)
+        rowText.line(txt("正式版启动时检查更新", 15f, fg, true))
+        rowText.line(txt("仅正式频道生效；实验版不自动检查", 12f, muted), 5)
         val autoState = txt(if (BuickUpdater.autoEnabled(this)) "状态：已开启" else "状态：已关闭", 12.5f, muted, true)
         rowText.line(autoState, 6)
         row.addView(rowText, LinearLayout.LayoutParams(0, -2, 1f))
@@ -177,12 +178,14 @@ class UpdateCenterActivity : AppCompatActivity() {
                 intArrayOf(accent, muted),
             )
             isChecked = BuickUpdater.autoEnabled(this@UpdateCenterActivity)
-            contentDescription = "自动检查当前选中更新分支"
+            isEnabled = UpdatePreference.selected(this@UpdateCenterActivity) == UpdatePreference.Channel.FORMAL
+            contentDescription = "正式版启动时自动检查"
             setOnCheckedChangeListener { _, checked ->
                 BuickUpdater.setAutoEnabled(this@UpdateCenterActivity, checked)
                 autoState.text = if (checked) "状态：已开启" else "状态：已关闭"
             }
         }
+        autoToggle = toggle
         row.addView(toggle)
         info.line(row, 15)
 
@@ -228,12 +231,13 @@ class UpdateCenterActivity : AppCompatActivity() {
         } else if (ownProject != null) {
             "当前检查通道：试验分支\n自动关注：$ownProject"
         } else {
-            "当前检查通道：试验分支\n未指定项目：自动检查可能选择不同的E5实验，请手动确认"
+            "当前检查通道：试验分支（仅手动检查）"
         }
         projectPanel.visibility = if (isExperiment) View.VISIBLE else View.GONE
         val subscribed = UpdatePreference.selectedProject(this)
-        projectName.text = if (subscribed == null) "未手动订阅（保留安装来源自动检查）"
+        projectName.text = if (subscribed == null) "未手动订阅（手动检查沿用安装来源）"
             else ExperimentProjectCatalog.name(subscribed) + "\n" + subscribed
         browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
+        autoToggle.isEnabled = !isExperiment
     }
 }
