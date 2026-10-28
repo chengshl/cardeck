@@ -286,6 +286,10 @@ object SessionController {
     @Volatile
     var audioEnabledForSession: Boolean = false
 
+    /** T77: this session only, explicit user choice, never persisted or auto-enabled. */
+    @Volatile
+    var audioDiagnosticToneForSession: Boolean = false
+
     /**
      * 「开启声音（兼容档）」：候选里把非 media 档（compatibility 等）排前面。
      * 2026-10-19 Honda HFT 实测——media 档只声明 44.1k，该车机音频通路只吃得下 48k，
@@ -1458,6 +1462,8 @@ object SessionController {
                     streamType = profile.streamType,
                     adtsFrames = tuning.adts,
                     failureTrace = client.audioFailureTrace,
+                    diagnosticToneEnabled =
+                        client.currentEndpoint.isBuickB233 && audioDiagnosticToneForSession,
                     vehicleNetwork =
                         if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                     // T71/B233 type=102 media: catplay modern TX does not actively
