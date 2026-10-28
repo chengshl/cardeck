@@ -3,6 +3,11 @@ on:
   push:
     branches:
       - fix/global-signed-release-baselines-39
+  pull_request:
+    branches: [Buick]
+    paths:
+      - 'tools/release/**'
+      - '.github/workflows/ci-global-version-baselines.yml'
   workflow_dispatch:
 permissions:
   contents: read
