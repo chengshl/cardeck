@@ -6,11 +6,10 @@ on:
     paths:
       - 'app/src/**'
       - 'app/build.gradle.kts'
-      - '.github/workflows/publish-rescue-ui-review.yml'
   workflow_dispatch:
 concurrency:
-  group: rescue-ui-review-signed
-  cancel-in-progress: true
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
 permissions:
   contents: write
 jobs:
@@ -101,17 +100,14 @@ jobs:
             echo "keyPassword=$KEYSTORE_PASSWORD"
           } > keystore.properties
           chmod 600 keystore.properties
-      - name: Assign signed build version
+      - name: Assign global signed release version (#39)
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          BUILD_EPOCH="$(date -u +%s)"
-          BUILD_CODE=$((BUILD_EPOCH - 1704067200))
-          (( BUILD_CODE > 0 && BUILD_CODE <= 2100000000 ))
-          VERSION="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
-          echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
-          echo "CARDECK_RELEASE_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
-          echo "SOURCE_BRANCH=experiment/cardeck-rescue-ui-reliability" >> "$GITHUB_ENV"
+          python3 tools/release/allocate_version.py
+          echo "SOURCE_BRANCH=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
       - name: Build signed standalone collector APK
         run: ./gradlew :app:assembleRelease --stacktrace
       - name: Verify package, signature and compiled origin
