@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicLong
  * alter iAP2/RTSP/RTP timing, retries or teardown. No addresses, media samples,
  * payload bytes or keys are logged.
  */
-internal class AudioFailureTrace(private val log: (String) -> Unit) {
+class AudioFailureTrace(private val log: (String) -> Unit) {
     companion object {
         private val nextId = AtomicLong()
     }
