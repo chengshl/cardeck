@@ -8,8 +8,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
-import android.text.TextUtils
-import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
@@ -124,6 +122,7 @@ class ForensicOnlyActivity : AppCompatActivity() {
             RescueTraceService.stop(this)
             feedback.text = "已发送停止请求；已写入的取证日志仍保留在本机。"
             refresh()
+            status.postDelayed({ if (!isFinishing && !isDestroyed) refresh() }, 600L)
         }
         controlRow.addView(start, LinearLayout.LayoutParams(0, 52.dp, 1f))
         controlRow.addView(gap(10, horizontal = true))
@@ -206,6 +205,7 @@ class ForensicOnlyActivity : AppCompatActivity() {
             .onSuccess { feedback.text = "已请求启动；请查看常驻通知，稍后确认最近心跳。" }
             .onFailure { feedback.text = "启动失败：${it.message ?: "系统拒绝前台服务"}" }
         refresh()
+        status.postDelayed({ if (!isFinishing && !isDestroyed) refresh() }, 600L)
     }
 
     private fun exportLogs() {
