@@ -104,7 +104,7 @@ jobs:
           BUILD_CODE=$((BUILD_EPOCH - 1704067200))
           (( BUILD_CODE > 0 && BUILD_CODE <= 2100000000 ))
           # Must be strictly newer than signed UI review APK for in-place rollback.
-          (( BUILD_CODE > 89139280 ))
+          (( BUILD_CODE > 89141443 ))
           VERSION="$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)"
           echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
           echo "CARDECK_RELEASE_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
@@ -146,7 +146,7 @@ jobs:
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$SOURCE_BRANCH" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
             printf '\n## 取证专用版说明\n'
-            printf 'L3 回退恢复包：源于旧取证软件功能基线 experiment/cardeck-rescue-standalone@258dbabb（与现有20261028084432主要采集代码一致），仅构建来源标记及工作流单独化，无新UI、无PR#45采集修复。签名、包名保持同一套，versionCode严格高于20261029005440审查包。此Release为回退工具，不会被独立取证助手的常规更新器选中。\n'
+            printf 'L3 回退恢复包：源于旧取证软件功能基线 experiment/cardeck-rescue-standalone@258dbabb（与现有20261028084432主要采集代码一致），仅构建来源标记及工作流单独化，无新UI、无PR#45采集修复。签名、包名保持同一套，versionCode严格高于20261029013043最新审查包。此Release为回退工具，不会被独立取证助手的常规更新器选中。\n'
             printf '\n## 安装与验收\n'
             printf '仅当PR#45审查包异常时手动安装此回退包。先用当前应用导出日志到下载/CarDeck并停止采集，再手动覆盖安装同包名签名APK；不得卸载/清除数据，否则丢失应用私有日志。回退后恢复旧版简易UI与旧日志策略，重新确认Shizuku、通知与持续采集；日志内容不会因本次包覆盖而主动删除。首次发布为尚未手机验证的回退构建。\n'
           } > release-notes.txt
