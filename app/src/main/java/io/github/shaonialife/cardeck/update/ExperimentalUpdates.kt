@@ -110,6 +110,47 @@ internal object ExperimentalUpdates {
         return results.sortedByDescending { it.versionCode }
     }
 
+    /** 目录按具体 sourceBranch 分组，保留 E5 既有跨项目浏览入口。 */
+    fun loadProjects(activity: Activity, onResult: (List<ExperimentProjectCatalog.Project>?, String?) -> Unit) {
+        val branch = owningBranch(activity)
+        if (branch == null) {
+            onResult(emptyList(), "当前APK没有受支持的试验分支")
+            return
+        }
+        thread(name = "experiment-project-list") {
+            try {
+                val projects = ExperimentProjectCatalog.group(parseCandidates(
+                    requestJson(activity, "https://api.github.com/repos/$REPOSITORY/releases?per_page=100"), branch))
+                ui.post { if (!activity.isFinishing && !activity.isDestroyed) onResult(projects, null) }
+            } catch (error: Exception) {
+                ui.post { if (!activity.isFinishing && !activity.isDestroyed) onResult(null, error.message ?: "目录不可用") }
+            }
+        }
+    }
+
+    fun chooseProject(activity: Activity, onChanged: () -> Unit) {
+        loadProjects(activity) { projects, error ->
+            when {
+                error != null -> message(activity, "实验目录读取失败：$error")
+                projects.isNullOrEmpty() -> message(activity, "当前暂无可订阅的实验项目")
+                else -> {
+                    val old = UpdatePreference.selectedProject(activity)
+                    val items = listOf(ExperimentPickerDialog.Item(
+                        "停止关注实验项目", "保留试验频道，不自动检查具体项目", old == null)) +
+                        projects.map { ExperimentPickerDialog.Item(
+                            ExperimentProjectCatalog.name(it.sourceBranch), it.newest.versionName,
+                            it.sourceBranch == old) }
+                    ExperimentPickerDialog.show(activity, "选择实验项目",
+                        "自动检查仅限所选项目；手动浏览仍可查看全部实验。", items) { index ->
+                        UpdatePreference.selectProject(activity,
+                            if (index == 0) null else projects[index - 1].sourceBranch)
+                        onChanged()
+                    }
+                }
+            }
+        }
+    }
+
     /** 软件更新页手动浏览历史试验包，不更改已保存的渠道选择。 */
     fun browse(activity: Activity) {
         val branch = owningBranch(activity)
@@ -137,8 +178,12 @@ internal object ExperimentalUpdates {
                 val sourceOnly = installedOrigin.takeIf {
                     it.startsWith("experiment/" + branchSlug(branch) + "-")
                 }
+                val selectedSource = UpdatePreference.selectedProject(activity)
+                // Explicit subscription wins; otherwise preserve the existing installed-origin default.
+                // Never let a higher version from a different project hijack a subscribed track.
+                val effectiveSource = selectedSource ?: sourceOnly
                 val newest = parseCandidates(releases, branch)
-                    .firstOrNull { sourceOnly == null || it.sourceBranch == sourceOnly }
+                    .firstOrNull { effectiveSource == null || it.sourceBranch == effectiveSource }
                 val pkg = activity.packageManager.getPackageInfo(activity.packageName, 0)
                 val installed = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
                     @Suppress("DEPRECATION")
