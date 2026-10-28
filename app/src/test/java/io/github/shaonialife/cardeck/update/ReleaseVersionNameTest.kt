@@ -42,6 +42,21 @@ class ReleaseVersionNameTest {
             ReleaseVersionName.isExperimental("EXP-OTHER-261029003", source))
     }
 
+    @Test fun fingerprintedExperimentNameTracksExactSource() {
+        val source = "experiment/buick-e5-updater-b-minimal"
+        val normalized = source.uppercase(java.util.Locale.ROOT)
+            .replace(Regex("""[^A-Z0-9]+"""), "-").trim('-')
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(source.toByteArray(Charsets.UTF_8))
+        val fingerprint = digest.take(6).joinToString("") {
+            "%02X".format(java.util.Locale.ROOT, it.toInt() and 0xff)
+        }
+        val name = "EXP-" + normalized.takeLast(14) + "-" + fingerprint + "-261029003"
+        org.junit.Assert.assertTrue(ReleaseVersionName.isExperimental(name, source))
+        org.junit.Assert.assertFalse(
+            ReleaseVersionName.isExperimental(name, "experiment/another-e5-updater-b-minimal"))
+    }
+
     @Test fun malformedNamesFallBackToVersionCode() {
         for (bad in listOf("E5-261029001-danger", "E5-26102901", "../E5-261029001")) {
             assertEquals("89134001",
