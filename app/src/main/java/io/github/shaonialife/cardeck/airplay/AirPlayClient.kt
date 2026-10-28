@@ -126,6 +126,19 @@ class AirPlayClient(
     /** T82 read-only: counts B233 event replies and progressing receiver audio clock. */
     private val audioControlLiveness = AudioControlLiveness()
 
+    // T84: only the first 12 B233 resource requests per connection, numeric protocol
+    // fields only; no raw plist, reason text or identifiers. Read-only diagnostics.
+    private var b233ModeRequestAuditCount: Int = 0
+
+    fun auditB233ModeRequest(command: Map<*, *>) {
+        if (!endpoint.isBuickB233) return
+        val ordinal = synchronized(this) {
+            if (b233ModeRequestAuditCount >= 12) null
+            else (++b233ModeRequestAuditCount)
+        } ?: return
+        log("AUDIO T84: changeModes request #$ordinal " + B233ModeRequestSummary.describe(command))
+    }
+
     /** T79: assigned only after this client's current AudioSender has been selected. */
     @Volatile internal var audioRtpSentCountProvider: (() -> Long?)? = null
 
