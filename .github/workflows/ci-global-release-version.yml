@@ -1,0 +1,32 @@
+name: Global release version allocator tests
+on:
+  push:
+    branches: [feature/buick-global-build-version-sequence]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test global sequence and Android version ordering
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
+
+  android-updater-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check update version-name and release metadata compatibility
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests '*ReleaseVersionNameTest' --tests '*ReleaseBuildTimeTest' --tests '*UpdateNotesTest' --stacktrace
