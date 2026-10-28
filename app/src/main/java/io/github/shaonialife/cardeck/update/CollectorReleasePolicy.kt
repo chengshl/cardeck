@@ -20,10 +20,26 @@ internal object CollectorReleasePolicy {
         (0 until releases.length()).mapNotNull { parse(releases.optJSONObject(it)) }
             .maxByOrNull { it.versionCode }
 
+    /** 只接受与固定完整来源分支绑定的新版 EXP 指纹或历史时间版本。 */
+    private fun allowedVersionName(name: String): Boolean {
+        if (Regex("[0-9]{14}").matches(name)) return true
+        val normalized = SOURCE.uppercase(java.util.Locale.ROOT)
+            .replace(Regex("[^A-Z0-9]+"), "-").trim('-')
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(SOURCE.toByteArray(Charsets.UTF_8))
+        val fingerprint = digest.take(6).joinToString("") {
+            "%02X".format(java.util.Locale.ROOT, it.toInt() and 0xff)
+        }
+        val current = "EXP-" + normalized.takeLast(14) + "-" + fingerprint
+        val previous = "EXP-" + normalized.takeLast(24)
+        return Regex(Regex.escape(current) + "-[0-9]{9}").matches(name) ||
+            Regex(Regex.escape(previous) + "-[0-9]{9}").matches(name)
+    }
+
     fun parse(release: JSONObject?): Candidate? {
         if (release == null || release.optBoolean("draft") || !release.optBoolean("prerelease")) return null
         val tag = release.optString("tag_name")
-        if (!tag.matches(Regex("exp-cardeck-rescue-standalone-[0-9]{14}"))) return null
+        if (!tag.startsWith(PREFIX) || tag.length > 140) return null
         val body = release.optString("body")
         fun field(key: String) = body.lineSequence()
             .firstOrNull { it.startsWith("$key=") }?.substringAfter('=').orEmpty().trim()
@@ -31,7 +47,7 @@ internal object CollectorReleasePolicy {
             field("baseBranch") != "Buick-E5" || field("sourceBranch") != SOURCE ||
             field("apkName") != APK) return null
         val name = field("versionName")
-        if (!name.matches(Regex("[0-9]{14}")) || tag != PREFIX + name) return null
+        if (!allowedVersionName(name) || tag != PREFIX + name) return null
         val code = field("versionCode").toLongOrNull() ?: return null
         if (code <= 0 || code > Int.MAX_VALUE) return null
         val built = field("builtAt")
