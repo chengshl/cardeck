@@ -1,0 +1,23 @@
+name: All signed APK versionCode baseline checks (E5 #39)
+on:
+  push:
+    branches: [fix/e5-all-signed-release-baselines-39]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'tools/release/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile release tools
+        run: python3 -m compileall -q tools/release
+      - name: Run allocator regression and GitHub API simulation
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
