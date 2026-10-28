@@ -21,7 +21,6 @@ class BuickMenuActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@BuickMenuActivity)
             adapter = BuickMenuAdapter()
         }
-        if (BuickUpdater.autoEnabled(this)) BuickUpdater.checkSelected(this, silent = true)
     }
 
     private inner class BuickMenuAdapter : RecyclerView.Adapter<MenuHolder>() {
@@ -52,7 +51,7 @@ class BuickMenuActivity : AppCompatActivity() {
                 2 -> {
                     holder.icon.setImageResource(android.R.drawable.stat_sys_download)
                     holder.title.text = "软件更新"
-                    holder.desc.text = "正式 / 试验分支 · 自动检查 · 构建时间"
+                    holder.desc.text = "正式版启动时检查 · 实验版手动检查 · 构建时间"
                     holder.itemView.setOnClickListener {
                         startActivity(Intent(this@BuickMenuActivity, UpdateCenterActivity::class.java))
                     }
