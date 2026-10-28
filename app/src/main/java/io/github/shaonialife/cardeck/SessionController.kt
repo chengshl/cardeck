@@ -1256,11 +1256,11 @@ object SessionController {
     // ---- 以下方法体自 MainActivity 原样迁入（会话逻辑不依赖 Activity）----
 
     /**
-     * Audio SETUP failed for every candidate: no negotiated audio stream exists.
+     * No accepted or unresolved audio SETUP remained after all candidates.
      * Revert only B233's already-declared main-audio claim, leaving the live
      * screen session and normal Bluetooth A2DP untouched. Do not use this path
      * for a missing MediaProjection permission (late authorization may recover),
-     * or for an audio stream that SETUP actually accepted.
+     * or if SETUP returned 200/timeout/error with an uncertain receiver state.
      */
     private fun releaseB233UnnegotiatedAudioClaim(client: AirPlayClient, reason: String) {
         val eligible = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.shouldReleaseUnnegotiatedAudioClaim(
@@ -1269,7 +1269,7 @@ object SessionController {
             sameClient = currentClient === client,
             cancelled = connectCancelled,
             videoRunning = videoSender?.isRunning == true,
-            audioStreamNegotiated = false,
+            audioSetupMayHaveCreatedStream = client.audioSetupMayHaveCreatedStream,
         )
         if (!eligible) return
         // Mark video-only intent first: concurrent incoming changeModes must not
@@ -1461,7 +1461,7 @@ object SessionController {
             val audio = streamInfo
             if (profile == null || audio == null) {
                 appendLog("AUDIO: 全部候选档位协商失败（共 ${ordered.size} 档）——本次仅推视频")
-                releaseB233UnnegotiatedAudioClaim(client, "all_audio_setups_rejected")
+                releaseB233UnnegotiatedAudioClaim(client, "no_accepted_or_unresolved_audio_setup")
                 return false
             }
             val modernB233Timing =
