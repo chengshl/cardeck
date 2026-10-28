@@ -33,6 +33,8 @@ internal object RescueCaptureHealth {
     fun started(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putLong("started", System.currentTimeMillis())
+            .putLong("heartbeat", 0L)
+            .putLong("matched", 0L)
             .putLong("heartbeat_elapsed", 0L)
             .putLong("gap_minutes", 0L)
             .putString("stop_reason", "")
