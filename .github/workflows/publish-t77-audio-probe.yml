@@ -2,7 +2,7 @@ name: T77 B233 AAC 诊断签名实验发布
 on:
   push:
     branches:
-      - experiment/buick-test-t77-aac-causality-observe
+      - experiment/buick-test-t76-aac-causality-observe
     paths:
       - '.github/workflows/publish-t77-audio-probe.yml'
   workflow_dispatch:
@@ -114,7 +114,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_NAME" = "experiment/buick-test-t77-aac-causality-observe"
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-t76-aac-causality-observe"
           TAG="exp-buick-test-t77-$CARDECK_RELEASE_VERSION_NAME"
           APK="CarDeck-Buick-Test-T77-TONE-PROBE.apk"
           test -s "$APK" && test -s "$APK.sha256"
