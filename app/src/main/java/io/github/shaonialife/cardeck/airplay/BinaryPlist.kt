@@ -10,10 +10,15 @@ import java.io.ByteArrayOutputStream
 object BinaryPlist {
     // ---- 编码：Map<String,Any?>/List/String/Long/Int/Boolean/Double/ByteArray ----
 
-    fun encode(value: Any?, appleNegativeIntegers: Boolean = false): ByteArray {
+    fun encode(
+        value: Any?,
+        appleNegativeIntegers: Boolean = false,
+        appleInternScalars: Boolean = false,
+    ): ByteArray {
         val objects = ArrayList<ByteArray>()
-        val totalObjects = countObjects(value)
-        val rootRef = encodeObject(value, objects, totalObjects, appleNegativeIntegers)
+        val totalObjects = countObjects(value, if (appleInternScalars) hashSetOf() else null)
+        val rootRef = encodeObject(value, objects, totalObjects, appleNegativeIntegers,
+            if (appleInternScalars) hashMapOf() else null)
         var offset = 8
         val offsets = IntArray(objects.size)
         objects.forEachIndexed { index, bytes ->
@@ -109,19 +114,39 @@ object BinaryPlist {
     }
 
     /** 预遍历：引用宽度必须按最终对象总数（含容器自身）确定。 */
-    private fun countObjects(value: Any?): Int =
+    private fun scalarKey(value: Any?): String? =
         when (value) {
-            is List<*> -> 1 + value.sumOf { countObjects(it) }
-            is Map<*, *> -> 1 + value.keys.sumOf { countObjects(it) } + value.values.sumOf { countObjects(it) }
+            is String -> "S:$value"
+            is Int -> "N:${value.toLong()}"
+            is Long -> "N:$value"
+            is Boolean -> "B:$value"
+            is Double -> "D:${value.toRawBits()}"
+            else -> null
+        }
+
+    /** Counts Apple-interned scalar objects only in explicit offline mode. */
+    private fun countObjects(value: Any?, seen: MutableSet<String>? = null): Int {
+        val key = scalarKey(value)
+        if (seen != null && key != null && !seen.add(key)) return 0
+        return when (value) {
+            is List<*> -> 1 + value.sumOf { countObjects(it, seen) }
+            is Map<*, *> -> 1 + value.keys.sumOf { countObjects(it, seen) } +
+                value.values.sumOf { countObjects(it, seen) }
             else -> 1
         }
+    }
 
     private fun encodeObject(
         value: Any?,
         objects: ArrayList<ByteArray>,
         total: Int,
         appleNegativeIntegers: Boolean,
+        scalarRefs: MutableMap<String, Int>?,
     ): Int {
+        val key = scalarKey(value)
+        if (scalarRefs != null && key != null) {
+            scalarRefs[key]?.let { return it }
+        }
         val bytes =
             when (value) {
                 null -> byteArrayOf(0x00)
@@ -132,22 +157,24 @@ object BinaryPlist {
                 is ByteArray -> withLength(0x40, value)
                 is String -> encodeString(value)
                 is List<*> -> {
-                    val refs = value.map { encodeObject(it, objects, total, appleNegativeIntegers) }
+                    val refs = value.map { encodeObject(it, objects, total, appleNegativeIntegers, scalarRefs) }
                     withLength(0xA0, refsToBytes(refs, total), refs.size)
                 }
 
                 is Map<*, *> -> {
                     @Suppress("UNCHECKED_CAST")
                     val map = value as Map<String, Any?>
-                    val keyRefs = map.keys.map { encodeObject(it, objects, total, appleNegativeIntegers) }
-                    val valueRefs = map.values.map { encodeObject(it, objects, total, appleNegativeIntegers) }
+                    val keyRefs = map.keys.map { encodeObject(it, objects, total, appleNegativeIntegers, scalarRefs) }
+                    val valueRefs = map.values.map { encodeObject(it, objects, total, appleNegativeIntegers, scalarRefs) }
                     withLength(0xD0, refsToBytes(keyRefs + valueRefs, total), map.size)
                 }
 
                 else -> throw IllegalArgumentException("不支持的 plist 类型 ${value.javaClass.simpleName}")
             }
         objects += bytes
-        return objects.size - 1
+        val index = objects.size - 1
+        if (scalarRefs != null && key != null) scalarRefs[key] = index
+        return index
     }
 
     private fun encodeString(value: String): ByteArray {
