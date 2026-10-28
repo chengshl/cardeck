@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import io.github.shaonialife.cardeck.update.BuickUpdater
 import io.github.shaonialife.cardeck.update.ExperimentalUpdates
+import io.github.shaonialife.cardeck.update.ExperimentProjectCatalog
 import io.github.shaonialife.cardeck.update.InstalledBuildIdentity
 import io.github.shaonialife.cardeck.update.UpdatePreference
 
@@ -35,6 +36,8 @@ class UpdateCenterActivity : AppCompatActivity() {
     private lateinit var installedOriginLabel: TextView
     private lateinit var currentChannelLabel: TextView
     private lateinit var browse: TextView
+    private lateinit var projectPanel: LinearLayout
+    private lateinit var projectName: TextView
 
     private fun dp(n: Int) = (resources.displayMetrics.density * n + .5f).toInt()
     private fun shape(fill: Int, stroke: Int = fill): GradientDrawable =
@@ -122,6 +125,24 @@ class UpdateCenterActivity : AppCompatActivity() {
         formal.setOnClickListener { choose(UpdatePreference.Channel.FORMAL) }
         experiment.setOnClickListener { choose(UpdatePreference.Channel.EXPERIMENT) }
 
+        projectPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            background = shape(surface, outline)
+        }
+        projectPanel.line(txt("关注的实验项目", 15f, fg, true))
+        projectName = txt("", 13f, accent, true)
+        projectPanel.line(projectName, 7)
+        projectPanel.line(txt("选择 / 更换 / 停止关注", 14f, bg, true).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(48)
+            background = shape(accent)
+            setOnClickListener {
+                ExperimentalUpdates.chooseProject(this@UpdateCenterActivity) { refresh() }
+            }
+        }, 12)
+        page.line(projectPanel, 12)
+
         val info = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(17), dp(16), dp(17), dp(14))
@@ -200,7 +221,19 @@ class UpdateCenterActivity : AppCompatActivity() {
             if (isExperiment) accent else outline)
         formalMark.text = if (!isExperiment) "✓ 已选择" else "选择"
         experimentMark.text = if (isExperiment) "✓ 已选择" else "选择"
-        currentChannelLabel.text = if (isExperiment) "当前检查通道：试验分支（与已安装来源不同）" else "当前检查通道：正式分支"
+        val ownOrigin = getString(R.string.cardeck_installed_build_origin)
+        val ownProject = ownOrigin.takeIf { it.startsWith("experiment/buick-e5-") }
+        currentChannelLabel.text = if (!isExperiment) {
+            "当前检查通道：正式分支（你手动选择的渠道优先）"
+        } else if (ownProject != null) {
+            "当前检查通道：试验分支\n自动关注：$ownProject"
+        } else {
+            "当前检查通道：试验分支\n未指定项目：自动检查可能选择不同的E5实验，请手动确认"
+        }
+        projectPanel.visibility = if (isExperiment) View.VISIBLE else View.GONE
+        val subscribed = UpdatePreference.selectedProject(this)
+        projectName.text = if (subscribed == null) "未手动订阅（保留安装来源自动检查）"
+            else ExperimentProjectCatalog.name(subscribed) + "\n" + subscribed
         browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
     }
 }
