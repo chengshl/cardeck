@@ -17,6 +17,8 @@ import java.util.Locale
  */
 internal class RescueTraceStore(private val directory: File) {
     companion object {
+        // Shared across all Store instances (service reader, heartbeat and manual export).
+        private val IO_LOCK = Any()
         private const val SLOT_BYTES = 512 * 1024L
         private const val SLOTS = 4
         private const val PREFIX = "rescue-trace-"
@@ -30,8 +32,12 @@ internal class RescueTraceStore(private val directory: File) {
         /** Manual export only. Never called automatically by the monitor. */
         fun export(context: Context): OfflineDiagnosticExporter.Result? {
             val store = forApp(context)
-            val files = store.oldestToNewest() + store.criticalOldestToNewest()
-            if (files.isEmpty()) return null
+            // Take a bounded coherent snapshot; do not block the reader during MediaStore I/O.
+            val snapshot = synchronized(IO_LOCK) {
+                (store.oldestToNewest() + store.criticalOldestToNewest())
+                    .map { it.name to it.readBytes() }
+            }
+            if (snapshot.isEmpty()) return null
             val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             val name = "CarDeck-PreReboot-$timestamp.txt"
             val relative = Environment.DIRECTORY_DOWNLOADS + "/CarDeck"
@@ -48,13 +54,12 @@ internal class RescueTraceStore(private val directory: File) {
             return try {
                 var length = 0
                 resolver.openOutputStream(uri)?.use { output ->
-                    files.forEach { file ->
-                        val separator = ("\n====== " + file.name + " ======\n").toByteArray()
+                    snapshot.forEach { (filename, bytes) ->
+                        val separator = ("\n====== " + filename + " ======\n").toByteArray()
                         output.write(separator)
                         length += separator.size
-                        file.inputStream().use { input ->
-                            length += input.copyTo(output).toInt()
-                        }
+                        output.write(bytes)
+                        length += bytes.size
                     }
                 } ?: error("no output")
                 check(resolver.update(uri, ContentValues().apply {
@@ -75,10 +80,11 @@ internal class RescueTraceStore(private val directory: File) {
     private fun criticalSlot(i: Int) = File(directory, CRITICAL_PREFIX + i + ".log")
     private fun criticalOldestToNewest() = (1 downTo 0).map(::criticalSlot).filter { it.isFile && it.length() > 0L }
 
-    fun retainedBytes(): Long = (oldestToNewest() + criticalOldestToNewest()).sumOf { it.length() }
+    fun retainedBytes(): Long = synchronized(IO_LOCK) {
+        (oldestToNewest() + criticalOldestToNewest()).sumOf { it.length() }
+    }
 
-    @Synchronized
-    fun append(safeLine: String, critical: Boolean = false) {
+    fun append(safeLine: String, critical: Boolean = false) = synchronized(IO_LOCK) {
         require(safeLine.length <= 256) { "unbounded capture" }
         val bytes = (safeLine + "\n").toByteArray(Charsets.UTF_8)
         if (bytes.size > 1024) return
