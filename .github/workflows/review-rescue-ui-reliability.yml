@@ -1,0 +1,29 @@
+name: Rescue review only - no publish
+on:
+  push:
+    branches:
+      - experiment/cardeck-rescue-ui-reliability
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compile-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests and unsigned debug build (no release, no signing)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Verify standalone-only permissions
+        run: |
+          test -f app/src/main/java/io/github/shaonialife/cardeck/ForensicOnlyActivity.kt
+          grep -Fq 'io.github.cardeck.rescue.collector' app/build.gradle.kts
+          if grep -Eq 'uses-permission.*(BLUETOOTH|RECORD_AUDIO)' app/src/main/AndroidManifest.xml; then exit 1; fi
