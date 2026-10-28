@@ -75,6 +75,8 @@ class AudioSender(
     private val vehicleNetwork: android.net.Network? = null,
     /** T73: release the phone-local reverse RTCP listener when this audio sender stops. */
     private val onStopped: (() -> Unit)? = null,
+    /** T76: observation-only per-AirPlay-session monotonic timeline. */
+    private val failureTrace: AudioFailureTrace? = null,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -177,6 +179,7 @@ class AudioSender(
     /** 首个音频包标记（打完就清）；AAC 自检只跑一次。 */
     private var markerPending = true
     private var selfChecked = false
+    private val aacSelfCheckWindow = AacSelfCheckWindow()
 
     /** 每包/每帧对应的 PCM 字节数（PCM 通路=一包的负载；AAC 通路=一帧的输入）。 */
     private val framePcmBytes: Int
@@ -284,6 +287,7 @@ class AudioSender(
     fun start(projection: MediaProjection): Boolean {
         if (running.get()) return true
         stopped.set(false)
+        failureTrace?.event("audio_sender_start")
         return try {
             val client = DatagramSocket()
             vehicleNetwork?.let { network ->
@@ -395,6 +399,7 @@ class AudioSender(
      */
     fun stop() {
         if (!stopped.compareAndSet(false, true)) return
+        failureTrace?.event("audio_sender_stop_requested")
         running.set(false)
         runCatching { record?.stop() }
         runCatching { record?.release() }
@@ -578,15 +583,27 @@ class AudioSender(
                     } else {
                         listOf(pcm)
                     }
-                if (payloads.isEmpty()) continue
-
-                // 一次性自检：把编码结果自己解一遍，证明比特流有效且非静音。
-                // 这是「车机无声」最需要的一条证据——如果自解码峰值是 0，问题在编码器，
-                // 如果自解码有声音而车机静音，问题在车机侧（会话/音量/路由）。
-                if (!selfChecked) {
+                // T76: wait for actual nonzero PCM and then accumulate 12 contiguous
+                // encoded frames (max 64KiB/1s). The live RTP path is unchanged.
+                if (!selfChecked && codec == AudioCodec.AAC_LC) {
+                    val wasArmed = aacSelfCheckWindow.armed
+                    val ready = aacSelfCheckWindow.accept(
+                        nonzeroPcm = peakPcm16Le(pcm) > 0,
+                        encoded = payloads,
+                        nowNanos = System.nanoTime(),
+                    )
+                    if (!wasArmed && aacSelfCheckWindow.armed) {
+                        failureTrace?.event("nonzero_pcm_first_seen")
+                    }
+                    if (ready != null) {
+                        selfChecked = true
+                        verifyEncodedFrames(ready, aacEncoder?.codecSpecificData())
+                    }
+                } else if (!selfChecked && codec == AudioCodec.PCM && payloads.isNotEmpty()) {
                     selfChecked = true
-                    verifyEncodedFrame(payloads.first())
+                    log("AUDIO T12: PCM 首帧自检 ${payloads.first().size}B peak=${peakPcm16Le(payloads.first())}")
                 }
+                if (payloads.isEmpty()) continue
 
                 var sendFailed = false
                 for (payload in payloads) {
@@ -617,6 +634,7 @@ class AudioSender(
             // 后台线程未捕获异常会杀死整个进程——音频异常绝不允许冒泡
             log("AUDIO: 采集线程异常退出 - ${error.message}")
         } finally {
+            failureTrace?.event("audio_capture_loop_exit")
             stop()
         }
     }
@@ -633,41 +651,35 @@ class AudioSender(
             client.send(DatagramPacket(wire, wire.size))
             packetsSent++
             bytesSent += wire.size
+            if (packetsSent == 1L) failureTrace?.firstRtpSent()
             true
         } catch (error: IOException) {
+            failureTrace?.event("audio_rtp_udp_error", error.javaClass.simpleName)
             log("AUDIO: UDP 发送失败 - ${error.message}")
             false
         }
     }
 
-    /** PCM directly checks capture; only AAC requires platform decoder self-test. */
-    private fun verifyEncodedFrame(frame: ByteArray) {
-        if (codec == AudioCodec.PCM) {
-            log("AUDIO T12: PCM 首帧自检 ${frame.size}B peak=${peakPcm16Le(frame)}" +
-                "（原版误把 PCM 交给 AAC 解码器）")
-            return
-        }
-        val payload = frame.copyOf()
+    /**
+     * T76: one bounded asynchronous decoder run over consecutive AAC frames.
+     * Success proves only that this plaintext segment decodes locally; it does
+     * not prove receiver decryption, timing, routing or audible playback.
+     */
+    private fun verifyEncodedFrames(frames: List<ByteArray>, csd0: ByteArray?) {
+        failureTrace?.event("aac_selfcheck_started", "frames=${frames.size} csdBytes=${csd0?.size ?: 0}")
         Thread(
             {
-                try {
-                    val result = AacLcEncoder.decodePeak(payload, sampleRate, CHANNELS)
-                    if (result == null) {
-                        log("AUDIO: 自检 = 本机解码器没解出样本（首帧 ${payload.size}B）——无法证伪，继续推流")
-                        return@Thread
-                    }
-                    val (peak, samples) = result
-                    log(
-                        "AUDIO: 自检 = 首帧 ${payload.size}B 本机解码 $samples 个样本，峰值 $peak" +
-                            if (peak > 0) {
-                                "（✓ 比特流有效且非静音：车机若无声，问题不在编码/加密）"
-                            } else {
-                                "（⚠ 解码为全零：AAC 编码器输出的是静音数据）"
-                            },
-                    )
-                } catch (error: Exception) {
-                    log("AUDIO: 自检解码异常 - ${error.message}")
-                }
+                val result = AacLcEncoder.decodeWindow(frames, sampleRate, CHANNELS, csd0)
+                log(
+                    "AUDIO T76: 自检 frames=${frames.size} queued=${result.queuedFrames} " +
+                        "decodedSamples=${result.decodedSamples} peak=${result.peak} " +
+                        "csdPresent=${!csd0.isNullOrEmpty()} error=${result.errorKind ?: "none"} " +
+                        "（仅证明本机明文AAC解码，不代表车机解密/播放）",
+                )
+                failureTrace?.event(
+                    "aac_selfcheck_done",
+                    "samples=${result.decodedSamples} peak=${result.peak} error=${result.errorKind ?: "none"}",
+                )
             },
             "audio-selfcheck",
         ).apply {
