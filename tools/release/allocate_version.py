@@ -47,10 +47,23 @@ def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     sha = os.environ["GITHUB_SHA"]
     branch = os.environ["GITHUB_REF_NAME"]
+    legacy_codes = []
+    for tag in ("buick-e5-latest", "buick-test-latest"):
+        try:
+            release = gh(f"repos/{repo}/releases/tags/{tag}")
+        except subprocess.CalledProcessError as exc:
+            if "404" in (exc.stderr or ""):
+                continue
+            raise
+        match = re.search(r"^versionCode=(\\d+)$", release.get("body") or "", re.MULTILINE)
+        if match:
+            legacy_codes.append(int(match.group(1)))
     for _ in range(12):
         now = datetime.now(timezone.utc)
         refs = gh(f"repos/{repo}/git/matching-refs/tags/cardeck-build/v1")
         name, code, ref = choose_version([item["ref"] for item in refs], now, branch)
+        code = max(code, max(legacy_codes, default=0) + 1)
+        ref = f"{PREFIX}{name.rsplit('-', 1)[-1]}-c{code}"
         try:
             gh("-X", "POST", f"repos/{repo}/git/refs", "-f", f"ref={ref}", "-f", f"sha={sha}")
             break
