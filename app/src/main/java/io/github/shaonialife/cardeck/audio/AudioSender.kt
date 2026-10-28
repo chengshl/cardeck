@@ -200,6 +200,9 @@ class AudioSender(
 
     /** 采集+推流统计（日志限流用）。 */
     private var packetsSent = 0L
+    /** T79: published only after a successful send(), for receive-only 0xD5 diagnostics. */
+    @Volatile private var diagnosticSentPacketCount = 0L
+    internal fun sentPacketCountSnapshot(): Long = diagnosticSentPacketCount
     private var bytesSent = 0L
     private var lastLogAt = 0L
     private var diagnosticStartedAt = 0L
@@ -671,6 +674,7 @@ class AudioSender(
         return try {
             client.send(DatagramPacket(wire, wire.size))
             packetsSent++
+            diagnosticSentPacketCount = packetsSent
             bytesSent += wire.size
             if (packetsSent == 1L) failureTrace?.firstRtpSent()
             true
