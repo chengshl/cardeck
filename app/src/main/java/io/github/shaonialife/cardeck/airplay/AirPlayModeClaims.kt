@@ -14,7 +14,7 @@ internal object AirPlayModeClaims {
 
 
     /**
-     * B233 only: no audio stream was negotiated after all SETUP candidates were tried.
+     * B233 only: no audio SETUP may have created a stream after all candidates were tried.
      * The screen can remain live without claiming CarPlay main audio. A user intent to
      * play audio is NOT proof that an audio stream exists. A late permission grant is
      * NOT this terminal failure; it must retain its separate retry path.
@@ -25,10 +25,10 @@ internal object AirPlayModeClaims {
         sameClient: Boolean,
         cancelled: Boolean,
         videoRunning: Boolean,
-        audioStreamNegotiated: Boolean,
+        audioSetupMayHaveCreatedStream: Boolean,
     ): Boolean =
         isBuickB233 && audioEnabledForSession && sameClient && !cancelled &&
-            videoRunning && !audioStreamNegotiated
+            videoRunning && !audioSetupMayHaveCreatedStream
 
     fun resources(claimAudio: Boolean): List<Map<String, Long>> {
         val screen = linkedMapOf(
