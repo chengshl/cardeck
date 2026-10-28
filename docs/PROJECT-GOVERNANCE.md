@@ -1,6 +1,6 @@
 # CarDeck 项目统一开发与协作规则
 
-> **统一规范版本：2026-10-27 / v1.9**  
+> **统一规范版本：2026-10-28 / v2.1**  
 > **唯一权威来源**：`Buick:docs/PROJECT-GOVERNANCE.md`。本文件在 `Buick-E5`、`Buick-Test` 是完全一致的只读同步副本，不允许各分支单独改写规则。与历史 `AGENTS.md`、旧版分支文档、Issue 快照冲突时，按本规则及用户最新明确决定执行。
 
 ## 一、仓库与分支边界
@@ -58,6 +58,28 @@
 4. **取证生命周期与隐私**：Shizuku 必须按 Test Android 包名单独授权；用户手动启动 `specialUse` 常驻通知取证，无应用层4小时时限，脱敏后只保存本机 4×512 KiB 滚动文件，不暗中网络上传；手动停止/导出到下载目录。系统杀进程、Shizuku断开或整机重启仍会停止采集，已同步落盘的文件跨系统重启保留，但**默认不自启动**。清除Test数据/卸载前先导出旧记录。
 5. **研发与发布边界**：本辅助工具改动风险 **L3**，单独 CI/签名/预发布 tag，不覆盖 Buick 正式 `latest` 或 E5 包名；须验收“可与 E5 并存、Shizuku授权、通知、采集/脱敏/停止/导出、E5覆盖升级期间不被触发断开、原有 Test 音频版本覆盖风险”，再标记手机验收通过。版本元数据必须真实记载源码实验分支、构建SHA与 Test applicationId，不因直接构建成功就当作长期稳定。
 6. **维护归属**：设备 RescueParty 证据继续汇总 #31，取证代码与交付在 #30 及 #12 登记，Test→E5迁移关系只在 #27 留简明记录。E5 后续正常功能融合按原 v1.8 L2/L3 验收，不必等这套自用采集工具查明 #31 的固件根因。
+
+### 第三个独立包名取证助手（v2.0，2026-10-28 用户明确要求推进，覆盖 v1.9 包名安排）
+
+**现行决定：取证助手自 Test Android applicationId 迁往第三个独立 Android 包名，与 Buick-E5 和 Buick-Test 音频试验可同时安装。** 上一节 v1.9 的 Test 同包名取证方案作为历史阶段保留；凡包名归属、更新源、安装互相覆盖等与本节冲突的条款，一律按本节执行。无需撤销 Test 音频 P0 许可，也不取消 E5 单一非音频验证主线。
+
+1. **唯一新取证开发目标**：从已签名发布的旧取证实验 `experiment/buick-test-rescue-collector@c399a6cbb6f3f8a98abe390ca3c5bb192464153b` 派生 `experiment/cardeck-rescue-standalone`；新 Android `applicationId=io.github.cardeck.rescue.collector`。旧分支、旧 Release、旧包名 `io.github.buick.test.cardeck` 保留追溯，不再承接新版取证功能开发；原冻结 `Buick-Test` 不作非音频功能修改。
+2. **三 App 共存**：E5 `io.github.buick.e5.cardeck` 负责稳定连接/视频/触摸，Test `io.github.buick.test.cardeck` 只保留音频 #11 研究，Standalone 独立包仅用于系统取证。新 APK **不是旧 Test 取证版的覆盖升级**，安装不会搬运私有数据、通知授权、Shizuku 授权、自动更新偏好。用户先在旧取证 App 导出到下载目录并停止旧采集，待新包实机验收后自行决定停用/卸载旧包；**不能在未验收前主动卸载旧包或清除旧数据**。
+3. **运行权限与隐私**：沿用 v1.9 的取证组件白名单，仅 `ForensicOnlyActivity`、`RescueTraceService`、Shizuku provider 和用于前台自更新的 FileProvider；不对外启用车机、蓝牙、Wi-Fi、麦克风、录音、视频、投屏、Gateway 自动采集/上传。用户主动开启、常驻 specialUse 通知、普通 2 MiB 加关键 512 KiB 本地轮转；只允许前台检查本程序的预发布，更新须用户同意。杀进程/重启不自动重启日志采集，已落盘证据留存。
+4. **独立发布闭环**：风险 **L3**，工作流 `.github/workflows/publish-rescue-standalone.yml` 只能在该实验分支执行，验证 `applicationId`、编译、JUnit、lint、禁用连接组件、非Debug签名、独立来源和 SHA256。APK 名 `CarDeck-Rescue-Standalone.apk`，独立 prerelease tag `exp-cardeck-rescue-standalone-YYYYMMDDHHmmss`；自动更新只接受此来源、标签、APK、摘要；不得误选旧 Test 取证版、Test 音频版、E5 或 Buick 正式版本。版本来源 `sourceBranch` 写真实分支，`baseBranch=Buick-E5` 表示最早诊断能力来源。
+5. **手机迁移验收门禁**：旧日志已导出、新旧包不互相覆盖、新 Shizuku 授权及通知、开始/停止/导出与脱敏、关键事件保存及心跳、恢复后持续、独立更新选择/包签名、E5和Test音频并存且正常；不可主动制造系统重启。构建/Release 成功不等于手机验收；只有用户完成手机验收后才视为可替换日用旧取证 App。
+6. **维护记录**：#30 记录取证代码/构建/手机验收，#11 继续音频独立实验，#27 只记迁移归属，#12 进度索引，#31 保留系统事件证据。原 Test 取证历史是追溯而非最新安装推荐；不因取证独立化推迟 #11 音频修复。
+
+### 废弃预发布通道退役与历史保留（v2.1，2026-10-28 用户明确要求）
+
+**用户批准清理不再使用的预发布通道。执行策略为「停止自动发版、退出手机内实验订阅、保留历史APK/校验文件/标签/日志证据」，而不是删除已引用的源代码与Release。** 不影响在用正式渠道、P0音频、E5稳定性试验和已签名独立取证版本。
+
+1. **允许在旧版本元数据执行受控归档**：仅对已确认替代或停用、不会再用作当前升级/重连排障测试入口的版本，将其GitHub Release正文机器字段 `artifactKind=experiment` 调整为 `artifactKind=historical`，补 `originalArtifactKind=experiment` / `retiredChannel=true` / 日期说明。更新器只接受 `artifactKind=experiment`，故无需修改线上APK即可阻止这些旧版本重新出现在实验安装列表。**不更改APK、SHA256、tag、源码SHA、原发布内容其他字段和资源可下载性**。此标记是2026-10-28的当前归档状态，原曾作为实验交付的事实仍然成立。
+2. **本次已归档六个签名预发布**：旧 Test 包名取证 `exp-buick-test-rescue-collector-20261027150931`、`exp-buick-test-rescue-collector-20261027200625`（由第三独立包名 `experiment/cardeck-rescue-standalone` 替代）；Test Updater-B `exp-buick-test-updater-b-20261026170331`、`...180307`、`...180738`（功能向 E5 集中）；Test任务隔离 `exp-buick-test-task-20261026144650`（Test非音频功能已冻结/迁往E5）。独立一次性归档工作流 `maintenance/archive-unused-prereleases-20261028`，Actions run `40611787076` completed/success；六份APK和SHA256资源已复核存在。对应三个过时签名发布工作流已从其原试验分支移除，但不删除历史提交。
+3. **继续保留可用渠道**：正式 `buick-latest`、`buick-e5-latest`、`buick-test-latest`；E5 #24 蓝牙、#34 iAP2 stop、安全/诊断与Test→E5迁移试验按专项门禁继续；音频 #11 的 T75历史有效schema2版本在 T76获得签名可试验版本前不归档；第三独立取证唯一 `exp-cardeck-rescue-standalone-*` 继续签名发行。旧schema1 T75本已因不满足schema2而从现行选择器隐藏，保留其原始Release不重复变更。
+4. **不触碰的历史固定标签**：`buick-main-latest`、`main-latest`、`cardeck-latest` 可能仍被旧客户端或上游代码引用；本轮仅分类为历史/兼容，不删除 Release/tag，也不通过改写其版本元数据制造安装失败。上游 `main` 不参与改动；`Buick-main` 分支已退役，不重启构建。
+5. **发布权限与重复清理安全**：旧发布工作流只删除现行分支中的workflow文件，Git历史可追溯；独立取证工作流只由其应用代码、Gradle和自身workflow改变触发，不因旧workflow/docs删除产生新包。归档仅限精确列表且要求原sourceBranch/schema、prerelease、APK及SHA256匹配，支持再次运行时识别已归档。**若将来恢复某专项，必须明确取消归档决策、重新做L2/L3验证并提供新独立签名版本，不简单恢复过期安装源。**
+6. **记录**：更新专项 #17、迁移 #27、取证 #30、总索引 #12。CI/Release归档不是用户手机新版本验收，也不解决 T76 AAC约20秒断连；仍禁止无验收合并运行代码。
 
 ## 二、规则更新：一个权威版本、立即同步
 

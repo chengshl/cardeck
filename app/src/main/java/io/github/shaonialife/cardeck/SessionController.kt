@@ -197,6 +197,16 @@ object SessionController {
     @Volatile
     var currentClient: AirPlayClient? = null
 
+    /** T78: only a confirmed screen RECORD can be politely torn down. */
+    @Volatile
+    private var recordedScreenOwner: AirPlayClient? = null
+
+    @Volatile
+    private var recordedScreenUuid: String? = null
+
+    private val disconnectInProgress = AtomicBoolean(false)
+    private const val DISCONNECT_FALLBACK_MS = 1_700L
+
     @Volatile
     var currentHiddenSource: HiddenDisplaySource? = null
 
@@ -327,6 +337,10 @@ object SessionController {
      * 幂等：已有会话时 BT 组件的 start() 自行短路，不会双开。
      */
     fun startConnection(context: Context) {
+        if (disconnectInProgress.get()) {
+            appendLog("SESSION T78: 上一会话正在退出，拒绝开启重复连接")
+            return
+        }
         CriticalEventTrail.mark(context, "CONNECTION_REQUESTED")
         connectCancelled = false
         phaseHint = "蓝牙就绪，等待车机回连…"
@@ -374,19 +388,81 @@ object SessionController {
         }
     }
 
-    /** 「断开连接」（可在任意 Activity 实例上调用——操作的是真管线对象）。 */
+    /**
+     * T78: an established screen session needs a receiver-side RTSP TEARDOWN
+     * before locally retiring AirPlay. Pre-0x4301 / failed pairing still
+     * cancels immediately, without inventing an RTSP session.
+     */
     fun disconnect(context: Context) {
         CriticalEventTrail.mark(context, "CONNECTION_DISCONNECT_REQUESTED")
+        if (!disconnectInProgress.compareAndSet(false, true)) {
+            appendLog("SESSION T78: 断开已在执行，忽略重复操作")
+            return
+        }
+        connectCancelled = true
+        val client = currentClient
+        val recorded = E5DisconnectPolicy.shouldTryTeardown(
+            isVideoStreaming = videoSender?.isRunning == true,
+            hasClient = client != null,
+            clientOwnsRecordedScreen = client != null && recordedScreenOwner === client,
+        )
+        if (!recorded || client == null) {
+            appendLog("SESSION T78: 尚无已确认的视频会话，快速取消且不发无效TEARDOWN")
+            try {
+                disconnectNow(context)
+            } finally {
+                disconnectInProgress.set(false)
+            }
+            return
+        }
+
+        val displayUuid = recordedScreenUuid
+        val app = context.applicationContext
+        val cleanupOnce = AtomicBoolean(false)
+        val finish: (String) -> Unit = { reason ->
+            if (cleanupOnce.compareAndSet(false, true)) {
+                appendLog("SESSION T78: receiver teardown结束原因=$reason；开始本地清理")
+                try {
+                    disconnectNow(app)
+                } finally {
+                    disconnectInProgress.set(false)
+                }
+            }
+        }
+        phaseHint = "正在通知车机退出CarPlay…"
+        appendLog("SESSION T78: 已确认屏幕会话；后台先尝试B233 TEARDOWN，再关闭本地连接")
+
+        Bg.run("e5-t78-teardown") {
+            try {
+                val ok = client.tryTeardownBuickScreen(displayUuid)
+                appendLog("SESSION T78: receiver TEARDOWN result=$ok")
+            } catch (error: Throwable) {
+                appendLog("SESSION T78: receiver TEARDOWN 异常=${error.javaClass.simpleName}")
+            } finally {
+                finish("request-completed")
+            }
+        }
+        // The RTSP response poll is capped at 900ms but socket write/reader
+        // setup may block. A separate watchdog always releases local resources.
+        Bg.run("e5-t78-stop-watchdog") {
+            try {
+                Thread.sleep(DISCONNECT_FALLBACK_MS)
+                finish("watchdog")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                finish("watchdog-interrupted")
+            }
+        }
+    }
+
+    /** Existing local cleanup remains the single terminal path, also on timeout. */
+    private fun disconnectNow(context: Context) {
         val hadProjection = CarPlayService.mediaProjection != null
         retireSession()
-        // BT 控制会话只在这里（用户终态）退役，socket close 让保活读循环立刻退出：
-        // 否则它阻塞到对端超时（实测 ~24s）才结束，用户取消后英雄卡持续转圈。
-        // 配对中绝不能断——DiPlay 在隧道 iAP2 就绪前看到 RFCOMM 断开即判
-        // bring-up failed 并拆整轮无线栈（含推流中的 AirPlay 会话，2026-10-16 实测）。
+        // Release only the iAP2 transport; T22 keeps normal Bluetooth profiles.
         detachActiveBtSessions()
         phaseHint = null
-        CarPlayService
-            .stop(context)
+        CarPlayService.stop(context)
         bluetoothServer?.stop()
         bluetoothClient?.stop()
         ctrlAdvertiser?.stop()
@@ -394,12 +470,11 @@ object SessionController {
         wifiConnector?.release()
         boundCarSsid = null
         if (hadProjection) {
-            // Android 14+：MediaProjection 与保活服务（mediaProjection FGS 类型）绑定，
-            // 停服务会连带失效授权——下次连接需重新点「申请投屏权限」
             appendLog("已手动断开并停止保活服务（常亮已恢复）；投屏授权已随服务停止失效，下次连接如需声音请重新申请")
         } else {
             appendLog("已手动断开并停止保活服务（常亮已恢复）")
         }
+        appendLog("SESSION T78: 本地清理完成（不代表车机已确认退出）")
     }
 
     /** 会话结束/新周期开始前彻底退役上一代会话（旧管线泄漏会累积编码器/虚拟显示器，最终 dequeueBuffer -19）。 */
@@ -411,6 +486,8 @@ object SessionController {
         videoSender = null
         val retiredClient = currentClient
         currentClient = null
+        recordedScreenOwner = null
+        recordedScreenUuid = null
         retiredClient?.cancelled = true
         retiredVideo?.stop()
         audioSender?.stop()
@@ -978,6 +1055,10 @@ object SessionController {
         source: String,
     ) {
         val context = appContext ?: return
+        if (connectCancelled || disconnectInProgress.get()) {
+            appendLog("SESSION T78: 取消/退出中的迟到端点已忽略")
+            return
+        }
         // 冗余端点防护：接收端控制器（DiPlay 实测）在我们配对推流后才完成既有的
         // RFCOMM 重连并重发 0x4301。此时重启配对会 retireSession 掉健康会话
         // （编码器 stop 竞态 = 「连上后自动断开」循环的根因）。推流中的端点一律忽略；
@@ -1378,7 +1459,8 @@ object SessionController {
                                             targetFps = fps,
                                             log = { line -> appendLog(line) },
                                             onEnded = {
-                                                if (videoSender === owningSender && currentClient === client) {
+                                                if (!disconnectInProgress.get() &&
+                                                    videoSender === owningSender && currentClient === client) {
                                                     appendLog("SESSION T42: 当前视频流已结束——尝试标准 TEARDOWN 后清理会话")
                                                     try {
                                                         // One last best-effort request over the encrypted
@@ -1413,7 +1495,11 @@ object SessionController {
                                 // 返回同一毫秒、且 5 次实测全部复现。故顺序改为：
                                 //   屏幕 SETUP → 连数据端口 → RECORD → 起编码器（出帧）→ 音频 SETUP
                                 // 音频 SETUP 失败只丢声音，视频会话保持。
-                                client.record()
+                                val screenRecordConfirmed = client.record()
+                                if (screenRecordConfirmed && currentClient === client && !connectCancelled) {
+                                    recordedScreenOwner = client
+                                    recordedScreenUuid = setup.displayUuid
+                                }
                                 if (host != null) {
                                     val videoW = pendingVideoW
                                     val videoH = pendingVideoH
