@@ -37,7 +37,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "io.github.buick.test.cardeck"
+        applicationId = "io.github.cardeck.rescue.collector"
         minSdk = 31
         targetSdk = 34
         versionCode = System.getenv("CARDECK_BUILD_VERSION_CODE")?.toIntOrNull() ?: appVersionCode
@@ -48,7 +48,7 @@ android {
         // 实验发布workflow向构建环境传入SOURCE_BRANCH；正式构建传入CARDECK_RELEASE_BRANCH。
         val experimentSource = System.getenv("SOURCE_BRANCH").orEmpty()
         val installedOrigin = when {
-            experimentSource == "experiment/buick-test-rescue-collector" -> experimentSource
+            experimentSource == "experiment/cardeck-rescue-standalone" -> experimentSource
             experimentSource.startsWith("experiment/buick-e5-") -> experimentSource
             System.getenv("CARDECK_RELEASE_BRANCH") == "Buick-E5" -> "Buick-E5"
             else -> "unmarked"

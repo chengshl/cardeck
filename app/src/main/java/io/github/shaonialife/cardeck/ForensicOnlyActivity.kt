@@ -40,7 +40,7 @@ class ForensicOnlyActivity : AppCompatActivity() {
         }
         heading("CarDeck · 独立系统取证", 23f)
         heading("专职读取 Sony / Android 系统异常；不连接 CarPlay，不执行蓝牙、Wi-Fi 或投屏操作。\n"
-            + "必须由你主动开始，记录脱敏后保存在本应用，最多 2 MB 滚动覆盖；不自动上传。", 14f)
+            + "必须由你主动开始，记录脱敏后保存在本应用，普通2MiB＋关键512KiB滚动保存；不自动上传。", 14f)
         current = TextView(this).apply {
             textSize = 14f
             setPadding(0, 10.dp, 0, 12.dp)
@@ -97,7 +97,7 @@ class ForensicOnlyActivity : AppCompatActivity() {
         button("安装已验证的缓存更新") { CollectorUpdater.installCached(this) }
         heading("注意：不设4小时自动停止，但系统仍可能终止进程；重启后Shizuku通常需要重新启动。\n"
             + "已经写入的日志重启后仍保留；卸载此App或清除数据之前务必先导出。"
-            + "\n如果原来安装过Buick-Test，本版将使用同一个Test包名覆盖安装；不影响E5包。", 13f)
+            + "\n本版使用第三个独立包名，可与Buick-E5及Buick-Test音频版并存。\n" + "旧Test取证数据不会自动迁移：请先在旧App导出日志并停止旧采集，避免双重监控。", 13f)
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             addView(holder)
@@ -119,7 +119,7 @@ class ForensicOnlyActivity : AppCompatActivity() {
         current.text = buildString {
             appendLine("Shizuku：${ready.name}")
             appendLine("采集：${RescueTraceService.description}")
-            appendLine("当前留存：${sizeKb} KB / 2048 KB")
+            appendLine("当前留存：${sizeKb} KB / 2560 KB")
             append("本机连续取证，不限制4小时，不自动上传")
         }
     }
