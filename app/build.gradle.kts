@@ -49,6 +49,8 @@ android {
         val experimentSource = System.getenv("SOURCE_BRANCH").orEmpty()
         val installedOrigin = when {
             experimentSource == "experiment/cardeck-rescue-standalone" -> experimentSource
+            // Signed PR #45 review build: accurate embedded provenance, never a normal updater release.
+            experimentSource == "experiment/cardeck-rescue-ui-reliability" -> experimentSource
             experimentSource.startsWith("experiment/buick-e5-") -> experimentSource
             System.getenv("CARDECK_RELEASE_BRANCH") == "Buick-E5" -> "Buick-E5"
             else -> "unmarked"
