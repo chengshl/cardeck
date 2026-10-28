@@ -1,7 +1,7 @@
 package io.github.shaonialife.cardeck.update
 
 import android.app.Activity
-import androidx.appcompat.app.AlertDialog
+import io.github.shaonialife.cardeck.ui.DarkMessageDialog
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -194,23 +194,29 @@ object BuickUpdater {
                         if (!silent) {
                             info(
                                 activity,
-                                "已是最新版本（$installedVersionName）\n" +
-                                    "发布分支：$branch\n$buildTimeLabel\n\n更新说明：\n$changeNotes",
+                                (if (code == installed) "已安装版本号与正式渠道相同" else "已安装版本号高于正式渠道") +
+                                    "（当前 $installedVersionName；正式渠道 $versionName）\n" +
+                                    "正式更新来源：$branch\n$buildTimeLabel\n\n更新说明：\n$changeNotes",
                             )
                         }
                     } else {
-                        AlertDialog.Builder(activity)
-                            .setTitle("发现 Buick-Test 更新")
-                            .setMessage(
-                                "当前版本：$installedVersionName\n" +
-                                    "最新版本：$versionName\n" +
-                                    "来源分支：$branch\n$buildTimeLabel\n\n" +
-                                    "更新说明：\n$changeNotes",
-                            )
-                            .setNegativeButton("取消", null)
-                            .setNeutralButton("安装已下载包") { _, _ -> install(activity, downloadedApk(activity, channel)) }
-                            .setPositiveButton("下载") { _, _ -> download(activity, url, shaUrl, channel) }
-                            .show()
+                        DarkMessageDialog.show(
+                            activity,
+                            "发现 Buick-Test 正式更新",
+                            "当前安装：$installedVersionName\n" +
+                                "正式渠道最新：$versionName\n" +
+                                "来源分支：$branch\n$buildTimeLabel\n\n" +
+                                "更新说明：\n$changeNotes",
+                            listOf(
+                                DarkMessageDialog.Action("取消") {},
+                                DarkMessageDialog.Action("安装已下载包") {
+                                    install(activity, downloadedApk(activity, channel))
+                                },
+                                DarkMessageDialog.Action("下载并安装", DarkMessageDialog.Emphasis.PRIMARY) {
+                                    download(activity, url, shaUrl, channel)
+                                },
+                            ),
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -220,13 +226,7 @@ object BuickUpdater {
     }
 
     private fun download(activity: Activity, url: String, shaUrl: String, channel: UpdateChannel) {
-        val dialog = android.app.ProgressDialog(activity).apply {
-            setTitle("下载 Buick-Test 更新")
-            setMessage("正在下载…")
-            setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
-            setCancelable(false)
-            show()
-        }
+        val dialog = ExperimentDownloadDialog.show(activity, title = "正在下载正式安装包")
         thread(name = "buick-update-download") {
             val target = downloadedApk(activity, channel)
             try {
@@ -237,7 +237,7 @@ object BuickUpdater {
                     target.delete()
                     main.post {
                         dialog.progress = 0
-                        dialog.setMessage("正在通过${route.label}下载…")
+                        dialog.setStatus("正在通过${route.label}下载并校验…")
                     }
                     val shaConn = openHttp(shaUrl, route, 15_000, 20_000)
                     val expected = try {
@@ -303,17 +303,22 @@ object BuickUpdater {
             return
         }
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
-            AlertDialog.Builder(activity).setTitle("允许安装更新")
-                .setMessage("安装包已下载并通过 SHA-256 校验。请允许 CarDeck 安装未知应用，返回后重新点击检查更新，即可继续安装，无需重新下载。")
-                .setNegativeButton("稍后", null)
-                .setPositiveButton("前往授权") { _, _ ->
-                    try {
-                        activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                            Uri.parse("package:${activity.packageName}")))
-                    } catch (e: Exception) {
-                        info(activity, "无法打开安装权限设置：${e.message}")
-                    }
-                }.show()
+            DarkMessageDialog.show(
+                activity,
+                "允许安装正式更新",
+                "安装包已下载并通过 SHA-256 校验。请允许 CarDeck 安装未知应用，返回后重新点击检查更新，即可继续安装，无需重新下载。",
+                listOf(
+                    DarkMessageDialog.Action("稍后") {},
+                    DarkMessageDialog.Action("前往授权", DarkMessageDialog.Emphasis.PRIMARY) {
+                        try {
+                            activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:${activity.packageName}")))
+                        } catch (e: Exception) {
+                            info(activity, "无法打开安装权限设置：${e.message}")
+                        }
+                    },
+                ),
+            )
             return
         }
         try {
@@ -330,16 +335,24 @@ object BuickUpdater {
             SessionController.disconnect(activity.applicationContext)
             activity.startActivity(Intent.createChooser(intent, "选择安装程序"))
         } catch (e: Exception) {
-            AlertDialog.Builder(activity).setTitle("无法打开安装窗口")
-                .setMessage("安装包已保留，无需重新下载。\n原因：${e.message}")
-                .setNegativeButton("稍后", null)
-                .setPositiveButton("重试安装") { _, _ -> install(activity, target) }
-                .show()
+            DarkMessageDialog.show(
+                activity,
+                "无法打开安装窗口",
+                "安装包已保留，无需重新下载。\n原因：${e.message}",
+                listOf(
+                    DarkMessageDialog.Action("稍后") {},
+                    DarkMessageDialog.Action("重试安装", DarkMessageDialog.Emphasis.PRIMARY) {
+                        install(activity, target)
+                    },
+                ),
+            )
         }
     }
 
     private fun info(activity: Activity, message: String) {
-        AlertDialog.Builder(activity).setTitle("CarDeck 在线更新")
-            .setMessage(message).setPositiveButton("确定", null).show()
+        DarkMessageDialog.show(
+            activity, "CarDeck 正式更新", message,
+            listOf(DarkMessageDialog.Action("确定", DarkMessageDialog.Emphasis.PRIMARY) {}),
+        )
     }
 }
