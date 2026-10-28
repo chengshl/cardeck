@@ -53,6 +53,15 @@ class ForensicOnlyActivity : AppCompatActivity() {
     private lateinit var stop: Button
     private lateinit var export: Button
     private val collector get() = RescueTraceStore.forApp(this)
+    // UI-only refresh. It never starts logcat or works while the Activity is in background.
+    private val refreshTicker = object : Runnable {
+        override fun run() {
+            if (!isFinishing && !isDestroyed && ::status.isInitialized) {
+                refresh()
+                status.postDelayed(this, 15_000L)
+            }
+        }
+    }
 
     private val requestNotifications = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -230,8 +239,17 @@ class ForensicOnlyActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::status.isInitialized) refresh()
+        if (::status.isInitialized) {
+            refresh()
+            status.removeCallbacks(refreshTicker)
+            status.postDelayed(refreshTicker, 15_000L)
+        }
         if (CollectorUpdater.autoEnabled(this)) CollectorUpdater.autoCheck(this)
+    }
+
+    override fun onPause() {
+        if (::status.isInitialized) status.removeCallbacks(refreshTicker)
+        super.onPause()
     }
 
     private fun refresh() {
