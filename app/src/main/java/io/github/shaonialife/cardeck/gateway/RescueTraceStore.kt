@@ -84,7 +84,8 @@ internal class RescueTraceStore(private val directory: File) {
         (oldestToNewest() + criticalOldestToNewest()).sumOf { it.length() }
     }
 
-    fun append(safeLine: String, critical: Boolean = false) = synchronized(IO_LOCK) {
+    fun append(safeLine: String, critical: Boolean = false) {
+        synchronized(IO_LOCK) {
         require(safeLine.length <= 256) { "unbounded capture" }
         val bytes = (safeLine + "\n").toByteArray(Charsets.UTF_8)
         if (bytes.size > 1024) return
@@ -119,6 +120,7 @@ internal class RescueTraceStore(private val directory: File) {
                 it.write(bytes)
                 it.fd.sync()
             }
+        }
         }
     }
 }
