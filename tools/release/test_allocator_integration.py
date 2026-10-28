@@ -59,7 +59,7 @@ class AllocatorIntegrationTest(unittest.TestCase):
         self.assertEqual(values["CARDECK_RELEASE_BRANCH"], branch)
         self.assertGreater(int(values["CARDECK_BUILD_VERSION_CODE"]), 89133957)
         self.assertRegex(values["CARDECK_RELEASE_VERSION_NAME"],
-                         r"^(E5|E5-TEST|BUICK)-\d{9}$")
+                         r"^(E5|E5-TEST|BUICK|EXP-[A-Z0-9-]+-[0-9A-F]{12})-\d{9}$")
         self.assertEqual(len(refs), 2 if collision else 1)
         self.assertTrue(any(call[0] == "--paginate" for call in calls))
         if collision:
@@ -73,6 +73,9 @@ class AllocatorIntegrationTest(unittest.TestCase):
 
     def test_buick_official_uses_shared_allocator(self):
         self.run_allocator(branch="Buick")
+
+    def test_experiment_uses_fingerprinted_alias(self):
+        self.run_allocator(branch="experiment/buick-e5-updater-b-minimal")
 
     def test_conflict_retries_with_fresh_daily_sequence(self):
         self.run_allocator(collision=True)
