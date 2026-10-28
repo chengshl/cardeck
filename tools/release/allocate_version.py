@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """为 CarDeck 签名发布分配跨分支统一版本号。仅供发布工作流调用。"""
+import hashlib
 import json
 import os
 import re
@@ -9,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 PREFIX = "refs/tags/cardeck-build/v1/"
 EPOCH = 1704067200
-ALIASES = {"Buick-E5": "E5", "Buick-Test": "E5-TEST", "Buick-main": "BUICK"}
+ALIASES = {"Buick-E5": "E5", "Buick-Test": "E5-TEST", "Buick-main": "BUICK", "Buick": "BUICK"}
 REF_RE = re.compile(r"^refs/tags/cardeck-build/v1/(\d{6})(\d{3})-c(\d+)$")
 
 
@@ -33,7 +34,8 @@ def choose_version(refs, now, branch):
     alias = ALIASES.get(branch)
     if alias is None:
         slug = re.sub(r"[^A-Z0-9]+", "-", branch.upper()).strip("-")
-        alias = "EXP-" + slug[-24:]
+        digest = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:12].upper()
+        alias = "EXP-" + slug[-14:] + "-" + digest
     name = f"{alias}-{day}{sequence:03d}"
     ref = f"{PREFIX}{day}{sequence:03d}-c{code}"
     return name, code, ref
@@ -61,7 +63,7 @@ def main():
     for _ in range(12):
         now = datetime.now(timezone.utc)
         legacy_codes = []
-        for tag in ("buick-e5-latest", "buick-test-latest"):
+        for tag in ("buick-e5-latest", "buick-test-latest", "buick-latest", "buick-main-latest"):
             try:
                 release = gh(f"repos/{repo}/releases/tags/{tag}")
             except subprocess.CalledProcessError as exc:

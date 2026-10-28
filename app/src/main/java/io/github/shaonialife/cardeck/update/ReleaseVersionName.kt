@@ -10,9 +10,17 @@ internal object ReleaseVersionName {
     fun isExperimental(name: String, sourceBranch: String): Boolean {
         if (!sourceBranch.startsWith("experiment/")) return false
         if (legacy.matches(name)) return true
-        val slug = sourceBranch.uppercase(java.util.Locale.ROOT)
-            .replace(Regex("""[^A-Z0-9]+"""), "-").trim('-').takeLast(24)
-        return Regex("EXP-" + Regex.escape(slug) + "-[0-9]{9}").matches(name)
+        val normalized = sourceBranch.uppercase(java.util.Locale.ROOT)
+            .replace(Regex("""[^A-Z0-9]+"""), "-").trim('-')
+        val bytes = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(sourceBranch.toByteArray(Charsets.UTF_8))
+        val fingerprint = bytes.take(6).joinToString("") {
+            "%02X".format(java.util.Locale.ROOT, it.toInt() and 0xff)
+        }
+        val alias = "EXP-" + normalized.takeLast(14) + "-" + fingerprint
+        val formerAlias = "EXP-" + normalized.takeLast(24)
+        return Regex(Regex.escape(alias) + "-[0-9]{9}").matches(name) ||
+            Regex(Regex.escape(formerAlias) + "-[0-9]{9}").matches(name)
     }
 
     fun display(body: String, branch: String, fallbackCode: Long): String {

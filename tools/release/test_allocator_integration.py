@@ -29,6 +29,10 @@ class AllocatorIntegrationTest(unittest.TestCase):
                             if not invalid_legacy else {"body": "broken-release-body"})
                 if args[0].endswith("/releases/tags/buick-test-latest"):
                     return {"body": "versionCode=88944806\n"}
+                if args[0].endswith("/releases/tags/buick-latest"):
+                    return {"body": "versionCode=88921786\\n".replace("\\n", "\n")}
+                if args[0].endswith("/releases/tags/buick-main-latest"):
+                    return {"body": "versionCode=88927204\\n".replace("\\n", "\n")}
                 if args[0] == "--paginate":
                     self.assertEqual(args[1], "--slurp")
                     return [[{"ref": ref} for ref in refs]]
@@ -55,7 +59,7 @@ class AllocatorIntegrationTest(unittest.TestCase):
         self.assertEqual(values["CARDECK_RELEASE_BRANCH"], branch)
         self.assertGreater(int(values["CARDECK_BUILD_VERSION_CODE"]), 89133957)
         self.assertRegex(values["CARDECK_RELEASE_VERSION_NAME"],
-                         r"^(E5|E5-TEST)-\d{9}$")
+                         r"^(E5|E5-TEST|BUICK|EXP-[A-Z0-9-]+-[0-9A-F]{12})-\d{9}$")
         self.assertEqual(len(refs), 2 if collision else 1)
         self.assertTrue(any(call[0] == "--paginate" for call in calls))
         if collision:
@@ -66,6 +70,12 @@ class AllocatorIntegrationTest(unittest.TestCase):
 
     def test_test_channel_uses_same_allocator(self):
         self.run_allocator(branch="Buick-Test")
+
+    def test_buick_official_uses_shared_allocator(self):
+        self.run_allocator(branch="Buick")
+
+    def test_experiment_uses_fingerprinted_alias(self):
+        self.run_allocator(branch="experiment/buick-e5-updater-b-minimal")
 
     def test_conflict_retries_with_fresh_daily_sequence(self):
         self.run_allocator(collision=True)
