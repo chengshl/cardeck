@@ -47,8 +47,8 @@ def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     sha = os.environ["GITHUB_SHA"]
     branch = os.environ["GITHUB_REF_NAME"]
-    now = datetime.now(timezone.utc)
     for _ in range(12):
+        now = datetime.now(timezone.utc)
         refs = gh(f"repos/{repo}/git/matching-refs/tags/cardeck-build/v1")
         name, code, ref = choose_version([item["ref"] for item in refs], now, branch)
         try:
