@@ -1256,6 +1256,35 @@ object SessionController {
     // ---- 以下方法体自 MainActivity 原样迁入（会话逻辑不依赖 Activity）----
 
     /**
+     * Audio SETUP failed for every candidate: no negotiated audio stream exists.
+     * Revert only B233's already-declared main-audio claim, leaving the live
+     * screen session and normal Bluetooth A2DP untouched. Do not use this path
+     * for a missing MediaProjection permission (late authorization may recover),
+     * or for an audio stream that SETUP actually accepted.
+     */
+    private fun releaseB233UnnegotiatedAudioClaim(client: AirPlayClient, reason: String) {
+        val eligible = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.shouldReleaseUnnegotiatedAudioClaim(
+            isBuickB233 = client.currentEndpoint.isBuickB233,
+            audioEnabledForSession = audioEnabledForSession,
+            sameClient = currentClient === client,
+            cancelled = connectCancelled,
+            videoRunning = videoSender?.isRunning == true,
+            audioStreamNegotiated = false,
+        )
+        if (!eligible) return
+        // Mark video-only intent first: concurrent incoming changeModes must not
+        // reassert main audio just because the user initially enabled audio.
+        audioEnabledForSession = false
+        audioAutoDowngradedForSession = true
+        val transportOk = client.assertModes(claimAudioResource = false)
+        appendLog(
+            "AUDIO T83: all_audio_setup_failed; keep video/A2DP; " +
+                "video_only_modes_transport200=$transportOk; " +
+                "app_resource_acceptance=unverified reason=$reason",
+        )
+    }
+
+    /**
      * 音频通道（手机 → 车机，RTP over UDP）：SETUP type=100 协商 → 播放捕获 → ChaCha 封包推流。
      *
      * 依赖 MediaProjection（AudioPlaybackCapture 的授权来源），且需用户在「启动连接」
@@ -1397,6 +1426,7 @@ object SessionController {
             }
             if (ordered.isEmpty()) {
                 appendLog("AUDIO: 没有可用音频档位（候选=${candidates.map { it.label }}）——仅推视频")
+                releaseB233UnnegotiatedAudioClaim(client, "no_audio_candidates")
                 return false
             }
             appendLog(
@@ -1431,6 +1461,7 @@ object SessionController {
             val audio = streamInfo
             if (profile == null || audio == null) {
                 appendLog("AUDIO: 全部候选档位协商失败（共 ${ordered.size} 档）——本次仅推视频")
+                releaseB233UnnegotiatedAudioClaim(client, "all_audio_setups_rejected")
                 return false
             }
             val modernB233Timing =
