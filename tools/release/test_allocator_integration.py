@@ -25,8 +25,8 @@ class AllocatorIntegrationTest(unittest.TestCase):
             def fake_gh(*args, **kwargs):
                 calls.append(args)
                 if args[0].endswith("/releases/tags/buick-e5-latest"):
-                    return {"body": "versionName=previous\nversionCode=89133957\n"}
-                    if not invalid_legacy else {"body": "broken-release-body"}
+                    return ({"body": "versionName=previous\nversionCode=89133957\n"}
+                            if not invalid_legacy else {"body": "broken-release-body"})
                 if args[0].endswith("/releases/tags/buick-test-latest"):
                     return {"body": "versionCode=88944806\n"}
                 if args[0] == "--paginate":
