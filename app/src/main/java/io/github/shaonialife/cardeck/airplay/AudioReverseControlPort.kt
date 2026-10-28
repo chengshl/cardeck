@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.airplay
 
+import io.github.shaonialife.cardeck.audio.AudioFailureTrace
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.SocketException
@@ -15,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger
 internal class AudioReverseControlPort(
     private val bindNetwork: (DatagramSocket) -> Unit,
     private val log: (String) -> Unit,
+    private val failureTrace: AudioFailureTrace? = null,
 ) : AutoCloseable {
     @Volatile private var socket: DatagramSocket? = null
     private val received = AtomicInteger(0)
@@ -62,6 +64,7 @@ internal class AudioReverseControlPort(
         socket = datagram
         openedAtNanos = System.nanoTime()
         lastReceiveNanos = 0L
+        failureTrace?.event("reverse_rtcp_listening")
         log("AUDIO T73: 手机反向 RTCP UDP 已监听 localControlPort=${datagram.localPort}")
         Thread({
             val buffer = ByteArray(2_048)
@@ -115,6 +118,7 @@ internal class AudioReverseControlPort(
         val now = System.nanoTime()
         val activeMs = if (openedAtNanos == 0L) 0L else ((now - openedAtNanos) / 1_000_000L).coerceAtLeast(0L)
         val lastGap = if (lastReceiveNanos == 0L) "none" else ((now - lastReceiveNanos) / 1_000_000L).toString()
+        failureTrace?.event("reverse_rtcp_closed", "packets=${received.get()}")
         log("AUDIO T75: 手机反向 RTCP 监听关闭 elapsedMs=$activeMs received=${received.get()} lastGapMs=$lastGap")
     }
 }
