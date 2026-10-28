@@ -3,9 +3,10 @@ on:
   push:
     branches:
       - experiment/cardeck-rescue-standalone
-    paths-ignore:
-      - 'docs/**'
-      - 'AGENTS.md'
+    paths:
+      - 'app/src/**'
+      - 'app/build.gradle.kts'
+      - '.github/workflows/publish-rescue-standalone.yml'
   workflow_dispatch:
 concurrency:
   group: rescue-standalone-signed
