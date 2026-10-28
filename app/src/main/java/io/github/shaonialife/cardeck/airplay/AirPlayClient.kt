@@ -8,6 +8,7 @@ import android.os.SystemClock
 import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioSender
+import io.github.shaonialife.cardeck.audio.AudioFailureTrace
 import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.audio.BuickAudioTimingPolicy
 import io.github.shaonialife.cardeck.iap2.Iap2Csm
@@ -117,6 +118,9 @@ class AirPlayClient(
      * This is receive-only and does not re-enable T70's legacy 0xD4 sender.
      */
     @Volatile private var reverseAudioControlPort: AudioReverseControlPort? = null
+
+    /** T76 scoped to this AirPlay connection, not the global Test installation. */
+    @Volatile internal var audioFailureTrace: AudioFailureTrace? = null
 
     @Synchronized
     fun closeReverseAudioControlPort() {
@@ -470,6 +474,7 @@ class AirPlayClient(
                 } catch (error: IOException) {
                     if (endpoint.isBuickB233) {
                         log("AIRPLAY T62: B233 feedback 结束 #$sent 原因=${error.javaClass.simpleName}")
+                        audioFailureTrace?.event("feedback_error", "replies=$sent type=${error.javaClass.simpleName}")
                     }
                     break // 连接已断（会话结束）
                 }
@@ -514,6 +519,7 @@ class AirPlayClient(
     private fun isSessionAlive(): Boolean = socket?.isClosed == false
 
     fun close() {
+        audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
         runCatching { socket?.close() }
         socket = null
@@ -2599,6 +2605,7 @@ class AirPlayClient(
                 output.write(wire)
                 output.flush()
             } catch (error: Throwable) {
+                audioFailureTrace?.event("rtsp_write_error", "method=$method path=$path type=${error.javaClass.simpleName}")
                 pendingResponses.remove(cseq)
                 throw error
             }
@@ -2606,7 +2613,10 @@ class AirPlayClient(
         val response =
             try {
                 queue.poll(timeoutMillis.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
-                    ?: throw IOException("RTSP 超时（${timeoutMillis}ms，CSeq=$cseq $method $path）")
+                    ?: run {
+                        audioFailureTrace?.event("rtsp_reply_timeout", "method=$method path=$path cseq=$cseq")
+                        throw IOException("RTSP 超时（${timeoutMillis}ms，CSeq=$cseq $method $path）")
+                    }
             } catch (error: InterruptedException) {
                 Thread.currentThread().interrupt()
                 throw IOException("RTSP 被中断（CSeq=$cseq $method $path）")
@@ -2619,6 +2629,7 @@ class AirPlayClient(
             log("AIRPLAY: 慢应答 ${elapsed}ms（$method $path，CSeq=$cseq）——等待期间心跳未中断")
         }
         if (response.first == RTSP_CLOSED_MARK) {
+            audioFailureTrace?.event("rtsp_closed_reply", "method=$method path=$path cseq=$cseq")
             throw IOException("控制通道已关闭（CSeq=$cseq $method $path）")
         }
         lastRequestCSeq.set(cseq)
@@ -2652,7 +2663,10 @@ class AirPlayClient(
             val chunk = ByteArray(8192)
             while (true) {
                 val count = input.read(chunk)
-                if (count < 0) break
+                if (count < 0) {
+                    if (generation == readerGeneration) audioFailureTrace?.event("rtsp_peer_eof")
+                    break
+                }
                 val encryption = cipher
                 if (encryption != null && !encryptedMode) {
                     // 切换点：清掉明文侧残留，之后一律走帧解密
@@ -2682,10 +2696,12 @@ class AirPlayClient(
                     dispatchResponse(parsed.statusLine, parsed.body, parsed.head)
                 }
             }
-        } catch (_: IOException) {
+        } catch (error: IOException) {
+            if (generation == readerGeneration) audioFailureTrace?.event("rtsp_read_error", error.javaClass.simpleName)
         } finally {
             // 只由「当前」读线程清账：重连会换 socket 与新读线程，旧线程不得误伤新会话
             if (generation == readerGeneration) {
+                audioFailureTrace?.event("rtsp_reader_exit")
                 failAllPending("控制通道读线程结束")
             }
         }
