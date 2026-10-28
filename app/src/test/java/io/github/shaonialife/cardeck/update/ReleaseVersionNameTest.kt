@@ -11,6 +11,15 @@ class ReleaseVersionNameTest {
             ReleaseVersionName.display("versionName=20261028232557", "Buick-E5", 89133957))
     }
 
+    @Test fun buickAcceptsOfficialAndLegacyChannelNames() {
+        assertEquals("BUICK-261029004",
+            ReleaseVersionName.display("versionName=BUICK-261029004", "Buick", 89134004))
+        assertEquals("BUICK-261029004",
+            ReleaseVersionName.display("versionName=BUICK-261029004", "Buick-main", 89134004))
+        assertEquals("89134004",
+            ReleaseVersionName.display("versionName=E5-261029001", "Buick", 89134004))
+    }
+
     @Test fun testAcceptsSharedSequenceAndRejectsWrongChannel() {
         assertEquals("E5-TEST-261029002",
             ReleaseVersionName.display("versionName=E5-TEST-261029002", "Buick-Test", 89134002))
