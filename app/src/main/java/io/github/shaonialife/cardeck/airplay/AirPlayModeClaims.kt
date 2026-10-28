@@ -12,6 +12,24 @@ internal object AirPlayModeClaims {
     fun claimAudio(isBuickB233: Boolean, audioEnabledForSession: Boolean): Boolean =
         !isBuickB233 || audioEnabledForSession
 
+
+    /**
+     * B233 only: no audio stream was negotiated after all SETUP candidates were tried.
+     * The screen can remain live without claiming CarPlay main audio. A user intent to
+     * play audio is NOT proof that an audio stream exists. A late permission grant is
+     * NOT this terminal failure; it must retain its separate retry path.
+     */
+    fun shouldReleaseUnnegotiatedAudioClaim(
+        isBuickB233: Boolean,
+        audioEnabledForSession: Boolean,
+        sameClient: Boolean,
+        cancelled: Boolean,
+        videoRunning: Boolean,
+        audioStreamNegotiated: Boolean,
+    ): Boolean =
+        isBuickB233 && audioEnabledForSession && sameClient && !cancelled &&
+            videoRunning && !audioStreamNegotiated
+
     fun resources(claimAudio: Boolean): List<Map<String, Long>> {
         val screen = linkedMapOf(
             "resourceID" to 1L, "entity" to 1L, "permanentEntity" to 1L,
