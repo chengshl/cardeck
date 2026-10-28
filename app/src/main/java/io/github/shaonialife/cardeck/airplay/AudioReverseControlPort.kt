@@ -17,6 +17,8 @@ internal class AudioReverseControlPort(
     private val bindNetwork: (DatagramSocket) -> Unit,
     private val log: (String) -> Unit,
     private val failureTrace: AudioFailureTrace? = null,
+    /** T79: current audio sender's monotonic successful RTP count, if available. */
+    private val currentSentRtpCount: () -> Long? = { null },
 ) : AutoCloseable {
     @Volatile private var socket: DatagramSocket? = null
     private val received = AtomicInteger(0)
@@ -32,7 +34,8 @@ internal class AudioReverseControlPort(
             val version = (bytes[0].toInt() and 0xFF) ushr 6
             val packetType = bytes[1].toInt() and 0xFF
             val declaredBytes =
-                if (length >= 4) {
+                if (packetType == AudioRetransmitRequest.TYPE) null
+                else if (length >= 4) {
                     val words = ((bytes[2].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF)
                     (words + 1) * 4
                 } else {
@@ -84,11 +87,38 @@ internal class AudioReverseControlPort(
                     datagram.receive(packet)
                     lastReceiveNanos = System.nanoTime()
                     val n = received.incrementAndGet()
+                    val header = inspectHeader(buffer, packet.length)
                     if (n <= 8 || n % 30 == 0) {
-                        val header = inspectHeader(buffer, packet.length)
                         log("AUDIO T75: 反向RTCP包 #${n} size=${packet.length} " +
                             "version=${header?.version ?: -1} pt=${header?.packetType ?: -1} " +
-                            "declaredBytes=${header?.declaredBytes ?: -1}")
+                            (if (header?.packetType == AudioRetransmitRequest.TYPE)
+                                 "requestLayout=D5_not_RTCP_length"
+                             else "declaredBytes=${header?.declaredBytes ?: -1}"))
+                    }
+                    // T79: receive-only. requestSeq alone is never a deduplication key.
+                    // No media bytes, sender address or keys are captured or sent.
+                    if (header?.packetType == AudioRetransmitRequest.TYPE) {
+                        when (val decoded = AudioRetransmitRequest.inspect(buffer, packet.length)) {
+                            is AudioRetransmitRequest.Parse.Valid -> {
+                                val f = decoded.fields
+                                val sent = currentSentRtpCount()
+                                val coverage = AudioRetransmitRequest.coverage(f, sent)
+                                if (n <= 32 || n % 30 == 0) {
+                                    log("AUDIO T79: 反向重传请求 #$n requestSeq=${f.requestSeq} " +
+                                        "firstMissingSeq=${f.firstMissingSeq} count=${f.count} " +
+                                        "lastMissingSeq=${f.lastMissingSeq} seqWrap=${f.wrapsRtpSequence} " +
+                                        "sentCount=${sent ?: "unknown"} coverage=$coverage (未响应)")
+                                }
+                                failureTrace?.event("reverse_audio_resend_request",
+                                    "req=${f.requestSeq} first=${f.firstMissingSeq} count=${f.count} inSent=$coverage")
+                            }
+                            is AudioRetransmitRequest.Parse.Invalid -> {
+                                if (n <= 32 || n % 30 == 0) {
+                                    log("AUDIO T79: 反向0xD5报文 #$n 拒绝解析 reason=${decoded.reason} size=${packet.length}")
+                                }
+                                failureTrace?.event("reverse_audio_resend_invalid", decoded.reason)
+                            }
+                        }
                     }
                     reportWindow()
                 } catch (_: SocketTimeoutException) {
