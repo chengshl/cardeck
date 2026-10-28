@@ -103,7 +103,10 @@ jobs:
           set -euo pipefail
           python3 tools/release/allocate_version.py
           echo "SOURCE_BRANCH=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
-          # Keep the original minimum recovery-code guard in addition to all-release baseline.
+      - name: Verify original rollback floor
+        shell: bash
+        run: |
+          set -euo pipefail
           (( CARDECK_BUILD_VERSION_CODE > 89141443 ))
       - name: Build signed standalone collector APK
         run: ./gradlew :app:assembleRelease --stacktrace
