@@ -1,12 +1,23 @@
 package io.github.shaonialife.cardeck.update
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class UpdatePreferenceTest {
     @Test fun defaultsToFormalWithoutSavedPreference() {
         assertEquals(UpdatePreference.Channel.FORMAL, UpdatePreference.Channel.parse(null))
         assertEquals(UpdatePreference.Channel.FORMAL, UpdatePreference.Channel.parse("unsupported"))
+    }
+
+    @Test fun invalidProjectSourceNeverPersistsAsSelectedExperiment() {
+        assertNull(UpdatePreference.validProjectSource(null))
+        assertNull(UpdatePreference.validProjectSource(""))
+        assertNull(UpdatePreference.validProjectSource("Buick-Test"))
+        assertNull(UpdatePreference.validProjectSource("experiment/../../bad"))
+        assertNull(UpdatePreference.validProjectSource("experiment/BadCase"))
+        assertEquals("experiment/buick-test-t75-rtcp-observe",
+            UpdatePreference.validProjectSource("experiment/buick-test-t75-rtcp-observe"))
     }
 
     @Test fun parsesSelectedExperimentAndFormal() {
