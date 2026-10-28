@@ -13,6 +13,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import io.github.shaonialife.cardeck.update.BuickUpdater
+import io.github.shaonialife.cardeck.update.UpdatePreference
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -543,6 +545,11 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // Only a fresh app launch checks formal releases; returning from settings does not.
+        if (savedInstanceState == null && BuickUpdater.autoEnabled(this) &&
+            UpdatePreference.selected(this) == UpdatePreference.Channel.FORMAL) {
+            BuickUpdater.check(this, silent = true)
+        }
         // 旋转/重建：沿用原倒计时截止时刻（onResume 据此续弹）
         disclaimerDeadlineAt = savedInstanceState?.getLong(KEY_DISCLAIMER_DEADLINE, 0L) ?: 0L
 
