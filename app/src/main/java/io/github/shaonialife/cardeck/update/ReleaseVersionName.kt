@@ -5,6 +5,7 @@ internal object ReleaseVersionName {
     private val legacy = Regex("""[0-9]{14}""")
     private val e5 = Regex("""E5-[0-9]{9}""")
     private val test = Regex("""E5-TEST-[0-9]{9}""")
+    private val buick = Regex("""BUICK-[0-9]{9}""")
 
     /** 实验包的可见名称必须绑定实际 sourceBranch，不能伪装成另一实验项目。 */
     fun isExperimental(name: String, sourceBranch: String): Boolean {
@@ -21,6 +22,7 @@ internal object ReleaseVersionName {
         val allowed = legacy.matches(name) || when (branch) {
             "Buick-E5" -> e5.matches(name)
             "Buick-Test" -> test.matches(name)
+            "Buick", "Buick-main" -> buick.matches(name)
             else -> false
         }
         return if (allowed) name else fallbackCode.toString()
