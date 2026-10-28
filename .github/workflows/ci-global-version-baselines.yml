@@ -1,0 +1,25 @@
+name: Release allocator global baseline regression (#39)
+on:
+  push:
+    branches:
+      - fix/global-signed-release-baselines-39
+  pull_request:
+    branches: [Buick]
+    paths:
+      - 'tools/release/**'
+      - '.github/workflows/ci-global-version-baselines.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  allocator-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile allocator and tests
+        run: python3 -m compileall -q tools/release
+      - name: Run allocator and GitHub API simulation tests
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
