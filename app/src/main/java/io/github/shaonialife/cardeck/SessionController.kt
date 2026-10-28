@@ -527,7 +527,7 @@ object SessionController {
         sessionStarting.set(false)
         val hadProjection = CarPlayService.mediaProjection != null
         pendingEndpointUpdate = null
-        retireSession()
+        retireSession("user_disconnect")
         // BT 控制会话只在这里（用户终态）退役，socket close 让保活读循环立刻退出：
         // 否则它阻塞到对端超时（实测 ~24s）才结束，用户取消后英雄卡持续转圈。
         // 配对中绝不能断——DiPlay 在隧道 iAP2 就绪前看到 RFCOMM 断开即判
@@ -553,12 +553,12 @@ object SessionController {
 
     /** 会话结束/新周期开始前彻底退役上一代会话（旧管线泄漏会累积编码器/虚拟显示器，最终 dequeueBuffer -19）。 */
     @Synchronized
-    fun retireSession() {
+    fun retireSession(reason: String = "unspecified") {
         // E5 T38 fix: revoke ownership BEFORE stop/close triggers onEnded.
         val retiredVideo = videoSender
         videoSender = null
         val retiredClient = currentClient
-        retiredClient?.audioFailureTrace?.event("session_retire_requested")
+        retiredClient?.audioFailureTrace?.event("session_retire_requested", reason)
         currentClient = null
         retiredClient?.cancelled = true
         // T28: finish EGL producer before stopping/releasing MediaCodec input Surface.
@@ -2062,7 +2062,7 @@ object SessionController {
                                 appendLog("EVENT: 车机媒体键（iAP2 0x6802）→ keyCode=$keyCode 已注入")
                             }
                         }
-                    retireSession()
+                    retireSession("new_connection_prepare")
                     if (connectCancelled) {
                         appendLog("SESSION T7: 手动断开已生效，旧配对线程不能重新创建会话")
                         sessionStarting.set(false)
@@ -2620,7 +2620,7 @@ object SessionController {
                                                     }
                                                     // B233: release naturally ended streams as well.
                                                     if (client.currentEndpoint.isBuickB233) {
-                                                        retireSession()
+                                                        retireSession("video_on_ended")
                                                         if (b233AudioEnded) {
                                                             // Old iAP2 may remain alive after the
                                                             // AirPlay receiver has killed video and
