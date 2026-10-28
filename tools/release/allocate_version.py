@@ -45,6 +45,14 @@ def gh(*args, input_data=None):
     return json.loads(proc.stdout)
 
 
+def parse_release_code(body, tag):
+    """读取已发布 APK 的版本码；异常元数据禁止继续分配，防止覆盖降级。"""
+    match = re.search(r"(?m)^versionCode=(\d+)$", body or "")
+    if not match:
+        raise ValueError(f"发布 {tag} 缺失有效 versionCode，拒绝继续分配")
+    return int(match.group(1))
+
+
 def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     sha = os.environ["GITHUB_SHA"]
@@ -60,16 +68,16 @@ def main():
                 if "404" in (exc.stderr or ""):
                     continue
                 raise
-            match = re.search(r"^versionCode=(\\d+)$", release.get("body") or "", re.MULTILINE)
-            if match:
-                legacy_codes.append(int(match.group(1)))
+            legacy_codes.append(parse_release_code(release.get("body"), tag))
         # --paginate --slurp collects every page, including >100 historical builds.
         pages = gh("--paginate", "--slurp",
                    f"repos/{repo}/git/matching-refs/tags/cardeck-build/v1?per_page=100")
         refs = [item for page in pages for item in page]
         name, code, ref = choose_version([item["ref"] for item in refs], now, branch)
         code = max(code, max(legacy_codes, default=0) + 1)
-        ref = f"{PREFIX}{name.rsplit('-', 1)[-1]}-c{code}"
+        if not 300000 <= code <= 2100000000:
+            raise ValueError("历史发布版本码导致 Android versionCode 超限")
+        ref = f"{ref.rsplit('-c', 1)[0]}-c{code}"
         try:
             gh("-X", "POST", f"repos/{repo}/git/refs", "-f", f"ref={ref}", "-f", f"sha={sha}")
             break
