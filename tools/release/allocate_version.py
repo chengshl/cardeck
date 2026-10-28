@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 PREFIX = "refs/tags/cardeck-build/v1/"
 EPOCH = 1704067200
-ALIASES = {"Buick-E5": "E5", "Buick-Test": "E5-TEST", "Buick-main": "BUICK"}
+ALIASES = {"Buick-E5": "E5", "Buick-Test": "E5-TEST", "Buick-main": "BUICK", "Buick": "BUICK"}
 REF_RE = re.compile(r"^refs/tags/cardeck-build/v1/(\d{6})(\d{3})-c(\d+)$")
 
 
@@ -61,7 +61,7 @@ def main():
     for _ in range(12):
         now = datetime.now(timezone.utc)
         legacy_codes = []
-        for tag in ("buick-e5-latest", "buick-test-latest"):
+        for tag in ("buick-e5-latest", "buick-test-latest", "buick-latest", "buick-main-latest"):
             try:
                 release = gh(f"repos/{repo}/releases/tags/{tag}")
             except subprocess.CalledProcessError as exc:
