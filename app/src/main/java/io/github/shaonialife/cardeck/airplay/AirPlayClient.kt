@@ -1773,10 +1773,12 @@ class AirPlayClient(
         // T73: CatPlay transmitter first binds a local RTCP UDP socket, then
         // advertises ITS port in the outgoing audio SETUP. CarDeck previously
         // only read the receiver's (opposite-direction) controlPort response.
-        // Limit the experiment to the already-audible T71 B233 AAC media path.
+        // T89: extend ONLY the phone-local reverse RTCP port advertisement
+        // to B233 PCM/type100 media; do not change modern timestamp policy,
+        // classic RTCP sync, RTP, or other audio profiles.
         closeReverseAudioControlPort()
         val reversePort =
-            if (BuickAudioTimingPolicy.useModernSenderTiming(endpoint.isBuickB233, profile)) {
+            if (BuickAudioTimingPolicy.advertiseReverseControlPort(endpoint.isBuickB233, profile)) {
                 val network = vehicleNetwork
                 if (network == null) {
                     log("AUDIO T73: 未取得车机 WiFi Network；不启动缺失反向控制端口的音频")
