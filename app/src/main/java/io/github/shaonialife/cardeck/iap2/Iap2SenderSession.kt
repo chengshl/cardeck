@@ -401,8 +401,8 @@ class Iap2SenderSession(
         if (startSession != null) {
             log(
                 "iap2 rx=0x4301 airPlayPort=${endpoint.airPlayPort} " +
-                    "device=${endpoint.deviceIdentifier} publicKey=${endpoint.publicKey?.take(16)}… " +
-                    "srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses}",
+                    "deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()} publicKeyPresent=${!endpoint.publicKey.isNullOrBlank()} " +
+                    "srcvers=${endpoint.sourceVersion} ipCount=${endpoint.ipAddresses.size} (identifiers redacted)",
             )
         }
 
