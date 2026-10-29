@@ -20,10 +20,15 @@ internal class AudioReverseControlPort(
     /** T79: current audio sender's monotonic successful RTP count, if available. */
     private val currentSentRtpCount: () -> Long? = { null },
 ) : AutoCloseable {
-    @Volatile private var socket: DatagramSocket? = null
-    @Volatile private var received = AtomicInteger(0)
-    @Volatile private var openedAtNanos = 0L
-    @Volatile private var lastReceiveNanos = 0L
+    // Keep all timing/counters attached to the socket that owns them. A retired
+    // receive thread may resume after start() publishes a replacement listener.
+    private class ListenerSession(val datagram: DatagramSocket) {
+        val received = AtomicInteger(0)
+        val openedAtNanos = System.nanoTime()
+        @Volatile var lastReceiveNanos = 0L
+    }
+
+    @Volatile private var activeSession: ListenerSession? = null
 
     /** 仅解析头部；不存储音频控制报文负载、IP或设备标识。 */
     internal data class ControlHeader(val version: Int, val packetType: Int, val declaredBytes: Int?)
@@ -45,7 +50,7 @@ internal class AudioReverseControlPort(
         }
     }
 
-    val port: Int get() = socket?.takeUnless { it.isClosed }?.localPort ?: 0
+    val port: Int get() = activeSession?.datagram?.takeUnless { it.isClosed }?.localPort ?: 0
 
     @Synchronized
     fun start(): Int {
@@ -66,11 +71,8 @@ internal class AudioReverseControlPort(
         }
         // Each newly bound socket owns its own packet count. A retired receive
         // thread must not contaminate the next listener's T75 diagnostics.
-        val sessionReceived = AtomicInteger(0)
-        received = sessionReceived
-        socket = datagram
-        openedAtNanos = System.nanoTime()
-        lastReceiveNanos = 0L
+        val session = ListenerSession(datagram)
+        activeSession = session
         // Diagnostics are not allowed to leave an advertised UDP port with no
         // receive thread. If a startup callback throws, fail closed before SETUP.
         try {
@@ -78,7 +80,7 @@ internal class AudioReverseControlPort(
             log("AUDIO T73: 手机反向 RTCP UDP 已监听 localControlPort=${datagram.localPort}")
         } catch (_: Exception) {
             datagram.close()
-            socket = null
+            activeSession = null
             return 0
         }
         Thread({
@@ -87,22 +89,22 @@ internal class AudioReverseControlPort(
             fun reportWindow() {
                 // A retired receiver must not report a stale packet window using
                 // the replacement listener's openedAtNanos / lastReceiveNanos.
-                if (socket !== datagram || datagram.isClosed) return
+                if (activeSession !== session || datagram.isClosed) return
                 val now = System.nanoTime()
-                val elapsedSecond = ((now - openedAtNanos) / 1_000_000_000L).coerceAtLeast(0L)
+                val elapsedSecond = ((now - session.openedAtNanos) / 1_000_000_000L).coerceAtLeast(0L)
                 if (elapsedSecond < nextReportSecond || elapsedSecond > 30L) return
                 nextReportSecond = elapsedSecond + 1L
-                val last = lastReceiveNanos
+                val last = session.lastReceiveNanos
                 val gap = if (last == 0L) "none" else ((now - last) / 1_000_000L).toString()
-                log("AUDIO T75: 反向RTCP t=${elapsedSecond}s 接收累计=${sessionReceived.get()} 距最后接收=${gap}ms")
+                log("AUDIO T75: 反向RTCP t=${elapsedSecond}s 接收累计=${session.received.get()} 距最后接收=${gap}ms")
             }
             try {
                 while (!datagram.isClosed) {
                     try {
                         val packet = DatagramPacket(buffer, buffer.size)
                         datagram.receive(packet)
-                        lastReceiveNanos = System.nanoTime()
-                        val n = sessionReceived.incrementAndGet()
+                        session.lastReceiveNanos = System.nanoTime()
+                        val n = session.received.incrementAndGet()
                         val header = inspectHeader(buffer, packet.length)
                         if (n <= 8 || n % 30 == 0) {
                             log("AUDIO T75: 反向RTCP包 #${n} size=${packet.length} " +
@@ -162,7 +164,7 @@ internal class AudioReverseControlPort(
                 // start() raced with this old thread's cleanup.
                 datagram.close()
                 synchronized(this@AudioReverseControlPort) {
-                    if (socket === datagram) socket = null
+                    if (activeSession === session) activeSession = null
                 }
             }
         }, "b233-audio-rtcp-reverse").apply { isDaemon = true; start() }
@@ -172,13 +174,14 @@ internal class AudioReverseControlPort(
 
     @Synchronized
     override fun close() {
-        val active = socket ?: return
-        socket = null
-        active.close()
+        val active = activeSession ?: return
+        activeSession = null
+        active.datagram.close()
         val now = System.nanoTime()
-        val activeMs = if (openedAtNanos == 0L) 0L else ((now - openedAtNanos) / 1_000_000L).coerceAtLeast(0L)
-        val lastGap = if (lastReceiveNanos == 0L) "none" else ((now - lastReceiveNanos) / 1_000_000L).toString()
-        failureTrace?.event("reverse_rtcp_closed", "packets=${received.get()}")
-        log("AUDIO T75: 手机反向 RTCP 监听关闭 elapsedMs=$activeMs received=${received.get()} lastGapMs=$lastGap")
+        val activeMs = ((now - active.openedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        val last = active.lastReceiveNanos
+        val lastGap = if (last == 0L) "none" else ((now - last) / 1_000_000L).toString()
+        failureTrace?.event("reverse_rtcp_closed", "packets=${active.received.get()}")
+        log("AUDIO T75: 手机反向 RTCP 监听关闭 elapsedMs=$activeMs received=${active.received.get()} lastGapMs=$lastGap")
     }
 }
