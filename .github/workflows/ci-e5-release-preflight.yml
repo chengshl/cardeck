@@ -1,7 +1,7 @@
 name: Buick-E5 signed APK preflight regression (#39)
 on:
   push:
-    branches: [fix/e5-signed-apk-preflight-39]
+    branches: [fix/e5-signed-apk-preflight-39, fix/e5-live-published-apk-baseline-39]
   pull_request:
     branches: [Buick-E5]
     paths:
@@ -23,3 +23,47 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts -p 'test_e5_release_preflight.py' -v
       - name: Regress global E5 allocator and monotonic version codes
         run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
+
+  e5-official-asset-readonly:
+    # This job never builds or signs an APK: inspect the publicly published E5 baseline.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify official E5 APK + SHA256, Android metadata and certificate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="buick-e5-latest"
+          APK="CarDeck-Buick-E5.apk"
+          mkdir -p release-proof
+          gh release view "$TAG" --repo "$GH_REPO" --json body --jq '.body' > release-proof/notes.txt
+          gh release download "$TAG" --repo "$GH_REPO" --dir release-proof \
+            --pattern "$APK" --pattern "$APK.sha256"
+          test -s "release-proof/$APK"
+          test -s "release-proof/$APK.sha256"
+          (cd release-proof && sha256sum --check "$APK.sha256")
+          NAME="$(sed -n 's/^versionName=//p' release-proof/notes.txt | head -n 1)"
+          CODE="$(sed -n 's/^versionCode=//p' release-proof/notes.txt | head -n 1)"
+          BRANCH="$(sed -n 's/^branch=//p' release-proof/notes.txt | head -n 1)"
+          [[ "$NAME" =~ ^E5-[0-9]{9}$ ]] || { echo "::error::Invalid E5 display version"; exit 1; }
+          [[ "$CODE" =~ ^[0-9]+$ ]] || { echo "::error::Invalid E5 Android versionCode"; exit 1; }
+          test "$BRANCH" = "Buick-E5"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$AAPT" && test -x "$APKSIGNER"
+          BADGING="$("$AAPT" dump badging "release-proof/$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$NAME'" <<< "$BADGING"
+          "$APKSIGNER" verify --verbose --print-certs "release-proof/$APK" > release-proof/cert.txt
+          if grep -qi 'CN=Android Debug' release-proof/cert.txt; then
+            echo "::error::E5 published APK is debug-signed"
+            exit 1
+          fi
+          CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' release-proof/cert.txt | head -n 1)"
+          [[ "$CERT" =~ ^[[:xdigit:]]{64}$ ]] || { echo "::error::E5 signing certificate SHA-256 is missing"; exit 1; }
+          echo "Verified published E5 baseline: $NAME / code=$CODE / package and signing certificate present"
