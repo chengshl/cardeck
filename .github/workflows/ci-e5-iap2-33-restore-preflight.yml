@@ -1,0 +1,59 @@
+name: E5 #33 stable restore guard offline preflight (no signing)
+on:
+  push:
+    branches: [work/e5-iap2-ack-33-restore-prep-20261029]
+    paths:
+      - '.github/workflows/publish-e5-iap2-ack-33-stable-restore.yml'
+      - '.github/workflows/ci-e5-iap2-33-restore-preflight.yml'
+permissions:
+  contents: read
+jobs:
+  offline-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Parse recovery workflow and bash-check every shell block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+          python3 - <<'PY'
+          import pathlib, subprocess, yaml
+          p=pathlib.Path('.github/workflows/publish-e5-iap2-ack-33-stable-restore.yml')
+          doc=yaml.safe_load(p.read_text(encoding='utf-8'))
+          jobs=doc['jobs']
+          assert set(jobs)=={'signed-stable-runtime-recovery'}
+          steps=jobs['signed-stable-runtime-recovery']['steps']
+          shell_blocks=[s['run'] for s in steps if 'run' in s]
+          assert len(shell_blocks)>=8
+          for i,block in enumerate(shell_blocks):
+              check=subprocess.run(['bash','-n'],input=block,text=True,capture_output=True)
+              assert check.returncode==0, f'Bash block {i}: {check.stderr}'
+          text=p.read_text(encoding='utf-8')
+          required=[
+              "test \"$GITHUB_REF_NAME\" = \"$RECOVERY\"",
+              'test "$(git rev-parse HEAD~2)" = "$STABLE"',
+              'test "$(git rev-list --count "$STABLE"..HEAD)" = 2',
+              'test "$(git rev-parse FETCH_HEAD^{commit})" = "$EXP_COMMIT"',
+              'git merge-base --is-ancestor "$EXP_COMMIT" "origin/$EXP_SOURCE"',
+              'grep -Fq "$EXP_SOURCE" <<< "$EXP_RES"',
+              'sha256sum --check "$APK_NAME.sha256"',
+              '(( CARDECK_BUILD_VERSION_CODE > EXP_CODE && CARDECK_BUILD_VERSION_CODE > OFFICIAL_CODE ))',
+              "assert cert('new-cert.txt')==cert('official-cert.txt')==cert('experiment-cert.txt')",
+              'gh release create "$TAG" "$APK" "$APK.sha256"',
+              '--prerelease --latest=false',
+          ]
+          missing=[x for x in required if x not in text]
+          assert not missing, f'Recovery fail-closed gates missing: {missing}'
+          trigger=doc.get('on',doc.get(True))
+          assert trigger['push']['branches']==['experiment/buick-e5-iap2-ack-33-stable-restore']
+          assert trigger['push']['paths']==['.github/release-intents/e5-iap2-33-restore-sign.txt']
+          assert doc['concurrency']['cancel-in-progress'] is False
+          print('Recovery release workflow parsed; bash syntax and critical gates verified')
+          PY
+      - name: Run existing global release allocator regression suite
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
