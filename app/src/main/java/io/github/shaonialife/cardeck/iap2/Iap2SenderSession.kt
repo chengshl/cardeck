@@ -250,9 +250,9 @@ class Iap2SenderSession(
                         Iap2Csm.u8(0, 1),
                         Iap2Csm.string(1, bluetoothMac),
                     )
-            log("iap2 Buick/GM T17: 0x4300 双参数结构，deviceId=${carPlayDeviceIdentifier()} bodyBytes=${availabilityBody.size} frameBytes=${availabilityBody.size + 6}")
-            val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
-            log("iap2 Buick/GM T10: 0x4300 参数字节数=${availabilityBody.size}，编码=${availabilityFrame.joinToString("") { "%02x".format(it) }}")
+            log("iap2 Buick/GM T17: 0x4300 双参数结构，bodyBytes=${availabilityBody.size} frameBytes=${availabilityBody.size + 6} (identifiers redacted)")
+            // Never log the encoded 0x4300 body: it contains the device identifier and Bluetooth MAC.
+            log("iap2 Buick/GM T10: 0x4300 参数字节数=${availabilityBody.size} (payload redacted)")
             log("iap2 Buick/GM T10: 车机收到 0x4300 的链路 ACK 不等于 CarPlay 会话接受")
             log("iap2 Buick/GM T20: 0x4300 发送与 ACK 为异步事件；不能将 send() 返回视为链路确认")
             send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
@@ -306,7 +306,7 @@ class Iap2SenderSession(
                 }
             }
             val endpoint = parseStartSession(start, WifiConfiguration("", "", 0, 0))
-            log("iap2 Buick/GM T19: parsed ssid=${endpoint.ssid} passwordPresent=${endpoint.passphrase.isNotEmpty()} port=${endpoint.airPlayPort} device=${endpoint.deviceIdentifier} srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()}")
+            log("iap2 Buick/GM T19: parsed ssidPresent=${endpoint.ssid.isNotBlank()} passwordPresent=${endpoint.passphrase.isNotEmpty()} port=${endpoint.airPlayPort} deviceIdPresent=${endpoint.deviceIdentifier.isNotBlank()} srcvers=${endpoint.sourceVersion} ipCount=${endpoint.ipAddresses.size} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()} (identifiers redacted)")
             if (endpoint.ssid.isBlank()) {
                 throw IOException("Buick T19: 0x4301 未包含有效 SSID，拒绝空热点进入后续配对")
             }
