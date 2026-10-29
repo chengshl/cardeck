@@ -251,14 +251,16 @@ class VideoSender(
         output.flush()
         // Reuse this existing 1-second tick; do not add a watchdog thread or recovery action.
         val evidence = videoFrameDiagnostics
-        when (evidence?.keepAliveFlushed(now)) {
-            VideoFrameDiagnostics.Signal.NO_FIRST_FRAME_6S ->
-                log("VIDEO DIAG #28: NO_FIRST_FRAME_6S encoderAgeMs=${evidence.ageMs(now)} " +
-                    "keepAliveOk=true frameCount=$framesSent (observe-only; no teardown)")
-            VideoFrameDiagnostics.Signal.NO_FRAMES_15S ->
-                log("VIDEO DIAG #28: NO_FRAMES_15S frameGapMs=${evidence.gapMs(now)} " +
-                    "frameCount=$framesSent (observe-only; no reconnect)")
-            else -> Unit
+        if (evidence != null) {
+            when (evidence.keepAliveFlushed(now)) {
+                VideoFrameDiagnostics.Signal.NO_FIRST_FRAME_6S ->
+                    log("VIDEO DIAG #28: NO_FIRST_FRAME_6S encoderAgeMs=${evidence.ageMs(now)} " +
+                        "keepAliveOk=true frameCount=$framesSent (observe-only; no teardown)")
+                VideoFrameDiagnostics.Signal.NO_FRAMES_15S ->
+                    log("VIDEO DIAG #28: NO_FRAMES_15S frameGapMs=${evidence.gapMs(now)} " +
+                        "frameCount=$framesSent (observe-only; no reconnect)")
+                else -> Unit
+            }
         }
         if (keepAliveCount <= 3 || keepAliveCount % 30 == 0L) {
             log(
@@ -371,7 +373,7 @@ class VideoSender(
         // This event proves only a successful application-side flush, not car-side decoding.
         val now = android.os.SystemClock.uptimeMillis()
         val evidence = videoFrameDiagnostics
-        if (evidence?.frameFlushed(now) == VideoFrameDiagnostics.Signal.FIRST_FRAME_FLUSHED) {
+        if (evidence != null && evidence.frameFlushed(now) == VideoFrameDiagnostics.Signal.FIRST_FRAME_FLUSHED) {
             log("VIDEO DIAG #28: FIRST_FRAME_FLUSHED encoderAgeMs=${evidence.ageMs(now)} " +
                 "(receiver/display not verified)")
         }
