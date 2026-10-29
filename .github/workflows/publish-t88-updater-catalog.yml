@@ -1,0 +1,91 @@
+name: T88 signed APK updater catalog compatibility
+on:
+  push:
+    branches:
+      - experiment/buick-test-t88-peer-request-evidence
+    paths:
+      - '.github/workflows/publish-t88-updater-catalog.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: publish-t88-updater-catalog
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify alias contains exactly signed T88 application source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE=4eedb7f5c42bdddb3bb23a73146c10b42f29829f
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-t88-peer-request-evidence"
+          git merge-base --is-ancestor "$SOURCE" "$GITHUB_SHA"
+          DIFF="$(git diff --name-only "$SOURCE" "$GITHUB_SHA")"
+          test "$DIFF" = '.github/workflows/publish-t88-updater-catalog.yml'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/40844624273" --jq '.conclusion')" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/exp-buick-test-t88-20261029165129" --jq '.prerelease')" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/exp-buick-test-t88-20261029165129" --jq '.target_commitish')" = "$SOURCE"
+      - name: Verify original signed T88 APK, checksum, package and T85 certificate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/t88" "$RUNNER_TEMP/t85"
+          gh release download exp-buick-test-t88-20261029165129 --repo "$GITHUB_REPOSITORY" \
+            --pattern 'CarDeck-Buick-Test-T88-PEER-RTSP-EVIDENCE.apk*' --dir "$RUNNER_TEMP/t88"
+          gh release download exp-buick-test-t85-20261029080409 --repo "$GITHUB_REPOSITORY" \
+            --pattern 'CarDeck-Buick-Test-T85-DELAYED-AUDIO-CLAIM.apk' --dir "$RUNNER_TEMP/t85"
+          cp "$RUNNER_TEMP/t88/"* .
+          APK=CarDeck-Buick-Test-T88-PEER-RTSP-EVIDENCE.apk
+          test -s "$APK" && test -s "$APK.sha256"
+          sha256sum -c "$APK.sha256"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='io.github.buick.test.cardeck'" |
+            grep -F "versionCode='89196689'" | grep -F "versionName='20261029165129'"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/t88cert"
+          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/t85/CarDeck-Buick-Test-T85-DELAYED-AUDIO-CLAIM.apk" > "$RUNNER_TEMP/t85cert"
+          NEW="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t88cert" | head -n 1)"
+          OLD="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t85cert" | head -n 1)"
+          test -n "$NEW" && test "$NEW" = "$OLD"
+          ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/t88cert"
+          test 89196689 -gt 89165049
+      - name: Publish unchanged T88 APK via updater-visible alias (prerelease)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG=exp-buick-test-t88-catalog-20261029165129
+          APK=CarDeck-Buick-Test-T88-PEER-RTSP-EVIDENCE.apk
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-t88-peer-request-evidence"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Refusing to overwrite existing tag"; exit 1
+          fi
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\n'
+            printf 'sourceBranch=experiment/buick-test-t88-peer-request-evidence\n'
+            printf 'applicationId=io.github.buick.test.cardeck\n'
+            printf 'versionName=20261029165129\nversionCode=89196689\n'
+            printf 'builtAt=2026-10-29T08:52:39Z\n'
+            printf 'apkName=%s\n' "$APK"
+            printf 'commit=4eedb7f5c42bdddb3bb23a73146c10b42f29829f\n'
+            printf '\n## Update catalog compatibility alias, not a new APK build or CarPlay fix\n'
+            printf 'Identical APK and SHA256 to original signed T88 prerelease exp-buick-test-t88-20261029165129. The old Test updater accepts experiment/buick-test-* source branches; this actual alias branch descends from original T88 source with NO app source changes. To opt in, select the T88 project in Update Center once; this never changes previous user subscriptions silently. T88 only diagnoses RTSP peer requests/TEARDOWN/CSeq collisions and does not repair the 20-second EOF.\n'
+            printf '\n## Parked car one-time diagnostic and rollback\n'
+            printf 'From installed T85, select Experiment channel > Change experiment project > T88; check update and install T88 without uninstalling/clearing data. Play CarPlay audio while safely parked until the session fails or exceeds 40 seconds. If it still fails near 20 seconds do not repeat; analyze the existing Gateway uploaded redacted logs. Full P0 success requires 3 runs >=3min plus stable video/touch/reconnection. Lower-version T85 cannot be installed over T88 without data loss; distinct E5 stable package remains independent.\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target 4eedb7f5c42bdddb3bb23a73146c10b42f29829f \
+            --title "Buick-Test T88 更新中心兼容预发布 20261029165129" \
+            --notes-file release-notes.txt --prerelease --latest=false
