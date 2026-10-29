@@ -81,7 +81,8 @@ internal class AudioReverseControlPort(
                 val gap = if (last == 0L) "none" else ((now - last) / 1_000_000L).toString()
                 log("AUDIO T75: 反向RTCP t=${elapsedSecond}s 接收累计=${received.get()} 距最后接收=${gap}ms")
             }
-            while (!datagram.isClosed) {
+            try {
+                while (!datagram.isClosed) {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
                     datagram.receive(packet)
@@ -134,6 +135,15 @@ internal class AudioReverseControlPort(
                         log("AUDIO T73: 反向 RTCP 接收异常：${error.javaClass.simpleName}")
                     }
                     break
+                }
+                }
+            } finally {
+                // A receive-thread exception must not leave a bound but unread
+                // UDP port advertised as live. Never clear a newer socket if
+                // start() raced with this old thread's cleanup.
+                datagram.close()
+                synchronized(this@AudioReverseControlPort) {
+                    if (socket === datagram) socket = null
                 }
             }
         }, "b233-audio-rtcp-reverse").apply { isDaemon = true; start() }
