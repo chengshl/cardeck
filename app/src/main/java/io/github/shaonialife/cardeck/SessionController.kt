@@ -1675,11 +1675,14 @@ object SessionController {
             return
         }
         if (currentClient?.currentEndpoint?.isBuickB233 == true) {
-            // This specific failure was a non-ACKed 0x5001 CSM whose LOCAL
-            // 4s x 5 retransmit watchdog died at +20s; AUDIO ECONNREFUSED
-            // occurred afterwards. Don't label PCM/AAC incompatible based
-            // on this session-level failure. Explicit sync-port refusal is
-            // still handled and remembered by the onSyncPortRefused callback.
+            // A short B233 session is not evidence that PCM/AAC is incompatible.
+            // A historical run involved a non-ACKed 0x5001 CSM watchdog, but
+            // that cause must NOT be generalized: T85 PCM audio still had
+            // advancing receiver sampleTime, event ACKs and feedback when
+            // RTSP reached EOF at first-RTP +20.215s. Its 0x5001 occurrence
+            // in logs was a capability declaration, NOT proof of a 0x5001
+            // retransmission failure. Do not blacklist codecs on this basis.
+            // Explicit sync-port refusal remains handled separately.
             appendLog(
                 "AUDIO T11: B233 会话仅存活 ${lived / 1000}s；" +
                     "未证明音频格式不兼容，不写入音频档位黑名单",
