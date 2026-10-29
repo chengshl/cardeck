@@ -215,6 +215,61 @@ class AudioReverseControlPortTest {
         assertEquals(0, listener.port)
     }
 
+    /**
+     * A receive callback can still be running after close() and a fresh start().
+     * Its old packet must not be reported against the replacement's timing
+     * window. Synthetic loopback only; does not validate VPN network binding.
+     */
+    @Test
+    fun retiredReceiverDoesNotReportWindowForReplacementSession() {
+        val oldPacketLogEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseOldPacketLog = java.util.concurrent.CountDownLatch(1)
+        val oldWindowReports = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("反向RTCP包 #1")) {
+                    oldPacketLogEntered.countDown()
+                    check(releaseOldPacketLog.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        "old packet callback was not released"
+                    }
+                }
+                if (line.contains("反向RTCP t=") && line.contains("接收累计=1")) {
+                    oldWindowReports.add(line)
+                }
+            },
+        )
+        try {
+            val oldPort = listener.start()
+            assertTrue(oldPort in 1..65535)
+            val packet = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(java.net.DatagramPacket(
+                    packet, packet.size, java.net.InetAddress.getByName("127.0.0.1"), oldPort,
+                ))
+            }
+            assertTrue("old receive callback must block", oldPacketLogEntered.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+            listener.close()
+            val newPort = listener.start()
+            assertTrue(newPort in 1..65535)
+            // Allow the replacement's monotonic window to advance past 1s.
+            // The retired thread would otherwise log its old count as t=1s.
+            Thread.sleep(1_250)
+            releaseOldPacketLog.countDown()
+            Thread.sleep(200)
+            assertTrue(
+                "retired receiver must not emit a window against replacement timing",
+                oldWindowReports.isEmpty(),
+            )
+            assertEquals(newPort, listener.port)
+        } finally {
+            releaseOldPacketLog.countDown()
+            listener.close()
+        }
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
