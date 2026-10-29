@@ -76,6 +76,9 @@ class VideoSender(
     private var bytesSinceKeepAlive = 0L
     private var keepAliveCount = 0L
 
+    /** #28: observation only; a keepAlive/RTSP 200 is not evidence of an output video frame. */
+    private var videoFrameDiagnostics: VideoFrameDiagnostics? = null
+
     @Volatile
     private var framesSent = 0L
 
@@ -147,6 +150,7 @@ class VideoSender(
             inputSurface = surface
             running.set(true)
             lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
+            videoFrameDiagnostics = VideoFrameDiagnostics(lastKeepAliveAt)
 
             onSurfaceReady(surface)
 
@@ -245,6 +249,17 @@ class VideoSender(
         val frame = buildKeepAliveFrame(keepAliveWithStats, frames, bytesPerSecond, framesPerSecond)
         output.write(frame)
         output.flush()
+        // Reuse this existing 1-second tick; do not add a watchdog thread or recovery action.
+        val evidence = videoFrameDiagnostics
+        when (evidence?.keepAliveFlushed(now)) {
+            VideoFrameDiagnostics.Signal.NO_FIRST_FRAME_6S ->
+                log("VIDEO DIAG #28: NO_FIRST_FRAME_6S encoderAgeMs=${evidence.ageMs(now)} " +
+                    "keepAliveOk=true frameCount=$framesSent (observe-only; no teardown)")
+            VideoFrameDiagnostics.Signal.NO_FRAMES_15S ->
+                log("VIDEO DIAG #28: NO_FRAMES_15S frameGapMs=${evidence.gapMs(now)} " +
+                    "frameCount=$framesSent (observe-only; no reconnect)")
+            else -> Unit
+        }
         if (keepAliveCount <= 3 || keepAliveCount % 30 == 0L) {
             log(
                 "VIDEO: keepAlive #$keepAliveCount " +
@@ -353,6 +368,13 @@ class VideoSender(
         output.write(sealed)
         output.flush()
         framesSent++
+        // This event proves only a successful application-side flush, not car-side decoding.
+        val now = android.os.SystemClock.uptimeMillis()
+        val evidence = videoFrameDiagnostics
+        if (evidence?.frameFlushed(now) == VideoFrameDiagnostics.Signal.FIRST_FRAME_FLUSHED) {
+            log("VIDEO DIAG #28: FIRST_FRAME_FLUSHED encoderAgeMs=${evidence.ageMs(now)} " +
+                "(receiver/display not verified)")
+        }
         framesSinceKeepAlive++
         bytesSinceKeepAlive += plain.size.toLong()
         if (keyFrame || framesSent <= 3 || framesSent % 150 == 0L) {
