@@ -23,6 +23,21 @@ class RtspPeerRequestEvidenceTest {
         )
     }
 
+    @Test fun cseqCollisionEvidenceCoversOtherRequestsWithoutLeakingTarget() {
+        val target = "rtsp://receiver.invalid/private-session"
+        val kind = RtspPeerRequestEvidence.classify("SET_PARAMETER $target RTSP/1.0")
+        assertEquals(RtspPeerRequestEvidence.Kind.OTHER_REQUEST, kind)
+        val summary = RtspPeerRequestEvidence.diagnosticTag(kind, true)
+        assertEquals("kind=OTHER_REQUEST pendingCseqMatch=true", summary)
+        assertEquals(null, RtspPeerRequestEvidence.diagnosticTag(
+            RtspPeerRequestEvidence.Kind.RESPONSE_OR_UNKNOWN, true,
+        ))
+        assertEquals(
+            "kind=TEARDOWN pendingCseqMatch=false",
+            RtspPeerRequestEvidence.diagnosticTag(RtspPeerRequestEvidence.Kind.TEARDOWN, false),
+        )
+    }
+
     @Test fun responsesAndMalformedLinesCannotInventPeerTeardown() {
         val notRequests = listOf(
             "RTSP/1.0 200 OK",
