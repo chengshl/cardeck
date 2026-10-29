@@ -41,6 +41,7 @@ jobs:
           assert 'parsed ssid=${endpoint.ssid}' not in new
           assert 'ips=${endpoint.ipAddresses}' not in new
           assert 'device=${endpoint.deviceIdentifier}' not in new
+          assert 'publicKey=${endpoint.publicKey?.take(16)}' not in new
           assert 'send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)' in new
           assert '0x4300 已交给链路发送队列' in new
           assert 'start4301=' in new
@@ -62,7 +63,11 @@ jobs:
                   'Never log the encoded 0x4300 body' in line or
                   'log("iap2 0x1d01 原始体' in line or
                   'log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC' in line or
-                  'Identification may include receiver-specific identifiers' in line
+                  'Identification may include receiver-specific identifiers' in line or
+                  'device=${endpoint.deviceIdentifier} publicKey=' in line or
+                  'deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()} publicKeyPresent=' in line or
+                  'srcvers=${endpoint.sourceVersion} ips=' in line or
+                  'srcvers=${endpoint.sourceVersion} ipCount=' in line
               )]
               return '\n'.join(lines)
           assert drop_logs(old) == drop_logs(new), 'unexpected non-log iAP2 behavior diff'
