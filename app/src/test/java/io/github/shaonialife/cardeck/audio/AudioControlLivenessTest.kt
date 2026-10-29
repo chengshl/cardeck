@@ -33,6 +33,19 @@ class AudioControlLivenessTest {
         assertTrue(s.contains("sampleAdvance=1 sampleStall=1"))
     }
 
+    @Test fun missingAndMalformedClocksDoNotInventStallsOrAdvances() {
+        val health = AudioControlLiveness { 2_000_000_000L }
+        health.onFeedback(null)
+        health.onFeedback(-1L)
+        health.onFeedback(0L)
+        health.onFeedback(null)
+        health.onFeedback(48_384L)
+        val s = health.summary()
+        assertTrue(s.contains("feedback=5"))
+        assertTrue(s.contains("sampleFirst=0 sampleLast=48384"))
+        assertTrue(s.contains("sampleAdvance=1 sampleStall=0"))
+    }
+
     @Test fun playbackClockResetIsNotFalselyReportedAsStall() {
         var now = 7_000_000_000L
         val health = AudioControlLiveness { now }
