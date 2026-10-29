@@ -180,6 +180,18 @@ class Iap2LinkEngineTest {
         assertTrue("seq 109 must remain eligible for retry", retry.size > Iap2LinkEngine.HEADER_BYTES)
         assertEquals(109, retry[5].toInt() and 0xFF)
         assertFalse(phone.isDead)
+
+        // A legitimate ACK arriving after invalid ACKs must still release the
+        // outstanding frame. Rejecting bad ACKs must not deadlock normal progress.
+        val progress = mutableListOf<Pair<String, String>>()
+        phone.onAcknowledgementProgress = { _, pendingBefore, pendingAfter ->
+            progress += pendingBefore to pendingAfter
+        }
+        phone.feed(ackOnly(109), tick())
+        assertTrue("valid ACK109 must confirm pending 109", progress.any { it.first == "109" && it.second.isEmpty() })
+        phone.advanceTime(20_000L)
+        assertTrue("confirmed 109 must not be retransmitted", phone.takeOutput().isEmpty())
+        assertFalse(phone.isDead)
     }
 
     @Test
@@ -209,6 +221,18 @@ class Iap2LinkEngineTest {
         val retry = phone.takeOutput()
         assertTrue("wrapped seq 0 must remain eligible for retry", retry.size > Iap2LinkEngine.HEADER_BYTES)
         assertEquals(0, retry[5].toInt() and 0xFF)
+        assertFalse(phone.isDead)
+
+        // After the rejected ACK1, the real cumulative ACK0 must be accepted
+        // across 255 -> 0 and stop further retransmissions.
+        val progress = mutableListOf<Pair<String, String>>()
+        phone.onAcknowledgementProgress = { _, pendingBefore, pendingAfter ->
+            progress += pendingBefore to pendingAfter
+        }
+        phone.feed(ackOnly(0), tick())
+        assertTrue("valid ACK0 must confirm wrapped pending 0", progress.any { it.first == "0" && it.second.isEmpty() })
+        phone.advanceTime(20_000L)
+        assertTrue("confirmed seq0 must not be retransmitted", phone.takeOutput().isEmpty())
         assertFalse(phone.isDead)
     }
 
