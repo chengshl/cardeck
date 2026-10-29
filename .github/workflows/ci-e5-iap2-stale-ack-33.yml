@@ -48,6 +48,10 @@ jobs:
           tests = Path(test).read_text()
           assert 'staleAckCannotConfirmPending109OrSuppressRetransmission' in tests
           assert 'futureAckAcrossSequenceWrapCannotSuppressRetry' in tests
+          # A bogus ACK must not free the send window and leak queued CSM packets.
+          assert 'invalidAckMustNotDrainQueuedControlFrame' in tests
+          assert 'invalid ACKs must not flush seq102' in tests
+          assert 'valid ACK must release the queued frame' in tests
           assert 'phone.feed(ackOnly(110), tick())' in tests
           assert 'phone.feed(ackOnly(1), tick())' in tests
           # Invalid ACKs must not poison later legitimate ACK progression.
