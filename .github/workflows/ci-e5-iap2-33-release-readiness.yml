@@ -165,7 +165,7 @@ jobs:
           if not reports:
               raise SystemExit('Lint failed without XML report')
           issues = [x for x in ET.parse(reports[-1]).getroot().findall('issue') if x.get('severity','').lower() in ('error','fatal')]
-          changed = ('Iap2LinkEngine.kt',)
+          changed = ('Iap2LinkEngine.kt', 'ExperimentProjectCatalog.kt')
           new = [x.get('id') for x in issues if any((loc.get('file') or '').endswith(changed) for loc in x.findall('location'))]
           print(f'Inherited/unrelated Lint errors: {len(issues)-len(new)}; changed-source errors: {len(new)}')
           if new:
