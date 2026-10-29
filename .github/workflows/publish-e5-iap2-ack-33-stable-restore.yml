@@ -62,6 +62,14 @@ jobs:
           grep -Fxq 'updaterSchema=2' <<< "$EXP"
           grep -Fxq 'baseBranch=Buick-E5' <<< "$EXP"
           grep -Fxq "sourceBranch=$EXP_SOURCE" <<< "$EXP"
+          # Bind release metadata to the actual immutable tag target; text-only
+          # sourceBranch claims must not authorize a data-preserving recovery.
+          EXP_COMMIT="$(sed -n 's/^commit=//p' <<< "$EXP" | head -n 1)"
+          [[ "$EXP_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "refs/tags/$EXP_TAG"
+          test "$(git rev-parse FETCH_HEAD^{commit})" = "$EXP_COMMIT"
+          git fetch --no-tags origin "$EXP_SOURCE"
+          git merge-base --is-ancestor "$EXP_COMMIT" "origin/$EXP_SOURCE"
           EXP_CODE="$(sed -n 's/^versionCode=//p' <<< "$EXP" | head -n 1)"
           [[ "$EXP_CODE" =~ ^[0-9]+$ ]]
           (( EXP_CODE > OFFICIAL_CODE ))
@@ -144,6 +152,11 @@ jobs:
           EXP_BADGING="$("$AAPT" dump badging "$RUNNER_TEMP/experiment/CarDeck-Buick-E5-IAP2-ACK-Guard.apk")"
           grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$EXP_BADGING"
           grep -Fq "versionCode='$EXP_CODE'" <<< "$EXP_BADGING"
+          # Inspect the APK's embedded build origin, not only editable Release
+          # notes. Do not accept an unrelated same-package signed APK.
+          EXP_RES="$("$AAPT" dump --values resources "$RUNNER_TEMP/experiment/CarDeck-Buick-E5-IAP2-ACK-Guard.apk")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$EXP_RES"
+          grep -Fq "$EXP_SOURCE" <<< "$EXP_RES"
           BADGING="$("$AAPT" dump badging "$APK")"
           grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
           grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
