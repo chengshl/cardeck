@@ -117,6 +117,51 @@ class AudioReverseControlPortTest {
         assertEquals(0, second.port)
     }
 
+    /**
+     * T89 offline socket-path preflight: verify the receive-only listener
+     * actually accepts a synthetic RTCP datagram on its advertised port.
+     * Loopback success is NOT proof that Android Network.bindSocket succeeds
+     * on the B233 Wi-Fi network when a user VPN is active.
+     */
+    @Test
+    fun t89LoopbackDatagramReachesReceiveOnlyListener() {
+        val received = java.util.concurrent.CountDownLatch(1)
+        val lines = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                lines.add(line)
+                if (line.contains("反向RTCP包 #1")) received.countDown()
+            },
+        )
+        val port = listener.start()
+        try {
+            assertTrue("local listener must bind an ephemeral port", port in 1..65535)
+            val packet = ByteArray(32)
+            packet[0] = 0x80.toByte()
+            packet[1] = 0xD3.toByte()
+            packet[3] = 0x07 // RTCP length: (7 + 1) * 4 = 32 bytes
+            java.net.DatagramSocket().use { sender ->
+                sender.send(
+                    java.net.DatagramPacket(
+                        packet,
+                        packet.size,
+                        java.net.InetAddress.getByName("127.0.0.1"),
+                        port,
+                    ),
+                )
+                assertTrue(
+                    "local reverse UDP datagram must reach receive-only listener",
+                    received.await(3, java.util.concurrent.TimeUnit.SECONDS),
+                )
+            }
+            assertTrue(lines.any { it.contains("pt=211") && it.contains("declaredBytes=32") })
+        } finally {
+            listener.close()
+        }
+        assertEquals(0, listener.port)
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
