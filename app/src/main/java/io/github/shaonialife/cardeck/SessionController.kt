@@ -1272,6 +1272,8 @@ object SessionController {
             audioSetupMayHaveCreatedStream = client.audioSetupMayHaveCreatedStream,
         )
         if (!eligible) return
+        // T85: disarm per-client mainAudio before switching back to video-only.
+        client.b233AudioClaimPrepared = false
         // Mark video-only intent first: concurrent incoming changeModes must not
         // reassert main audio just because the user initially enabled audio.
         audioEnabledForSession = false
@@ -1434,6 +1436,26 @@ object SessionController {
                     "（本车机记忆：${AudioProfileMemory.describe(entry)}；" +
                     "封装=${tuning.detail}）",
             )
+            // T85: in B233 only, claim mainAudio just before the first actual
+            // audio SETUP, NOT during initial screen/session SETUP. Screen RECORD
+            // and initial visual mode are unchanged, as are PCM/AAC and RTP/RTCP.
+            // This is an unverified L3 timing hypothesis, not a protocol fix.
+            if (client.currentEndpoint.isBuickB233) {
+                client.b233AudioClaimPrepared = true
+                val transportOk = client.assertModes(claimAudioResource = true)
+                appendLog(
+                    "AUDIO T85: delayed_mainAudio_claim before_audio_setup " +
+                        "rtsp_transport200=$transportOk app_resource_acceptance=unverified",
+                )
+                if (!transportOk) {
+                    // Uncertain control response: do not risk creating a new
+                    // audio stream; retain established video without retrying
+                    // or sending a compensating modesChanged on this path.
+                    client.b233AudioClaimPrepared = false
+                    appendLog("AUDIO T85: mainAudio declaration unconfirmed; skip audio SETUP, keep video")
+                    return false
+                }
+            }
             // SETUP 失败不会扰动会话（车机只是不接这条流的请求），所以本会话内就把候选
             // 试完，不必等下一次连接。这一点对当前场景很关键：102/AAC-LC 与 100/PCM 是
             // 两条完全不同的通路，前者不被接受时应当立刻退到后者，而不是让用户白连一次。
@@ -2420,6 +2442,7 @@ object SessionController {
                                         val claimAudio = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
                                             client.currentEndpoint.isBuickB233,
                                             audioEnabledForSession,
+                                            b233AudioClaimPrepared = client.b233AudioClaimPrepared,
                                         )
                                         appendLog(
                                             "EVENT T26: 车机请求 changeModes → 回 modesChanged；" +
@@ -2451,6 +2474,7 @@ object SessionController {
                             val claimAudioForCarPlay = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
                                 client.currentEndpoint.isBuickB233,
                                 audioEnabledForSession,
+                                b233AudioClaimPrepared = client.b233AudioClaimPrepared,
                             )
                             appendLog(
                                 "AIRPLAY T26: resource experiment B233=" +
