@@ -192,7 +192,7 @@ class Iap2SenderSession(
                 mac.equals("02:00:00:00:00:00", ignoreCase = true) ||
                 mac.equals("00:00:00:00:00:00", ignoreCase = true)
             ) {
-                log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 mac=$mac")
+                log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 (MAC redacted)")
                 throw IOException("Buick T10: 无有效蓝牙 MAC，避免占位地址污染配对")
             }
             log("iap2 Buick/GM T15: 使用真实蓝牙 MAC=$mac；恢复最多 2 秒监听 0x6800 StartHID")
@@ -834,7 +834,8 @@ class Iap2SenderSession(
         if (receives != null) {
             log("iap2 0x1d01 车机可收清单(${receives.size})=" + receives.joinToString(" ") { "0x%04x".format(it) })
         }
-        log("iap2 0x1d01 原始体=" + frame.body.joinToString("") { "%02x".format(it) })
+        // Identification may include receiver-specific identifiers: retain parsed ID lists only.
+        log("iap2 0x1d01 原始体长度=${frame.body.size} (payload redacted)")
     }
 
     private fun remainingMillis(deadlineNanos: Long): Long {
