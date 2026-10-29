@@ -2819,7 +2819,11 @@ class AirPlayClient(
         if (endpoint.isBuickB233 && audioFailureTrace != null) {
             val kind = RtspPeerRequestEvidence.classify(statusLine)
             val matchedPending = message.cseq?.let { pendingResponses.containsKey(it) } == true
-            val evidence = RtspPeerRequestEvidence.diagnosticTag(kind, matchedPending)
+            // The legacy request predicate only accepts path-form targets. A
+            // peer request using an absolute rtsp:// URI is classified above
+            // but would not be acknowledged by the unchanged routing below.
+            val legacyAckEligible = !matchedPending && message.isRequest
+            val evidence = RtspPeerRequestEvidence.diagnosticTag(kind, matchedPending, legacyAckEligible)
             if (evidence != null) {
                 // T88: all peer requests, including non-TEARDOWN with a colliding
                 // pending CSeq, are now visible without exposing URI or headers.
