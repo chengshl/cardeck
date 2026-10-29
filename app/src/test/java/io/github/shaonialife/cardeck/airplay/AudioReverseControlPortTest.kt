@@ -55,7 +55,8 @@ class AudioReverseControlPortTest {
     /**
      * Isolated L3 lifecycle regression: a receive-thread exception must close
      * its UDP socket and invalidate the advertised port. The second receive
-     * verifies that start() can create a fresh, usable listener afterwards.
+     * verifies that start() can create a fresh, usable listener afterwards
+     * with packet numbering reset to #1 (not the prior socket's #2).
      * This is synthetic loopback, not Android VPN / Wi-Fi bind validation.
      */
     @Test
@@ -66,11 +67,13 @@ class AudioReverseControlPortTest {
         val listener = AudioReverseControlPort(
             bindNetwork = {},
             log = { line ->
-                if (line.contains("反向RTCP包 #1") && faultOnce.compareAndSet(false, true)) {
-                    throw IllegalStateException("synthetic receive callback failure")
+                if (line.contains("反向RTCP包 #1")) {
+                    if (faultOnce.compareAndSet(false, true)) {
+                        throw IllegalStateException("synthetic receive callback failure")
+                    }
+                    secondReceived.countDown()
                 }
                 if (line.contains("反向 RTCP 接收异常")) errorLogged.countDown()
-                if (line.contains("反向RTCP包 #2")) secondReceived.countDown()
             },
         )
         fun send(port: Int) {
@@ -125,8 +128,11 @@ class AudioReverseControlPortTest {
         val listener = AudioReverseControlPort(
             bindNetwork = {},
             log = { line ->
-                if (line.contains("反向RTCP包 #1") && faultOnce.compareAndSet(false, true)) {
-                    throw IllegalStateException("synthetic callback failure")
+                if (line.contains("反向RTCP包 #1")) {
+                    if (faultOnce.compareAndSet(false, true)) {
+                        throw IllegalStateException("synthetic callback failure")
+                    }
+                    replacementReceived.countDown()
                 }
                 if (line.contains("反向 RTCP 接收异常")) {
                     failureLogEntered.countDown()
@@ -134,7 +140,6 @@ class AudioReverseControlPortTest {
                         "test diagnostic callback was not released"
                     }
                 }
-                if (line.contains("反向RTCP包 #2")) replacementReceived.countDown()
             },
         )
         fun send(port: Int) {
