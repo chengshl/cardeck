@@ -79,8 +79,8 @@ jobs:
           gh release download "$EXP_TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern "$APK_NAME" --pattern "$APK_NAME.sha256" --dir "$RUNNER_TEMP/experiment"
           (cd "$RUNNER_TEMP/experiment" && sha256sum --check "$APK_NAME.sha256")
-          printf 'STABLE=%s\nOFFICIAL_CODE=%s\nEXP_CODE=%s\nEXP_TAG=%s\n' \
-            "$STABLE" "$OFFICIAL_CODE" "$EXP_CODE" "$EXP_TAG" >> "$GITHUB_ENV"
+          printf 'STABLE=%s\nOFFICIAL_CODE=%s\nEXP_CODE=%s\nEXP_TAG=%s\nEXP_SOURCE=%s\n' \
+            "$STABLE" "$OFFICIAL_CODE" "$EXP_CODE" "$EXP_TAG" "$EXP_SOURCE" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
