@@ -31,6 +31,7 @@ internal object ExperimentProjectCatalog {
             "experiment/buick-e5-iap2-stop-safety" -> "iAP2 安全退出"
             "experiment/buick-e5-session-teardown" -> "CarPlay 会话退出与重连"
             "experiment/buick-e5-video-firstframe-observability" -> "视频首帧与停帧诊断（#28）"
+            "experiment/buick-e5-iap2-stale-ack-guard-33" -> "iAP2 重连 ACK 防误确认（#33）"
             "experiment/buick-e5-updater-b-minimal" -> "更新器方案 B · 最小融合"
             "experiment/buick-e5-t78-updater-b-convergence" -> "更新器融合 · T78 联调"
             "experiment/buick-e5-test-convergence" -> "Test → E5 功能融合"
