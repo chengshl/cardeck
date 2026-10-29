@@ -23,7 +23,7 @@ jobs:
           test "$(git rev-parse origin/Buick-E5)" = "06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
           test "$(git rev-parse origin/work/e5-iap2-stale-ack-guard-33)" = "65ea8768d7792855e6bfa8e8b043b22707fba41a"
           git merge-base --is-ancestor origin/work/e5-iap2-stale-ack-guard-33 HEAD
-          test "$(git diff --name-only origin/work/e5-iap2-stale-ack-guard-33...HEAD)" = ".github/workflows/ci-e5-iap2-33-release-readiness.yml"
+          test "$(git diff --name-only origin/work/e5-iap2-stale-ack-guard-33...HEAD)" = "$(printf '%s\n' '.github/workflows/ci-e5-iap2-33-release-readiness.yml' '.github/workflows/publish-e5-iap2-ack-33.yml')"
           test "$(git merge-base HEAD origin/Buick-E5)" = "$(git rev-parse origin/Buick-E5)"
           python3 - <<'PY'
           from pathlib import Path
@@ -39,11 +39,23 @@ jobs:
           allowed = {
             '.github/workflows/ci-e5-iap2-stale-ack-33.yml',
             '.github/workflows/ci-e5-iap2-33-release-readiness.yml',
+            '.github/workflows/publish-e5-iap2-ack-33.yml',
             'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt',
             'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt',
           }
           assert changed == allowed, f'Unexpected release candidate scope: {sorted(changed ^ allowed)}'
           assert 'experiment/buick-e5-iap2-stale-ack-guard-33' == source
+          # The signing workflow must remain dormant until an explicit intent is
+          # committed, and must reject missing official mapping/recovery.
+          signing = Path('.github/workflows/publish-e5-iap2-ack-33.yml').read_text()
+          assert "branches: [experiment/buick-e5-iap2-stale-ack-guard-33]" in signing
+          assert ".github/release-intents/e5-iap2-33-sign.txt" in signing
+          assert 'git fetch --no-tags origin Buick-E5 "$RECOVERY"' in signing
+          assert 'OFFICIAL_CODE > 89204866' in signing
+          assert 'sourceBranch=%s' in signing
+          assert 'SOURCE_BRANCH=$GITHUB_REF_NAME' in signing
+          assert 'CarDeck-Buick-E5-IAP2-ACK-Guard.apk' in signing
+          assert not Path('.github/release-intents/e5-iap2-33-sign.txt').exists(), 'Release intent must not be present before recovery is ready'
           print('Source branch, PR #68 code snapshot, narrow diff and PR #69 Chinese mapping verified')
           if label not in stable:
               print('::notice::BLOCKED: current official E5 APK lacks #33 trusted Chinese label; no signing allowed')
