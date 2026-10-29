@@ -171,6 +171,45 @@ class AudioReverseControlPortTest {
         assertEquals(0, listener.port)
     }
 
+    /**
+     * Startup diagnostics execute after the socket is published but before
+     * its receive thread exists. A throwing callback must not leave a
+     * nonzero controlPort that SETUP could advertise without a receiver.
+     */
+    @Test
+    fun startupDiagnosticExceptionFailsClosedAndFreshStartReceives() {
+        val throwOnce = java.util.concurrent.atomic.AtomicBoolean(true)
+        val received = java.util.concurrent.CountDownLatch(1)
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("UDP 已监听") && throwOnce.compareAndSet(true, false)) {
+                    throw IllegalStateException("synthetic startup diagnostic failure")
+                }
+                if (line.contains("反向RTCP包 #1")) received.countDown()
+            },
+        )
+        try {
+            assertEquals("startup diagnostic failure must not advertise a port", 0, listener.start())
+            assertEquals(0, listener.port)
+            val recoveredPort = listener.start()
+            assertTrue("fresh start must bind after fail-closed", recoveredPort in 1..65535)
+            assertEquals(recoveredPort, listener.port)
+            val bytes = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(java.net.DatagramPacket(
+                    bytes, bytes.size, java.net.InetAddress.getByName("127.0.0.1"), recoveredPort,
+                ))
+            }
+            assertTrue("fresh receiver must process UDP", received.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+        } finally {
+            listener.close()
+        }
+        assertEquals(0, listener.port)
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
