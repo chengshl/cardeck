@@ -23,7 +23,7 @@ jobs:
           test "$(git rev-parse origin/Buick-E5)" = "06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
           test "$(git rev-parse origin/work/e5-iap2-stale-ack-guard-33)" = "65ea8768d7792855e6bfa8e8b043b22707fba41a"
           git merge-base --is-ancestor origin/work/e5-iap2-stale-ack-guard-33 HEAD
-          test "$(git diff --name-only origin/work/e5-iap2-stale-ack-guard-33...HEAD)" = "$(printf '%s\n' '.github/workflows/ci-e5-iap2-33-release-readiness.yml' '.github/workflows/publish-e5-iap2-ack-33.yml')"
+          test "$(git diff --name-only origin/work/e5-iap2-stale-ack-guard-33...HEAD)" = "$(printf '%s\n' '.github/workflows/ci-e5-iap2-33-release-readiness.yml' '.github/workflows/publish-e5-iap2-ack-33.yml' 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt' 'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt')"
           test "$(git merge-base HEAD origin/Buick-E5)" = "$(git rev-parse origin/Buick-E5)"
           python3 - <<'PY'
           from pathlib import Path
@@ -34,12 +34,18 @@ jobs:
           planned = subprocess.check_output(['git','show',f'origin/fix/e5-iap2-stale-ack-chinese-label-33:{catalog}'], text=True)
           stable = subprocess.check_output(['git','show',f'origin/Buick-E5:{catalog}'], text=True)
           assert label in planned, 'PR #69 no longer contains exact trusted Chinese mapping'
+          local = Path(catalog).read_text()
+          assert local == planned, 'Experiment APK catalog differs from PR #69 trusted Chinese mapping'
+          local_tests = Path('app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt').read_text()
+          assert 'plannedAckGuardExperimentUsesExactChineseSourceAndCannotCrossSubscribe' in local_tests
           assert 'applicationId = "io.github.buick.e5.cardeck"' in Path('app/build.gradle.kts').read_text()
           changed = set(subprocess.check_output(['git','diff','--name-only','origin/Buick-E5...HEAD'],text=True).splitlines())
           allowed = {
             '.github/workflows/ci-e5-iap2-stale-ack-33.yml',
             '.github/workflows/ci-e5-iap2-33-release-readiness.yml',
             '.github/workflows/publish-e5-iap2-ack-33.yml',
+            'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
+            'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
             'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt',
             'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt',
           }
@@ -55,6 +61,7 @@ jobs:
           assert 'sourceBranch=%s' in signing
           assert 'SOURCE_BRANCH=$GITHUB_REF_NAME' in signing
           assert 'CarDeck-Buick-E5-IAP2-ACK-Guard.apk' in signing
+          assert 'Experiment APK would revert Chinese label after installation' in signing
           assert not Path('.github/release-intents/e5-iap2-33-sign.txt').exists(), 'Release intent must not be present before recovery is ready'
           print('Source branch, PR #68 code snapshot, narrow diff and PR #69 Chinese mapping verified')
           if label not in stable:
