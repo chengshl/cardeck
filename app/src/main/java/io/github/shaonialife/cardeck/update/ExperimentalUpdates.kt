@@ -79,7 +79,7 @@ internal object ExperimentalUpdates {
             val source = ReleaseBuildTime.metadata(body, "sourceBranch") ?: continue
             if (!source.startsWith(sourcePrefix) || !source.matches(Regex("experiment/[A-Za-z0-9_/-]+"))) continue
             val name = ReleaseBuildTime.metadata(body, "versionName") ?: continue
-            if (!name.matches(Regex("[0-9]{14}"))) continue
+            if (!ReleaseVersionName.isExperimental(name, source) || !tag.endsWith("-" + name)) continue
             val code = ReleaseBuildTime.metadata(body, "versionCode")?.toLongOrNull() ?: continue
             if (code < 1L || code > Int.MAX_VALUE) continue
             val builtAt = ReleaseBuildTime.metadata(body, "builtAt") ?: continue
