@@ -108,7 +108,7 @@ jobs:
           gh release download exp-buick-test-t85-20261029080409 \
             --repo "$GITHUB_REPOSITORY" \
             --pattern 'CarDeck-Buick-Test-T85-DELAYED-AUDIO-CLAIM.apk' \
-            --dir "$RUNNER_TEMP/t84-reference"
+            --dir "$RUNNER_TEMP/t85-reference"
           OLD_APK="$RUNNER_TEMP/t85-reference/CarDeck-Buick-Test-T85-DELAYED-AUDIO-CLAIM.apk"
           "$APKSIGNER" verify --verbose --print-certs "$OLD_APK" | tee "$RUNNER_TEMP/t85-cert-reference.txt"
           OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t85-cert-reference.txt" | head -n 1)"
