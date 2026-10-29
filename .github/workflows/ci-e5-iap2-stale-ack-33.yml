@@ -50,6 +50,11 @@ jobs:
           assert 'futureAckAcrossSequenceWrapCannotSuppressRetry' in tests
           assert 'phone.feed(ackOnly(110), tick())' in tests
           assert 'phone.feed(ackOnly(1), tick())' in tests
+          # Invalid ACKs must not poison later legitimate ACK progression.
+          assert 'phone.feed(ackOnly(109), tick())' in tests
+          assert 'phone.feed(ackOnly(0), tick())' in tests
+          assert 'confirmed 109 must not be retransmitted' in tests
+          assert 'confirmed seq0 must not be retransmitted' in tests
           # Guard is limited to cumulative ACK handling, not transport or CSM messages.
           before, after = old.split('    private fun handleAcknowledgement(', 1)
           updated_before, updated_after = new.split('    private fun handleAcknowledgement(', 1)
