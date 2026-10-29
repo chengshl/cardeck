@@ -23,6 +23,11 @@ internal object ReleaseVersionName {
             Regex(Regex.escape(formerAlias) + "-[0-9]{9}").matches(name)
     }
 
+    /** 可纯 JVM 验证：Release tag、显示名和真实实验来源须同时对应。 */
+    fun matchesExperimentRelease(tag: String, name: String, sourceBranch: String, tagPrefix: String): Boolean =
+        tag.startsWith(tagPrefix) && tag.matches(Regex("[A-Za-z0-9_-]{8,100}")) &&
+            tag.endsWith("-" + name) && isExperimental(name, sourceBranch)
+
     fun display(body: String, branch: String, fallbackCode: Long): String {
         val name = ReleaseBuildTime.metadata(body, "versionName")
             ?: return fallbackCode.toString()
