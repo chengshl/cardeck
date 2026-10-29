@@ -81,6 +81,45 @@ jobs:
           with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write(f'\nPrior signed E5 chain: {codes[0]} → {codes[1]} → {codes[2]}. Future #33 chain requires **new official > {codes[2]} → #33 experiment > official → data-preserving recovery > experiment → subsequent official > recovery**. Source/asset checks are not signing-certificate or device validation.\n')
           PY
+      - name: Verify real 014/015/016 APK SHA256, applicationId, versionCode and signing identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$AAPT" && test -x "$APKSIGNER"
+          cert_first=""
+          while IFS='|' read -r tag apk code origin; do
+            mkdir -p "$RUNNER_TEMP/e5-chain/$code"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$apk" --pattern "$apk.sha256" --dir "$RUNNER_TEMP/e5-chain/$code"
+            (
+              cd "$RUNNER_TEMP/e5-chain/$code"
+              sha256sum --check "$apk.sha256"
+            )
+            badging="$("$AAPT" dump badging "$RUNNER_TEMP/e5-chain/$code/$apk")"
+            grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$badging"
+            grep -Fq "versionCode='$code'" <<< "$badging"
+            resources="$("$AAPT" dump --values resources "$RUNNER_TEMP/e5-chain/$code/$apk")"
+            grep -Fq 'cardeck_installed_build_origin' <<< "$resources"
+            grep -Fq "$origin" <<< "$resources"
+            "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/e5-chain/$code/$apk" > "$RUNNER_TEMP/e5-chain/$code/cert.txt"
+            if grep -qi 'CN=Android Debug' "$RUNNER_TEMP/e5-chain/$code/cert.txt"; then
+              echo "::error::Debug certificate in signed E5 chain"; exit 1
+            fi
+            cert="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\\1/p' "$RUNNER_TEMP/e5-chain/$code/cert.txt" | head -n 1)"
+            [[ "$cert" =~ ^[[:xdigit:]]{64}$ ]]
+            if [[ -z "$cert_first" ]]; then cert_first="$cert"; else
+              test "${cert,,}" = "${cert_first,,}"
+            fi
+          done <<'E5_CHAIN'
+          buick-e5-latest|CarDeck-Buick-E5.apk|89204263|Buick-E5
+          exp-buick-e5-video-firstframe-observability-EXP--OBSERVABILITY-96375CDB4EA9-261029015|CarDeck-Buick-E5-Video-Observation.apk|89204507|experiment/buick-e5-video-firstframe-observability
+          e5-stable-restore-after-video-observation-v2-20261029|CarDeck-Buick-E5-Stable-Restore.apk|89204866|Buick-E5
+          E5_CHAIN
+          echo "Three actual E5 APKs: checksum, same package, code, source and production signing certificate verified"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
