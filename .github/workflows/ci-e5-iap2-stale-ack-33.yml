@@ -1,0 +1,58 @@
+name: E5 iAP2 stale ACK regression isolation (#33)
+on:
+  push:
+    branches: [work/e5-iap2-stale-ack-guard-33]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt'
+      - '.github/workflows/ci-e5-iap2-stale-ack-33.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stale-ack-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enforce isolated E5 baseline and narrow #33 scope
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          expected = '06cdfdd5b3f58e797e68c57e2a4bc43820d19de0'
+          assert base == expected, f'E5 baseline drift; re-review before proceeding: {base}'
+          source = 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt'
+          test = 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt'
+          allowed = {source, test, '.github/workflows/ci-e5-iap2-stale-ack-33.yml'}
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          assert changed == allowed, f'Unexpected changes: {sorted(changed ^ allowed)}'
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + source], text=True)
+          new = Path(source).read_text()
+          assert old.count('        val ackClass = when {') == 1
+          assert 'if (forward != null && forward >= 128)' in new
+          assert 'ignored=true' in new
+          assert 'staleAckCannotConfirmPending109OrSuppressRetransmission' in Path(test).read_text()
+          # Guard is limited to cumulative ACK handling, not transport or CSM messages.
+          before, after = old.split('    private fun handleAcknowledgement(', 1)
+          updated_before, updated_after = new.split('    private fun handleAcknowledgement(', 1)
+          assert before == updated_before
+          assert after.split('    private fun handleData(', 1)[1] == updated_after.split('    private fun handleData(', 1)[1]
+          print('Only isolated ACK bookkeeping and deterministic regression changed')
+          PY
+      - name: Run all Android unit tests and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
