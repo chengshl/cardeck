@@ -1,0 +1,47 @@
+name: T89 B233 PCM Reverse RTCP Offline Validation (isolated)
+on:
+  push:
+    branches:
+      - experiment/buick-test-t89-pcm-reverse-rtcp
+    paths:
+      - '.github/workflows/validate-t89-pcm-reverse-rtcp.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validate-t89-pcm-reverse-rtcp
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Gate one-variable isolated T89 experiment against T88
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4eedb7f5c42bdddb3bb23a73146c10b42f29829f
+          git merge-base --is-ancestor "$BASE" HEAD
+          CHANGED="$(git diff --name-only "$BASE" HEAD)"
+          printf '%s\n' "$CHANGED"
+          BAD="$(printf '%s\n' "$CHANGED" | grep -Ev '^(\.github/workflows/validate-t89-pcm-reverse-rtcp\.yml|app/src/main/java/io/github/shaonialife/cardeck/(airplay/AirPlayClient|audio/BuickAudioTimingPolicy)\.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest\.kt)$' || true)"
+          test -z "$BAD" || { echo "::error::T89 out-of-scope changes: $BAD"; exit 1; }
+          grep -Fq 'advertiseReverseControlPort(endpoint.isBuickB233, profile)' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          grep -Fq 't89OnlyB233PcmMediaAdvertisesReceiveOnlyReversePort' app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt
+          echo 'T89 isolated source scope verified. No signed APK or release in this workflow.'
+      - name: Android unit tests, lint and debug compile (no release)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
