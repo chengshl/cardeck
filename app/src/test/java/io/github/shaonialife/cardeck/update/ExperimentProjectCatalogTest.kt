@@ -41,6 +41,7 @@ class ExperimentProjectCatalogTest {
             "experiment/buick-e5-detailed-diagnostics" to "详细故障诊断与日志",
             "experiment/buick-e5-iap2-stop-safety" to "iAP2 安全退出",
             "experiment/buick-e5-session-teardown" to "CarPlay 会话退出与重连",
+            "experiment/buick-e5-video-firstframe-observability" to "视频首帧与停帧诊断（#28）",
             "experiment/buick-e5-updater-b-minimal" to "更新器方案 B · 最小融合",
             "experiment/buick-e5-t78-updater-b-convergence" to "更新器融合 · T78 联调",
             "experiment/buick-e5-test-convergence" to "Test → E5 功能融合",
@@ -72,5 +73,16 @@ class ExperimentProjectCatalogTest {
         val audio = sample("experiment/buick-e5-t75-rtcp-observe", 100)
         assertTrue(ExperimentProjectCatalog.installState(110, audio).contains("重新构建"))
         assertTrue(ExperimentProjectCatalog.installState(90, audio).contains("可覆盖安装"))
+    }
+
+    @Test fun officialE5VideoObservationReleaseDisplaysChineseButRetainsExactSource() {
+        val source = "experiment/buick-e5-video-firstframe-observability"
+        val released = sample(source, 89195447)
+        assertEquals("视频首帧与停帧诊断（#28）", ExperimentProjectCatalog.name(source))
+        assertEquals(source, ExperimentProjectCatalog.group(listOf(released)).single().sourceBranch)
+        assertEquals(released, ExperimentProjectCatalog.latest(listOf(released), source))
+        assertNull(ExperimentProjectCatalog.latest(listOf(released), "experiment/buick-e5-session-teardown"))
+        assertEquals("其他实验 · buick e5 video firstframe observability extra",
+            ExperimentProjectCatalog.name(source + "-extra"))
     }
 }
