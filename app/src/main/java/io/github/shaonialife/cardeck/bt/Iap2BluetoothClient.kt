@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import io.github.shaonialife.cardeck.iap2.Iap2InterruptibleWait
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
 import io.github.shaonialife.cardeck.util.DeviceIdentity
 import io.github.shaonialife.cardeck.transport.Iap2LinkChannel
@@ -304,19 +305,21 @@ class Iap2BluetoothClient(
             var mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
             repeat(3) {
                 if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
-                    Thread.sleep(600)
+                    Iap2InterruptibleWait.sleep(600)
                     mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
                 }
             }
             log("BT-C T10: pre-session identity=" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) "unavailable" else mac)
             channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)
         } catch (error: IOException) {
-            log("BT-C: SESSION 失败 - ${error.message}")
-            // T39: an old T24/T25/T26/T28 diagnostic timeout must not
-            // permanently disable the Buick connector. The caller's backoff and
-            // BtSessionGate prevent overlap with a live incoming RFCOMM session.
-            if (error.message?.contains("Buick T") == true) {
-                log("BT-C T39: Buick 诊断结束；保留受控的主动重连（不重启车机）")
+            if (!running || Thread.currentThread().isInterrupted) {
+                log("BT-C: 会话已取消，正常释放控制链路；不是异常崩溃")
+            } else {
+                log("BT-C: SESSION 失败 - ${error.message}")
+                // Preserve the existing T39 backoff for actual diagnostic timeouts.
+                if (error.message?.contains("Buick T") == true) {
+                    log("BT-C T39: Buick 诊断结束；保留受控的主动重连（不重启车机）")
+                }
             }
         } finally {
             activeChannel = null
