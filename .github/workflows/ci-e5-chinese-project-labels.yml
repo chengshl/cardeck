@@ -1,0 +1,42 @@
+name: Buick-E5 experiment Chinese labels regression (#27)
+on:
+  push:
+    branches: [feature/e5-experiment-chinese-labels-27]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/UpdateCenterActivity.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt'
+      - '.github/workflows/ci-e5-chinese-project-labels.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android-e5-ui-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify all Android unit tests, Lint and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Verify this change does not modify the E5 release channel or core runtime
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          catalog = Path('app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt').read_text()
+          history = Path('app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt').read_text()
+          assert 'fun name(sourceBranch: String)' in catalog
+          assert 'sourceBranch == selectedSource' in catalog
+          assert 'ExperimentProjectCatalog.name(candidate.sourceBranch)' in history
+          assert 'if (ReleaseBuildTime.metadata(body, "artifactKind") != "experiment") continue' in history
+          assert 'if (!ReleaseVersionName.isExperimental(name, source)) continue' in history
+          PY
