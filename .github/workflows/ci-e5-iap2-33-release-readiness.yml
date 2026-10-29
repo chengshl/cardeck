@@ -1,0 +1,92 @@
+name: E5 #33 ACK experiment source and release-chain preflight (no APK)
+on:
+  push:
+    branches: [experiment/buick-e5-iap2-stale-ack-guard-33]
+    paths:
+      - '.github/workflows/ci-e5-iap2-33-release-readiness.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-and-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact #33 candidate, stable baseline and future Chinese label
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-iap2-stale-ack-guard-33"
+          git fetch --no-tags origin Buick-E5 work/e5-iap2-stale-ack-guard-33 fix/e5-iap2-stale-ack-chinese-label-33
+          test "$(git rev-parse origin/Buick-E5)" = "06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/work/e5-iap2-stale-ack-guard-33)"
+          test "$(git merge-base HEAD origin/Buick-E5)" = "$(git rev-parse origin/Buick-E5)"
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          source = 'experiment/buick-e5-iap2-stale-ack-guard-33'
+          label = f'"{source}" -> "iAP2 重连 ACK 防误确认（#33）"'
+          catalog = 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt'
+          planned = subprocess.check_output(['git','show',f'origin/fix/e5-iap2-stale-ack-chinese-label-33:{catalog}'], text=True)
+          stable = subprocess.check_output(['git','show',f'origin/Buick-E5:{catalog}'], text=True)
+          assert label in planned, 'PR #69 no longer contains exact trusted Chinese mapping'
+          assert 'applicationId = "io.github.buick.e5.cardeck"' in Path('app/build.gradle.kts').read_text()
+          assert label not in stable or label in planned
+          changed = set(subprocess.check_output(['git','diff','--name-only','origin/Buick-E5...HEAD'],text=True).splitlines())
+          allowed = {
+            '.github/workflows/ci-e5-iap2-stale-ack-33.yml',
+            '.github/workflows/ci-e5-iap2-33-release-readiness.yml',
+            'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt',
+            'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt',
+          }
+          assert changed == allowed, f'Unexpected release candidate scope: {sorted(changed ^ allowed)}'
+          assert 'experiment/buick-e5-iap2-stale-ack-guard-33' == source
+          print('Source branch, PR #68 code snapshot, narrow diff and PR #69 Chinese mapping verified')
+          if label not in stable:
+              print('::notice::BLOCKED: current official E5 APK lacks #33 trusted Chinese label; no signing allowed')
+              with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a') as f:
+                  f.write('## #33 release readiness: BLOCKED\nCurrent Buick-E5 does not contain the exact #33 Chinese source mapping. PR #69 is only prepared, not installed. **No APK is signed or published.**\n')
+          else:
+              print('Stable source contains mapping; installed APK still requires independent confirmation')
+          PY
+      - name: Verify published E5 version chain and signed asset presence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess
+          repo = 'chengshl/cardeck'
+          tags = [
+            'buick-e5-latest',
+            'exp-buick-e5-video-firstframe-observability-EXP--OBSERVABILITY-96375CDB4EA9-261029015',
+            'e5-stable-restore-after-video-observation-v2-20261029',
+          ]
+          codes = []
+          for tag in tags:
+              release = json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/releases/tags/{tag}'],text=True))
+              body = dict(line.split('=',1) for line in release['body'].splitlines() if '=' in line and not line.startswith('#'))
+              code = int(body['versionCode'])
+              assets = [x['name'] for x in release['assets']]
+              assert any(x.endswith('.apk') for x in assets), (tag, assets)
+              assert any(x.endswith('.apk.sha256') for x in assets), (tag, assets)
+              codes.append(code)
+          assert codes[0] == 89204263 and codes[1] == 89204507 and codes[2] == 89204866, codes
+          assert codes[0] < codes[1] < codes[2], codes
+          print('Published 014 -> 015 -> 016: release metadata, APK and SHA256 asset presence verified')
+          with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write(f'\nPrior signed E5 chain: {codes[0]} → {codes[1]} → {codes[2]}. Future #33 chain requires **new official > {codes[2]} → #33 experiment > official → data-preserving recovery > experiment → subsequent official > recovery**. Source/asset checks are not signing-certificate or device validation.\n')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run #33 regression tests and Debug build (never sign)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
