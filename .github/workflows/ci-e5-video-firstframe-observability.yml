@@ -1,0 +1,57 @@
+name: E5 video first-frame observation only (#28)
+on:
+  push:
+    branches: [work/e5-video-firstframe-observability-28]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt'
+      - '.github/workflows/ci-e5-video-firstframe-observability.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  e5-frame-observation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Pure timestamp/tracker regression and Debug compilation
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Limit modifications to E5 video observability and ensure no automatic reconnect
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          files = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          allowed = {
+              'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt',
+              '.github/workflows/ci-e5-video-firstframe-observability.yml',
+          }
+          assert files == allowed, f'Unexpected E5 runtime changes: {sorted(files ^ allowed)}'
+          sender = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt').read_text()
+          tracker = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt').read_text()
+          assert 'NO_FIRST_FRAME_6S' in sender and 'NO_FRAMES_15S' in sender
+          assert 'FIRST_FRAME_FLUSHED' in sender and 'keepAliveFlushed(now)' in sender
+          assert 'onEnded?.invoke()' in sender
+          assert 'output.write(header)' in sender and 'output.write(sealed)' in sender
+          assert 'output.flush()' in sender
+          for forbidden in ('retireSession(', 'requestUI(', 'disconnect(', 'reconnect(', 'Thread(', 'Socket(', 'MediaCodec', 'Bluetooth'):
+              assert forbidden not in tracker, f'Tracker must not mutate session: {forbidden}'
+          print('E5 probe is log-only; no session or transport control logic added')
+          PY
