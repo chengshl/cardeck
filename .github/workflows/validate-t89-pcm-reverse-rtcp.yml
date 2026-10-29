@@ -8,6 +8,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt'
       - 'app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt'
   workflow_dispatch:
 permissions:
   contents: read
@@ -36,7 +37,7 @@ jobs:
           git merge-base --is-ancestor "$BASE" HEAD
           CHANGED="$(git diff --name-only "$BASE" HEAD)"
           printf '%s\n' "$CHANGED"
-          BAD="$(printf '%s\n' "$CHANGED" | grep -Ev '^(\.github/workflows/validate-t89-pcm-reverse-rtcp\.yml|app/src/main/java/io/github/shaonialife/cardeck/(airplay/AirPlayClient|audio/BuickAudioTimingPolicy)\.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest\.kt)$' || true)"
+          BAD="$(printf '%s\n' "$CHANGED" | grep -Ev '^(\.github/workflows/validate-t89-pcm-reverse-rtcp\.yml|app/src/main/java/io/github/shaonialife/cardeck/(airplay/AirPlayClient|audio/BuickAudioTimingPolicy)\.kt|app/src/test/java/io/github/shaonialife/cardeck/(audio/BuickAudioTimingPolicyTest|airplay/AudioReverseControlPortTest)\.kt)$' || true)"
           test -z "$BAD" || { echo "::error::T89 out-of-scope changes: $BAD"; exit 1; }
           # The only executable AirPlayClient change from signed T88 must be
           # the one predicate selecting whether the phone advertises a local
@@ -69,6 +70,10 @@ jobs:
           print('T89 single executable predicate and outgoing controlPort wire field verified')
           PY
           grep -Fq 't89OnlyB233PcmMediaAdvertisesReceiveOnlyReversePort' app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt
+          # Observed T85/T88 WiFi bind EPERM must NOT silently produce a T89 SETUP.
+          grep -Fq 'if (port == 0) return null' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          grep -Fq 't89VpnEpermCannotAdvertiseControlPort' app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt
+          echo 'T89 EPERM preflight: missing listener means no reverse controlPort in SETUP; do not request vehicle test without verified bind'
           echo 'T89 isolated source scope verified. No signed APK or release in this workflow.'
       - name: Android unit tests, lint and debug compile (no release)
         run: |
