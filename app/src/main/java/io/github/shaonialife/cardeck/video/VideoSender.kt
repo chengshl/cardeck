@@ -125,6 +125,7 @@ class VideoSender(
         if (running.get()) return true
         return try {
             if (!openDataPort()) {
+                log("VIDEO DIAG #28: START_ABORTED phase=data-port (encoder not started)")
                 stop()
                 return false
             }
@@ -147,6 +148,7 @@ class VideoSender(
             val surface = codec.createInputSurface()
             codec.start()
             encoder = codec
+            log("VIDEO DIAG #28: ENCODER_STARTED (first video frame not yet proven)")
             inputSurface = surface
             running.set(true)
             lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
@@ -160,6 +162,7 @@ class VideoSender(
             }
             true
         } catch (error: Exception) {
+            log("VIDEO DIAG #28: START_ABORTED phase=start-exception (see startup error)")
             log("VIDEO: 启动失败 - ${error.message}")
             stop()
             false
