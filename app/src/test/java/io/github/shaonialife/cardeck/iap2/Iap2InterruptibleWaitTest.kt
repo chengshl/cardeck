@@ -33,24 +33,35 @@ class Iap2InterruptibleWaitTest {
         assertTrue("interrupt flag must remain set for stop semantics", restored.get())
     }
 
-    @Test fun interruptDuringWaitDoesNotCrashUncaughtHandler() {
+    @Test fun interruptionDuringActiveWaitIsIoWithCauseAndRestoredFlag() {
         val thrown = AtomicReference<Throwable?>()
+        val restored = AtomicBoolean(false)
         val started = java.util.concurrent.CountDownLatch(1)
         val worker = Thread {
             try {
                 started.countDown()
                 Iap2InterruptibleWait.sleep(3000L)
+                thrown.set(AssertionError("interrupted wait unexpectedly returned"))
             } catch (error: IOException) {
-                // Same IOException boundary used by Iap2BluetoothClient.runSession().
+                thrown.set(error)
+                restored.set(Thread.currentThread().isInterrupted)
             } catch (error: Throwable) {
                 thrown.set(error)
             }
         }
         worker.start()
         assertTrue(started.await(1L, java.util.concurrent.TimeUnit.SECONDS))
+        // Ensure this is a mid-sleep cancellation, not just the pre-interrupted case.
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)
+        while (worker.state != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) {
+            Thread.sleep(1L)
+        }
+        assertEquals("worker must enter the cancellable wait", Thread.State.TIMED_WAITING, worker.state)
         worker.interrupt()
         worker.join(1500L)
-        assertFalse(worker.isAlive)
-        assertNull(thrown.get())
+        assertFalse("cancelled worker must exit promptly", worker.isAlive)
+        assertTrue("interruption must reach the IOException boundary", thrown.get() is IOException)
+        assertTrue("original interruption must be preserved", thrown.get()?.cause is InterruptedException)
+        assertTrue("worker interrupt flag must be restored", restored.get())
     }
 }
