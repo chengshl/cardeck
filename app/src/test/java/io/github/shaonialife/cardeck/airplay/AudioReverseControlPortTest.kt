@@ -77,37 +77,44 @@ class AudioReverseControlPortTest {
     }
 
     /**
-     * An EPERM from a previous attempt must not leave a phantom advertised
-     * port or permanently poison the listener. This tests only a synthetic
-     * bind callback; it does not prove Android VPN/Wi-Fi routing will recover.
+     * runAudioStream creates a NEW listener for each negotiation attempt.
+     * Reusing one listener in this regression would test a retry path that
+     * production does not actually take after EPERM. Model two separate
+     * attempts instead: the first fails closed; a later fresh attempt can
+     * advertise a port only if its own synthetic network bind succeeds.
+     * This does not establish that Android VPN/Wi-Fi policy will recover.
      */
     @Test
-    fun t89TransientEpermCanRetryWithoutAdvertisingStalePort() {
+    fun t89FreshNegotiationAfterEpermCannotReusePhantomPort() {
         var attempts = 0
         val lines = mutableListOf<String>()
-        val receiver = AudioReverseControlPort(
-            bindNetwork = {
-                attempts++
-                if (attempts == 1) throw java.net.SocketException("synthetic EPERM")
-            },
-            log = { lines += it },
-        )
-        assertEquals(0, receiver.start())
-        assertEquals(0, receiver.port)
-        assertTrue(lines.none { it.contains("已监听") })
+        val bind: (java.net.DatagramSocket) -> Unit = {
+            attempts++
+            if (attempts == 1) throw java.net.SocketException("synthetic EPERM")
+        }
+        val first = AudioReverseControlPort(bindNetwork = bind, log = { lines += it })
+        try {
+            assertEquals(0, first.start())
+            assertEquals(0, first.port)
+            assertTrue(lines.none { it.contains("已监听") })
+        } finally {
+            first.close()
+        }
 
-        val recoveredPort = receiver.start()
+        val second = AudioReverseControlPort(bindNetwork = bind, log = { lines += it })
+        val recoveredPort = second.start()
         try {
             assertEquals(2, attempts)
             assertTrue(recoveredPort in 1..65535)
-            assertEquals(recoveredPort, receiver.port)
-            assertEquals(recoveredPort, receiver.start())
+            assertEquals(0, first.port)
+            assertEquals(recoveredPort, second.port)
+            assertEquals(recoveredPort, second.start())
             assertEquals(2, attempts)
             assertEquals(1, lines.count { it.contains("已监听") })
         } finally {
-            receiver.close()
+            second.close()
         }
-        assertEquals(0, receiver.port)
+        assertEquals(0, second.port)
     }
 
     @Test
