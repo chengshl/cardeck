@@ -76,6 +76,40 @@ class AudioReverseControlPortTest {
         }
     }
 
+    /**
+     * An EPERM from a previous attempt must not leave a phantom advertised
+     * port or permanently poison the listener. This tests only a synthetic
+     * bind callback; it does not prove Android VPN/Wi-Fi routing will recover.
+     */
+    @Test
+    fun t89TransientEpermCanRetryWithoutAdvertisingStalePort() {
+        var attempts = 0
+        val lines = mutableListOf<String>()
+        val receiver = AudioReverseControlPort(
+            bindNetwork = {
+                attempts++
+                if (attempts == 1) throw java.net.SocketException("synthetic EPERM")
+            },
+            log = { lines += it },
+        )
+        assertEquals(0, receiver.start())
+        assertEquals(0, receiver.port)
+        assertTrue(lines.none { it.contains("已监听") })
+
+        val recoveredPort = receiver.start()
+        try {
+            assertEquals(2, attempts)
+            assertTrue(recoveredPort in 1..65535)
+            assertEquals(recoveredPort, receiver.port)
+            assertEquals(recoveredPort, receiver.start())
+            assertEquals(2, attempts)
+            assertEquals(1, lines.count { it.contains("已监听") })
+        } finally {
+            receiver.close()
+        }
+        assertEquals(0, receiver.port)
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
