@@ -26,7 +26,19 @@ jobs:
           import subprocess
           from pathlib import Path
           base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
-          assert base == '8271f2a71be7b4acc740c2748bf3281810ea9aa1', f'E5 baseline changed: {base}'
+          original_base = '8271f2a71be7b4acc740c2748bf3281810ea9aa1'
+          current_base = '06cdfdd5b3f58e797e68c57e2a4bc43820d19de0'
+          assert base == current_base, f'E5 baseline changed; review and refresh before proceeding: {base}'
+          # PR #65 only added the #28 Chinese project label and its tests/CI.
+          # A future E5 change must not silently expand this L3 candidate's base.
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', original_base, current_base], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/workflows/ci-e5-chinese-project-labels.yml',
+              'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
+          }, f'Unexpected stable E5 drift: {sorted(stable_delta)}'
           files = set(subprocess.check_output(
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
           ).splitlines())
