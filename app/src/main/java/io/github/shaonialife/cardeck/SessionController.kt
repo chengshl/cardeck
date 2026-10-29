@@ -1432,6 +1432,9 @@ object SessionController {
                                                 safeViewport = pendingSafeViewport,
                                             )
                                         currentHiddenSource = source
+                                        // #28: distinguish a blocked Shizuku/display attach from an encoder with no frames.
+                                        val attachStartedAtMs = android.os.SystemClock.uptimeMillis()
+                                        appendLog("VIDEO DIAG #28: SURFACE_ATTACH_BEGIN (no frame proven)")
                                         val ok =
                                             source.attach(
                                                 surface,
@@ -1439,6 +1442,11 @@ object SessionController {
                                                 videoH,
                                                 videoDensity,
                                             )
+                                        appendLog(
+                                            "VIDEO DIAG #28: SURFACE_ATTACH_RESULT=${if (ok) "attached" else "failed"} " +
+                                                "durationMs=${(android.os.SystemClock.uptimeMillis() - attachStartedAtMs).coerceAtLeast(0)} " +
+                                                "(no frame proven)",
+                                        )
                                         appendLog(
                                             "MODE: 隐形屏 ${if (ok) "已启动（高德车机版优先）display=${source.displayId}" else "启动失败（Shizuku 就绪？）"}",
                                         )
