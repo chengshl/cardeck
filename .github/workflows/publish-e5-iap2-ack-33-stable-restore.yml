@@ -140,6 +140,10 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
           test -s "$APK" && test -x "$AAPT" && test -x "$APKSIGNER"
           (( CARDECK_BUILD_VERSION_CODE > EXP_CODE && CARDECK_BUILD_VERSION_CODE > OFFICIAL_CODE ))
+          # Compare actual signed experiment APK, not just release-note metadata.
+          EXP_BADGING="$("$AAPT" dump badging "$RUNNER_TEMP/experiment/CarDeck-Buick-E5-IAP2-ACK-Guard.apk")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$EXP_BADGING"
+          grep -Fq "versionCode='$EXP_CODE'" <<< "$EXP_BADGING"
           BADGING="$("$AAPT" dump badging "$APK")"
           grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
           grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
