@@ -34,13 +34,32 @@
 
 用户验收集中进行，不要求对每个中间构建或实验包重复全套实车测试。优先在最终正式版执行：旧包发现新版本 → 展示正确的中文说明 → 下载与系统确认覆盖安装 → 安装后显示新版本名 → App 正常启动。实验 APK 与 E5 正式 APK 包名相同时尤其不能随意覆盖，避免实验包版本码更高导致无法直接回退正式版。
 
-## 当前迁移状态与保留边界（2026-10-29，北京时间）
+## 当前迁移状态与保留边界（2026-10-29，北京时间，依 v2.2 治理）
 
-- 核心四线已通过 001–006 真实签名发布；用户确认 `Buick-E5 E5-261029004` 五项手机验收通过，不要求复测原有 #27/#42。
-- PR #51 已将 Buick 历史基线扩展至全部 APK Release，真实双通道发布 ``Buick` 正式版（具体设备标识已脱敏）` / `versionCode=89142306`（Actions #40738378165 成功）。
-- Rescue UI 审查版 PR #52、Rescue 独立回滚包 PR #53 已合并统一分配器、全局并发组。只改发布工作流与测试，未因合并自动产生新的取证 APK，现有 L3 功能及安装版本保持不变。
-- Rescue Standalone 正式实验源分支的更新器此前只接受 14 位版本名；PR #54 已隔离实现对该源分支的 SHA-256 指纹命名与历史名称兼容，保留签名、APK、sourceBranch、SHA256 校验；**Draft，未合并、未发布、未经手机验收**。
-- E5 PR #55 与 Test PR #56 正在同步同一全 Release 基线分配器（见 #39 最新评论及 Actions）；**仅按实际最终成功的签名发布记录更新状态**。
-- 音频 T84 等历史独立实验仍有旧版发布 workflow，且 T84 的源文件白名单隔离不容放宽。冻结/休眠分支不因本文件自动构建或发布：恢复任一签名工作流之前，必须先完成共享分配器、统一并发锁、更新器新名称解析及旧包版本码基线的实际核查；不可直接用旧时间戳编号继续发布。
+### 已经过真实发布验证的统一编号入口
 
-此节是已核实的迁移/风险登记，不代表所有实验 APK 已完成用户手机验证。详见 [Issue #39](https://github.com/chengshl/cardeck/issues/39)。
+- Buick / Buick-main 双兼容 Release：PR #51，同一签名 APK，版本码 `89142306`，Actions [#40738378165](https://github.com/chengshl/cardeck/actions/runs/40738378165) 成功。
+- Buick-E5：PR #55，版本码 `89142773`，Actions [#40739580065](https://github.com/chengshl/cardeck/actions/runs/40739580065) 成功。用户此前明确确认的 E5 正式版 004 五项手机验收仍有效，不重复要求旧版验收；本次 Python 分配器升级不等于重新取得实车验证。
+- Buick-Test：PR #56，更新中文发布说明后版本码 `89143185`，Actions [#40740442345](https://github.com/chengshl/cardeck/actions/runs/40740442345) 成功。旧的中文说明门禁失败记录保留、不得降低门槛。
+- Updater-B 的编号验证版本 003/010 曾完成独立签名，但依用户 v2.2 退役决定已从活跃实验订阅退出（`artifactKind=historical`）。**保留历史 APK、SHA256 和 tag，不再把已完成的 Updater-B 当成活跃实验重新签发**。
+- Rescue UI 审查、Rescue rollback：PR #52/#53 已统一发布分配器与共享并发组；仅工作流改动，没有因此自动签发取证 APK。
+
+### 按现行治理等待专项验收或恢复前迁移的入口
+
+| 入口与分支 | 现状 / 恢复条件 |
+|---|---|
+| 第三独立取证 `experiment/cardeck-rescue-standalone` | 旧更新器仅识别14位数字名称；[Draft PR #54](https://github.com/chengshl/cardeck/pull/54) 已有 Android/Python CI 成功。更新器新旧 EXP 解析尚未手机验收、未合并，不可将 CI 写作正式发布。 |
+| 活跃 P0 音频 `experiment/buick-test-t76-aac-causality-observe` | T85 仍为独立实车待验版本，历史签名包 code `89165049`，未证明音频解决。[Draft PR #58](https://github.com/chengshl/cardeck/pull/58) 已为 T85 准备共享分配器与新旧名称来源绑定，完整 [CI #40805960921](https://github.com/chengshl/cardeck/actions/runs/40805960921) 成功；**未签发新 APK、未改协议运行代码、未合并**。 |
+| E5 A2DP、iAP2 stop、会话 teardown、详细诊断、Updater-B 旧融合等历史独立功能分支 | 仓库树审计显示仍保留无统一分配器的 publish 工作流。遵守 v2.2 冻结/独立专项门禁，不批量重启旧实验；确需再次签名时先迁移分配器、共用串行组、解析、旧版本覆盖基线，再做该功能线必要 CI/手机验证。 |
+| 旧 Test T75/T84 等前序音频工作流 | 保留历史证据与音频实验对照，尚不能声称全线迁移。禁止把旧 14 位脚本直接当成已统一的发行通道使用；音频协议修改继续由 #11 单变量实车门禁控制。 |
+
+### 恢复旧实验签名发布前的检查
+
+1. 确认 v2.2 冻结状态、是否仍有用户认可的活跃专项，不将历史分支视为可直接复用的发布目标。
+2. 核对所用 `tools/release/allocate_version.py` 与当前权威实现完全一致；读取完整 Release 历史 APK `versionCode`，共享 `cardeck-global-signed-release-version`，关闭运行中任务自动取消。
+3. 实验 `versionName`、`sourceBranch`、`baseBranch`、tag、APK 文件名、签名和 SHA-256 均匹配；老更新器须先具备新 EXP 哈希名兼容，不得发布后让更新中心过滤。
+4. 保留该专项既有 lint、证书对比、路径白名单和稳定 CarPlay 回归，不通过扩大白名单或更换签名逃避门禁。
+5. 只有 CI/签名 APK/元数据真实发布成功才登记“发布通过”，手机与实车验收必须另行明确记录。对正式包的纯 Python 分配器改动不重复请求已完成的 CarPlay 回归。
+6. 不删除既有 Release、APK、历史失败证据或 Git 分支；不修改 `main` 上游同步流程。
+
+此节为**迁移与风险清单**，不代表旧实验已经统一编号或 #39 全部完结。真实逐轮 CI/签名与用户手机验收请以 [Issue #39](https://github.com/chengshl/cardeck/issues/39) 和对应专项 Issue 为准。
