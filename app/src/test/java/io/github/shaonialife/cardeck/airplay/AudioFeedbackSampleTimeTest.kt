@@ -66,6 +66,32 @@ class AudioFeedbackSampleTimeTest {
         assertNull(AudioFeedbackSampleTime.fromParsedFeedback(mapOf("streams" to "bad")))
     }
 
+    @Test fun realValuedOrNonFinitePlistNumbersCannotInventAPlaybackClock() {
+        // BinaryPlist decodes real objects as Double, not Long. Truncating
+        // NaN to 0 or 1.5 to 1 would fabricate a valid receiver sampleTime.
+        val invalidSamples = listOf(
+            Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY,
+            1.5, 100.0, Double.MAX_VALUE,
+        )
+        for (invalid in invalidSamples) {
+            val roundTrip = BinaryPlist.parse(
+                BinaryPlist.encode(feedback(100L, invalid)),
+            ) as Map<*, *>
+            assertNull("invalid sampleTime=$invalid", AudioFeedbackSampleTime.fromParsedFeedback(roundTrip))
+        }
+        assertNull(AudioFeedbackSampleTime.fromParsedFeedback(feedback(100.0, 48_000L)))
+        assertNull(AudioFeedbackSampleTime.fromParsedFeedback(feedback(102.5, 48_000L)))
+
+        // A malformed AAC clock must not hide a valid PCM clock.
+        val mixed = mapOf(
+            "streams" to listOf(
+                mapOf("type" to 102L, "sampleTime" to Double.NaN),
+                mapOf("type" to 100L, "sampleTime" to 48_384L),
+            ),
+        )
+        assertEquals(48_384L, AudioFeedbackSampleTime.fromParsedFeedback(mixed))
+    }
+
     @Test fun malformedEntriesDoNotPreventSelectingAnotherAudioStream() {
         val parsed = mapOf(
             "streams" to listOf(
