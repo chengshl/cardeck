@@ -21,6 +21,47 @@ class BuickAudioTimingPolicyTest {
     }
 
     @Test
+    fun t89OnlyB233PcmMediaAdvertisesReceiveOnlyReversePort() {
+        val pcmMedia = AudioProfile("media", 1L shl 15, 48_000, 250)
+        assertTrue(BuickAudioTimingPolicy.advertiseReverseControlPort(true, pcmMedia))
+        assertTrue(
+            BuickAudioTimingPolicy.advertiseReverseControlPort(
+                true, pcmMedia.copy(audioType = "MEDIA"),
+            ),
+        )
+        assertFalse(BuickAudioTimingPolicy.advertiseReverseControlPort(false, pcmMedia))
+        assertFalse(
+            BuickAudioTimingPolicy.advertiseReverseControlPort(
+                true, pcmMedia.copy(audioType = "compatibility"),
+            ),
+        )
+        assertFalse(
+            BuickAudioTimingPolicy.advertiseReverseControlPort(
+                true, pcmMedia.copy(streamType = 102L),
+            ),
+        )
+        assertFalse(
+            BuickAudioTimingPolicy.advertiseReverseControlPort(
+                true, pcmMedia.copy(codec = AudioCodec.AAC_LC),
+            ),
+        )
+        // T89 must NOT silently enable the T71 high-accuracy timing mode.
+        assertFalse(BuickAudioTimingPolicy.useModernSenderTiming(true, pcmMedia))
+    }
+
+    @Test
+    fun t89PreservesExistingAacMediaReversePortAndModernTiming() {
+        assertTrue(BuickAudioTimingPolicy.advertiseReverseControlPort(true, aacMedia))
+        assertTrue(BuickAudioTimingPolicy.useModernSenderTiming(true, aacMedia))
+        assertFalse(BuickAudioTimingPolicy.advertiseReverseControlPort(false, aacMedia))
+        assertFalse(
+            BuickAudioTimingPolicy.advertiseReverseControlPort(
+                true, aacMedia.copy(audioType = "compatibility"),
+            ),
+        )
+    }
+
+    @Test
     fun otherReceiversKeepExistingRtcpSendBehavior() {
         assertFalse(BuickAudioTimingPolicy.useModernSenderTiming(false, aacMedia))
     }
