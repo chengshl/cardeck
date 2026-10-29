@@ -67,8 +67,16 @@ internal class AudioReverseControlPort(
         socket = datagram
         openedAtNanos = System.nanoTime()
         lastReceiveNanos = 0L
-        failureTrace?.event("reverse_rtcp_listening")
-        log("AUDIO T73: 手机反向 RTCP UDP 已监听 localControlPort=${datagram.localPort}")
+        // Diagnostics are not allowed to leave an advertised UDP port with no
+        // receive thread. If a startup callback throws, fail closed before SETUP.
+        try {
+            failureTrace?.event("reverse_rtcp_listening")
+            log("AUDIO T73: 手机反向 RTCP UDP 已监听 localControlPort=${datagram.localPort}")
+        } catch (_: Exception) {
+            datagram.close()
+            socket = null
+            return 0
+        }
         Thread({
             val buffer = ByteArray(2_048)
             var nextReportSecond = 1L
