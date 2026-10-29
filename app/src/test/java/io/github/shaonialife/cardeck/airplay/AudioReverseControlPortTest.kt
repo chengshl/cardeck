@@ -52,6 +52,267 @@ class AudioReverseControlPortTest {
         assertEquals(0, receiver.port)
     }
 
+    /**
+     * Isolated L3 lifecycle regression: a receive-thread exception must close
+     * its UDP socket and invalidate the advertised port. The second receive
+     * verifies that start() can create a fresh, usable listener afterwards
+     * with packet numbering reset to #1 (not the prior socket's #2).
+     * This is synthetic loopback, not Android VPN / Wi-Fi bind validation.
+     */
+    @Test
+    fun unexpectedReceiveExceptionFailsClosedAndAllowsFreshListener() {
+        val faultOnce = java.util.concurrent.atomic.AtomicBoolean(false)
+        val errorLogged = java.util.concurrent.CountDownLatch(1)
+        val secondReceived = java.util.concurrent.CountDownLatch(1)
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("反向RTCP包 #1")) {
+                    if (faultOnce.compareAndSet(false, true)) {
+                        throw IllegalStateException("synthetic receive callback failure")
+                    }
+                    secondReceived.countDown()
+                }
+                if (line.contains("反向 RTCP 接收异常")) errorLogged.countDown()
+            },
+        )
+        fun send(port: Int) {
+            val packet = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(
+                    java.net.DatagramPacket(
+                        packet,
+                        packet.size,
+                        java.net.InetAddress.getByName("127.0.0.1"),
+                        port,
+                    ),
+                )
+            }
+        }
+        try {
+            val firstPort = listener.start()
+            assertTrue(firstPort in 1..65535)
+            send(firstPort)
+            assertTrue("synthetic receiver failure must be observed", errorLogged.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+            // Catch logging can precede the receive thread's finally cleanup.
+            for (attempt in 1..100) {
+                if (listener.port == 0) break
+                Thread.sleep(10)
+            }
+            assertEquals("dead receiver must not advertise a live UDP port", 0, listener.port)
+            val secondPort = listener.start()
+            assertTrue("new listener must bind", secondPort in 1..65535)
+            send(secondPort)
+            assertTrue("replacement listener must receive", secondReceived.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+        } finally {
+            listener.close()
+        }
+        assertEquals(0, listener.port)
+    }
+
+    /**
+     * Deterministic race regression: diagnostic logging can block after a
+     * receive exception. The dying socket must already be invalidated, and
+     * the old thread must not clear the replacement listener afterwards.
+     */
+    @Test
+    fun blockedFailureLogDoesNotAdvertiseDeadPortOrLoseReplacement() {
+        val failureLogEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseFailureLog = java.util.concurrent.CountDownLatch(1)
+        val replacementReceived = java.util.concurrent.CountDownLatch(1)
+        val faultOnce = java.util.concurrent.atomic.AtomicBoolean(false)
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("反向RTCP包 #1")) {
+                    if (faultOnce.compareAndSet(false, true)) {
+                        throw IllegalStateException("synthetic callback failure")
+                    }
+                    replacementReceived.countDown()
+                }
+                if (line.contains("反向 RTCP 接收异常")) {
+                    failureLogEntered.countDown()
+                    check(releaseFailureLog.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        "test diagnostic callback was not released"
+                    }
+                }
+            },
+        )
+        fun send(port: Int) {
+            val bytes = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(java.net.DatagramPacket(
+                    bytes, bytes.size, java.net.InetAddress.getByName("127.0.0.1"), port,
+                ))
+            }
+        }
+        try {
+            val originalPort = listener.start()
+            assertTrue(originalPort in 1..65535)
+            send(originalPort)
+            assertTrue("failure log must be reached", failureLogEntered.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+            // The original receive thread is deliberately held in its error
+            // logger, so finally has not yet run.
+            assertEquals("dead receiver must be invalid before logging", 0, listener.port)
+            val replacementPort = listener.start()
+            assertTrue("fresh receiver must bind", replacementPort in 1..65535)
+            send(replacementPort)
+            assertTrue("replacement must receive while old logger is blocked",
+                replacementReceived.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            releaseFailureLog.countDown()
+            // Give the old thread a chance to complete its finally cleanup.
+            Thread.sleep(100)
+            assertEquals("old cleanup must not clear replacement", replacementPort, listener.port)
+        } finally {
+            releaseFailureLog.countDown()
+            listener.close()
+        }
+        assertEquals(0, listener.port)
+    }
+
+    /**
+     * Startup diagnostics execute after the socket is published but before
+     * its receive thread exists. A throwing callback must not leave a
+     * nonzero controlPort that SETUP could advertise without a receiver.
+     */
+    @Test
+    fun startupDiagnosticExceptionFailsClosedAndFreshStartReceives() {
+        val throwOnce = java.util.concurrent.atomic.AtomicBoolean(true)
+        val received = java.util.concurrent.CountDownLatch(1)
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("UDP 已监听") && throwOnce.compareAndSet(true, false)) {
+                    throw IllegalStateException("synthetic startup diagnostic failure")
+                }
+                if (line.contains("反向RTCP包 #1")) received.countDown()
+            },
+        )
+        try {
+            assertEquals("startup diagnostic failure must not advertise a port", 0, listener.start())
+            assertEquals(0, listener.port)
+            val recoveredPort = listener.start()
+            assertTrue("fresh start must bind after fail-closed", recoveredPort in 1..65535)
+            assertEquals(recoveredPort, listener.port)
+            val bytes = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(java.net.DatagramPacket(
+                    bytes, bytes.size, java.net.InetAddress.getByName("127.0.0.1"), recoveredPort,
+                ))
+            }
+            assertTrue("fresh receiver must process UDP", received.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+        } finally {
+            listener.close()
+        }
+        assertEquals(0, listener.port)
+    }
+
+    /**
+     * A receive callback can still be running after close() and a fresh start().
+     * Its old packet must not be reported against the replacement's timing
+     * window. Synthetic loopback only; does not validate VPN network binding.
+     */
+    @Test
+    fun retiredReceiverDoesNotReportWindowForReplacementSession() {
+        val oldPacketLogEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseOldPacketLog = java.util.concurrent.CountDownLatch(1)
+        val oldWindowReports = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("反向RTCP包 #1")) {
+                    oldPacketLogEntered.countDown()
+                    check(releaseOldPacketLog.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        "old packet callback was not released"
+                    }
+                }
+                if (line.contains("反向RTCP t=") && line.contains("接收累计=1")) {
+                    oldWindowReports.add(line)
+                }
+            },
+        )
+        try {
+            val oldPort = listener.start()
+            assertTrue(oldPort in 1..65535)
+            val packet = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(java.net.DatagramPacket(
+                    packet, packet.size, java.net.InetAddress.getByName("127.0.0.1"), oldPort,
+                ))
+            }
+            assertTrue("old receive callback must block", oldPacketLogEntered.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+            listener.close()
+            val newPort = listener.start()
+            assertTrue(newPort in 1..65535)
+            // Allow the replacement's monotonic window to advance past 1s.
+            // The retired thread would otherwise log its old count as t=1s.
+            Thread.sleep(1_250)
+            releaseOldPacketLog.countDown()
+            Thread.sleep(200)
+            assertTrue(
+                "retired receiver must not emit a window against replacement timing",
+                oldWindowReports.isEmpty(),
+            )
+            assertEquals(newPort, listener.port)
+        } finally {
+            releaseOldPacketLog.countDown()
+            listener.close()
+        }
+    }
+
+    /**
+     * Session counters and receive timestamps must belong to the owning
+     * socket. Closing a fresh listener with no packets must never inherit
+     * the previous listener's last-receive time or packet count.
+     */
+    @Test
+    fun replacementCloseReportsOnlyItsOwnReceiveState() {
+        val firstPacket = java.util.concurrent.CountDownLatch(1)
+        val closes = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("反向RTCP包 #1")) firstPacket.countDown()
+                if (line.contains("监听关闭 elapsedMs=")) closes.add(line)
+            },
+        )
+        try {
+            val firstPort = listener.start()
+            assertTrue(firstPort in 1..65535)
+            val bytes = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(java.net.DatagramPacket(
+                    bytes, bytes.size, java.net.InetAddress.getByName("127.0.0.1"), firstPort,
+                ))
+            }
+            assertTrue("first receiver must process one packet", firstPacket.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+            listener.close()
+            val secondPort = listener.start()
+            assertTrue(secondPort in 1..65535)
+            listener.close()
+            assertEquals(2, closes.size)
+            val reports = closes.toList()
+            assertTrue("first close must report its own packet", reports[0].contains("received=1 "))
+            assertTrue("first close must report its receive time", !reports[0].contains("lastGapMs=none"))
+            assertTrue("second close must have no packets", reports[1].contains("received=0 "))
+            assertTrue("second close must have no receive time", reports[1].contains("lastGapMs=none"))
+        } finally {
+            listener.close()
+        }
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
