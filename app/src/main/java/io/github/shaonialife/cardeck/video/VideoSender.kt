@@ -183,8 +183,15 @@ class VideoSender(
     // ---- 编码输出 → 协议封装发送 ----
 
     private fun drainEncoder() {
-        val codec = encoder ?: return
-        val output = socket?.getOutputStream() ?: return
+        val codec = encoder ?: run {
+            log("VIDEO DIAG #28: DRAIN_ABORTED phase=encoder-missing (no frame output)")
+            return
+        }
+        val output = socket?.getOutputStream() ?: run {
+            log("VIDEO DIAG #28: DRAIN_ABORTED phase=output-stream-missing (no frame output)")
+            return
+        }
+        log("VIDEO DIAG #28: DRAIN_ENTERED (no video frame proven yet)")
         val bufferInfo = MediaCodec.BufferInfo()
         try {
             while (running.get()) {
