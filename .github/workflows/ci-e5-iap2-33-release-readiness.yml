@@ -1,4 +1,4 @@
-name: E5 #33 ACK experiment source and release-chain preflight (no APK)
+name: 'E5 #33 ACK experiment source and release-chain preflight (no APK)'
 on:
   push:
     branches: [experiment/buick-e5-iap2-stale-ack-guard-33]
@@ -33,7 +33,6 @@ jobs:
           stable = subprocess.check_output(['git','show',f'origin/Buick-E5:{catalog}'], text=True)
           assert label in planned, 'PR #69 no longer contains exact trusted Chinese mapping'
           assert 'applicationId = "io.github.buick.e5.cardeck"' in Path('app/build.gradle.kts').read_text()
-          assert label not in stable or label in planned
           changed = set(subprocess.check_output(['git','diff','--name-only','origin/Buick-E5...HEAD'],text=True).splitlines())
           allowed = {
             '.github/workflows/ci-e5-iap2-stale-ack-33.yml',
@@ -90,3 +89,27 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Check modified Android source for Lint errors (inherited debt disclosed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug --stacktrace > "$RUNNER_TEMP/e5-33-lint.log" 2>&1
+          lint_rc=$?
+          set -e
+          if (( lint_rc != 0 )); then
+            python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          reports = sorted(Path('app/build/reports').glob('lint-results-debug*.xml'))
+          if not reports:
+              raise SystemExit('Lint failed without XML report')
+          issues = [x for x in ET.parse(reports[-1]).getroot().findall('issue') if x.get('severity','').lower() in ('error','fatal')]
+          changed = ('Iap2LinkEngine.kt',)
+          new = [x.get('id') for x in issues if any((loc.get('file') or '').endswith(changed) for loc in x.findall('location'))]
+          print(f'Inherited/unrelated Lint errors: {len(issues)-len(new)}; changed-source errors: {len(new)}')
+          if new:
+              raise SystemExit(f'Changed source Lint errors: {new}')
+          print('::warning::Full project Lint has inherited errors; this is NOT a full-Lint pass')
+          PY
+          fi
