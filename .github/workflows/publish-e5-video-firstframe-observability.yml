@@ -1,0 +1,179 @@
+name: E5 #28 first-frame observation - signed isolated experiment
+on:
+  push:
+    branches: [experiment/buick-e5-video-firstframe-observability]
+    paths:
+      - '.github/workflows/publish-e5-video-firstframe-observability.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt'
+  workflow_dispatch:
+concurrency:
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  signed-e5-observation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify one-time source snapshot, stable baseline and scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-video-firstframe-observability"
+          test "$(git rev-parse HEAD^)" = "9921685242a20cc7110d56b2803386d71e1fc58d"
+          git fetch origin Buick-E5 --no-tags
+          test "$(git rev-parse origin/Buick-E5)" = "8271f2a71be7b4acc740c2748bf3281810ea9aa1"
+          test "$(git merge-base origin/Buick-E5 HEAD)" = "8271f2a71be7b4acc740c2748bf3281810ea9aa1"
+          grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          files = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          expected = {
+              '.github/workflows/ci-e5-video-firstframe-observability.yml',
+              '.github/workflows/publish-e5-video-firstframe-observability.yml',
+              'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt',
+          }
+          assert files == expected, f'Unexpected changed paths: {sorted(files ^ expected)}'
+          sender = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt').read_text()
+          controller = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          tracker = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt').read_text()
+          for marker in ('NO_FIRST_FRAME_6S', 'NO_FRAMES_15S', 'FIRST_FRAME_FLUSHED',
+                         'DRAIN_ENTERED', 'START_ABORTED'):
+              assert marker in sender, marker
+          for marker in ('RECORD_RETURNED', 'SENDER_START_RESULT', 'SURFACE_ATTACH_BEGIN',
+                         'SURFACE_ATTACH_RESULT'):
+              assert marker in controller, marker
+          for forbidden in ('retireSession(', 'requestUI(', 'disconnect(', 'reconnect(',
+                            'Thread(', 'Socket(', 'MediaCodec', 'BluetoothAdapter'):
+              assert forbidden not in tracker, forbidden
+          print('One-time isolated E5 #28 observation scope verified')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Android JVM tests and Debug build
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Lint and changed-source error gate
+        shell: bash
+        run: |
+          set +e
+          ./gradlew :app:lintDebug
+          lint_rc=$?
+          set -e
+          if (( lint_rc != 0 )); then
+            python3 - <<'PY'
+          import pathlib, sys, xml.etree.ElementTree as ET
+          reports = sorted(pathlib.Path('app/build/reports').glob('lint-results-debug*.xml'))
+          if not reports:
+              sys.exit('Lint failed without a parseable report')
+          root = ET.parse(reports[-1]).getroot()
+          changed = ('SessionController.kt', 'VideoSender.kt', 'VideoFrameDiagnostics.kt')
+          new_errors, inherited = [], []
+          for issue in root.findall('issue'):
+              if issue.get('severity') != 'Error':
+                  continue
+              locations = [x.get('file', '').replace('\\', '/') for x in issue.findall('location')]
+              (new_errors if any(p.endswith(changed) for p in locations) else inherited).append(
+                  (issue.get('id'), locations))
+          for item in new_errors:
+              print('::error::Changed E5 observation source lint error:', item)
+          print(f'Inherited unrelated lint errors: {len(inherited)}; changed-source errors: {len(new_errors)}')
+          if new_errors:
+              sys.exit(1)
+          print('::warning::Full-project lint not clean; inherited errors not represented as passed')
+          PY
+          fi
+      - name: Restore existing production E5 signing identity
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/e5-observation.p12"
+          chmod 600 "$RUNNER_TEMP/e5-observation.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/e5-observation.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Allocate globally monotonic release version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/release/allocate_version.py
+          echo "SOURCE_BRANCH=experiment/buick-e5-video-firstframe-observability" >> "$GITHUB_ENV"
+      - name: Build signed experimental APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify APK identity, version, origin and exact E5 signing certificate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$AAPT" && test -x "$APKSIGNER"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          RES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$RES"
+          grep -Fq 'experiment/buick-e5-video-firstframe-observability' <<< "$RES"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/new-cert.txt"
+          if grep -qi 'CN=Android Debug' "$RUNNER_TEMP/new-cert.txt"; then exit 1; fi
+          gh release download buick-e5-latest --pattern 'CarDeck-Buick-E5.apk' --dir "$RUNNER_TEMP" --repo "$GITHUB_REPOSITORY"
+          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/CarDeck-Buick-E5.apk" > "$RUNNER_TEMP/old-cert.txt"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/new-cert.txt" | head -n 1)"
+          OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/old-cert.txt" | head -n 1)"
+          test -n "$NEW_CERT" && test -n "$OLD_CERT"
+          test "${NEW_CERT,,}" = "${OLD_CERT,,}"
+          OFFICIAL_CODE="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq '.body' | sed -n 's/^versionCode=//p' | head -n 1)"
+          [[ "$OFFICIAL_CODE" =~ ^[0-9]+$ ]]
+          (( CARDECK_BUILD_VERSION_CODE > OFFICIAL_CODE ))
+          cp "$APK" CarDeck-Buick-E5-Video-Observation.apk
+          sha256sum CarDeck-Buick-E5-Video-Observation.apk > CarDeck-Buick-E5-Video-Observation.apk.sha256
+      - name: Publish separate prerelease only, never E5 latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-video-firstframe-observability"
+          test "$SOURCE_BRANCH" = "$GITHUB_REF_NAME"
+          APK=CarDeck-Buick-E5-Video-Observation.apk
+          TAG="exp-buick-e5-video-firstframe-observability-$CARDECK_RELEASE_VERSION_NAME"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$SOURCE_BRANCH" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$(date -u +%FT%TZ)" "$APK" "$GITHUB_SHA"
+            printf '\n## #28 RECORD 后零帧诊断（未修复）\n'
+            printf '仅补充 RECORD、sender/start、虚拟屏附着、drain、首帧/停帧分层只读日志。无自动重连、无音视频协议或蓝牙/iAP2变更。源自 Draft PR #62 的受控签名快照。\n'
+            printf '\n## 验收与回退限制\n'
+            printf 'L3 尚未手机/实车验收，不得合并稳定 E5。仅在 B233 安全停车环境验证，先备份诊断资料。与正式 E5 同包名/签名且版本码更高，覆盖安装保留应用数据；Android 不支持直接覆盖降级回正式旧版，回退需等待更高版本码的稳定 E5 修复包，不得以卸载清数据冒充无损回滚。分别观察 RECORD 后是否启动编码器、Shizuku虚拟屏附着、首帧输出、车机是否实际显示，并单独记录 #33 的重连问题。\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "E5 #28 视频首帧只读诊断 $CARDECK_RELEASE_VERSION_NAME（实验）" \
+            --notes-file release-notes.txt --prerelease --latest=false
