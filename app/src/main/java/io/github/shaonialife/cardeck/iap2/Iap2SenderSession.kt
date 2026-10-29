@@ -319,7 +319,7 @@ class Iap2SenderSession(
         val wifiConfiguration = expect(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION, deadline)
         val wifi = parseWifiConfiguration(wifiConfiguration)
         log(
-            "iap2 rx=0x5703 ssid=${wifi.ssid} channel=${wifi.channel} " +
+            "iap2 rx=0x5703 ssidPresent=${wifi.ssid.isNotBlank()} channel=${wifi.channel} " +
                 "security=${wifi.securityType} psk=${if (wifi.passphrase.isEmpty()) "(空)" else "***"}",
         )
         // 真车死锁解药（catplay CarPlayInviter 实证）：车机在 WiFi 网络上发现手机的
@@ -815,7 +815,7 @@ class Iap2SenderSession(
         val name = params[0]?.value?.asStringOrEmpty()
         val model = params[1]?.value?.asStringOrEmpty()
         val manufacturer = params[2]?.value?.asStringOrEmpty()
-        log("iap2 rx=0x1d01 车机身份 name=$name model=$model manufacturer=$manufacturer")
+        log("iap2 rx=0x1d01 车机身份 namePresent=${!name.isNullOrBlank()} model=$model manufacturer=$manufacturer (name redacted)")
         // 参 6/7 = 车机声明「它会发送/它可接收」的消息 ID 清单。
         // 参 7（它可接收）直接告诉我们它是否认可 0x4300 —— 真车排查的关键证据。
         val sends = params[6]?.value?.asU16List()
