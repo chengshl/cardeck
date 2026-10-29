@@ -83,7 +83,7 @@ jobs:
           reports=sorted(Path('app/build/reports').glob('lint-results-debug*.xml'))
           if not reports: raise SystemExit('Lint failed without XML report')
           issues=[x for x in ET.parse(reports[-1]).getroot().findall('issue') if x.get('severity','').lower() in ('error','fatal')]
-          changed=[x.get('id') for x in issues if any((p.get('file') or '').endswith('Iap2LinkEngine.kt') for p in x.findall('location'))]
+          changed=[x.get('id') for x in issues if any((p.get('file') or '').endswith(('Iap2LinkEngine.kt','ExperimentProjectCatalog.kt')) for p in x.findall('location'))]
           if changed: raise SystemExit(f'Changed source Lint errors: {changed}')
           print(f'::warning::Full-project Lint has {len(issues)} inherited errors; not a full Lint pass')
           PY
