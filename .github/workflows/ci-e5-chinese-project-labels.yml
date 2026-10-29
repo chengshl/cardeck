@@ -84,6 +84,11 @@ jobs:
           assert 'fun name(sourceBranch: String)' in catalog
           # Known active #28 published experiment must render Chinese instead of English fallback.
           assert '"experiment/buick-e5-video-firstframe-observability" -> "视频首帧与停帧诊断（#28）"' in catalog
+          # Preflight the real sourceBranch planned for the isolated #33 ACK experiment.
+          assert '"experiment/buick-e5-iap2-stale-ack-guard-33" -> "iAP2 重连 ACK 防误确认（#33）"' in catalog
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt').read_text()
+          assert 'plannedAckGuardExperimentUsesExactChineseSourceAndCannotCrossSubscribe' in tests
+          assert 'source + "-extra"' in tests
           assert 'sourceBranch == selectedSource' in catalog
           assert 'ExperimentProjectCatalog.name(candidate.sourceBranch)' in history
           assert 'if (ReleaseBuildTime.metadata(body, "artifactKind") != "experiment") continue' in history
