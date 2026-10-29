@@ -167,6 +167,11 @@ class Iap2LinkEngineTest {
         assertTrue(firstTransmission.size > Iap2LinkEngine.HEADER_BYTES)
         assertEquals(109, firstTransmission[5].toInt() and 0xFF)
 
+        // ACK 110 is beyond the newest transmitted seq 109: never treat it
+        // as cumulative proof that seq 109 was received.
+        phone.feed(ackOnly(110), tick())
+        assertTrue(diagnostics.any { it.contains("class=future-unsent") && it.contains("ignored=true") })
+
         // Delayed ACK 90 is older than confirmed 108, not proof of receipt of 109.
         phone.feed(ackOnly(90), tick())
         assertTrue(diagnostics.any { it.contains("class=stale-or-backward") && it.contains("ignored=true") })
@@ -174,6 +179,36 @@ class Iap2LinkEngineTest {
         val retry = phone.takeOutput()
         assertTrue("seq 109 must remain eligible for retry", retry.size > Iap2LinkEngine.HEADER_BYTES)
         assertEquals(109, retry[5].toInt() and 0xFF)
+        assertFalse(phone.isDead)
+    }
+
+    @Test
+    fun futureAckAcrossSequenceWrapCannotSuppressRetry() {
+        val phone = Iap2LinkEngine()
+        val car = Iap2LinkEngine()
+        phone.start(0)
+        car.start(0)
+        exchangeUntilNormal(phone, car)
+
+        // 100..255 acknowledged, then 0 remains outstanding across wrap.
+        repeat(156) { index ->
+            assertTrue(phone.sendControl(Iap2Csm.encode(0x5200 + index), tick()))
+            exchange(phone, car)
+            assertEquals(1, pollControls(car).size)
+        }
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), tick()))
+        val first = phone.takeOutput()
+        assertTrue(first.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(0, first[5].toInt() and 0xFF)
+
+        val diagnostics = mutableListOf<String>()
+        phone.onLinkAckDiagnostic = { diagnostics += it }
+        phone.feed(ackOnly(1), tick())
+        assertTrue(diagnostics.any { it.contains("class=future-unsent") && it.contains("ignored=true") })
+        phone.advanceTime(10_000L)
+        val retry = phone.takeOutput()
+        assertTrue("wrapped seq 0 must remain eligible for retry", retry.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(0, retry[5].toInt() and 0xFF)
         assertFalse(phone.isDead)
     }
 
