@@ -270,6 +270,49 @@ class AudioReverseControlPortTest {
         }
     }
 
+    /**
+     * Session counters and receive timestamps must belong to the owning
+     * socket. Closing a fresh listener with no packets must never inherit
+     * the previous listener's last-receive time or packet count.
+     */
+    @Test
+    fun replacementCloseReportsOnlyItsOwnReceiveState() {
+        val firstPacket = java.util.concurrent.CountDownLatch(1)
+        val closes = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("反向RTCP包 #1")) firstPacket.countDown()
+                if (line.contains("监听关闭 elapsedMs=")) closes.add(line)
+            },
+        )
+        try {
+            val firstPort = listener.start()
+            assertTrue(firstPort in 1..65535)
+            val bytes = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(java.net.DatagramPacket(
+                    bytes, bytes.size, java.net.InetAddress.getByName("127.0.0.1"), firstPort,
+                ))
+            }
+            assertTrue("first receiver must process one packet", firstPacket.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+            listener.close()
+            val secondPort = listener.start()
+            assertTrue(secondPort in 1..65535)
+            listener.close()
+            assertEquals(2, closes.size)
+            val reports = closes.toList()
+            assertTrue("first close must report its own packet", reports[0].contains("received=1 "))
+            assertTrue("first close must report its receive time", !reports[0].contains("lastGapMs=none"))
+            assertTrue("second close must have no packets", reports[1].contains("received=0 "))
+            assertTrue("second close must have no receive time", reports[1].contains("lastGapMs=none"))
+        } finally {
+            listener.close()
+        }
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
