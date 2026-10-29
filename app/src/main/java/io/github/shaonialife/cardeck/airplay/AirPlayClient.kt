@@ -478,12 +478,11 @@ class AirPlayClient(
                 try {
                     val (status, body) = request("POST", "/feedback", ByteArray(0))
                     if (endpoint.isBuickB233 && status.contains("200")) {
+                        // T86: PCM streams use type=100, AAC uses type=102.
+                        // Read-only telemetry: this does not change /feedback transport.
                         val sampleTime = runCatching {
                             val parsed = BinaryPlist.parse(body) as? Map<*, *>
-                            val streams = parsed?.get("streams") as? List<*>
-                            (streams?.firstOrNull { (it as? Map<*, *>)?.get("type") == 102L ||
-                                (it as? Map<*, *>)?.get("type") == 102 } as? Map<*, *>)
-                                ?.get("sampleTime").let { it as? Number }?.toLong()
+                            AudioFeedbackSampleTime.fromParsedFeedback(parsed)
                         }.getOrNull()
                         audioControlLiveness.onFeedback(sampleTime)
                         if (audioFailureTrace != null && sent + 1 in listOf(5, 10, 15, 20, 25)) {
