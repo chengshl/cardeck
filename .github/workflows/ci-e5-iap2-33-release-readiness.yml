@@ -109,7 +109,7 @@ jobs:
             if grep -qi 'CN=Android Debug' "$RUNNER_TEMP/e5-chain/$code/cert.txt"; then
               echo "::error::Debug certificate in signed E5 chain"; exit 1
             fi
-            cert="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\\1/p' "$RUNNER_TEMP/e5-chain/$code/cert.txt" | head -n 1)"
+            cert="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/e5-chain/$code/cert.txt" | head -n 1)"
             [[ "$cert" =~ ^[[:xdigit:]]{64}$ ]]
             if [[ -z "$cert_first" ]]; then cert_first="$cert"; else
               test "${cert,,}" = "${cert_first,,}"
