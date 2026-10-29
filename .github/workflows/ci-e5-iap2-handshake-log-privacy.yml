@@ -52,6 +52,10 @@ jobs:
           assert '原始体=" + frame.body.joinToString' not in new
           assert '原始体长度=${frame.body.size}' in new
           assert 'mac=$mac' not in new
+          assert 'ssid=${wifi.ssid}' not in new
+          assert 'ssidPresent=${wifi.ssid.isNotBlank()}' in new
+          assert '车机身份 name=$name' not in new
+          assert '车机身份 namePresent=${!name.isNullOrBlank()}' in new
           # Non-log transport/handshake code must stay byte-identical.
           def drop_logs(s):
               lines = s.splitlines()
@@ -67,7 +71,11 @@ jobs:
                   'device=${endpoint.deviceIdentifier} publicKey=' in line or
                   'deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()} publicKeyPresent=' in line or
                   'srcvers=${endpoint.sourceVersion} ips=' in line or
-                  'srcvers=${endpoint.sourceVersion} ipCount=' in line
+                  'srcvers=${endpoint.sourceVersion} ipCount=' in line or
+                  'iap2 rx=0x5703 ssid=' in line or
+                  'iap2 rx=0x5703 ssidPresent=' in line or
+                  'iap2 rx=0x1d01 车机身份 name=' in line or
+                  'iap2 rx=0x1d01 车机身份 namePresent=' in line
               )]
               return '\n'.join(lines)
           assert drop_logs(old) == drop_logs(new), 'unexpected non-log iAP2 behavior diff'
