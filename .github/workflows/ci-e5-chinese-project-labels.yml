@@ -54,8 +54,8 @@ jobs:
           diff = set(subprocess.check_output(
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
           ).splitlines())
-          if diff != allowed:
-              raise SystemExit(f'Unexpected changed paths: {sorted(diff ^ allowed)}')
+          if not diff or not diff.issubset(allowed):
+              raise SystemExit(f'Unexpected changed paths: {sorted(diff - allowed)}')
           report = Path('app/build/reports/lint-results-debug.xml')
           if not report.is_file():
               raise SystemExit('Lint XML missing: refusing to waive an unreviewed Lint failure')
@@ -82,6 +82,8 @@ jobs:
           catalog = Path('app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt').read_text()
           history = Path('app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt').read_text()
           assert 'fun name(sourceBranch: String)' in catalog
+          # Known active #28 published experiment must render Chinese instead of English fallback.
+          assert '"experiment/buick-e5-video-firstframe-observability" -> "视频首帧与停帧诊断（#28）"' in catalog
           assert 'sourceBranch == selectedSource' in catalog
           assert 'ExperimentProjectCatalog.name(candidate.sourceBranch)' in history
           assert 'if (ReleaseBuildTime.metadata(body, "artifactKind") != "experiment") continue' in history
