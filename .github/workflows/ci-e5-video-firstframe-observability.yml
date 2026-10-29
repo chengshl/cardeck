@@ -50,6 +50,7 @@ jobs:
           tracker = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt').read_text()
           controller = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
           assert 'RECORD_RETURNED' in controller and 'SENDER_START_RESULT' in controller
+          assert 'SURFACE_ATTACH_BEGIN' in controller and 'SURFACE_ATTACH_RESULT' in controller
           assert 'val videoStartSucceeded = videoSender?.start' in controller
           assert 'NO_FIRST_FRAME_6S' in sender and 'NO_FRAMES_15S' in sender
           assert 'FIRST_FRAME_FLUSHED' in sender and 'keepAliveFlushed(now)' in sender
