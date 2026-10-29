@@ -47,6 +47,10 @@ jobs:
           assert 'ipCount=${endpoint.ipAddresses.size}' in new
           assert 'ssidPresent=${endpoint.ssid.isNotBlank()}' in new
           assert 'deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()}' in new
+          assert '原始体=" + frame.body.joinToString' in old
+          assert '原始体=" + frame.body.joinToString' not in new
+          assert '原始体长度=${frame.body.size}' in new
+          assert 'mac=$mac' not in new
           # Non-log transport/handshake code must stay byte-identical.
           def drop_logs(s):
               lines = s.splitlines()
@@ -55,7 +59,10 @@ jobs:
                   'log("iap2 Buick/GM T10: 0x4300 参数字节数' in line or
                   'log("iap2 Buick/GM T19: parsed ' in line or
                   'val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)' in line or
-                  'Never log the encoded 0x4300 body' in line
+                  'Never log the encoded 0x4300 body' in line or
+                  'log("iap2 0x1d01 原始体' in line or
+                  'log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC' in line or
+                  'Identification may include receiver-specific identifiers' in line
               )]
               return '\n'.join(lines)
           assert drop_logs(old) == drop_logs(new), 'unexpected non-log iAP2 behavior diff'
