@@ -1,0 +1,158 @@
+name: E5 #33 signed ACK experiment (guarded)
+on:
+  push:
+    branches: [experiment/buick-e5-iap2-stale-ack-guard-33]
+    paths:
+      - '.github/release-intents/e5-iap2-33-sign.txt'
+concurrency:
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  signed-e5-ack-33:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify actual source, Chinese mapping, current official and recovery branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="experiment/buick-e5-iap2-stale-ack-guard-33"
+          RECOVERY="experiment/buick-e5-iap2-ack-33-stable-restore"
+          test "$GITHUB_REF_NAME" = "$SOURCE"
+          test "$(cat .github/release-intents/e5-iap2-33-sign.txt)" = "source=$SOURCE"
+          git fetch --no-tags origin Buick-E5 "$RECOVERY"
+          STABLE="$(git rev-parse origin/Buick-E5)"
+          test "$(git merge-base HEAD origin/Buick-E5)" = "06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
+          test "$(git rev-parse origin/$RECOVERY^)" = "$STABLE"
+          test "$(git diff --name-only "$STABLE" "origin/$RECOVERY")" = ".github/workflows/publish-e5-iap2-ack-33-stable-restore.yml"
+          test -z "$(git diff --name-only "$STABLE" "origin/$RECOVERY" -- app tools)"
+          python3 - <<'PY'
+          import subprocess
+          changed=set(subprocess.check_output(['git','diff','--name-only','06cdfdd5b3f58e797e68c57e2a4bc43820d19de0...HEAD'],text=True).splitlines())
+          allowed={
+            '.github/workflows/ci-e5-iap2-stale-ack-33.yml',
+            '.github/workflows/ci-e5-iap2-33-release-readiness.yml',
+            '.github/workflows/publish-e5-iap2-ack-33.yml',
+            '.github/release-intents/e5-iap2-33-sign.txt',
+            'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt',
+            'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt',
+          }
+          assert changed == allowed, f'Unexpected source changes: {sorted(changed ^ allowed)}'
+          catalog=subprocess.check_output(['git','show','origin/Buick-E5:app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt'],text=True)
+          assert '"experiment/buick-e5-iap2-stale-ack-guard-33" -> "iAP2 重连 ACK 防误确认（#33）"' in catalog
+          PY
+          OFFICIAL="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          grep -Fxq "commit=$STABLE" <<< "$OFFICIAL"
+          OFFICIAL_CODE="$(sed -n 's/^versionCode=//p' <<< "$OFFICIAL" | head -n 1)"
+          [[ "$OFFICIAL_CODE" =~ ^[0-9]+$ ]]
+          (( OFFICIAL_CODE > 89204866 ))
+          echo "OFFICIAL_CODE=$OFFICIAL_CODE" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Full Android JUnit and Debug build
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Modified iAP2 source Lint error gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug > "$RUNNER_TEMP/e5-ack-lint.log" 2>&1
+          rc=$?
+          set -e
+          if (( rc != 0 )); then
+            python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          reports=sorted(Path('app/build/reports').glob('lint-results-debug*.xml'))
+          if not reports: raise SystemExit('Lint failed without XML report')
+          issues=[x for x in ET.parse(reports[-1]).getroot().findall('issue') if x.get('severity','').lower() in ('error','fatal')]
+          changed=[x.get('id') for x in issues if any((p.get('file') or '').endswith('Iap2LinkEngine.kt') for p in x.findall('location'))]
+          if changed: raise SystemExit(f'Changed source Lint errors: {changed}')
+          print(f'::warning::Full-project Lint has {len(issues)} inherited errors; not a full Lint pass')
+          PY
+          fi
+      - name: Restore production E5 signing identity
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/e5-ack-33.p12"
+          chmod 600 "$RUNNER_TEMP/e5-ack-33.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/e5-ack-33.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Allocate global monotonic version and bind actual experiment source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/release/allocate_version.py
+          echo "SOURCE_BRANCH=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+      - name: Build signed APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify package, code, source, signing certificate and SHA256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -s "$APK" && test -x "$AAPT" && test -x "$APKSIGNER"
+          (( CARDECK_BUILD_VERSION_CODE > OFFICIAL_CODE && CARDECK_BUILD_VERSION_CODE > 89204866 ))
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          RES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$RES"
+          grep -Fq "$SOURCE_BRANCH" <<< "$RES"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/new-cert.txt"
+          ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/new-cert.txt"
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" --pattern 'CarDeck-Buick-E5.apk' --dir "$RUNNER_TEMP"
+          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/CarDeck-Buick-E5.apk" > "$RUNNER_TEMP/official-cert.txt"
+          NEW="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/new-cert.txt" | head -n 1)"
+          OLD="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/official-cert.txt" | head -n 1)"
+          [[ "$NEW" =~ ^[[:xdigit:]]{64}$ && "$OLD" =~ ^[[:xdigit:]]{64}$ ]]
+          test "$NEW" = "$OLD"
+          cp "$APK" CarDeck-Buick-E5-IAP2-ACK-Guard.apk
+          sha256sum CarDeck-Buick-E5-IAP2-ACK-Guard.apk > CarDeck-Buick-E5-IAP2-ACK-Guard.apk.sha256
+      - name: Publish only #33 isolated prerelease, never official latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$SOURCE_BRANCH" = "$GITHUB_REF_NAME"
+          TAG="exp-buick-e5-iap2-stale-ack-guard-33-$CARDECK_RELEASE_VERSION_NAME"
+          APK="CarDeck-Buick-E5-IAP2-ACK-Guard.apk"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then exit 1; fi
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\n' "$SOURCE_BRANCH"
+            printf 'versionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$(date -u +%FT%TZ)" "$APK" "$GITHUB_SHA"
+            printf '\n## #33 iAP2 ACK 防误确认（隔离 L3）\n'
+            printf '仅保护过期/未来 ACK，不代表 B233 历史 0x4300/0x4301 根因已证实。须先确认更高版本码稳定恢复包成功签名发布，再安排安装/实车验收；禁止卸载清数据降级。\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "E5 #33 iAP2 ACK 防误确认（隔离实验）" \
+            --notes-file release-notes.txt --prerelease --latest=false
