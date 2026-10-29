@@ -7,6 +7,7 @@ on:
     paths:
       - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
       - 'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt'
       - '.github/workflows/ci-e5-video-firstframe-observability.yml'
   workflow_dispatch:
@@ -40,12 +41,16 @@ jobs:
           allowed = {
               'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt',
               'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt',
               'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt',
               '.github/workflows/ci-e5-video-firstframe-observability.yml',
           }
           assert files == allowed, f'Unexpected E5 runtime changes: {sorted(files ^ allowed)}'
           sender = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt').read_text()
           tracker = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt').read_text()
+          controller = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          assert 'RECORD_RETURNED' in controller and 'SENDER_START_RESULT' in controller
+          assert 'val videoStartSucceeded = videoSender?.start' in controller
           assert 'NO_FIRST_FRAME_6S' in sender and 'NO_FRAMES_15S' in sender
           assert 'FIRST_FRAME_FLUSHED' in sender and 'keepAliveFlushed(now)' in sender
           assert 'onEnded?.invoke()' in sender
