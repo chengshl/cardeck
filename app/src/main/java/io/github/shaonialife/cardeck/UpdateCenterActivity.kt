@@ -229,7 +229,7 @@ class UpdateCenterActivity : AppCompatActivity() {
         currentChannelLabel.text = if (!isExperiment) {
             "当前检查通道：正式分支（你手动选择的渠道优先）"
         } else if (ownProject != null) {
-            "当前检查通道：试验分支\n自动关注：$ownProject"
+            "当前检查通道：试验分支\n当前安装项目：${ExperimentProjectCatalog.name(ownProject)}"
         } else {
             "当前检查通道：试验分支（仅手动检查）"
         }
