@@ -2811,6 +2811,18 @@ class AirPlayClient(
         head: String,
     ) {
         val message = RtspMessage(statusLine, body, head)
+        // T87: observe a peer-initiated TEARDOWN *before* matching CSeq.
+        // The receiver can reuse a locally pending CSeq, in which case the
+        // unmatched-message path below would never reveal its request.
+        // Classification retains no target/header/body and does not alter
+        // RTSP acknowledgements, queues, socket lifetime, or protocol output.
+        if (endpoint.isBuickB233 && audioFailureTrace != null &&
+            RtspPeerRequestEvidence.classify(statusLine) == RtspPeerRequestEvidence.Kind.TEARDOWN
+        ) {
+            val matchedPending = message.cseq?.let { pendingResponses.containsKey(it) } == true
+            audioFailureTrace?.event("rtsp_peer_teardown", "pendingCseqMatch=$matchedPending")
+            log("AUDIO T87: B233 peer RTSP TEARDOWN observed pendingCseqMatch=$matchedPending")
+        }
         message.cseq?.let { responseHeads[it] = head }
         val queue = message.cseq?.let { pendingResponses[it] }
         if (queue != null) {
