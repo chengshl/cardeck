@@ -85,6 +85,9 @@ internal class AudioReverseControlPort(
             val buffer = ByteArray(2_048)
             var nextReportSecond = 1L
             fun reportWindow() {
+                // A retired receiver must not report a stale packet window using
+                // the replacement listener's openedAtNanos / lastReceiveNanos.
+                if (socket !== datagram || datagram.isClosed) return
                 val now = System.nanoTime()
                 val elapsedSecond = ((now - openedAtNanos) / 1_000_000_000L).coerceAtLeast(0L)
                 if (elapsedSecond < nextReportSecond || elapsedSecond > 30L) return
