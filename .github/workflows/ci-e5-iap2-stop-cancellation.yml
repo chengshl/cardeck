@@ -1,0 +1,64 @@
+name: E5 iAP2 stop cancellation isolation (#34)
+on:
+  push:
+    branches: [work/e5-iap2-stop-cancellation-convergence-34]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWait.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWaitTest.kt'
+      - '.github/workflows/ci-e5-iap2-stop-cancellation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cancellation-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Enforce fresh E5 base and narrow #34 change scope
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          assert base == '8271f2a71be7b4acc740c2748bf3281810ea9aa1', f'E5 baseline changed: {base}'
+          files = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          allowed = {
+              'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWait.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWaitTest.kt',
+              '.github/workflows/ci-e5-iap2-stop-cancellation.yml',
+          }
+          assert files == allowed, f'Unexpected changes: {sorted(files ^ allowed)}'
+          root = Path('app/src/main/java/io/github/shaonialife/cardeck')
+          helper = (root / 'iap2/Iap2InterruptibleWait.kt').read_text()
+          sender = (root / 'iap2/Iap2SenderSession.kt').read_text()
+          client = (root / 'bt/Iap2BluetoothClient.kt').read_text()
+          assert 'Thread.currentThread().interrupt()' in helper
+          assert 'throw IOException(' in helper
+          assert 'Iap2InterruptibleWait.sleep(1500L)' in sender
+          assert 'Iap2InterruptibleWait.sleep(600)' in client
+          assert 'Thread.sleep(1500L)' not in sender
+          assert 'Thread.sleep(600)' not in client
+          assert 'channel.runSenderSession(' in client
+          assert 'activeChannel = null' in client and 'channel.close()' in client
+          print('Stop-cancellation only; no protocol timing, Bluetooth profile or reconnect behavior expanded')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests and Android Debug compilation (no APK publication)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
