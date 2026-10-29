@@ -226,7 +226,7 @@ internal object ExperimentalUpdates {
                             val status = if (ExperimentInstallPolicy.mode(installed, candidate.versionCode) ==
                                 ExperimentInstallPolicy.Mode.UPGRADE) "可升级" else "仅下载"
                             UpdateDialogUi.Choice(
-                                title = candidate.sourceBranch.substringAfterLast('/'),
+                                title = ExperimentProjectCatalog.name(candidate.sourceBranch),
                                 detail = candidate.versionName + "\n" +
                                     ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName),
                                 status = status,
