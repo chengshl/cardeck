@@ -21,7 +21,9 @@ jobs:
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-iap2-stale-ack-guard-33"
           git fetch --no-tags origin Buick-E5 work/e5-iap2-stale-ack-guard-33 fix/e5-iap2-stale-ack-chinese-label-33
           test "$(git rev-parse origin/Buick-E5)" = "06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
-          test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/work/e5-iap2-stale-ack-guard-33)"
+          test "$(git rev-parse origin/work/e5-iap2-stale-ack-guard-33)" = "65ea8768d7792855e6bfa8e8b043b22707fba41a"
+          git merge-base --is-ancestor origin/work/e5-iap2-stale-ack-guard-33 HEAD
+          test "$(git diff --name-only origin/work/e5-iap2-stale-ack-guard-33...HEAD)" = ".github/workflows/ci-e5-iap2-33-release-readiness.yml"
           test "$(git merge-base HEAD origin/Buick-E5)" = "$(git rev-parse origin/Buick-E5)"
           python3 - <<'PY'
           from pathlib import Path
