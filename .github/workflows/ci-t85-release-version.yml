@@ -1,0 +1,57 @@
+name: T85 release-only version migration checks (#39)
+on:
+  push:
+    branches: [fix/t85-global-release-version-39]
+  pull_request:
+    branches: [experiment/buick-test-t76-aac-causality-observe]
+    paths:
+      - 'tools/release/**'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/update/**'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/update/**'
+      - '.github/workflows/publish-t85-delayed-audio-claim.yml'
+      - '.github/workflows/ci-t85-release-version.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  global-allocator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Global release numbering regression
+        run: |
+          python3 -m compileall -q tools/release
+          python3 -m unittest discover -s tools/release -p 'test_*.py' -v
+      - name: Validate T85 signing scope and no automatic release
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          workflow = Path(".github/workflows/publish-t85-delayed-audio-claim.yml").read_text()
+          assert "group: cardeck-global-signed-release-version" in workflow
+          assert "cancel-in-progress: false" in workflow
+          assert "python3 tools/release/allocate_version.py" in workflow
+          assert "tools/release/T85_RELEASE_REQUEST.md" in workflow
+          assert "'\.github/workflows/publish-t85-delayed-audio-claim.yml'" not in workflow.split("workflow_dispatch:")[0]
+          assert 'CARDECK_BUILD_VERSION_CODE > 89165049' in workflow
+          assert 'BUILD_EPOCH="$(date -u +%s)"' not in workflow
+          assert workflow.count("gh release create") == 1
+          assert 'sourceBranch=%s' in workflow
+          assert 'gh release download exp-buick-test-t84-20261028224929' in workflow
+          PY
+  android-experiment-version-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Android unit tests and Lint (no signed APK)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug --stacktrace
