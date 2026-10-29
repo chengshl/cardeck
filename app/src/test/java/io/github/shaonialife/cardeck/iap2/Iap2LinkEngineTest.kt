@@ -236,6 +236,49 @@ class Iap2LinkEngineTest {
         assertFalse(phone.isDead)
     }
 
+    @Test
+    fun invalidAckMustNotDrainQueuedControlFrame() {
+        val phone = Iap2LinkEngine(maxOutgoing = 2)
+        val car = Iap2LinkEngine(maxOutgoing = 2)
+        phone.start(0)
+        car.start(0)
+        exchangeUntilNormal(phone, car)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+        phone.takeOutput() // discard any final handshake ACK
+        car.takeOutput()
+
+        // With window=2, seq100 and seq101 are sent; seq102 must wait for a real ACK.
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), tick()))
+        val first = phone.takeOutput()
+        assertTrue(first.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(100, first[5].toInt() and 0xFF)
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4301), tick()))
+        val second = phone.takeOutput()
+        assertTrue(second.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(101, second[5].toInt() and 0xFF)
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4302), tick()))
+        assertTrue("seq102 must remain queued while window is full", phone.takeOutput().isEmpty())
+
+        val diagnostics = mutableListOf<String>()
+        phone.onLinkAckDiagnostic = { diagnostics += it }
+        phone.feed(ackOnly(103), tick()) // ACK for a packet not yet sent
+        phone.feed(ackOnly(90), tick())  // delayed ACK older than the current watermark
+        assertTrue(diagnostics.any { it.contains("class=future-unsent") && it.contains("ignored=true") })
+        assertTrue(diagnostics.any { it.contains("class=stale-or-backward") && it.contains("ignored=true") })
+        assertTrue("invalid ACKs must not flush seq102", phone.takeOutput().isEmpty())
+
+        // The outstanding packet still retries. Only a valid ACK100 can open a slot.
+        phone.advanceTime(10_000L)
+        val retry = phone.takeOutput()
+        assertTrue(retry.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(100, retry[5].toInt() and 0xFF)
+        phone.feed(ackOnly(100), tick())
+        val queued = phone.takeOutput()
+        assertTrue("valid ACK must release the queued frame", queued.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(102, queued[5].toInt() and 0xFF)
+        assertFalse(phone.isDead)
+    }
+
     private fun ackOnly(ack: Int): ByteArray {
         val frame = ByteArray(Iap2LinkEngine.HEADER_BYTES)
         frame[0] = 0xFF.toByte()
