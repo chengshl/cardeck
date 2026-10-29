@@ -11,6 +11,10 @@ on:
       - 'README.md'
       - 'SECURITY.md'
       - 'DISCLAIMER.md'
+      # CI-only release guard changes must not trigger a signed E5 APK.
+      - '.github/workflows/build-buick-e5.yml'
+      - '.github/workflows/ci-e5-release-preflight.yml'
+      - '.github/scripts/test_e5_release_preflight.py'
 
 concurrency:
   group: cardeck-global-signed-release-version
@@ -86,12 +90,48 @@ jobs:
           BADGING="$("$AAPT" dump badging "$APK")"
           grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
           grep -Fq "application-label:'CarDeck-Buick-E5'" <<< "$BADGING"
+          # Validate the real APK rather than assuming Gradle got the env variables.
+          test "$CARDECK_RELEASE_BRANCH" = "Buick-E5"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
           MANIFEST="$("$AAPT" dump xmltree "$APK" AndroidManifest.xml)"
           grep -Fq 'io.github.shaonialife.cardeck.SenderApp' <<< "$MANIFEST"
           grep -Fq 'io.github.shaonialife.cardeck.MainActivity' <<< "$MANIFEST"
           grep -Fq 'io.github.shaonialife.cardeck.EntryConfigActivity' <<< "$MANIFEST"
           grep -Fq 'io.github.shaonialife.cardeck.service.GatewayLogService' <<< "$MANIFEST"
           echo "Verified independent APK identity: Buick-E5"
+      - name: Verify E5 production certificate against previously published signed APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$APKSIGNER" && test -s "$APK"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/e5-new-certificate.txt"
+          if grep -qi 'CN=Android Debug' "$RUNNER_TEMP/e5-new-certificate.txt"; then
+            echo "::error::Refusing an Android Debug certificate for E5 official release"
+            exit 1
+          fi
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/e5-new-certificate.txt" | head -n 1)"
+          test -n "$NEW_CERT" || { echo "::error::Unable to parse signed E5 certificate"; exit 1; }
+
+          # E5 has an existing official release. Missing history is an error, not
+          # permission to silently change the signing key or install identity.
+          mkdir -p "$RUNNER_TEMP/e5-previous-official"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$APK_NAME" --dir "$RUNNER_TEMP/e5-previous-official"
+          OLD_APK="$RUNNER_TEMP/e5-previous-official/$APK_NAME"
+          test -s "$OLD_APK"
+          "$APKSIGNER" verify --verbose --print-certs "$OLD_APK" > "$RUNNER_TEMP/e5-previous-certificate.txt"
+          OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/e5-previous-certificate.txt" | head -n 1)"
+          test -n "$OLD_CERT" || { echo "::error::Unable to parse previous E5 certificate"; exit 1; }
+          if [[ "${NEW_CERT,,}" != "${OLD_CERT,,}" ]]; then
+            echo "::error::E5 production signing certificate differs from the existing APK; refusing release"
+            exit 1
+          fi
+          echo "E5 APK version and signing certificate preflight passed"
       - uses: actions/upload-artifact@v4
         with:
           name: CarDeck-${{ github.ref_name }}-${{ github.run_id }}

@@ -1,0 +1,25 @@
+name: Buick-E5 signed APK preflight regression (#39)
+on:
+  push:
+    branches: [fix/e5-signed-apk-preflight-39]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - '.github/workflows/build-buick-e5.yml'
+      - '.github/workflows/ci-e5-release-preflight.yml'
+      - '.github/scripts/test_e5_release_preflight.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  e5-release-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify E5 signed workflow protection and no auto-release
+        run: python3 -m unittest discover -s .github/scripts -p 'test_e5_release_preflight.py' -v
+      - name: Regress global E5 allocator and monotonic version codes
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
