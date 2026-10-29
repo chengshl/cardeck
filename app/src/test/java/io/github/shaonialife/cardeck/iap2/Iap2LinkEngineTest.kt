@@ -145,6 +145,51 @@ class Iap2LinkEngineTest {
         assertEquals(Iap2LinkEngine.State.NORMAL, car.state)
     }
 
+    @Test
+    fun staleAckCannotConfirmPending109OrSuppressRetransmission() {
+        val phone = Iap2LinkEngine()
+        val car = Iap2LinkEngine()
+        phone.start(0)
+        car.start(0)
+        exchangeUntilNormal(phone, car)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+
+        // Initial data sequence is 100. Confirm 100..108, then leave 109 pending.
+        repeat(9) { index ->
+            assertTrue(phone.sendControl(Iap2Csm.encode(0x5100 + index), tick()))
+            exchange(phone, car)
+            assertEquals(1, pollControls(car).size)
+        }
+        val diagnostics = mutableListOf<String>()
+        phone.onLinkAckDiagnostic = { diagnostics += it }
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), tick()))
+        val firstTransmission = phone.takeOutput()
+        assertTrue(firstTransmission.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(109, firstTransmission[5].toInt() and 0xFF)
+
+        // Delayed ACK 90 is older than confirmed 108, not proof of receipt of 109.
+        phone.feed(ackOnly(90), tick())
+        assertTrue(diagnostics.any { it.contains("class=stale-or-backward") && it.contains("ignored=true") })
+        phone.advanceTime(10_000L)
+        val retry = phone.takeOutput()
+        assertTrue("seq 109 must remain eligible for retry", retry.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(109, retry[5].toInt() and 0xFF)
+        assertFalse(phone.isDead)
+    }
+
+    private fun ackOnly(ack: Int): ByteArray {
+        val frame = ByteArray(Iap2LinkEngine.HEADER_BYTES)
+        frame[0] = 0xFF.toByte()
+        frame[1] = 0x5A
+        frame[3] = Iap2LinkEngine.HEADER_BYTES.toByte()
+        frame[4] = 0x40
+        frame[5] = 99.toByte()
+        frame[6] = ack.toByte()
+        val checksum = (0 until Iap2LinkEngine.HEADER_BYTES - 1).sumOf { frame[it].toInt() and 0xFF }
+        frame[Iap2LinkEngine.HEADER_BYTES - 1] = (-checksum).toByte()
+        return frame
+    }
+
     // ---- 工具 ----
 
     private fun exchange(
