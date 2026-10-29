@@ -111,6 +111,66 @@ class AudioReverseControlPortTest {
         assertEquals(0, listener.port)
     }
 
+    /**
+     * Deterministic race regression: diagnostic logging can block after a
+     * receive exception. The dying socket must already be invalidated, and
+     * the old thread must not clear the replacement listener afterwards.
+     */
+    @Test
+    fun blockedFailureLogDoesNotAdvertiseDeadPortOrLoseReplacement() {
+        val failureLogEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseFailureLog = java.util.concurrent.CountDownLatch(1)
+        val replacementReceived = java.util.concurrent.CountDownLatch(1)
+        val faultOnce = java.util.concurrent.atomic.AtomicBoolean(false)
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                if (line.contains("反向RTCP包 #1") && faultOnce.compareAndSet(false, true)) {
+                    throw IllegalStateException("synthetic callback failure")
+                }
+                if (line.contains("反向 RTCP 接收异常")) {
+                    failureLogEntered.countDown()
+                    check(releaseFailureLog.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        "test diagnostic callback was not released"
+                    }
+                }
+                if (line.contains("反向RTCP包 #2")) replacementReceived.countDown()
+            },
+        )
+        fun send(port: Int) {
+            val bytes = byteArrayOf(0x80.toByte(), 0xD3.toByte(), 0x00, 0x00)
+            java.net.DatagramSocket().use { sender ->
+                sender.send(java.net.DatagramPacket(
+                    bytes, bytes.size, java.net.InetAddress.getByName("127.0.0.1"), port,
+                ))
+            }
+        }
+        try {
+            val originalPort = listener.start()
+            assertTrue(originalPort in 1..65535)
+            send(originalPort)
+            assertTrue("failure log must be reached", failureLogEntered.await(
+                3, java.util.concurrent.TimeUnit.SECONDS,
+            ))
+            // The original receive thread is deliberately held in its error
+            // logger, so finally has not yet run.
+            assertEquals("dead receiver must be invalid before logging", 0, listener.port)
+            val replacementPort = listener.start()
+            assertTrue("fresh receiver must bind", replacementPort in 1..65535)
+            send(replacementPort)
+            assertTrue("replacement must receive while old logger is blocked",
+                replacementReceived.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            releaseFailureLog.countDown()
+            // Give the old thread a chance to complete its finally cleanup.
+            Thread.sleep(100)
+            assertEquals("old cleanup must not clear replacement", replacementPort, listener.port)
+        } finally {
+            releaseFailureLog.countDown()
+            listener.close()
+        }
+        assertEquals(0, listener.port)
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
