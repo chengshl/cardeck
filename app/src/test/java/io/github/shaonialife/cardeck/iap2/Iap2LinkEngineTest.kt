@@ -140,6 +140,59 @@ class Iap2LinkEngineTest {
     }
 
     /** Positive control: 0x4300 ACKed normally must not trigger the local watchdog. */
+    /**
+     * T88 uploaded 3 separate recovery rounds with 4-5 incoming BT DETECT
+     * markers while the car did not ACK the pending seq=110 0x4300.
+     * These markers indicate the lower-level peer is still talking, NOT an
+     * iAP2 control ACK. A single DETECT echo did not recover those rounds.
+     */
+    @Test
+    fun b233DetectMarkersDoNotAcknowledgePending4300() {
+        val phone = Iap2LinkEngine(retransmissionTimeoutMillis = 4_000L, maxRetransmissions = 4)
+        val accessory = Iap2LinkEngine()
+        phone.start(0L)
+        accessory.start(0L)
+        exchangeUntilNormal(phone, accessory)
+        var observedMarkers = 0
+        phone.onMarkerReceived = { observedMarkers++ }
+
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), 2_000L))
+        val pending = phone.takeOutput()
+        assertEquals(1, parseFrames(pending).size)
+        for (index in 0 until 5) {
+            phone.feed(Iap2LinkEngine.MARKER, 2_500L + index * 100L)
+        }
+        assertEquals("raw BT markers are observable but do not ACK control frames", 5, observedMarkers)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+        assertTrue("DETECT alone must not emit an RTSP/iAP2 control response", phone.takeOutput().isEmpty())
+
+        for (time in listOf(6_000L, 10_000L, 14_000L, 18_000L)) {
+            phone.advanceTime(time)
+            assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+            assertArrayEquals("still retransmits original unacknowledged CSM", pending, phone.takeOutput())
+        }
+        phone.advanceTime(22_000L)
+        assertEquals("markers do not postpone the independent local retry watchdog",
+            Iap2LinkEngine.State.DEAD, phone.state)
+    }
+
+    /** A real control ACK (unlike five DETECT markers) clears the retry watchdog. */
+    @Test
+    fun b233ControlAckAfterDetectMarkersStillRecoversPending4300() {
+        val phone = Iap2LinkEngine(retransmissionTimeoutMillis = 4_000L, maxRetransmissions = 4)
+        val accessory = Iap2LinkEngine()
+        phone.start(0L)
+        accessory.start(0L)
+        exchangeUntilNormal(phone, accessory)
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), 2_000L))
+        val pending = phone.takeOutput()
+        repeat(4) { index -> phone.feed(Iap2LinkEngine.MARKER, 2_100L + index * 100L) }
+        accessory.feed(pending, 3_000L)
+        phone.feed(accessory.takeOutput(), 3_001L)
+        phone.advanceTime(30_000L)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+    }
+
     @Test
     fun b2334300AckedBeforeDeadlineRemainsHealthyAfterTwentySeconds() {
         val phone = Iap2LinkEngine(retransmissionTimeoutMillis = 4_000L, maxRetransmissions = 4)
