@@ -96,6 +96,63 @@ class Iap2LinkEngineTest {
         assertEquals(Iap2LinkEngine.State.NEGOTIATING, phone.state)
     }
 
+    /**
+     * 2026-10-29 B233 T88, after AUDIO RTSP EOF: outgoing 0x4300 was seq=110,
+     * last peer ACK remained 109, and local link later logged "packet 110 not
+     * acknowledged". The related CarPToCarL Buick E2LB case reports the same
+     * ACK-stall signature. Model ONLY the iAP2 recovery-phase local watchdog,
+     * never infer that this watchdog caused the earlier 20.110s RTSP EOF.
+     *
+     * Synthetic peer silence: deliberately do not deliver the 0x4300 to the
+     * accessory. No radio/vehicle behavior is simulated or asserted.
+     */
+    @Test
+    fun b2334300UnackedTriggersLocalRetransmissionDeathAfterTwentySeconds() {
+        val phone = Iap2LinkEngine(retransmissionTimeoutMillis = 4_000L, maxRetransmissions = 4)
+        val accessory = Iap2LinkEngine()
+        phone.start(0L)
+        accessory.start(0L)
+        exchangeUntilNormal(phone, accessory)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+
+        // ACK for the immediately preceding 0x4E0C is healthy, as in T88.
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4E0C), 1_000L))
+        exchange(phone, accessory)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+        phone.takeOutput()
+
+        // Car never acknowledges this single 0x4300; the phone retransmits
+        // the same link sequence four times, then locally retires the link.
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), 2_000L))
+        val firstFrame = phone.takeOutput()
+        assertEquals(1, parseFrames(firstFrame).size)
+        for (time in listOf(6_000L, 10_000L, 14_000L, 18_000L)) {
+            phone.advanceTime(time)
+            assertEquals("before final retransmit deadline", Iap2LinkEngine.State.NORMAL, phone.state)
+            assertArrayEquals("retry must keep the same frame/sequence", firstFrame, phone.takeOutput())
+        }
+        phone.advanceTime(21_999L)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+        phone.advanceTime(22_000L)
+        assertEquals("20s after unacknowledged 0x4300 the LOCAL watchdog kills the link",
+            Iap2LinkEngine.State.DEAD, phone.state)
+        assertTrue(phone.takeOutput().isEmpty())
+    }
+
+    /** Positive control: 0x4300 ACKed normally must not trigger the local watchdog. */
+    @Test
+    fun b2334300AckedBeforeDeadlineRemainsHealthyAfterTwentySeconds() {
+        val phone = Iap2LinkEngine(retransmissionTimeoutMillis = 4_000L, maxRetransmissions = 4)
+        val accessory = Iap2LinkEngine()
+        phone.start(0L)
+        accessory.start(0L)
+        exchangeUntilNormal(phone, accessory)
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), 2_000L))
+        exchange(phone, accessory)
+        phone.advanceTime(30_000L)
+        assertEquals(Iap2LinkEngine.State.NORMAL, phone.state)
+    }
+
     @Test
     fun nonCriticalCsmDoesNotKillLinkWithoutReceiverAck() {
         val phone = Iap2LinkEngine()
