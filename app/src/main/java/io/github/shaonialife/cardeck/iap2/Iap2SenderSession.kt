@@ -306,7 +306,7 @@ class Iap2SenderSession(
                 }
             }
             val endpoint = parseStartSession(start, WifiConfiguration("", "", 0, 0))
-            log("iap2 Buick/GM T19: parsed ssidPresent=${endpoint.ssid.isNotBlank()} passwordPresent=${endpoint.passphrase.isNotEmpty()} port=${endpoint.airPlayPort} deviceIdPresent=${endpoint.deviceIdentifier.isNotBlank()} srcvers=${endpoint.sourceVersion} ipCount=${endpoint.ipAddresses.size} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()} (identifiers redacted)")
+            log("iap2 Buick/GM T19: parsed ssidPresent=${endpoint.ssid.isNotBlank()} passwordPresent=${endpoint.passphrase.isNotEmpty()} port=${endpoint.airPlayPort} deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()} srcvers=${endpoint.sourceVersion} ipCount=${endpoint.ipAddresses.size} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()} (identifiers redacted)")
             if (endpoint.ssid.isBlank()) {
                 throw IOException("Buick T19: 0x4301 未包含有效 SSID，拒绝空热点进入后续配对")
             }
