@@ -43,10 +43,16 @@ jobs:
             '.github/release-intents/e5-iap2-33-sign.txt',
             'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt',
             'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt',
+            'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
+            'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
           }
           assert changed == allowed, f'Unexpected source changes: {sorted(changed ^ allowed)}'
           catalog=subprocess.check_output(['git','show','origin/Buick-E5:app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt'],text=True)
           assert '"experiment/buick-e5-iap2-stale-ack-guard-33" -> "iAP2 重连 ACK 防误确认（#33）"' in catalog
+          from pathlib import Path
+          assert Path('app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt').read_text() == catalog, 'Experiment APK would revert Chinese label after installation'
+          tests=Path('app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt').read_text()
+          assert 'plannedAckGuardExperimentUsesExactChineseSourceAndCannotCrossSubscribe' in tests
           PY
           OFFICIAL="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
           grep -Fxq "commit=$STABLE" <<< "$OFFICIAL"
