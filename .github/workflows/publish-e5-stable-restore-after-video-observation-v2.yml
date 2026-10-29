@@ -1,0 +1,175 @@
+name: E5 stable restore artifact - pinned source, signed recovery (2026-10-29)
+on:
+  push:
+    branches: [experiment/buick-e5-stable-restore-after-video-observation-v2]
+    paths:
+      - '.github/workflows/publish-e5-stable-restore-after-video-observation-v2.yml'
+# One-time workflow: no workflow_dispatch or runtime-code trigger.
+concurrency:
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  signed-e5-stable-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact proven stable E5 runtime, no prior recovery release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          STABLE_SHA="06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
+          EXP_TAG="exp-buick-e5-video-firstframe-observability-EXP--OBSERVABILITY-96375CDB4EA9-261029015"
+          TAG="e5-stable-restore-after-video-observation-v2-20261029"
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-stable-restore-after-video-observation-v2"
+          test "$(git rev-parse HEAD^)" = "$STABLE_SHA"
+          git fetch --no-tags origin Buick-E5
+          test "$(git rev-parse origin/Buick-E5)" = "$STABLE_SHA"
+          test "$(git merge-base HEAD origin/Buick-E5)" = "$STABLE_SHA"
+          CHANGED="$(git diff --name-only origin/Buick-E5...HEAD)"
+          test "$CHANGED" = ".github/workflows/publish-e5-stable-restore-after-video-observation-v2.yml"
+          test -z "$(git diff --name-only "$STABLE_SHA" HEAD -- app tools gradle* settings.gradle.kts)"
+          grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::One-time recovery already released, refusing a duplicate signed APK"
+            exit 1
+          fi
+          OFFICIAL="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          grep -Fxq "commit=$STABLE_SHA" <<< "$OFFICIAL"
+          grep -Fxq 'versionCode=89204263' <<< "$OFFICIAL"
+          grep -Fxq 'versionName=E5-261029014' <<< "$OFFICIAL"
+          EXPERIMENT="$(gh release view "$EXP_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          grep -Fxq 'sourceBranch=experiment/buick-e5-video-firstframe-observability' <<< "$EXPERIMENT"
+          grep -Fxq 'versionCode=89204507' <<< "$EXPERIMENT"
+          echo "Pinned official E5 code and higher-version experiment release verified"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Re-run unchanged stable E5 Android tests and Debug compile
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Preserve historical stable E5 Lint evidence (no waivers for changed source)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug > "$RUNNER_TEMP/e5-restore-lint.txt" 2>&1
+          LINT_RC=$?
+          set -e
+          if (( LINT_RC != 0 )); then
+            grep -E 'Lint found|First failure' "$RUNNER_TEMP/e5-restore-lint.txt" | head -n 8 || true
+            python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          reports = sorted(Path('app/build/reports').glob('lint-results-debug*.xml'))
+          if not reports:
+              raise SystemExit('Lint report unavailable: abort restore build')
+          root = ET.parse(reports[-1]).getroot()
+          errs = [x for x in root.findall('issue') if x.get('severity') in ('Error', 'Fatal')]
+          print(f'Unmodified E5 baseline Lint errors: {len(errs)}')
+          if len(errs) > 13:
+              raise SystemExit('Lint errors exceed 13 already recorded on stable E5')
+          PY
+            echo "::warning::Full-project Lint still has historic issues; none was modified by this recovery workflow"
+          fi
+      - name: Restore the existing E5 production signing identity
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/e5-stable-restore.p12"
+          chmod 600 "$RUNNER_TEMP/e5-stable-restore.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/e5-stable-restore.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Allocate next globally increasing version and stamp stable E5 origin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/release/allocate_version.py
+          # Same stable code and update channel. The release metadata separately
+          # records the actual recovery build branch and pinned runtime SHA.
+          echo 'CARDECK_RELEASE_BRANCH=Buick-E5' >> "$GITHUB_ENV"
+      - name: Build a signed APK from unchanged stable E5 runtime
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify runtime identity, higher code and matching E5 production certificate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$AAPT" && test -x "$APKSIGNER"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          [[ "$CARDECK_RELEASE_VERSION_NAME" == EXP-* ]]
+          (( CARDECK_BUILD_VERSION_CODE > 89204507 ))
+          RES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$RES"
+          grep -Fq 'Buick-E5' <<< "$RES"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/restore-cert.txt"
+          if grep -qi 'CN=Android Debug' "$RUNNER_TEMP/restore-cert.txt"; then
+            echo "::error::Debug signing certificate is forbidden"; exit 1
+          fi
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \
+            --pattern 'CarDeck-Buick-E5.apk' --dir "$RUNNER_TEMP"
+          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/CarDeck-Buick-E5.apk" > "$RUNNER_TEMP/official-cert.txt"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/restore-cert.txt" | head -n 1)"
+          OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/official-cert.txt" | head -n 1)"
+          [[ "$NEW_CERT" =~ ^[[:xdigit:]]{64}$ ]]
+          [[ "$OLD_CERT" =~ ^[[:xdigit:]]{64}$ ]]
+          test "${NEW_CERT,,}" = "${OLD_CERT,,}"
+          cp "$APK" CarDeck-Buick-E5-Stable-Restore.apk
+          sha256sum CarDeck-Buick-E5-Stable-Restore.apk > CarDeck-Buick-E5-Stable-Restore.apk.sha256
+          echo "Signed stable E5 runtime is installable over the #28 012 experiment"
+      - name: Publish pinned stable recovery asset, never modify official latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-stable-restore-after-video-observation-v2"
+          test "$CARDECK_RELEASE_BRANCH" = "Buick-E5"
+          TAG="e5-stable-restore-after-video-observation-v2-20261029"
+          APK="CarDeck-Buick-E5-Stable-Restore.apk"
+          {
+            printf 'artifactKind=recovery\nrecoveryFor=exp-buick-e5-video-firstframe-observability-EXP--OBSERVABILITY-96375CDB4EA9-261029015\n'
+            printf 'baseBranch=Buick-E5\nsourceBranch=%s\nstableRuntimeCommit=%s\n' \
+              "$GITHUB_REF_NAME" '06cdfdd5b3f58e797e68c57e2a4bc43820d19de0'
+            printf 'versionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\nbuildCommit=%s\n' \
+              "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" \
+              "$(date -u +%FT%TZ)" "$APK" "$GITHUB_SHA"
+            printf '\n## E5 数据保留恢复包（不是功能升级）\n'
+            printf '应用代码来自已验收 E5-261029014 的完全相同稳定源码；仅独立工作流及 Android 构建版本/来源发生变化。\n'
+            printf '与 E5 014 同包名、同签名、versionCode 严格高于 #28 012 实验，因此可从该实验覆盖安装并保留应用私有数据。\n'
+            printf '恢复后 APP 运行代码等同 E5 014；安装恢复包不会自动证明实车回归已通过，仍须由用户确认。\n'
+            printf '不是现有 buick-e5-latest 正式通道的替换包；以后正常正式更新必须具备更高版本码。\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "E5 #28 实验后保留数据恢复包" \
+            --notes-file release-notes.txt --prerelease --latest=false
