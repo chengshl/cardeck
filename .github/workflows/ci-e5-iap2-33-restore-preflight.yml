@@ -41,6 +41,8 @@ jobs:
               'test "$(git rev-parse FETCH_HEAD^{commit})" = "$EXP_COMMIT"',
               'git merge-base --is-ancestor "$EXP_COMMIT" "origin/$EXP_SOURCE"',
               'grep -Fq "$EXP_SOURCE" <<< "$EXP_RES"',
+              'EXP_SOURCE=%s\\n',
+              '"$EXP_TAG" "$EXP_SOURCE" >> "$GITHUB_ENV"',
               'sha256sum --check "$APK_NAME.sha256"',
               '(( CARDECK_BUILD_VERSION_CODE > EXP_CODE && CARDECK_BUILD_VERSION_CODE > OFFICIAL_CODE ))',
               "assert cert('new-cert.txt')==cert('official-cert.txt')==cert('experiment-cert.txt')",
