@@ -27,10 +27,17 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-video-firstframe-observability"
-          test "$(git rev-parse HEAD^)" = "9921685242a20cc7110d56b2803386d71e1fc58d"
+          test "$(git rev-parse HEAD^)" = "7bcb58950517f6fc3e5b01a1fe3a41c2e55f79e7"
           git fetch origin Buick-E5 --no-tags
-          test "$(git rev-parse origin/Buick-E5)" = "8271f2a71be7b4acc740c2748bf3281810ea9aa1"
+          test "$(git rev-parse origin/Buick-E5)" = "06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
           test "$(git merge-base origin/Buick-E5 HEAD)" = "8271f2a71be7b4acc740c2748bf3281810ea9aa1"
+          # New signed experiment must also match the Chinese project label now on E5 official.
+          for file in \
+            app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt; do
+            git show "origin/Buick-E5:$file" | cmp - "$file"
+          done
+          grep -Fq '"experiment/buick-e5-video-firstframe-observability" -> "视频首帧与停帧诊断（#28）"' app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt
           grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
           python3 - <<'PY'
           import subprocess
@@ -45,6 +52,8 @@ jobs:
               'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt',
               'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt',
               'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
           }
           assert files == expected, f'Unexpected changed paths: {sorted(files ^ expected)}'
           sender = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt').read_text()
@@ -83,7 +92,7 @@ jobs:
           if not reports:
               sys.exit('Lint failed without a parseable report')
           root = ET.parse(reports[-1]).getroot()
-          changed = ('SessionController.kt', 'VideoSender.kt', 'VideoFrameDiagnostics.kt')
+          changed = ('SessionController.kt', 'VideoSender.kt', 'VideoFrameDiagnostics.kt', 'ExperimentProjectCatalog.kt')
           new_errors, inherited = [], []
           for issue in root.findall('issue'):
               if issue.get('severity') != 'Error':
@@ -151,7 +160,9 @@ jobs:
           OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/old-cert.txt" | head -n 1)"
           test -n "$NEW_CERT" && test -n "$OLD_CERT"
           test "${NEW_CERT,,}" = "${OLD_CERT,,}"
-          OFFICIAL_CODE="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq '.body' | sed -n 's/^versionCode=//p' | head -n 1)"
+          OFFICIAL_METADATA="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq '.body')"
+          grep -Fxq 'commit=06cdfdd5b3f58e797e68c57e2a4bc43820d19de0' <<< "$OFFICIAL_METADATA"
+          OFFICIAL_CODE="$(sed -n 's/^versionCode=//p' <<< "$OFFICIAL_METADATA" | head -n 1)"
           [[ "$OFFICIAL_CODE" =~ ^[0-9]+$ ]]
           (( CARDECK_BUILD_VERSION_CODE > OFFICIAL_CODE ))
           cp "$APK" CarDeck-Buick-E5-Video-Observation.apk
@@ -170,7 +181,7 @@ jobs:
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$SOURCE_BRANCH" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$(date -u +%FT%TZ)" "$APK" "$GITHUB_SHA"
             printf '\n## #28 RECORD 后零帧诊断（未修复）\n'
-            printf '仅补充 RECORD、sender/start、虚拟屏附着、drain、首帧/停帧分层只读日志。无自动重连、无音视频协议或蓝牙/iAP2变更。源自 Draft PR #62 的受控签名快照。\n'
+            printf '仅补充 RECORD、sender/start、虚拟屏附着、drain、首帧/停帧分层只读日志；同步正式版受信任中文名称“视频首帧与停帧诊断（#28）”。无自动重连、无音视频协议或蓝牙/iAP2变更。源自 Draft PR #62 的同功能线第二次受控签名快照。\n'
             printf '\n## 验收与回退限制\n'
             printf 'L3 尚未手机/实车验收，不得合并稳定 E5。仅在 B233 安全停车环境验证，先备份诊断资料。与正式 E5 同包名/签名且版本码更高，覆盖安装保留应用数据；Android 不支持直接覆盖降级回正式旧版，回退需等待更高版本码的稳定 E5 修复包，不得以卸载清数据冒充无损回滚。分别观察 RECORD 后是否启动编码器、Shizuku虚拟屏附着、首帧输出、车机是否实际显示，并单独记录 #33 的重连问题。\n'
           } > release-notes.txt
