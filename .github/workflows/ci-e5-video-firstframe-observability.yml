@@ -51,7 +51,11 @@ jobs:
           assert 'onEnded?.invoke()' in sender
           assert 'output.write(header)' in sender and 'output.write(sealed)' in sender
           assert 'output.flush()' in sender
-          for forbidden in ('retireSession(', 'requestUI(', 'disconnect(', 'reconnect(', 'Thread(', 'Socket(', 'MediaCodec', 'Bluetooth'):
+          for forbidden in (
+              'retireSession(', 'requestUI(', 'disconnect(', 'reconnect(',
+              'Thread(', 'Socket(', 'MediaCodec',
+              'BluetoothAdapter', 'BluetoothManager', 'BluetoothSocket', 'BluetoothDevice',
+          ):
               assert forbidden not in tracker, f'Tracker must not mutate session: {forbidden}'
           print('E5 probe is log-only; no session or transport control logic added')
           PY
