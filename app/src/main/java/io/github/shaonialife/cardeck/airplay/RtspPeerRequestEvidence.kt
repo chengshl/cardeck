@@ -13,9 +13,9 @@ internal object RtspPeerRequestEvidence {
     enum class Kind { TEARDOWN, OTHER_REQUEST, RESPONSE_OR_UNKNOWN }
 
     /** Stable, privacy-safe summary: never accept or include a request URI or headers. */
-    fun diagnosticTag(kind: Kind, pendingCseqMatch: Boolean): String? =
+    fun diagnosticTag(kind: Kind, pendingCseqMatch: Boolean, legacyAckEligible: Boolean): String? =
         if (kind == Kind.RESPONSE_OR_UNKNOWN) null
-        else "kind=${kind.name} pendingCseqMatch=$pendingCseqMatch"
+        else "kind=${kind.name} pendingCseqMatch=$pendingCseqMatch legacyAckEligible=$legacyAckEligible"
 
     fun classify(startLine: String): Kind {
         val fields = startLine.trim().split(Regex("""\s+"""))
