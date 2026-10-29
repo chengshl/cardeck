@@ -127,11 +127,15 @@ internal class AudioReverseControlPort(
                         reportWindow()
                     } catch (error: SocketException) {
                         if (!datagram.isClosed) {
+                            // Invalidate the advertised port before invoking potentially
+                            // blocking diagnostics; start() must not reuse a dying receiver.
+                            datagram.close()
                             log("AUDIO T73: 反向 RTCP 套接字异常：${error.javaClass.simpleName}")
                         }
                         break
                     } catch (error: Exception) {
                         if (!datagram.isClosed) {
+                            datagram.close()
                             log("AUDIO T73: 反向 RTCP 接收异常：${error.javaClass.simpleName}")
                         }
                         break
