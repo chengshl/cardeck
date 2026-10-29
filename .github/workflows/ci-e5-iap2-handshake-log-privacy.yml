@@ -1,0 +1,67 @@
+name: E5 iAP2 4300/4301 diagnostic redaction (#33)
+on:
+  push:
+    branches: [work/e5-iap2-4300-4301-redacted-logs-33]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+      - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  redaction-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify only diagnostic logs changed and no identifiers leak
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+          files = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          assert files == {path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + path], text=True)
+          new = Path(path).read_text()
+          assert old.count('编码=${availabilityFrame.joinToString') == 1
+          assert '编码=${availabilityFrame.joinToString' not in new
+          assert 'deviceId=${carPlayDeviceIdentifier()}' not in new
+          assert 'parsed ssid=${endpoint.ssid}' not in new
+          assert 'ips=${endpoint.ipAddresses}' not in new
+          assert 'device=${endpoint.deviceIdentifier}' not in new
+          assert 'send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)' in new
+          assert '0x4300 已交给链路发送队列' in new
+          assert 'start4301=' in new
+          assert 'ipCount=${endpoint.ipAddresses.size}' in new
+          assert 'ssidPresent=${endpoint.ssid.isNotBlank()}' in new
+          assert 'deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()}' in new
+          # Non-log transport/handshake code must stay byte-identical.
+          def drop_logs(s):
+              lines = s.splitlines()
+              lines = [line for line in lines if not (
+                  'log("iap2 Buick/GM T17: 0x4300 双参数结构' in line or
+                  'log("iap2 Buick/GM T10: 0x4300 参数字节数' in line or
+                  'log("iap2 Buick/GM T19: parsed ' in line or
+                  'val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)' in line or
+                  'Never log the encoded 0x4300 body' in line
+              )]
+              return '\n'.join(lines)
+          assert drop_logs(old) == drop_logs(new), 'unexpected non-log iAP2 behavior diff'
+          print('Only iAP2 diagnostic redaction; CSM payload, ACK and handshake unchanged')
+          PY
+      - name: Android unit tests and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
