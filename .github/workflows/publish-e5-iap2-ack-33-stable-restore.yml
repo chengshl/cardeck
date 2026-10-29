@@ -168,7 +168,11 @@ jobs:
           ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/new-cert.txt"
           mkdir -p "$RUNNER_TEMP/official"
           gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \
-            --pattern 'CarDeck-Buick-E5.apk' --dir "$RUNNER_TEMP/official"
+            --pattern 'CarDeck-Buick-E5.apk' --pattern 'CarDeck-Buick-E5.apk.sha256' --dir "$RUNNER_TEMP/official"
+          (cd "$RUNNER_TEMP/official" && sha256sum --check 'CarDeck-Buick-E5.apk.sha256')
+          OFFICIAL_BADGING="$("$AAPT" dump badging "$RUNNER_TEMP/official/CarDeck-Buick-E5.apk")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$OFFICIAL_BADGING"
+          grep -Fq "versionCode='$OFFICIAL_CODE'" <<< "$OFFICIAL_BADGING"
           "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/official/CarDeck-Buick-E5.apk" > "$RUNNER_TEMP/official-cert.txt"
           "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/experiment/CarDeck-Buick-E5-IAP2-ACK-Guard.apk" > "$RUNNER_TEMP/experiment-cert.txt"
           python3 - <<'PY'
