@@ -52,6 +52,30 @@ class AudioReverseControlPortTest {
         assertEquals(0, receiver.port)
     }
 
+    /**
+     * T89 B233 PCM reverse-RTCP is only a valid protocol experiment when its
+     * phone-local UDP listener actually binds. Both T85 and T88 previously
+     * logged Android Network.bindSocket EPERM with VPN enabled. Without that
+     * bind, the existing runAudioStream() path returns before audio SETUP:
+     * never mistake a fallback profile or absent audio for a negative trial.
+     */
+    @Test
+    fun t89VpnEpermCannotAdvertiseControlPort() {
+        val lines = mutableListOf<String>()
+        val receiver = AudioReverseControlPort(
+            bindNetwork = { throw java.net.SocketException("EPERM in synthetic WiFi bind") },
+            log = { lines += it },
+        )
+        try {
+            assertEquals("failed bind must not claim a usable UDP port", 0, receiver.start())
+            assertEquals(0, receiver.port)
+            assertTrue(lines.any { it.contains("网络绑定失败") && it.contains("SocketException") })
+            assertTrue(lines.none { it.contains("已监听") })
+        } finally {
+            receiver.close()
+        }
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
