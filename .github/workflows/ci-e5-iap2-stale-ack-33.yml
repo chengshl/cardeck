@@ -43,8 +43,13 @@ jobs:
           new = Path(source).read_text()
           assert old.count('        val ackClass = when {') == 1
           assert 'if (forward != null && forward >= 128)' in new
-          assert 'ignored=true' in new
-          assert 'staleAckCannotConfirmPending109OrSuppressRetransmission' in Path(test).read_text()
+          assert 'if (sequenceDistance(acknowledgement, sentSequence) in 1..127)' in new
+          assert 'class=future-unsent' in new and 'ignored=true' in new
+          tests = Path(test).read_text()
+          assert 'staleAckCannotConfirmPending109OrSuppressRetransmission' in tests
+          assert 'futureAckAcrossSequenceWrapCannotSuppressRetry' in tests
+          assert 'phone.feed(ackOnly(110), tick())' in tests
+          assert 'phone.feed(ackOnly(1), tick())' in tests
           # Guard is limited to cumulative ACK handling, not transport or CSM messages.
           before, after = old.split('    private fun handleAcknowledgement(', 1)
           updated_before, updated_after = new.split('    private fun handleAcknowledgement(', 1)
