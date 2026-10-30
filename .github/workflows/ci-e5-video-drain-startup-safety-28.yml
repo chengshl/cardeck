@@ -63,7 +63,7 @@ jobs:
           assert old.count(before) == 1, 'Original drain startup not found exactly once'
           assert new == old.replace(before, after), 'Unexpected change outside reviewed startup guard'
           tail = new.split('private fun drainEncoder()', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
-          assert tail.index('try {') < tail.index('getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
+          assert tail.index('try {') < tail.index('socket?.getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
           assert 'stop()' in tail.split('} finally {', 1)[1]
           assert 'onEnded?.invoke()' in tail.split('} finally {', 1)[1]
           print('Exact one-block L3 startup exception/early-return cleanup isolation verified')
