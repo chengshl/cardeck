@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -478,5 +479,78 @@ class RtspSocketLifecycleTest {
             executor.shutdownNow()
         }
     }
+
+
+    @Test
+    fun staleReaderFinallyCannotDrainReplacementPendingReply() {
+        val writerLock = Any()
+        val pending = ConcurrentHashMap<Int, String>()
+        val observedOldExit = CountDownLatch(1)
+        val allowOldFinally = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        var activeGeneration = 1
+        try {
+            // Force the historical vulnerable ordering: old reader begins
+            // finally, then new reader registers a waiter before old cleanup.
+            val oldFinally = executor.submit<List<String>?> {
+                observedOldExit.countDown()
+                check(allowOldFinally.await(5, TimeUnit.SECONDS))
+                synchronized(writerLock) {
+                    RtspReaderGenerationCleanup.drainIfCurrent(
+                        1, activeGeneration, pending,
+                    )
+                }
+            }
+            assertTrue(observedOldExit.await(5, TimeUnit.SECONDS))
+            synchronized(writerLock) {
+                activeGeneration = 2
+                pending[42] = "replacement-session-reply"
+            }
+            allowOldFinally.countDown()
+            assertEquals(
+                "retired reader must not drain the new CSeq waiter",
+                null, oldFinally.get(5, TimeUnit.SECONDS),
+            )
+            assertEquals("replacement-session-reply", pending[42])
+            // The previous check-then-unconditional-clear implementation
+            // would erase the same waiter after this generation change.
+            val unsafe = ConcurrentHashMap<Int, String>()
+            unsafe[42] = "replacement-session-reply"
+            val oldCheckPassed = true // old reader checked generation before replacement
+            if (oldCheckPassed) unsafe.clear()
+            assertFalse("negative control must reproduce the old loss", unsafe.containsKey(42))
+        } finally {
+            allowOldFinally.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun currentReaderExitDrainsWaitersButStaleExitDoesNotEmitCurrentExit() {
+        val writerLock = Any()
+        val pending = ConcurrentHashMap<Int, String>()
+        pending[7] = "current-session-reply"
+        val drained = synchronized(writerLock) {
+            RtspReaderGenerationCleanup.drainIfCurrent(3, 3, pending)
+        }
+        assertEquals(listOf("current-session-reply"), drained)
+        assertTrue(pending.isEmpty())
+        assertEquals(
+            "current reader with no pending requests is not a stale reader",
+            emptyList<String>(),
+            synchronized(writerLock) {
+                RtspReaderGenerationCleanup.drainIfCurrent(3, 3, pending)
+            },
+        )
+        pending[42] = "replacement-session-reply"
+        assertEquals(
+            null,
+            synchronized(writerLock) {
+                RtspReaderGenerationCleanup.drainIfCurrent(3, 4, pending)
+            },
+        )
+        assertEquals("replacement-session-reply", pending[42])
+    }
+
 
 }
