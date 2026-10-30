@@ -576,7 +576,9 @@ class AirPlayClient(
 
     fun close() {
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
-        if (endpoint.isBuickB233) b233HeartbeatSessionGate.retire()
+        // Also invalidate B233 workers when updateEndpoint() already changed
+        // the receiver type before calling close(); non-B233 loops ignore gate.
+        b233HeartbeatSessionGate.retire()
         closeReverseAudioControlPort()
         runCatching { socket?.close() }
         socket = null
