@@ -95,6 +95,33 @@ class E5SignedReleasePreflightTest(unittest.TestCase):
         next_code = max(reserved_code, max(published_codes) + 1)
         self.assertGreater(next_code, 89253898)
 
+    def test_newer_other_package_release_is_global_floor_after_e5_recovery(self):
+        # A later signed Test APK must raise the next E5 official code even
+        # when E5 recovery 003 is the highest E5-family APK. This guards the
+        # real cross-package allocation contract, not an E5-only release list.
+        releases = [[
+            {"tag_name": "buick-e5-latest", "body": "versionCode=89252977",
+             "assets": [{"name": "CarDeck-Buick-E5.apk"}]},
+            {"tag_name": "e5-stable-restore-after-iap2-ack-33",
+             "body": "versionCode=89253898",
+             "assets": [{"name": "CarDeck-Buick-E5-IAP2-ACK-Stable-Restore.apk"}]},
+        ], [
+            {"tag_name": "exp-buick-test-t89", "body": "versionCode=89270470",
+             "assets": [{"name": "CarDeck-Buick-Test-T89-SAME-UID-UDP-PREFLIGHT.apk"}]},
+            {"tag_name": "notes-only", "body": "versionCode=99999999",
+             "assets": [{"name": "notes.txt"}]},
+        ]]
+        published_codes = published_apk_codes(releases)
+        self.assertEqual(max(published_codes), 89270470)
+        _, reserved_code, _ = choose_version(
+            ["refs/tags/cardeck-build/v1/261030001-c89252977"],
+            datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc),
+            "Buick-E5",
+        )
+        next_official_code = max(reserved_code, max(published_codes) + 1)
+        self.assertGreater(next_official_code, 89270470)
+        self.assertGreater(next_official_code, 89253898)
+
     def test_signed_apk_without_version_metadata_fails_closed(self):
         releases = [[
             {"tag_name": "e5-stable-restore-after-iap2-ack-33",
