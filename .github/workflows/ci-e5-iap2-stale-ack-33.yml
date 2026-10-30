@@ -1,0 +1,101 @@
+name: E5 iAP2 stale ACK regression isolation (#33)
+on:
+  # Open PR is the single CI authority; each commit must not consume two
+  # identical Android build runners via simultaneous push and PR events.
+  # workflow_dispatch stays available for an explicit isolated rerun.
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt'
+      - '.github/workflows/ci-e5-iap2-stale-ack-33.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stale-ack-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enforce isolated E5 baseline and narrow #33 scope
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          expected = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          assert base == expected, f'E5 baseline drift; re-review before proceeding: {base}'
+          # #77 changes only release-preflight tests, #79 changes only synthetic
+          # ACK replay tests and CI; unknown stable changes must still fail.
+          # Never silently widen the L3 runtime scope.
+          # #82 only changed official APK auto-publish workflow and its regression tests.
+          # The merged stable base is exact, #33/#34 runtime sources are untouched.
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_reviewed, expected], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+          }, f'Unreviewed stable drift since #33 baseline: {sorted(stable_delta)}'
+          source = 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt'
+          test = 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt'
+          allowed = {source, test, '.github/workflows/ci-e5-iap2-stale-ack-33.yml'}
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          assert changed == allowed, f'Unexpected changes: {sorted(changed ^ allowed)}'
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + source], text=True)
+          new = Path(source).read_text()
+          assert old.count('        val ackClass = when {') == 1
+          assert 'if (forward != null && forward >= 128)' in new
+          assert 'if (sequenceDistance(acknowledgement, sentSequence) in 1..127)' in new
+          assert 'class=future-unsent' in new and 'ignored=true' in new
+          tests = Path(test).read_text()
+          assert 'staleAckCannotConfirmPending109OrSuppressRetransmission' in tests
+          assert 'futureAckAcrossSequenceWrapCannotSuppressRetry' in tests
+          # A bogus ACK must not free the send window and leak queued CSM packets.
+          assert 'invalidAckMustNotDrainQueuedControlFrame' in tests
+          # RFCOMM read boundaries must not turn a partial ACK109 into a confirmation.
+          assert 'fragmentedAck109AfterRetransmitMustConfirmExactlyOnce' in tests
+          # ACK109 and the 0x4301 response may share an RFCOMM read, with the
+          # response link frame split across subsequent reads.
+          assert 'ack109AndResponse4301AcrossRfcommReadsDoNotBlockControlDelivery' in tests
+          # A 0x4301 data frame can itself acknowledge seq109 without a separate ACK-only frame.
+          assert 'piggybackedAck109On4301WithoutStandaloneAckConfirmsAndDelivers' in tests
+          assert 'piggybacked ACK109 must confirm pending seq109' in tests
+          assert '0x4301 must be delivered without standalone ACK' in tests
+          assert 'partial 0x4301 frame must not be delivered' in tests
+          assert '0x4301 must survive ACK+data coalescing' in tests
+          assert 'partial ACK must not advance acknowledgement' in tests
+          assert 'completed ACK109 must release seq109' in tests
+          assert 'invalid ACKs must not flush seq102' in tests
+          assert 'valid ACK must release the queued frame' in tests
+          assert 'phone.feed(ackOnly(110), tick())' in tests
+          assert 'phone.feed(ackOnly(1), tick())' in tests
+          # Invalid ACKs must not poison later legitimate ACK progression.
+          assert 'phone.feed(ackOnly(109), tick())' in tests
+          assert 'phone.feed(ackOnly(0), tick())' in tests
+          assert 'confirmed 109 must not be retransmitted' in tests
+          assert 'confirmed seq0 must not be retransmitted' in tests
+          # Guard is limited to cumulative ACK handling, not transport or CSM messages.
+          before, after = old.split('    private fun handleAcknowledgement(', 1)
+          updated_before, updated_after = new.split('    private fun handleAcknowledgement(', 1)
+          assert before == updated_before
+          assert after.split('    private fun handleData(', 1)[1] == updated_after.split('    private fun handleData(', 1)[1]
+          print('Only isolated ACK bookkeeping and deterministic regression changed')
+          PY
+      - name: Run all Android unit tests and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace

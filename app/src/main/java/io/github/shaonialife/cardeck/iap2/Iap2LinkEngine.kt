@@ -473,6 +473,28 @@ class Iap2LinkEngine(
         val before = unacknowledged.joinToString(",") { it.sequence.toString() }
         val previousAck = lastSentAcknowledged
         val forward = previousAck?.let { sequenceDistance(acknowledgement, it) }
+        // #33: a delayed/backward ACK is not a cumulative confirmation of newer
+        // packets. Previously it could clear seq 109 from unacknowledged when
+        // (109 - staleAck) mod 256 exceeded the receive-window slack.
+        // Keep the outstanding packet and its retransmission deadline intact.
+        if (forward != null && forward >= 128) {
+            onLinkAckDiagnostic?.invoke(
+                "ack=$acknowledgement class=stale-or-backward previous=$previousAck ignored=true " +
+                    "outstanding=[${unacknowledged.joinToString(",") { it.sequence.toString() }}]"
+            )
+            return
+        }
+        // A cumulative ACK cannot confirm a sequence that has not been sent.
+        // Without this bound, an ACK for seq 110 while seq 109 is the newest
+        // transmitted packet would incorrectly clear pending 109 and its retry.
+        // Use modulo distance so the same guard works across 255 -> 0.
+        if (sequenceDistance(acknowledgement, sentSequence) in 1..127) {
+            onLinkAckDiagnostic?.invoke(
+                "ack=$acknowledgement class=future-unsent lastSent=$sentSequence ignored=true " +
+                    "outstanding=[${unacknowledged.joinToString(",") { it.sequence.toString() }}]"
+            )
+            return
+        }
         val ackClass = when {
             previousAck == null -> "first"
             forward == 0 -> "duplicate"
