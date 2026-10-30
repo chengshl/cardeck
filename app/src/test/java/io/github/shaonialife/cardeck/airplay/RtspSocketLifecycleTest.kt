@@ -152,6 +152,88 @@ class RtspSocketLifecycleTest {
     }
 
     @Test
+    fun supersededReaderCannotRouteLateResponseToNewPendingRequest() {
+        val writerLock = Any()
+        val old = Socket()
+        val replacement = Socket()
+        var activeReader = replacement
+        var activeGeneration = 2
+        val delivered = mutableListOf<String>()
+        try {
+            val oldAccepted = RtspReaderDispatchGate.dispatchIfCurrent(
+                writerLock,
+                { activeGeneration == 1 && activeReader === old },
+                { delivered += "stale-response" },
+            )
+            assertFalse("old RTSP reader must not poison the new CSeq reply", oldAccepted)
+            assertTrue(delivered.isEmpty())
+
+            val currentAccepted = RtspReaderDispatchGate.dispatchIfCurrent(
+                writerLock,
+                { activeGeneration == 2 && activeReader === replacement },
+                { delivered += "new-response" },
+            )
+            assertTrue(currentAccepted)
+            assertEquals(listOf("new-response"), delivered)
+        } finally {
+            old.close()
+            replacement.close()
+        }
+    }
+
+    @Test
+    fun replacingReaderCannotInterleaveBetweenOwnershipCheckAndDispatch() {
+        val writerLock = Any()
+        val dispatchEntered = CountDownLatch(1)
+        val permitDispatch = CountDownLatch(1)
+        val replacementStarted = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        var activeGeneration = 1
+        val delivered = mutableListOf<String>()
+        try {
+            val oldDispatch = executor.submit<Boolean> {
+                RtspReaderDispatchGate.dispatchIfCurrent(
+                    writerLock,
+                    { activeGeneration == 1 },
+                    {
+                        dispatchEntered.countDown()
+                        check(permitDispatch.await(5, TimeUnit.SECONDS))
+                        delivered += "old-on-old"
+                    },
+                )
+            }
+            assertTrue(dispatchEntered.await(5, TimeUnit.SECONDS))
+            val replacement = executor.submit {
+                replacementStarted.countDown()
+                synchronized(writerLock) { activeGeneration = 2 }
+            }
+            assertTrue(replacementStarted.await(5, TimeUnit.SECONDS))
+            permitDispatch.countDown()
+            assertTrue(oldDispatch.get(5, TimeUnit.SECONDS))
+            replacement.get(5, TimeUnit.SECONDS)
+
+            assertFalse(
+                RtspReaderDispatchGate.dispatchIfCurrent(
+                    writerLock,
+                    { activeGeneration == 1 },
+                    { delivered += "old-on-new" },
+                ),
+            )
+            assertTrue(
+                RtspReaderDispatchGate.dispatchIfCurrent(
+                    writerLock,
+                    { activeGeneration == 2 },
+                    { delivered += "new-on-new" },
+                ),
+            )
+            assertEquals(listOf("old-on-old", "new-on-new"), delivered)
+        } finally {
+            permitDispatch.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun parallelConnectAttemptsPublishAtMostOneSocket() {
         val gate = RtspSocketLifecycle()
         val sameEpoch = gate.snapshot()
