@@ -19,6 +19,8 @@ internal class AudioReverseControlPort(
     private val failureTrace: AudioFailureTrace? = null,
     /** T79: current audio sender's monotonic successful RTP count, if available. */
     private val currentSentRtpCount: () -> Long? = { null },
+    /** Synthetic receive failures in JVM tests; production always calls DatagramSocket.receive. */
+    private val receivePacket: (DatagramSocket, DatagramPacket) -> Unit = { udp, packet -> udp.receive(packet) },
 ) : AutoCloseable {
     @Volatile private var socket: DatagramSocket? = null
     private val received = AtomicInteger(0)
@@ -65,13 +67,15 @@ internal class AudioReverseControlPort(
             return 0
         }
         socket = datagram
-        openedAtNanos = System.nanoTime()
+        val listenerStartNanos = System.nanoTime()
+        openedAtNanos = listenerStartNanos
         lastReceiveNanos = 0L
         failureTrace?.event("reverse_rtcp_listening")
         log("AUDIO T73: 手机反向 RTCP UDP 已监听 localControlPort=${datagram.localPort}")
         Thread({
             val buffer = ByteArray(2_048)
             var nextReportSecond = 1L
+            var exitReason = "socket_closed"
             fun reportWindow() {
                 val now = System.nanoTime()
                 val elapsedSecond = ((now - openedAtNanos) / 1_000_000_000L).coerceAtLeast(0L)
@@ -81,10 +85,11 @@ internal class AudioReverseControlPort(
                 val gap = if (last == 0L) "none" else ((now - last) / 1_000_000L).toString()
                 log("AUDIO T75: 反向RTCP t=${elapsedSecond}s 接收累计=${received.get()} 距最后接收=${gap}ms")
             }
-            while (!datagram.isClosed) {
+            try {
+                while (!datagram.isClosed) {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
-                    datagram.receive(packet)
+                    receivePacket(datagram, packet)
                     lastReceiveNanos = System.nanoTime()
                     val n = received.incrementAndGet()
                     val header = inspectHeader(buffer, packet.length)
@@ -126,18 +131,41 @@ internal class AudioReverseControlPort(
                     reportWindow()
                 } catch (error: SocketException) {
                     if (!datagram.isClosed) {
+                        exitReason = "socket_exception"
                         log("AUDIO T73: 反向 RTCP 套接字异常：${error.javaClass.simpleName}")
                     }
                     break
                 } catch (error: Exception) {
                     if (!datagram.isClosed) {
+                        exitReason = "receive_exception"
                         log("AUDIO T73: 反向 RTCP 接收异常：${error.javaClass.simpleName}")
                     }
                     break
                 }
+                }
+            } finally {
+                // An unexpectedly dead receive thread must never advertise a stale UDP
+                // port. Identity guard avoids retiring a replacement listener started
+                // after the previous one was explicitly closed.
+                datagram.close()
+                val retired = synchronized(this@AudioReverseControlPort) {
+                    if (socket === datagram) {
+                        socket = null
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (retired) {
+                    val elapsedMs = ((System.nanoTime() - listenerStartNanos) / 1_000_000L).coerceAtLeast(0L)
+                    log("AUDIO T89: 反向RTCP监听退出 reason=$exitReason elapsedMs=$elapsedMs")
+                    failureTrace?.event("reverse_rtcp_listener_exit", "reason=$exitReason elapsedMs=$elapsedMs")
+                }
             }
         }, "b233-audio-rtcp-reverse").apply { isDaemon = true; start() }
-        return datagram.localPort
+        // Returning the live field, rather than the already-created datagram's
+        // localPort, fails closed if the worker terminated during start().
+        return port
     }
 
     @Synchronized
