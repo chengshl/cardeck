@@ -59,6 +59,9 @@ jobs:
           grep -Fq 'retiredReaderCannotSnapshotReplacementInboundCipher' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'staleReaderFinallyCannotDrainReplacementPendingReply' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'currentReaderExitDrainsWaitersButStaleExitDoesNotEmitCurrentExit' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'failedB233TcpConnectClosesUnpublishedCandidate' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'rejectedB233PublicationClosesCandidateButAcceptedSocketRemainsOwned' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'internal object RtspSocketCandidateCleanup' app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycle.kt
           grep -Fq 'internal object RtspReaderGenerationCleanup' app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycle.kt
           grep -Fq 'replacingReaderCannotInterleaveBetweenOwnershipCheckAndDispatch' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'delayedOldRequestCannotInstallReaderOverReconnectedSocket' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
@@ -73,6 +76,19 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           source = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          # B233 TCP candidates must be closed when connect() throws, before
+          # publication, without closing an accepted live session Socket.
+          connect = source.split('    private fun ensureConnected(', 1)[1].split(
+              '    private fun resolveAddress(', 1
+          )[0]
+          for token in ('RtspSocketCandidateCleanup.publishOrClose(',
+                        'cleanupOnFailure = target.isBuickB233',
+                        'newSocket.connect(InetSocketAddress(',
+                        'socketLifecycle.tryPublish(connectEpoch)'):
+              if token not in connect:
+                  raise SystemExit('B233 failed TCP candidate cleanup missing: ' + token)
+          if not connect.index('RtspSocketCandidateCleanup.publishOrClose(') < connect.index('newSocket.connect('):
+              raise SystemExit('B233 socket cleanup must own candidate before TCP connect')
           # Request write guard must execute *inside* the CSeq/cipher lock.
           # A helper-only test would miss accidental wiring after encryption.
           request = source.split('    private fun request(', 1)[1].split(
