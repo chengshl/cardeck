@@ -77,6 +77,13 @@ class B233HandshakeReplayTest {
             val tx = phone.takeOutput()
             assertTrue("preamble must transmit bytes", tx.isNotEmpty())
             car.feed(tx, ++now)
+            val preambleEvent = car.pollEvent()
+            assertTrue("preamble must reach real accessory control queue", preambleEvent is Iap2LinkEngine.Event.Control)
+            assertEquals(
+                "accessory must decode the exact preamble CSM",
+                listOf(messageId),
+                Iap2Csm.Parser().offer((preambleEvent as Iap2LinkEngine.Event.Control).bytes).map { it.messageId },
+            )
             phone.feed(car.takeOutput(), ++now)
         }
         // Flush only remaining transport-level ACK residues.
@@ -88,8 +95,16 @@ class B233HandshakeReplayTest {
         assertTrue("0x4300 frame must be emitted", availability.size >= 9)
         assertEquals("0x4300 must occupy seq109 in this fixture", 109, dataSequence(availability))
         car.feed(availability, ++now)
+        val requestEvent = car.pollEvent()
+        assertTrue("0x4300 must reach real accessory control queue", requestEvent is Iap2LinkEngine.Event.Control)
+        assertEquals(
+            "accessory must decode 0x4300 before an ACK can be considered evidence",
+            listOf(0x4300),
+            Iap2Csm.Parser().offer((requestEvent as Iap2LinkEngine.Event.Control).bytes).map { it.messageId },
+        )
         val ack109 = car.takeOutput()
-        assertTrue("synthetic accessory should have generated ACK109", ack109.isNotEmpty())
+        assertEquals("ACK109 must be a complete ACK-only link frame", Iap2LinkEngine.HEADER_BYTES, ack109.size)
+        assertEquals("accessory ACK must confirm seq109", 109, ack109[6].toInt() and 0xFF)
 
         if (fixture.outcome != Outcome.ACK109_MISSING) {
             phone.feed(ack109, ++now)
