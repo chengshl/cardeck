@@ -152,6 +152,58 @@ class RtspSocketLifecycleTest {
     }
 
     @Test
+    fun retiredReaderCannotSnapshotReplacementInboundCipher() {
+        val readerLock = Any()
+        val oldCipher = Any()
+        val replacementCipher = Any()
+        var activeReaderGeneration = 1
+        var currentCipher: Any = oldCipher
+        val bytesAlreadyRead = CountDownLatch(1)
+        val allowOldDecrypt = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val oldReader = executor.submit<Pair<Boolean, Any?>> {
+                // Old reader received bytes but was descheduled before it
+                // selected a cipher. The new session may now replace it.
+                bytesAlreadyRead.countDown()
+                check(allowOldDecrypt.await(5, TimeUnit.SECONDS))
+                var captured: Any? = null
+                val accepted = RtspReaderDispatchGate.dispatchIfCurrent(
+                    readerLock,
+                    { activeReaderGeneration == 1 },
+                    { captured = currentCipher },
+                )
+                accepted to captured
+            }
+            assertTrue(bytesAlreadyRead.await(5, TimeUnit.SECONDS))
+            synchronized(readerLock) {
+                activeReaderGeneration = 2
+                currentCipher = replacementCipher
+            }
+            allowOldDecrypt.countDown()
+            val stale = oldReader.get(5, TimeUnit.SECONDS)
+            assertFalse("stale reader must stop before selecting new cipher", stale.first)
+            assertTrue("stale reader must not touch replacement cipher", stale.second == null)
+
+            var newCaptured: Any? = null
+            assertTrue(RtspReaderDispatchGate.dispatchIfCurrent(
+                readerLock,
+                { activeReaderGeneration == 2 },
+                { newCaptured = currentCipher },
+            ))
+            assertTrue("new reader must retain its own cipher", newCaptured === replacementCipher)
+
+            // A reader that already captured the old cipher before retirement
+            // must retain that object; it must never read the mutable shared
+            // cipher again after the replacement is installed.
+            assertTrue(oldCipher !== newCaptured)
+        } finally {
+            allowOldDecrypt.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun supersededReaderCannotRouteLateResponseToNewPendingRequest() {
         val writerLock = Any()
         val old = Socket()
