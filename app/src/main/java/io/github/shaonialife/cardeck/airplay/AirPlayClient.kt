@@ -2788,7 +2788,16 @@ class AirPlayClient(
                 while (true) {
                     val parsed = parseRtspMessage(buffer) ?: break
                     buffer = parsed.rest
-                    dispatchResponse(parsed.statusLine, parsed.body, parsed.head)
+                    // A superseded reader must never route its delayed response
+                    // into the replacement RTSP session's pending CSeq queue.
+                    // Reader generation, socket identity and dispatch are
+                    // serialized with startReader()/close() by rtspWriteLock.
+                    if (!RtspReaderDispatchGate.dispatchIfCurrent(
+                            rtspWriteLock,
+                            { generation == readerGeneration && readerSocket === client },
+                            { dispatchResponse(parsed.statusLine, parsed.body, parsed.head) },
+                        )
+                    ) return
                 }
             }
         } catch (error: IOException) {
