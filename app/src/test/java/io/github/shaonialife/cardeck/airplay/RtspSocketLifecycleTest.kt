@@ -234,6 +234,94 @@ class RtspSocketLifecycleTest {
     }
 
     @Test
+    fun delayedOldRequestCannotInstallReaderOverReconnectedSocket() {
+        val gate = RtspSocketLifecycle()
+        val old = Socket()
+        val replacement = Socket()
+        var current: Socket? = null
+        var reader: Socket? = null
+        try {
+            assertTrue(gate.tryPublish(gate.snapshot()) {
+                current = old
+                true
+            })
+            // A request has already captured old; reconnect retires it.
+            gate.retire {
+                current = null
+                reader = null
+            }
+            assertTrue(gate.tryPublish(gate.snapshot()) {
+                current = replacement
+                true
+            })
+            assertTrue(gate.runIfCurrent(
+                { current === replacement && !replacement.isClosed },
+                { reader = replacement },
+            ))
+            // Previously startReader(old) could replace readerSocket and close
+            // the new socket. The delayed old caller must be rejected.
+            assertFalse(gate.runIfCurrent(
+                { current === old && !old.isClosed },
+                { reader = old },
+            ))
+            assertTrue(reader === replacement)
+            assertFalse(replacement.isClosed)
+        } finally {
+            old.close()
+            replacement.close()
+        }
+    }
+
+    @Test
+    fun readerInstallAndRetirementCannotInterleave() {
+        val gate = RtspSocketLifecycle()
+        val currentSocket = Socket()
+        val installing = CountDownLatch(1)
+        val finishInstall = CountDownLatch(1)
+        val retiring = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        var current: Socket? = null
+        var reader: Socket? = null
+        try {
+            assertTrue(gate.tryPublish(gate.snapshot()) {
+                current = currentSocket
+                true
+            })
+            val install = executor.submit<Boolean> {
+                gate.runIfCurrent(
+                    { current === currentSocket },
+                    {
+                        installing.countDown()
+                        check(finishInstall.await(5, TimeUnit.SECONDS))
+                        reader = currentSocket
+                    },
+                )
+            }
+            assertTrue(installing.await(5, TimeUnit.SECONDS))
+            val retire = executor.submit {
+                retiring.countDown()
+                gate.retire {
+                    current = null
+                    reader = null
+                }
+            }
+            assertTrue(retiring.await(5, TimeUnit.SECONDS))
+            finishInstall.countDown()
+            assertTrue(install.get(5, TimeUnit.SECONDS))
+            retire.get(5, TimeUnit.SECONDS)
+            assertTrue("retired socket must not retain a reader", reader == null)
+            assertFalse(gate.runIfCurrent(
+                { current === currentSocket },
+                { reader = currentSocket },
+            ))
+        } finally {
+            finishInstall.countDown()
+            currentSocket.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun parallelConnectAttemptsPublishAtMostOneSocket() {
         val gate = RtspSocketLifecycle()
         val sameEpoch = gate.snapshot()
