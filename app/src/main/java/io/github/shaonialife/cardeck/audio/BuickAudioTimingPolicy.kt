@@ -13,6 +13,27 @@ package io.github.shaonialife.cardeck.audio
  * lasting video connection alone does not prove audio playback works.
  */
 internal object BuickAudioTimingPolicy {
+    /**
+     * T89 isolated, single-wire-field hypothesis: B233 PCM/type100 media
+     * currently advertises no PHONE-local reverse RTCP controlPort.
+     * In T85 and T88 the receiver also returned no controlPort; neither
+     * direction therefore had an active audio RTCP control endpoint.
+     * Advertise a receive-only local port for this PCM media profile while
+     * leaving high-accuracy timestamps, RTP, legacy 0xD4 sync and all
+     * non-B233/compatibility profiles unchanged.
+     *
+     * This is NOT evidence that missing RTCP caused the 20s peer EOF.
+     */
+    fun advertiseReverseControlPort(
+        isBuickB233: Boolean,
+        profile: AudioProfile,
+    ): Boolean =
+        useModernSenderTiming(isBuickB233, profile) ||
+            (isBuickB233 &&
+                profile.streamType == 100L &&
+                profile.codec == AudioCodec.PCM &&
+                profile.audioType.equals("media", ignoreCase = true))
+
     fun useModernSenderTiming(
         isBuickB233: Boolean,
         profile: AudioProfile,

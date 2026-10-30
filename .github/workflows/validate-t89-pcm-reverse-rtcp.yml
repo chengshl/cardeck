@@ -1,0 +1,100 @@
+name: T89 B233 PCM Reverse RTCP Offline Validation (isolated)
+on:
+  push:
+    branches:
+      - experiment/buick-test-t89-pcm-reverse-rtcp
+    paths:
+      - '.github/workflows/validate-t89-pcm-reverse-rtcp.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflight.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validate-t89-pcm-reverse-rtcp
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Gate one-variable isolated T89 experiment against T88
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4eedb7f5c42bdddb3bb23a73146c10b42f29829f
+          git merge-base --is-ancestor "$BASE" HEAD
+          CHANGED="$(git diff --name-only "$BASE" HEAD)"
+          printf '%s\n' "$CHANGED"
+          BAD="$(printf '%s\n' "$CHANGED" | grep -Ev '^(\.github/workflows/(validate-t89-pcm-reverse-rtcp|publish-t89-udp-preflight)\.yml|app/src/main/java/io/github/shaonialife/cardeck/(airplay/(AirPlayClient|AudioReverseControlPort|B233UdpBindPreflight)|audio/BuickAudioTimingPolicy|SessionController|BuickMenuActivity)\.kt|app/src/test/java/io/github/shaonialife/cardeck/(audio/BuickAudioTimingPolicyTest|airplay/(AudioReverseControlPortTest|B233UdpBindPreflightTest))\.kt)$' || true)"
+          test -z "$BAD" || { echo "::error::T89 out-of-scope changes: $BAD"; exit 1; }
+          # The only executable AirPlayClient change from signed T88 must be
+          # the one predicate selecting whether the phone advertises a local
+          # reverse RTCP port. File-scope alone cannot prevent accidental
+          # changes to RTSP replies, RTP, session teardown or timing flags.
+          python3 - <<'PY'
+          import subprocess
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+          diff = subprocess.check_output(
+              ['git', 'diff', '--unified=0', '4eedb7f5c42bdddb3bb23a73146c10b42f29829f', 'HEAD', '--', path],
+              text=True,
+          )
+          executable = []
+          for line in diff.splitlines():
+              if not line.startswith(('+', '-')) or line.startswith(('+++', '---')):
+                  continue
+              code = line[1:].strip()
+              if not code or code.startswith(('//', '*', '/*', '*/')):
+                  continue
+              executable.append((line[0], code))
+          expected = [
+              ('-', 'if (BuickAudioTimingPolicy.useModernSenderTiming(endpoint.isBuickB233, profile)) {'),
+              ('+', 'if (BuickAudioTimingPolicy.advertiseReverseControlPort(endpoint.isBuickB233, profile)) {'),
+          ]
+          if sorted(executable) != sorted(expected):
+              raise SystemExit('T89 AirPlayClient executable diff exceeds one predicate: ' + repr(executable))
+          source = open(path, encoding='utf-8').read()
+          if 'if (reversePort > 0) put("controlPort", reversePort.toLong())' not in source:
+              raise SystemExit('T89 expected SETUP reverse controlPort serialization missing')
+          print('T89 single executable predicate and outgoing controlPort wire field verified')
+          PY
+          grep -Fq 't89OnlyB233PcmMediaAdvertisesReceiveOnlyReversePort' app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt
+          # Observed T85/T88 WiFi bind EPERM must NOT silently produce a T89 SETUP.
+          grep -Fq 'if (port == 0) return null' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          grep -Fq 't89VpnEpermCannotAdvertiseControlPort' app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt
+          # T89 receiver exits must invalidate its own advertised UDP port.
+          grep -Fq 'socket === datagram' app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt
+          grep -Fq 'reverse_rtcp_listener_exit' app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt
+          grep -Fq 't89UnexpectedReceiveFailureRetiresPort' app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt
+          grep -Fq 't89RetiredWorkerCannotClearReplacementListener' app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt
+          # A manual in-app preflight MUST use the same Network reference as AudioSender.
+          grep -Fq 'wifiConnector?.currentNetwork' app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt
+          grep -Fq 'b233NetworkForAudioFreePreflight' app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt
+          grep -Fq 'networkStillValid' app/src/main/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflight.kt
+          grep -Fq 'reportsBindEpermAsInvalidExperimentWithoutOpeningPort' app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt
+          grep -Fq 'CopyOnWriteArrayList' app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt
+          # Preflight must never request WiFi or change VPN/audio, or send RTP.
+          ! grep -Eq 'requestNetwork|joinCarPlayNetwork|bindProcessToNetwork|AudioSender\\(|runAudioStream\\(|DatagramSocket\\.send\\(' app/src/main/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflight.kt
+          echo 'T89 preflight is manual, receive-only, and restricted to an existing B233 audio-free Network.'
+          echo 'T89 EPERM preflight: missing listener means no reverse controlPort in SETUP; do not request vehicle test without verified bind'
+          echo 'T89 isolated source scope verified. No signed APK or release in this workflow.'
+      - name: Android unit tests, lint and debug compile (no release)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace

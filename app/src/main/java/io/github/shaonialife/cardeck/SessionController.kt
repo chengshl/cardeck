@@ -224,6 +224,21 @@ object SessionController {
     /** WiFi 绑定互斥：auto-join 与端点交接两条路径可能同时绑定同一热点。 */
     private val wifiBindLock = Any()
 
+    /**
+     * T89: read-only, manual, same-UID preflight access to the EXACT Network
+     * used by the production B233 reverse RTCP sender. Do not request/alter
+     * Wi-Fi or VPN. Only a pre-existing B233 video-only session is eligible.
+     * A previously attempted or requested audio session is NOT a preflight.
+     */
+    fun b233NetworkForAudioFreePreflight(): android.net.Network? {
+        if (audioRequestedByUserForSession || audioAttemptedForSession ||
+            audioEnabledForSession || audioSender?.isRunning == true
+        ) return null
+        if (currentClient?.currentEndpoint?.isBuickB233 != true) return null
+        if (boundCarSsid.isNullOrBlank()) return null
+        return wifiConnector?.currentNetwork
+    }
+
     /** DCL 双检锁的可发布字段（无 volatile 的双检锁是坏发布——虽然当前仅主线程调用，别留隐患）。 */
     @Volatile
     private var bluetoothServer: Iap2BluetoothServer? = null
