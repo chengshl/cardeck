@@ -368,6 +368,53 @@ class Iap2LinkEngineTest {
         assertFalse(phone.isDead)
     }
 
+    @Test
+    fun piggybackedAck109On4301WithoutStandaloneAckConfirmsAndDelivers() {
+        val phone = Iap2LinkEngine()
+        val car = Iap2LinkEngine()
+        phone.start(0)
+        car.start(0)
+        exchangeUntilNormal(phone, car)
+        phone.takeOutput() // discard final handshake residue
+        car.takeOutput()
+
+        // Reproduce the #33 boundary: 100..108 confirmed, 0x4300/seq109 pending.
+        repeat(9) { index ->
+            assertTrue(phone.sendControl(Iap2Csm.encode(0x5500 + index), tick()))
+            exchange(phone, car)
+            assertEquals(1, pollControls(car).size)
+        }
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), tick()))
+        val request = phone.takeOutput()
+        assertEquals(109, request[5].toInt() and 0xFF)
+        car.feed(request, tick())
+        assertArrayEquals(Iap2Csm.encode(0x4300), pollControls(car).single())
+
+        // A data frame also carries the cumulative ACK in its header. Ignore
+        // the separate ACK-only output and deliver only the 0x4301 response.
+        val standaloneAck = car.takeOutput()
+        assertEquals(Iap2LinkEngine.HEADER_BYTES, standaloneAck.size)
+        assertEquals(109, standaloneAck[6].toInt() and 0xFF)
+        val response = Iap2Csm.encode(0x4301)
+        assertTrue(car.sendControl(response, tick()))
+        val responsePacket = car.takeOutput()
+        assertTrue(responsePacket.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals("0x4301 must carry piggybacked ACK109", 109, responsePacket[6].toInt() and 0xFF)
+
+        val progress = mutableListOf<Pair<String, String>>()
+        phone.onAcknowledgementProgress = { _, before, after -> progress += before to after }
+        phone.feed(responsePacket, tick())
+        assertTrue("piggybacked ACK109 must confirm pending seq109",
+            progress.any { it.first == "109" && it.second.isEmpty() })
+        assertArrayEquals("0x4301 must be delivered without standalone ACK",
+            response, pollControls(phone).single())
+        phone.takeOutput() // discard the expected ACK for the received response
+        phone.advanceTime(20_000L)
+        assertTrue("confirmed seq109 must not retry after piggybacked ACK",
+            phone.takeOutput().isEmpty())
+        assertFalse(phone.isDead)
+    }
+
     private fun ackOnly(ack: Int): ByteArray {
         val frame = ByteArray(Iap2LinkEngine.HEADER_BYTES)
         frame[0] = 0xFF.toByte()
