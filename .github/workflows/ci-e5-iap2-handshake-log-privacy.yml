@@ -7,6 +7,7 @@ on:
     paths:
       - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -144,6 +145,8 @@ jobs:
               ["\"请到 系统设置>WLAN 手动连接 \\\"${wifi.ssid}\\\"（手动连接不会被自动切回）\"","\"请到 系统设置>WLAN 手动连接目标热点（SSID 已脱敏；手动连接不会被自动切回）\""],
               ["\">>> 等待 ${WIFI_BIND_WAIT_S}s 仍未绑定到 \\\"${wifi.ssid}\\\"——\"","\">>> 等待 ${WIFI_BIND_WAIT_S}s 仍未绑定到车机热点（SSID 已脱敏）——\""],
               ["\"WIFI: connect-network 失败（${result.output.take(80).ifEmpty { \"exit=${result.exitCode}\" }}）\"","\"WIFI: connect-network 失败（exit=${result.exitCode}；outputChars=${result.output.length}；原始输出已脱敏）\""],
+              ["appendLog(\"AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.message}\")","appendLog(\"AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.javaClass.simpleName}（详细异常已脱敏）\")"],
+              ["appendLog(\"AIRPLAY: 配对线程异常 - ${error.message ?: error.javaClass.simpleName}\")","appendLog(\"AIRPLAY: 配对线程异常 - ${error.javaClass.simpleName}（详细异常已脱敏）\")"],
           ]
           for before, after in session_replacements:
               assert session_expected.count(before) == 1, 'SessionController log baseline drift'
