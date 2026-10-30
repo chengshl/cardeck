@@ -320,6 +320,54 @@ class Iap2LinkEngineTest {
         assertFalse(phone.isDead)
     }
 
+    @Test
+    fun ack109AndResponse4301AcrossRfcommReadsDoNotBlockControlDelivery() {
+        val phone = Iap2LinkEngine()
+        val car = Iap2LinkEngine()
+        phone.start(0)
+        car.start(0)
+        exchangeUntilNormal(phone, car)
+        phone.takeOutput() // discard final negotiation residue
+        car.takeOutput()
+
+        // ACK108 is confirmed, then #33 0x4300 leaves seq109 outstanding.
+        repeat(9) { index ->
+            assertTrue(phone.sendControl(Iap2Csm.encode(0x5400 + index), tick()))
+            exchange(phone, car)
+            assertEquals(1, pollControls(car).size)
+        }
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), tick()))
+        val request = phone.takeOutput()
+        assertEquals(109, request[5].toInt() and 0xFF)
+
+        // The peer receives 0x4300 and emits ACK109 immediately followed by
+        // the separate 0x4301 control response in the same RFCOMM byte stream.
+        car.feed(request, tick())
+        assertArrayEquals(Iap2Csm.encode(0x4300), pollControls(car).single())
+        val ack = car.takeOutput()
+        assertEquals(Iap2LinkEngine.HEADER_BYTES, ack.size)
+        assertEquals(109, ack[6].toInt() and 0xFF)
+        val response = Iap2Csm.encode(0x4301)
+        assertTrue(car.sendControl(response, tick()))
+        val responsePacket = car.takeOutput()
+        assertTrue(responsePacket.size > Iap2LinkEngine.HEADER_BYTES)
+
+        val progress = mutableListOf<Pair<String, String>>()
+        phone.onAcknowledgementProgress = { _, before, after -> progress += before to after }
+        val stream = ack + responsePacket
+        // One RFCOMM read ends inside the next link frame; another completes it.
+        val split = ack.size + 5
+        phone.feed(stream.copyOfRange(0, split), tick())
+        assertTrue("ACK109 must clear pending 109", progress.any { it.first == "109" && it.second.isEmpty() })
+        assertTrue("partial 0x4301 frame must not be delivered", pollControls(phone).isEmpty())
+        phone.feed(stream.copyOfRange(split, stream.size), tick())
+        assertArrayEquals("0x4301 must survive ACK+data coalescing", response, pollControls(phone).single())
+        phone.takeOutput() // ignore the normal ACK of the incoming 0x4301
+        phone.advanceTime(20_000L)
+        assertTrue("confirmed seq109 must not retry after 0x4301", phone.takeOutput().isEmpty())
+        assertFalse(phone.isDead)
+    }
+
     private fun ackOnly(ack: Int): ByteArray {
         val frame = ByteArray(Iap2LinkEngine.HEADER_BYTES)
         frame[0] = 0xFF.toByte()
