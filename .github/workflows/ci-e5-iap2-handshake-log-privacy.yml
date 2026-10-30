@@ -136,6 +136,7 @@ jobs:
               ["appendLog(\">>> [$source] 已绑定车机热点 ${endpoint.ssid}，跳过重复绑定\")","appendLog(\">>> [$source] 已绑定车机热点（SSID 已脱敏），跳过重复绑定\")"],
               ["appendLog(\"WIFI: 等待切换到车机热点（当前 $current）…\")","appendLog(\"WIFI: 等待切换到车机热点（当前WiFi存在=${!current.isNullOrBlank()}；SSID 已脱敏）…\")"],
               ["appendLog(\">>> [$source] 等待车机热点超时（当前 WiFi: $current）——请到 设置>WLAN 加入 \\\"${endpoint.ssid}\\\" 后重新连接\")","appendLog(\">>> [$source] 等待车机热点超时（当前WiFi存在=${!current.isNullOrBlank()}；SSID 已脱敏）——请到 设置>WLAN 加入已显示的目标热点后重新连接\")"],
+              ["appendLog(\"WIFI: 手机已在车机热点 \\\"$current\\\"——直接绑定\")","appendLog(\"WIFI: 手机已在车机热点（SSID 已脱敏）——直接绑定\")"],
           ]
           for before, after in session_replacements:
               assert session_expected.count(before) == 1, 'SessionController log baseline drift'
