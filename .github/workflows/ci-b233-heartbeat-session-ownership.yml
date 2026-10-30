@@ -1,0 +1,81 @@
+name: B233 heartbeat session ownership isolation (test only)
+
+on:
+  pull_request:
+    branches:
+      - experiment/buick-test-t89-pcm-reverse-rtcp
+    paths:
+      - '.github/workflows/ci-b233-heartbeat-session-ownership.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGate.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGateTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b233-heartbeat-ownership-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact signed T89 base, four-file scope and runtime wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          git diff --name-only "$BASE" HEAD > /tmp/heartbeat-scope
+          test "$(wc -l < /tmp/heartbeat-scope)" -eq 4
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-heartbeat-session-ownership.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGate.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGateTest.kt) ;;
+              *) echo "Unexpected change: $file"; exit 1 ;;
+            esac
+          done < /tmp/heartbeat-scope
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          gate = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGate.kt').read_text()
+          test = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGateTest.kt').read_text()
+          assert 'private val b233HeartbeatSessionGate = B233HeartbeatSessionGate()' in src
+          assert 'AtomicLong(0L)' in gate and 'incrementAndGet()' in gate
+          close = src.split('    fun close() {',1)[1].split('    /**',1)[0]
+          assert close.index('b233HeartbeatSessionGate.retire()') < close.index('socket?.close()')
+          keep = src.split('    fun startKeepAlive(',1)[1].split('    fun startFeedbackLoop()',1)[0]
+          feedback = src.split('    fun startFeedbackLoop()',1)[1].split('    /** 解析并打印',1)[0]
+          for name, section in (('keepAlive',keep), ('feedback',feedback)):
+              assert section.index('b233HeartbeatSessionGate.snapshot()') < section.index('Thread({'), name
+              assert 'val b233HeartbeatWorker = endpoint.isBuickB233' in section, name
+              assert '(!b233HeartbeatWorker || b233HeartbeatSessionGate.isCurrent(heartbeatToken))' in section, name
+          assert 'if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break' in feedback
+          assert feedback.index('request("POST", "/feedback", ByteArray(0))') < feedback.index('if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break')
+          for name in ('oldKeepAliveCannotPingRetiredHostAfterFastReconnect',
+                       'delayedOldFeedbackWorkerCannotAdoptReplacementSession',
+                       'feedbackResponseAfterCloseCannotBeReportedAsNewSession',
+                       'nonB233LegacyWorkerDoesNotDependOnGate'):
+              assert name in test, name
+          print('B233 only: close invalidates pre-scheduled old feedback/UDP workers; no protocol or routing change')
+          PY
+      - name: Deterministic B233 stale-heartbeat regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233HeartbeatSessionGateTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# No signing, release, stable merge or vehicle acceptance from this workflow.
