@@ -6,6 +6,7 @@ on:
     branches: [Buick-E5]
     paths:
       - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -32,7 +33,8 @@ jobs:
           files = set(subprocess.check_output(
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
           ).splitlines())
-          assert files == {path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          bt_path = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+          assert files == {path, bt_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
           old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + path], text=True)
           new = Path(path).read_text()
           assert old.count('编码=${availabilityFrame.joinToString') == 1
@@ -98,6 +100,21 @@ jobs:
               )]
               return '\n'.join(lines)
           assert drop_logs(old) == drop_logs(new), 'unexpected non-log iAP2 behavior diff'
+          # Exact byte-for-byte audit: only Bluetooth log text and its log-only
+          # device-name lookup may change. Pairing, profile and retry stay intact.
+          bt_old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + bt_path], text=True)
+          bt_new = Path(bt_path).read_text()
+          replacements = [["\"，目标：「${target.name}」${target.address}（只连该设备）\"","\"，已指定目标设备（只连该设备；名称/地址不写入日志）\""],["                val name =\n                    try {\n                        device.name\n                    } catch (_: SecurityException) {\n                        null\n                    } ?: device.address\n",""],["\"BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString(\"/\")}）——已断开\"","\"BT-C: 候选车机处于蓝牙已连接状态（${dropped.joinToString(\"/\")}）——已断开\""],["\"BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）\"","\"BT-C: ✓ 已连入候选车机的无线 iAP2 服务（RFCOMM 建立；身份已脱敏）\""],["\"BT-C: 连接 $name 失败（车机未就绪或不在无线配对窗口），${if (t35Buick) \"6\" else \"3\"} 秒后重试…\"","\"BT-C: 连接候选车机失败（车机未就绪或不在无线配对窗口），${if (t35Buick) \"6\" else \"3\"} 秒后重试…\""],["\"BT-C: 目标设备「${target.name}」(${target.address}) 不在已配对列表\"","\"BT-C: 已指定目标不在已配对列表（名称/地址已脱敏）\""],["\"BT-C T10: pre-session identity=\" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) \"unavailable\" else mac","\"BT-C T10: pre-session identity=\" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) \"unavailable\" else \"present-redacted\""],["log(\"BT-C: SESSION 失败 - ${error.message}\")","log(\"BT-C: SESSION 失败（${error.javaClass.simpleName}；详细原因已脱敏）\")"]]
+          expected_bt = bt_old
+          for before, after in replacements:
+              assert expected_bt.count(before) == 1, 'unexpected BT baseline drift or missing log'
+              expected_bt = expected_bt.replace(before, after)
+          assert bt_new == expected_bt, 'Bluetooth runtime behavior changed outside log redaction'
+          assert 'GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address)' in bt_new
+          assert 'BtProfiles.disconnect(context, device)' in bt_new
+          assert 'TargetDevicePrefs.matches(target, it.address)' in bt_new
+          assert 'channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)' in bt_new
+          print('Bluetooth target names, addresses, identity and raw exception text removed from logs')
           print('Only iAP2 diagnostic redaction; CSM payload, ACK and handshake unchanged')
           PY
       - name: Android unit tests and Debug build
