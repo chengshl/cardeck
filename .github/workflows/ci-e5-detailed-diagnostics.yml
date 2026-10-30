@@ -1,5 +1,15 @@
 name: E5 detailed diagnostics PR verification
 on:
+  # The PR workflow is not present on the older E5 base, so provide a
+  # branch-local exact-HEAD gate for the existing L3 diagnostics candidate.
+  push:
+    branches: [experiment/buick-e5-detailed-diagnostics]
+    paths:
+      - 'app/src/main/**'
+      - 'app/src/test/**'
+      - 'app/build.gradle.kts'
+      - '.github/workflows/ci-e5-detailed-diagnostics.yml'
+      - '.github/workflows/publish-e5-detailed-diagnostics.yml'
   pull_request:
     branches:
       - Buick-E5
@@ -7,7 +17,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: e5-diagnostics-pr-${{ github.event.pull_request.number || github.ref }}
+  group: e5-diagnostics-head-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
   android-tests:
