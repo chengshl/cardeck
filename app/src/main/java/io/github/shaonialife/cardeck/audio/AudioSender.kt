@@ -666,10 +666,10 @@ class AudioSender(
             cadence?.tailSnapshotAt(System.nanoTime())?.let { tail ->
                 failureTrace?.event(
                     "audio_rtp_tail",
-                    "sent=${tail.successfulSendObserved} ageMs=${tail.lastSuccessAgeMs ?: "never"} " +
+                    "ok=${tail.successfulSendObserved} ageMs=${tail.lastSuccessAgeMs ?: "never"} " +
                         "elapsedMs=${tail.elapsedSinceFirstSuccessMs ?: "never"} " +
-                        "pendingPackets=${tail.unreportedPackets} pendingFrames=${tail.unreportedSampleFrames} " +
-                        "maxGapMs=${tail.maxCompletedGapMs} maxSendUs=${tail.maxSendUs}",
+                        "pkts=${tail.unreportedPackets} frames=${tail.unreportedSampleFrames} " +
+                        "gapMs=${tail.maxCompletedGapMs} sendUs=${tail.maxSendUs}",
                 )
             }
             failureTrace?.event("audio_capture_loop_exit")
