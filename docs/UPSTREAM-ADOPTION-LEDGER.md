@@ -108,3 +108,10 @@
 - **差异与安全边界**：本轮只改 PR #79 的 `.github/workflows/ci-e5-upstream-replay-33.yml`；PR 相对稳定线仍仅两个新增文件（合成测试 + CI）。没有修改 CarPlay/iAP2/蓝牙/音视频运行时、签名、版本号、更新源、GitHub `main` 或 `Buick-Test`。
 - **最终状态**：**已借鉴改写在 E5 隔离测试线 + 精确 HEAD 专项/隐私 CI 成功；未合入 Buick-E5、未合入最终 Buick**。没有新签名 APK、Release、versionCode、手机/实车验收；测试专用代码不要求另发 APK，但 #33 实验002 的真实 B233 负向结果仍有效且独立。未来若申请合入须再次复核治理、HEAD、diff、CI 与风险门禁；若撤回可直接关闭未合 PR，若合入后回退则 revert 对应合入提交并保留 #23 与本台账原历史。真实录制回放仍未实施，须另行私有证据脱敏审查。
 
+## H. 2026-10-30 U03 合成回放补齐接收端真实断言（保留 F/G 历史）
+
+- **上游精确来源**：[`shaonialife/cardeck@3095d64ed1fbe2ea6f52b202a80f28d7dd7749d1`](https://github.com/shaonialife/cardeck/commit/3095d64ed1fbe2ea6f52b202a80f28d7dd7749d1)；原始 `BtLinkReplayTest/ScriptedCarStream` 以真实生产链路接收事件为判据。E5 仅**借鉴并重新实现合成测试方法**，没有直接 cherry-pick，也没有导入车机录制原始帧。
+- **接收目标/提交**：`Buick-E5@7945c16254e71c12f2824c7d90e4de960649f6f0` 派生 `experiment/buick-e5-upstream-replay-33-20261030`，Draft [PR #79](https://github.com/chengshl/cardeck/pull/79)；本轮新提交 [`1223f5e0b87b4eac5b1339d1eb2cbb3ab9814c0d`](https://github.com/chengshl/cardeck/commit/1223f5e0b87b4eac5b1339d1eb2cbb3ab9814c0d)。仅更新 `B233HandshakeReplayTest.kt`；相对稳定基线仍仅有测试文件与专项工作流两项差异，运行时无变化。
+- **缺口与补强**：此前合成测试证明手机端发出 `0x4300`、模拟车机产生非空响应，却没有逐项断言**真实 `Iap2LinkEngine` 接收端事件队列**实际解码九条 ACK108 前导 CSM 与 `0x4300`，也未核对 ACK-only 帧长度和 ACK109 字节。现补上接收端 `Event.Control` / `Iap2Csm.Parser` 的精确 messageId 断言、9 字节 ACK-only 长度与 `ack=109`；若接收端没有真实处理控制消息，测试应失败，不允许“只发未收”误绿。仍是无个人信息的**合成**三态测试，不是实车录制回放。
+- **本轮 CI 状态**：精确 HEAD `1223f5e0` 已触发 [Push 专项 #41089734966](https://github.com/chengshl/cardeck/actions/runs/41089734966)、[PR 专项 #41089746663](https://github.com/chengshl/cardeck/actions/runs/41089746663)；本条写入时仍在执行，**不把旧 HEAD 的 CI 视为当前通过**。[PR 隐私 #41089746607](https://github.com/chengshl/cardeck/actions/runs/41089746607) 已 completed/success。完整 Lint 既有 13 错的基线问题仍需本 HEAD 对照复核，不宣称全量 Lint 通过。
+- **状态/验收/回退**：**上游方法已借鉴改写在 E5 隔离测试线；新提交已入库、专项 CI 待最终核验**。未合并 E5/最终 Buick、未签名/发布 APK、无新设备/实车验收；#33 实验002真实 B233 负向及“成功握手但不自动切屏”分别保留。可关闭未合并 PR 撤回本轮实验；将来若受控合入需记录精确目标合入 SHA、CI、验收适用性、日期与 revert 途径。恢复003仍仅按需使用，未获数据保留验收。
