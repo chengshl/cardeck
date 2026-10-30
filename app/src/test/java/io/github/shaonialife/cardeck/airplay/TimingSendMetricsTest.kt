@@ -15,11 +15,13 @@ class TimingSendMetricsTest {
         assertEquals(0L, before.responseSendOk)
         assertEquals(0L, before.sendError)
         assertEquals(-1L, before.lastSuccessMonoMs)
-        metrics.responseSendFailed()
+        assertEquals(-1L, before.firstSendErrorMonoMs)
+        metrics.responseSendFailed(12_500L)
         val after = metrics.snapshot()
         assertEquals(1L, after.requestRx)
         assertEquals(0L, after.responseSendOk)
         assertEquals(1L, after.sendError)
+        assertEquals(12_500L, after.firstSendErrorMonoMs)
         assertEquals(-1L, after.lastSuccessMonoMs)
     }
 
@@ -29,7 +31,7 @@ class TimingSendMetricsTest {
         metrics.requestReceived()
         metrics.responseSentOk(12_345L)
         metrics.requestReceived()
-        metrics.responseSendFailed()
+        metrics.responseSendFailed(12_500L)
         metrics.exited("receive_error")
         val snapshot = metrics.snapshot()
         assertEquals(2L, snapshot.requestRx)
@@ -38,6 +40,7 @@ class TimingSendMetricsTest {
         assertEquals(1L, snapshot.loopExit)
         assertEquals("receive_error", snapshot.lastLoopExitReason)
         assertEquals(12_345L, snapshot.lastSuccessMonoMs)
+        assertEquals(12_500L, snapshot.firstSendErrorMonoMs)
     }
 
     @Test
@@ -50,6 +53,7 @@ class TimingSendMetricsTest {
         assertEquals(0L, snapshot.sendError)
         assertEquals("stop", snapshot.lastLoopExitReason)
         assertEquals(-1L, snapshot.lastSuccessMonoMs)
+        assertEquals(-1L, snapshot.firstSendErrorMonoMs)
     }
 
     @Test
@@ -62,7 +66,7 @@ class TimingSendMetricsTest {
 
         val replacement = TimingSendMetrics()
         replacement.requestReceived()
-        replacement.responseSendFailed()
+        replacement.responseSendFailed(2_000L)
         retired.exited("stop")
 
         val oldSnapshot = retired.snapshot()
@@ -78,6 +82,8 @@ class TimingSendMetricsTest {
         assertEquals(0L, newSnapshot.loopExit)
         assertEquals("none", newSnapshot.lastLoopExitReason)
         assertEquals(-1L, newSnapshot.lastSuccessMonoMs)
+        assertEquals(2_000L, newSnapshot.firstSendErrorMonoMs)
+        assertEquals(-1L, oldSnapshot.firstSendErrorMonoMs)
     }
 
     @Test
@@ -93,6 +99,22 @@ class TimingSendMetricsTest {
         replacement.requestReceived()
         assertTrue(replacement.snapshot().requestRx > 3L)
         assertEquals(10L, retired.snapshot().requestRx)
+    }
+
+    @Test
+    fun firstFailureTimeIsNotOverwrittenByRetriesOrLaterSuccess() {
+        val metrics = TimingSendMetrics()
+        repeat(4) { metrics.requestReceived() }
+        metrics.responseSentOk(1_000L)
+        metrics.responseSendFailed(2_000L)
+        metrics.responseSendFailed(3_000L)
+        metrics.responseSentOk(4_000L)
+        val snapshot = metrics.snapshot()
+        assertEquals(4L, snapshot.requestRx)
+        assertEquals(2L, snapshot.sendError)
+        assertEquals(2L, snapshot.responseSendOk)
+        assertEquals(2_000L, snapshot.firstSendErrorMonoMs)
+        assertEquals(4_000L, snapshot.lastSuccessMonoMs)
     }
 
     @Test
