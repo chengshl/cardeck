@@ -1,0 +1,66 @@
+name: B233 RTSP Reader Generation Offline Regression
+on:
+  push:
+    branches:
+      - experiment/buick-b233-rtsp-reader-generation-cleanup
+    paths:
+      - '.github/workflows/validate-b233-rtsp-reader-generation.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: b233-rtsp-reader-generation
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Gate generation cleanup-only diff against signed T88
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4eedb7f5c42bdddb3bb23a73146c10b42f29829f
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --name-only "$BASE" HEAD | while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/validate-b233-rtsp-reader-generation.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt) ;;
+              *) echo "::error::Out-of-scope change: $path"; exit 1 ;;
+            esac
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path("app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt").read_text()
+          start = source.index("    private fun readLoop(")
+          end = source.index("    /** 控制通道报文", start)
+          reader = source[start:end]
+          assert "val waiting = synchronized(rtspWriteLock) {" in reader
+          assert "RtspReaderGenerationCleanup.drainIfCurrent(" in reader
+          assert reader.index("val waiting = synchronized(rtspWriteLock) {") < reader.index("RtspReaderGenerationCleanup.drainIfCurrent(")
+          assert 'failAllPending("控制通道读线程结束")' not in reader
+          close_start = source.index("    fun close() {")
+          close_end = source.index("    /**", close_start)
+          close_body = source[close_start:close_end]
+          assert "val waiting = synchronized(rtspWriteLock) {" in close_body
+          assert close_body.index("readerGeneration++") < close_body.index("RtspReaderGenerationCleanup.drainAll(")
+          assert 'wakePending("控制通道关闭", waiting)' in close_body
+          assert 'failAllPending("控制通道关闭")' not in close_body
+          print("RTSP reader and close retirement integration guards passed")
+          PY
+          echo 'No signing, release, RTSP wire-format or iAP2 changes.'
+      - name: Android unit tests, lint and Kotlin compile (offline only)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:compileDebugKotlin --stacktrace
