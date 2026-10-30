@@ -87,8 +87,8 @@ class AirPlayClient(
         }
     }
 
-    /** Serializes RTSP socket publication and retirement; never hold while connecting. */
-    private val socketLifecycleLock = Any()
+    /** Prevents an in-flight TCP connection from reappearing after close(). */
+    private val socketLifecycle = RtspSocketLifecycle()
     private var socket: Socket? = null
     private var cSeq = 0
 
@@ -562,7 +562,7 @@ class AirPlayClient(
     fun close() {
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
-        synchronized(socketLifecycleLock) {
+        socketLifecycle.retire {
             runCatching { socket?.close() }
             socket = null
             activeHost = null
@@ -2509,6 +2509,7 @@ class AirPlayClient(
         // 若用旧地址建好连接再被请求，会一直连错机器到本轮超时。
         val target = endpoint
         val generation = endpointGeneration
+        val connectEpoch = socketLifecycle.snapshot()
         val candidates = EndpointHosts.candidates(target.ipAddresses)
         if (candidates.isEmpty()) {
             log("AIRPLAY: 0x4301/ mDNS 未提供可用地址，无法连接")
@@ -2533,15 +2534,20 @@ class AirPlayClient(
                 // 读由独立读线程负责（阻塞等数据），请求超时由待响应表的 poll 控制；
                 // 这里若留 soTimeout，读线程会周期性收到 SocketTimeoutException 而退出
                 newSocket.soTimeout = 0
-                synchronized(socketLifecycleLock) {
+                val accepted = socketLifecycle.tryPublish(connectEpoch) {
                     if (generation != endpointGeneration) {
-                        // 连接途中端点已更新：丢弃旧连接，不能覆盖新端点
-                        runCatching { newSocket.close() }
-                        return false
+                        false
+                    } else {
+                        socket = newSocket
+                        activeAddress = address
+                        activeHost = addressLiteral(address)
+                        true
                     }
-                    socket = newSocket
-                    activeAddress = address
-                    activeHost = addressLiteral(address)
+                }
+                if (!accepted) {
+                    // close() or endpoint change occurred during connect: never publish a stale socket.
+                    runCatching { newSocket.close() }
+                    return false
                 }
                 log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")
                 return true
