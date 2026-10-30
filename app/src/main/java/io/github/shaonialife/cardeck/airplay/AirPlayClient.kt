@@ -2832,10 +2832,29 @@ class AirPlayClient(
         } catch (error: IOException) {
             if (generation == readerGeneration) audioFailureTrace?.event("rtsp_read_error", error.javaClass.simpleName)
         } finally {
-            // 只由「当前」读线程清账：重连会换 socket 与新读线程，旧线程不得误伤新会话
-            if (generation == readerGeneration) {
-                audioFailureTrace?.event("rtsp_reader_exit")
-                failAllPending("控制通道读线程结束")
+            if (endpoint.isBuickB233) {
+                // Integrate the independently reviewed PR #72 retirement rule:
+                // generation validation and pending drain must be atomic with
+                // startReader() and request() under rtspWriteLock. A stale
+                // reader cannot erase a replacement session's CSeq waiters.
+                val waiting = synchronized(rtspWriteLock) {
+                    RtspReaderGenerationCleanup.drainIfCurrent(
+                        generation, readerGeneration, pendingResponses,
+                    )
+                }
+                if (waiting != null) {
+                    audioFailureTrace?.event("rtsp_reader_exit")
+                    if (waiting.isNotEmpty()) {
+                        log("AIRPLAY: 控制通道读线程结束——唤醒 ${waiting.size} 个待响应请求")
+                        waiting.forEach { it.offer(RTSP_CLOSED_MARK to ByteArray(0)) }
+                    }
+                }
+            } else {
+                // Preserve the pre-existing cleanup path for other receivers.
+                if (generation == readerGeneration) {
+                    audioFailureTrace?.event("rtsp_reader_exit")
+                    failAllPending("控制通道读线程结束")
+                }
             }
         }
     }
