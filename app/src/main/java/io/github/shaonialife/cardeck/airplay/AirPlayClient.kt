@@ -562,21 +562,25 @@ class AirPlayClient(
     fun close() {
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
+        // Retire the RTSP socket, cipher, reader ownership and pending replies as
+        // one publication barrier. A concurrent ensureConnected() must not publish
+        // its new socket between retiring the old socket and clearing old state.
+        // Close the socket first so in-flight RTSP writes can unblock before
+        // acquiring rtspWriteLock; TCP connect remains outside this gate.
         socketLifecycle.retire {
             runCatching { socket?.close() }
             socket = null
             activeHost = null
             activeAddress = null
+            // A new RTSP connection starts unencrypted until pair-verify.
+            cipher = null
+            synchronized(rtspWriteLock) {
+                readerSocket = null
+                readerThread = null
+                readerGeneration++
+            }
+            failAllPending("控制通道关闭")
         }
-        // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
-        // 清掉，否则重连后的读线程会把明文应答当密文帧解，后续所有请求超时。
-        cipher = null
-        synchronized(rtspWriteLock) {
-            readerSocket = null
-            readerThread = null
-            readerGeneration++
-        }
-        failAllPending("控制通道关闭")
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
         iapLink = null
