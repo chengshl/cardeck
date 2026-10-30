@@ -562,7 +562,7 @@ object SessionController {
 
             val current = shellWifiStatus().second
             if (current == wifi.ssid) {
-                appendLog("WIFI: 手机已在车机热点 \"$current\"——直接绑定")
+                appendLog("WIFI: 手机已在车机热点（SSID 已脱敏）——直接绑定")
                 bindCarWifiAndRegister(wifi)
                 return@run
             }
