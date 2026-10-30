@@ -78,4 +78,57 @@ class RtspReaderGenerationCleanupTest {
         assertEquals(2, generation)
         assertFalse("baseline must reproduce the lost waiter", pending.containsKey(42))
     }
+
+    @Test fun closeDrainCannotClearWaiterRegisteredAfterRetirementLock() {
+        val writeLock = Any()
+        val pending = ConcurrentHashMap<Int, String>()
+        pending[7] = "retiring-session-waiter"
+        val closeHasLock = CountDownLatch(1)
+        val allowCloseDrain = CountDownLatch(1)
+        val drained = AtomicReference<List<String>?>()
+        val failure = AtomicReference<Throwable?>()
+
+        val closer = Thread {
+            try {
+                synchronized(writeLock) {
+                    closeHasLock.countDown()
+                    check(allowCloseDrain.await(3, TimeUnit.SECONDS))
+                    drained.set(RtspReaderGenerationCleanup.drainAll(pending))
+                }
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        closer.start()
+        val nextRequest = Thread {
+            try {
+                synchronized(writeLock) { pending[42] = "next-session-waiter" }
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        try {
+            assertTrue(closeHasLock.await(3, TimeUnit.SECONDS))
+            nextRequest.start()
+        } finally {
+            allowCloseDrain.countDown()
+        }
+        closer.join(3000)
+        nextRequest.join(3000)
+        assertFalse(closer.isAlive)
+        assertFalse(nextRequest.isAlive)
+        assertNull(failure.get())
+        assertEquals(listOf("retiring-session-waiter"), drained.get())
+        assertEquals("next-session-waiter", pending[42])
+    }
+
+    @Test fun oldCloseSnapshotThenClearOutsideWriteLockCouldLoseNewWaiter() {
+        val pending = ConcurrentHashMap<Int, String>()
+        pending[7] = "retiring-session-waiter"
+        val oldSnapshot = pending.values.toList()
+        pending[42] = "next-session-waiter"
+        pending.clear() // baseline close() after releasing the write lock
+        assertEquals(listOf("retiring-session-waiter"), oldSnapshot)
+        assertFalse(pending.containsKey(42))
+    }
 }
