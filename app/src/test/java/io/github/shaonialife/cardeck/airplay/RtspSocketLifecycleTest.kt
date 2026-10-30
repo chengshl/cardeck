@@ -322,6 +322,58 @@ class RtspSocketLifecycleTest {
     }
 
     @Test
+    fun delayedRequestCannotConsumeReplacementCipherNonce() {
+        val writeLock = Any()
+        val old = Socket()
+        val replacement = Socket()
+        var published: Socket? = old
+        var reader: Socket? = old
+        var nextCipherNonce = 0
+        val capturedByRequest = old
+        try {
+            // startReader(old) succeeded, then close/reconnect completed before
+            // the request obtained rtspWriteLock to register CSeq and encrypt.
+            synchronized(writeLock) {
+                published = replacement
+                reader = replacement
+            }
+            val accepted = synchronized(writeLock) {
+                RtspRequestWriteOwnership.isCurrent(
+                    capturedByRequest, published, reader, capturedByRequest.isClosed,
+                )
+            }
+            if (accepted) nextCipherNonce++
+            assertFalse("retired request must not use the new cipher", accepted)
+            assertEquals("new session's cipher nonce must be untouched", 0, nextCipherNonce)
+            assertTrue(RtspRequestWriteOwnership.isCurrent(
+                replacement, published, reader, replacement.isClosed,
+            ))
+        } finally {
+            old.close()
+            replacement.close()
+        }
+    }
+
+    @Test
+    fun currentButClosedRequestSocketCannotRegisterOrEncrypt() {
+        val closed = Socket()
+        closed.close()
+        assertFalse(RtspRequestWriteOwnership.isCurrent(
+            closed, closed, closed, closed.isClosed,
+        ))
+        val current = Socket()
+        try {
+            assertFalse("reader must also own request socket",
+                RtspRequestWriteOwnership.isCurrent(current, current, closed, current.isClosed))
+            assertTrue(RtspRequestWriteOwnership.isCurrent(
+                current, current, current, current.isClosed,
+            ))
+        } finally {
+            current.close()
+        }
+    }
+
+    @Test
     fun parallelConnectAttemptsPublishAtMostOneSocket() {
         val gate = RtspSocketLifecycle()
         val sameEpoch = gate.snapshot()
