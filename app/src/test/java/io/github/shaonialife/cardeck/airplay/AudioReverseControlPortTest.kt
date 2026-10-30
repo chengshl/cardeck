@@ -162,6 +162,69 @@ class AudioReverseControlPortTest {
         assertEquals(0, listener.port)
     }
 
+    /** A receive-thread failure must invalidate the advertised port and record a monotonic exit. */
+    @Test
+    fun t89UnexpectedReceiveFailureRetiresPort() {
+        val exited = java.util.concurrent.CountDownLatch(1)
+        val lines = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line ->
+                lines.add(line)
+                if (line.contains("反向RTCP监听退出")) exited.countDown()
+            },
+            receivePacket = { _, _ -> throw java.net.SocketException("synthetic_receive_failure") },
+        )
+        try {
+            listener.start()
+            assertTrue("failed worker must exit promptly", exited.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("dead listener cannot report its former UDP port", 0, listener.port)
+            assertTrue(lines.any { it.contains("reason=socket_exception") && it.contains("elapsedMs=") })
+            assertTrue(lines.any { it.contains("反向 RTCP 套接字异常") })
+        } finally {
+            listener.close()
+        }
+    }
+
+    /** A late old worker may finish AFTER a new listener started; it must not retire the new one. */
+    @Test
+    fun t89RetiredWorkerCannotClearReplacementListener() {
+        val oldWorkerEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseOldWorker = java.util.concurrent.CountDownLatch(1)
+        val oldWorkerExited = java.util.concurrent.CountDownLatch(1)
+        val receives = java.util.concurrent.atomic.AtomicInteger(0)
+        val listener = AudioReverseControlPort(
+            bindNetwork = {},
+            log = { line -> if (line.contains("旧监听线程退出")) oldWorkerExited.countDown() },
+            receivePacket = { udp, packet ->
+                if (receives.incrementAndGet() == 1) {
+                    oldWorkerEntered.countDown()
+                    if (!releaseOldWorker.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw java.net.SocketException("synthetic_old_worker_timeout")
+                    }
+                    throw java.net.SocketException("synthetic_old_worker_exit")
+                }
+                udp.receive(packet)
+            },
+        )
+        try {
+            val previous = listener.start()
+            assertTrue(previous in 1..65535)
+            assertTrue(oldWorkerEntered.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            listener.close()
+            val replacement = listener.start()
+            assertTrue(replacement in 1..65535)
+            releaseOldWorker.countDown()
+            assertTrue("old worker must finish after replacement starts",
+                oldWorkerExited.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("stale worker cannot clear new listener", replacement, listener.port)
+        } finally {
+            releaseOldWorker.countDown()
+            listener.close()
+        }
+        assertEquals(0, listener.port)
+    }
+
     @Test
     fun failureToBindPreventsAdvertisingPort() {
         val receiver = AudioReverseControlPort(
