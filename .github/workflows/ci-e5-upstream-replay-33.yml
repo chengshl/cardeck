@@ -62,9 +62,8 @@ jobs:
             echo 'E5 stable HEAD changed; re-review baseline before trusting this CI.'
             exit 1
           }
-          # Run Lint on the changed tree AND on the exact unchanged E5 base.
-          # A green CI is allowed only when all existing baseline errors match
-          # exactly; no unexpected Lint failure is silently reclassified.
+          # A green CI requires identical full Lint errors on PR and stable base.
+          # We run the real Lint task twice; neither failure is called a pass.
           set +e
           ./gradlew :app:lintDebug --stacktrace > /tmp/e5-replay-head-lint.log 2>&1
           head_rc=$?
@@ -84,7 +83,7 @@ jobs:
           )
           baseline_rc="$(cat /tmp/e5-replay-base-lint.rc)"
           test "$baseline_rc" -ne 0 || {
-            echo 'E5 stable Lint passes but this PR fails: regression.'
+            echo 'E5 stable Lint passes but PR Lint fails: regression.'
             tail -n 70 /tmp/e5-replay-head-lint.log
             exit 1
           }
@@ -113,35 +112,7 @@ jobs:
                   raise RuntimeError(f'No Lint report produced in {root}')
               errors = []
               for line in report.read_text().splitlines():
-                  match = re.search(r'^(.+?):(\d+): (Error|Fatal): (.+) \[([^]]+)\]
-                  if match:
-                      file, line_no, severity, message, issue_id = match.groups()
-                      file = file.replace(str(root) + '/', '')
-                      errors.append((issue_id, message, ((file, line_no, ''),)))
-              return sorted(errors)
-
-          head = diagnostics(sys.argv[1])
-          base = diagnostics(sys.argv[2])
-          if not base or head != base:
-              print(f'Lint diagnostics differ: base={len(base)} head={len(head)}')
-              for issue in head:
-                  if issue not in base:
-                      print('NEW:', issue)
-              for issue in base:
-                  if issue not in head:
-                      print('REMOVED:', issue)
-              sys.exit(1)
-          assert any(issue[0] == 'WrongConstant' and
-                     any('CarInputServiceImpl.kt' in loc[0] for loc in issue[2])
-                     for issue in base), 'Expected unchanged E5 WrongConstant baseline absent'
-          print(f'Exact baseline match: {len(base)} pre-existing Lint errors; no new errors.')
-          PY
-          echo '::warning::Full Lint fails identically on exact E5 stable baseline; this test-only PR introduces no new Lint errors.'
-          echo 'Full Lint: FAILED on both exact stable baseline and test-only HEAD, identical diagnostic set; not marked as Lint pass.' >> "$GITHUB_STEP_SUMMARY"
-
-# Only synthesized message IDs, no recordings/keys/MAC/AP credentials.
-# The test does NOT certify real-car replay, successful 0x4301 or screen takeover.
-, line)
+                  match = re.search(r'^(.+?):(\d+): (Error|Fatal): (.+) \[([^]]+)\]$', line)
                   if match:
                       file, line_no, severity, message, issue_id = match.groups()
                       file = file.replace(str(root) + '/', '')
