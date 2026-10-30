@@ -50,7 +50,14 @@ jobs:
           assert "RtspReaderGenerationCleanup.drainIfCurrent(" in reader
           assert reader.index("val waiting = synchronized(rtspWriteLock) {") < reader.index("RtspReaderGenerationCleanup.drainIfCurrent(")
           assert 'failAllPending("控制通道读线程结束")' not in reader
-          print("RTSP reader generation retirement integration guard passed")
+          close_start = source.index("    fun close() {")
+          close_end = source.index("    /**", close_start)
+          close_body = source[close_start:close_end]
+          assert "val waiting = synchronized(rtspWriteLock) {" in close_body
+          assert close_body.index("readerGeneration++") < close_body.index("RtspReaderGenerationCleanup.drainAll(")
+          assert 'wakePending("控制通道关闭", waiting)' in close_body
+          assert 'failAllPending("控制通道关闭")' not in close_body
+          print("RTSP reader and close retirement integration guards passed")
           PY
           echo 'No signing, release, RTSP wire-format or iAP2 changes.'
       - name: Android unit tests, lint and Kotlin compile (offline only)
