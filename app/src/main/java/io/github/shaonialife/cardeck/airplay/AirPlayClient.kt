@@ -2772,7 +2772,23 @@ class AirPlayClient(
                     }
                     break
                 }
-                val encryption = cipher
+                // A retired B233 reader may still hold bytes read before close().
+                // Snapshot cipher under the same reader-ownership gate used by
+                // dispatch, so those bytes can never advance the replacement
+                // session's inbound cipher nonce before dispatch rejects them.
+                val encryption =
+                    if (endpoint.isBuickB233) {
+                        var ownedCipher: ControlCipher? = null
+                        if (!RtspReaderDispatchGate.dispatchIfCurrent(
+                                rtspWriteLock,
+                                { generation == readerGeneration && readerSocket === client },
+                                { ownedCipher = cipher },
+                            )
+                        ) return
+                        ownedCipher
+                    } else {
+                        cipher
+                    }
                 if (encryption != null && !encryptedMode) {
                     // 切换点：清掉明文侧残留，之后一律走帧解密
                     encryptedMode = true
