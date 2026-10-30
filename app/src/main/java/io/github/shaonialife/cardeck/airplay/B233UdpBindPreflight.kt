@@ -37,7 +37,7 @@ internal class B233UdpBindPreflight(
             },
             log = log,
         )
-        val start = System.nanoTime()
+        var listeningSinceNanos: Long? = null
         var started = false
         var endedAlive = false
         var status = "failed"
@@ -50,7 +50,8 @@ internal class B233UdpBindPreflight(
                 if (!started) {
                     status = "bind_failed"
                 } else {
-                    val deadlineNanos = start + holdMillis * 1_000_000L
+                    listeningSinceNanos = System.nanoTime()
+                    val deadlineNanos = checkNotNull(listeningSinceNanos) + holdMillis * 1_000_000L
                     status = "pass"
                     while (System.nanoTime() < deadlineNanos) {
                         if (!networkStillValid()) {
@@ -78,7 +79,9 @@ internal class B233UdpBindPreflight(
         return Result(
             status = status,
             errno = errno,
-            heldMs = ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(0L),
+            heldMs = listeningSinceNanos?.let {
+                ((System.nanoTime() - it) / 1_000_000L).coerceAtLeast(0L)
+            } ?: 0L,
             wasListening = started,
             listenerAliveAtEnd = endedAlive,
         )
