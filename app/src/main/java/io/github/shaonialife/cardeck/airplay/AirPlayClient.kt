@@ -2525,18 +2525,29 @@ class AirPlayClient(
                 }
             try {
                 val newSocket = newVehicleSocket()
-                newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
-                if (generation != endpointGeneration) {
-                    // 连接途中端点已更新：丢弃这条旧连接，下一轮按新地址重连
-                    runCatching { newSocket.close() }
+                // B233: failed TCP connect must close the allocated candidate.
+                // The previous catch path retried without closing this Socket.
+                val accepted = RtspConnectCandidateCleanup.publishOrClose(
+                    newSocket,
+                    cleanupOnFailure = target.isBuickB233,
+                ) {
+                    newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
+                    if (generation != endpointGeneration) {
+                        false
+                    } else {
+                        // Reader input stays blocking; request() owns response timeout.
+                        newSocket.soTimeout = 0
+                        socket = newSocket
+                        activeAddress = address
+                        activeHost = addressLiteral(address)
+                        true
+                    }
+                }
+                if (!accepted) {
+                    // Keep the original endpoint-change close for non-B233.
+                    if (!target.isBuickB233) runCatching { newSocket.close() }
                     return false
                 }
-                // 读由独立读线程负责（阻塞等数据），请求超时由待响应表的 poll 控制；
-                // 这里若留 soTimeout，读线程会周期性收到 SocketTimeoutException 而退出
-                newSocket.soTimeout = 0
-                socket = newSocket
-                activeAddress = address
-                activeHost = addressLiteral(address)
                 log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")
                 return true
             } catch (error: IOException) {
