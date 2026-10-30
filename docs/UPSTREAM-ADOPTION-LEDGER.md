@@ -99,3 +99,12 @@
 6. `rollback / supersededBy / withdrawn / securityReview`：可执行回退及后续撤回史；有失败继续保留，不覆盖此前状态。
 
 **严格门禁：最终合并时若缺来源或目标 SHA、精确 CI、验收级别与回退，禁止标记“最终融合完毕”**。治理与台账只写在 Buick，本地 E5/Test 不建立分叉记录；GitHub main 只同步上游、不写自有功能或记录。
+
+## G. 2026-10-30 U03 测试专用 CI 安全门禁加固（保留 F 节历史）
+
+- **源与方法归属不变**：上游 `shaonialife/cardeck@3095d64ed1fbe2ea6f52b202a80f28d7dd7749d1`，借鉴 `BtLinkReplayTest` / `ScriptedCarStream` 的输入回放测试方法，**不是**直接移植真实车辆录制或上游运行时代码；候选作用仍是 #33 物理 ACK109 / `0x4301` 三态的合成、非空、确定性离线验证。
+- **唯一 E5 接收实验**：`experiment/buick-e5-upstream-replay-33-20261030`，基线 `Buick-E5@7945c16254e71c12f2824c7d90e4de960649f6f0`，Draft [PR #79](https://github.com/chengshl/cardeck/pull/79)。本轮提交 [`1ceb80f2`](https://github.com/chengshl/cardeck/commit/1ceb80f230ec79f0d9dfbdc42f7dbd7f4718a2da) 加入“实际运行基线与实验全量 Lint 并逐项比较”门禁；[`7dbe2064`](https://github.com/chengshl/cardeck/commit/7dbe2064548ed30696854eb529e6a65ba0849a4e) 中间 YAML/回退解析损坏导致 Push [#41081012911](https://github.com/chengshl/cardeck/actions/runs/41081012911) 失败；[`a8ce916b`](https://github.com/chengshl/cardeck/commit/a8ce916bdf0507d4eed499025a05213f575f0b4e) 从已知良好工作流重建并修复。失败历史保留，不作为通过证据。
+- **精确 HEAD 与 CI**：`a8ce916bdf0507d4eed499025a05213f575f0b4e` 的 [Push 专项 #41081099514](https://github.com/chengshl/cardeck/actions/runs/41081099514)、[PR 专项 #41081112558](https://github.com/chengshl/cardeck/actions/runs/41081112558)、[PR 隐私 #41081112603](https://github.com/chengshl/cardeck/actions/runs/41081112603) 均 `completed/success`。专项实际运行全部 3 条合成 ACK109 fixture、全 Android JUnit、Debug、严格两文件差异白名单；**全量 Lint 本身仍失败**，但同一工作流在原始 E5 稳定基线独立重跑并对比 XML/文本诊断，精确匹配 **13 条原有错误、0 条新增错误**（含 `CarInputServiceImpl.kt` 的 `WrongConstant`），不能宣称“全量 Lint 通过”。稳定 HEAD 漂移会拒绝 CI。
+- **差异与安全边界**：本轮只改 PR #79 的 `.github/workflows/ci-e5-upstream-replay-33.yml`；PR 相对稳定线仍仅两个新增文件（合成测试 + CI）。没有修改 CarPlay/iAP2/蓝牙/音视频运行时、签名、版本号、更新源、GitHub `main` 或 `Buick-Test`。
+- **最终状态**：**已借鉴改写在 E5 隔离测试线 + 精确 HEAD 专项/隐私 CI 成功；未合入 Buick-E5、未合入最终 Buick**。没有新签名 APK、Release、versionCode、手机/实车验收；测试专用代码不要求另发 APK，但 #33 实验002 的真实 B233 负向结果仍有效且独立。未来若申请合入须再次复核治理、HEAD、diff、CI 与风险门禁；若撤回可直接关闭未合 PR，若合入后回退则 revert 对应合入提交并保留 #23 与本台账原历史。真实录制回放仍未实施，须另行私有证据脱敏审查。
+
