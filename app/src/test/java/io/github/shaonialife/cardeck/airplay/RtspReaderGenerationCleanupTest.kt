@@ -19,15 +19,20 @@ class RtspReaderGenerationCleanupTest {
         val checkedOldGeneration = CountDownLatch(1)
         val allowOldRetirement = CountDownLatch(1)
         val drained = AtomicReference<List<String>?>()
+        val workerFailure = AtomicReference<Throwable?>()
 
         val oldReader = Thread {
-            // Reproduce the old implementation's vulnerable window: a check
-            // occurs before the new generation registers its response waiter.
-            checkedOldGeneration.countDown()
-            check(allowOldRetirement.await(3, TimeUnit.SECONDS))
-            drained.set(synchronized(writeLock) {
-                RtspReaderGenerationCleanup.drainIfCurrent(1, generation, pending)
-            })
+            try {
+                // Reproduce the old implementation's vulnerable window: a check
+                // occurs before the new generation registers its response waiter.
+                checkedOldGeneration.countDown()
+                check(allowOldRetirement.await(3, TimeUnit.SECONDS))
+                drained.set(synchronized(writeLock) {
+                    RtspReaderGenerationCleanup.drainIfCurrent(1, generation, pending)
+                })
+            } catch (error: Throwable) {
+                workerFailure.set(error)
+            }
         }
         oldReader.start()
         try {
@@ -41,6 +46,7 @@ class RtspReaderGenerationCleanupTest {
         }
         oldReader.join(3000)
         assertFalse(oldReader.isAlive)
+        assertNull("worker thread must not fail", workerFailure.get())
         assertNull("stale reader must not retire any queue", drained.get())
         assertEquals("new-session-waiter", pending[42])
     }
