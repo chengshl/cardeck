@@ -2,6 +2,9 @@
 from pathlib import Path
 import unittest
 
+from tools.release.allocate_version import choose_version, published_apk_codes
+from datetime import datetime, timezone
+
 WORKFLOW = Path(".github/workflows/build-buick-e5.yml")
 STEP = "      - name: Verify E5 production certificate against previously published signed APK"
 
@@ -66,6 +69,50 @@ class E5SignedReleasePreflightTest(unittest.TestCase):
         self.assertIn('sha256sum "$APK_NAME"', w)
         self.assertIn('gh release upload "$RELEASE_TAG"', w)
         self.assertIn('gh release create "$RELEASE_TAG"', w)
+
+
+    def test_signed_recovery_apk_is_a_global_future_official_version_floor(self):
+        # E5 #33: signed official 001 < experiment 002 < data-preserving recovery 003.
+        # A future official APK must exceed the recovery, not merely official 001.
+        releases = [[
+            {"tag_name": "buick-e5-latest", "body": "versionCode=89252977",
+             "assets": [{"name": "CarDeck-Buick-E5.apk"}]},
+            {"tag_name": "exp-buick-e5-iap2-stale-ack-guard-33",
+             "body": "versionCode=89253482",
+             "assets": [{"name": "CarDeck-Buick-E5-IAP2-ACK-Guard.apk"}]},
+        ], [
+            {"tag_name": "e5-stable-restore-after-iap2-ack-33",
+             "body": "versionCode=89253898",
+             "assets": [{"name": "CarDeck-Buick-E5-IAP2-ACK-Stable-Restore.apk"}]},
+        ]]
+        published_codes = published_apk_codes(releases)
+        self.assertEqual(max(published_codes), 89253898)
+        _, reserved_code, _ = choose_version(
+            ["refs/tags/cardeck-build/v1/261029001-c89252977"],
+            datetime(2026, 10, 29, 0, 0, tzinfo=timezone.utc),
+            "Buick-E5",
+        )
+        next_code = max(reserved_code, max(published_codes) + 1)
+        self.assertGreater(next_code, 89253898)
+
+    def test_signed_apk_without_version_metadata_fails_closed(self):
+        releases = [[
+            {"tag_name": "e5-stable-restore-after-iap2-ack-33",
+             "body": "artifactKind=recovery\\n",
+             "assets": [{"name": "CarDeck-Buick-E5-IAP2-ACK-Stable-Restore.apk"}]},
+        ]]
+        with self.assertRaisesRegex(ValueError, "versionCode"):
+            published_apk_codes(releases)
+
+    def test_non_apk_release_does_not_set_install_version_floor(self):
+        releases = [[
+            {"tag_name": "docs-only", "body": "",
+             "assets": [{"name": "notes.txt"}]},
+            {"tag_name": "buick-e5-latest", "body": "versionCode=89252977",
+             "assets": [{"name": "CarDeck-Buick-E5.apk"}]},
+        ]]
+        self.assertEqual(published_apk_codes(releases), [89252977])
+
 
 
 if __name__ == "__main__":
