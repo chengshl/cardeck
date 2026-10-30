@@ -326,29 +326,44 @@ class RtspSocketLifecycleTest {
         val writeLock = Any()
         val old = Socket()
         val replacement = Socket()
+        val readerStarted = CountDownLatch(1)
+        val allowWrite = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
         var published: Socket? = old
         var reader: Socket? = old
         var nextCipherNonce = 0
-        val capturedByRequest = old
         try {
-            // startReader(old) succeeded, then close/reconnect completed before
-            // the request obtained rtspWriteLock to register CSeq and encrypt.
+            val staleRequest = executor.submit<Boolean> {
+                // Simulate startReader(old) succeeding before close/reconnect.
+                val capturedByRequest = old
+                readerStarted.countDown()
+                check(allowWrite.await(5, TimeUnit.SECONDS))
+                synchronized(writeLock) {
+                    val accepted = RtspRequestWriteOwnership.isCurrent(
+                        capturedByRequest, published, reader, capturedByRequest.isClosed,
+                    )
+                    if (accepted) nextCipherNonce++
+                    accepted
+                }
+            }
+            assertTrue(readerStarted.await(5, TimeUnit.SECONDS))
+            // Force the new connection to take ownership before the old writer
+            // can register a CSeq or consume the new cipher's outbound nonce.
             synchronized(writeLock) {
                 published = replacement
                 reader = replacement
             }
-            val accepted = synchronized(writeLock) {
-                RtspRequestWriteOwnership.isCurrent(
-                    capturedByRequest, published, reader, capturedByRequest.isClosed,
-                )
+            allowWrite.countDown()
+            assertFalse("retired request must not use new cipher", staleRequest.get(5, TimeUnit.SECONDS))
+            synchronized(writeLock) {
+                assertEquals("replacement cipher nonce must be untouched", 0, nextCipherNonce)
+                assertTrue(RtspRequestWriteOwnership.isCurrent(
+                    replacement, published, reader, replacement.isClosed,
+                ))
             }
-            if (accepted) nextCipherNonce++
-            assertFalse("retired request must not use the new cipher", accepted)
-            assertEquals("new session's cipher nonce must be untouched", 0, nextCipherNonce)
-            assertTrue(RtspRequestWriteOwnership.isCurrent(
-                replacement, published, reader, replacement.isClosed,
-            ))
         } finally {
+            allowWrite.countDown()
+            executor.shutdownNow()
             old.close()
             replacement.close()
         }
