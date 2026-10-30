@@ -1,0 +1,58 @@
+name: E5 B233 upstream replay adaptation (test-only)
+
+on:
+  push:
+    branches:
+      - experiment/buick-e5-upstream-replay-33-20261030
+  pull_request:
+    branches:
+      - Buick-E5
+    paths:
+      - 'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt'
+      - '.github/workflows/ci-e5-upstream-replay-33.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Fail closed if runtime files or stable code changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin Buick-E5 --quiet
+          git diff --name-only origin/Buick-E5...HEAD > /tmp/e5-replay-changed-files
+          test -s /tmp/e5-replay-changed-files
+          while IFS= read -r path; do
+            case "$path" in
+              app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt|.github/workflows/ci-e5-upstream-replay-33.yml) ;;
+              *) echo "Unauthorized change in test-only replay PR: $path"; exit 1 ;;
+            esac
+          done < /tmp/e5-replay-changed-files
+          grep -Fxq 'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt' /tmp/e5-replay-changed-files
+          test "$(grep -c 'Fixture(' app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt)" -ge 3
+      - name: Run all three synthetic B233 ACK109 scenarios on the production link engine
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.replay.B233HandshakeReplayTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        shell: bash
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Only synthesized message IDs, no recordings/keys/MAC/AP credentials.
+# The test does NOT certify real-car replay, successful 0x4301 or screen takeover.
