@@ -6,7 +6,8 @@ import java.util.concurrent.atomic.AtomicLong
  * T82: read-only per-AirPlay-connection event and audio-feedback health counters.
  *
  * No socket operation, protocol output, media payload, host/address or secret is retained.
- * Monotonic time is injectable for offline tests; 0 means not observed.
+ * Monotonic time is injectable for offline tests; Long.MIN_VALUE means not observed.
+ * System.nanoTime() has an arbitrary origin and can validly be zero or negative.
  */
 internal class AudioControlLiveness(
     private val nowNanos: () -> Long = System::nanoTime,
@@ -14,10 +15,10 @@ internal class AudioControlLiveness(
     private val receivedEvents = AtomicLong(0)
     private val acknowledgedEvents = AtomicLong(0)
     private val failedEventAcks = AtomicLong(0)
-    private val lastEventNanos = AtomicLong(0)
-    private val lastAckNanos = AtomicLong(0)
+    private val lastEventNanos = AtomicLong(Long.MIN_VALUE)
+    private val lastAckNanos = AtomicLong(Long.MIN_VALUE)
     private val feedbackReplies = AtomicLong(0)
-    private val lastFeedbackNanos = AtomicLong(0)
+    private val lastFeedbackNanos = AtomicLong(Long.MIN_VALUE)
     private val firstAudioSampleTime = AtomicLong(-1)
     private val lastAudioSampleTime = AtomicLong(-1)
     private val audioSampleAdvances = AtomicLong(0)
@@ -56,7 +57,7 @@ internal class AudioControlLiveness(
     fun summary(): String {
         val now = nowNanos()
         fun age(last: Long): String =
-            if (last <= 0L) "never" else ((now - last).coerceAtLeast(0L) / 1_000_000L).toString()
+            if (last == Long.MIN_VALUE) "never" else ((now - last).coerceAtLeast(0L) / 1_000_000L).toString()
         return "eventRx=${receivedEvents.get()} eventAck=${acknowledgedEvents.get()}" +
             " eventAckFail=${failedEventAcks.get()} eventAgeMs=${age(lastEventNanos.get())}" +
             " ackAgeMs=${age(lastAckNanos.get())} feedback=${feedbackReplies.get()}" +
