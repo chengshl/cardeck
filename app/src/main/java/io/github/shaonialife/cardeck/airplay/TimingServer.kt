@@ -62,34 +62,56 @@ class TimingServer(
         socket = null
     }
 
+    private val sendMetrics = TimingSendMetrics()
+
     private fun loop(s: DatagramSocket) {
         val buffer = ByteArray(256)
-        while (running) {
-            val packet = DatagramPacket(buffer, buffer.size)
-            try {
-                s.receive(packet)
-            } catch (_: Exception) {
-                return // socket closed
-            }
-            val request = buffer.copyOfRange(0, packet.length)
-            val response = buildResponse(request, System.nanoTime())
-            if (response == null) {
-                unexpected++
-                if (unexpected <= 5) {
-                    log("TIMING: 收到非 timesync 报文 ${request.size}B（累计 $unexpected）")
+        var exitReason = "stop"
+        try {
+            while (running) {
+                val packet = DatagramPacket(buffer, buffer.size)
+                try {
+                    s.receive(packet)
+                } catch (_: Exception) {
+                    // Keep the original stop/exception behavior. A real unexpected
+                    // receive failure is observable even when running remains true.
+                    exitReason = if (!running || s.isClosed) "stop" else "receive_error"
+                    break
                 }
-                continue
+                val request = buffer.copyOfRange(0, packet.length)
+                val response = buildResponse(request, System.nanoTime())
+                if (response == null) {
+                    unexpected++
+                    if (unexpected <= 5) {
+                        log("TIMING: 收到非 timesync 报文 ${request.size}B（累计 $unexpected）")
+                    }
+                    continue
+                }
+                syncRequests++
+                sendMetrics.requestReceived()
+                val now = System.currentTimeMillis()
+                val shouldLog = syncRequests <= 3 || now - lastSyncLogAt >= 30_000L
+                if (shouldLog) lastSyncLogAt = now
+                try {
+                    // Outcome is recorded ONLY after send() returns normally.
+                    s.send(DatagramPacket(response, response.size, packet.address, packet.port))
+                    sendMetrics.responseSentOk(System.nanoTime() / 1_000_000L)
+                } catch (_: Exception) {
+                    // The existing wire/control behavior deliberately stays the same.
+                    sendMetrics.responseSendFailed()
+                }
+                if (shouldLog) {
+                    val snapshot = sendMetrics.snapshot()
+                    log("TIMING OBS: requestRx=${snapshot.requestRx} responseSendOk=${snapshot.responseSendOk} " +
+                        "sendError=${snapshot.sendError} lastSuccessMonoMs=${snapshot.lastSuccessMonoMs}")
+                }
             }
-            syncRequests++
-            val now = System.currentTimeMillis()
-            if (syncRequests <= 3 || now - lastSyncLogAt >= 30_000L) {
-                lastSyncLogAt = now
-                log("TIMING: timesync 应答 #$syncRequests → ${packet.address.hostAddress}:${packet.port}")
-            }
-            try {
-                s.send(DatagramPacket(response, response.size, packet.address, packet.port))
-            } catch (_: Exception) {
-            }
+        } finally {
+            sendMetrics.exited(exitReason)
+            val snapshot = sendMetrics.snapshot()
+            log("TIMING OBS: loopExit=${snapshot.loopExit} reason=${snapshot.lastLoopExitReason} " +
+                "requestRx=${snapshot.requestRx} responseSendOk=${snapshot.responseSendOk} " +
+                "sendError=${snapshot.sendError} lastSuccessMonoMs=${snapshot.lastSuccessMonoMs}")
         }
     }
 
