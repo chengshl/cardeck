@@ -2672,6 +2672,16 @@ class AirPlayClient(
         val queue = java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>(1)
         val cseq: Int
         synchronized(rtspWriteLock) {
+            // startReader() checked ownership earlier, but close/reconnect can
+            // happen before this writer acquires the lock. Never register an
+            // old request or encrypt it with the replacement session cipher.
+            if (endpoint.isBuickB233 &&
+                !RtspRequestWriteOwnership.isCurrent(
+                    client, socket, readerSocket, client.isClosed,
+                )
+            ) {
+                throw IOException("RTSP request socket already retired")
+            }
             cseq = ++cSeq
             // 先登记再写：响应可能在 write 返回前就到达
             pendingResponses[cseq] = queue
