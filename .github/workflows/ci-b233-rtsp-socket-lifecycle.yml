@@ -57,6 +57,9 @@ jobs:
           grep -Fq 'retireReaderAndCipherBeforeAllowingNextSocketPublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'supersededReaderCannotRouteLateResponseToNewPendingRequest' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'retiredReaderCannotSnapshotReplacementInboundCipher' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'staleReaderFinallyCannotDrainReplacementPendingReply' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'currentReaderExitDrainsWaitersButStaleExitDoesNotEmitCurrentExit' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'internal object RtspReaderGenerationCleanup' app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycle.kt
           grep -Fq 'replacingReaderCannotInterleaveBetweenOwnershipCheckAndDispatch' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'delayedOldRequestCannotInstallReaderOverReconnectedSocket' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'readerInstallAndRetirementCannotInterleave' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
@@ -116,6 +119,23 @@ jobs:
                         'cipher'):
               if token not in cipher_snapshot:
                   raise SystemExit('B233 pre-decrypt reader ownership guard missing: ' + token)
+          # PR #72 integration: the real B233 readLoop.finally must compare
+          # generation AND drain pending CSeq under the writer lock. The old
+          # non-B233 path remains untouched, and wakeup happens outside lock.
+          finally_block = reader.split('        } finally {', 1)[1]
+          b233_finally = finally_block.split('            } else {', 1)[0]
+          for token in ('if (endpoint.isBuickB233) {',
+                        'val waiting = synchronized(rtspWriteLock) {',
+                        'RtspReaderGenerationCleanup.drainIfCurrent(',
+                        'generation, readerGeneration, pendingResponses',
+                        'if (waiting != null) {',
+                        'waiting.forEach { it.offer(RTSP_CLOSED_MARK'):
+              if token not in b233_finally:
+                  raise SystemExit('B233 reader finally ownership drain missing: ' + token)
+          if not b233_finally.index('synchronized(rtspWriteLock)') < b233_finally.index('RtspReaderGenerationCleanup.drainIfCurrent('):
+              raise SystemExit('reader finally generation check must run inside write lock')
+          if 'failAllPending("控制通道读线程结束")' not in finally_block.split('            } else {', 1)[1]:
+              raise SystemExit('non-B233 reader finally legacy path missing')
           dispatch = reader.split('buffer = parsed.rest', 1)[1].split('        } catch (error: IOException)', 1)[0]
           for token in ('if (endpoint.isBuickB233) {',
                         'RtspReaderDispatchGate.dispatchIfCurrent(',
