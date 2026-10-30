@@ -1,7 +1,7 @@
 package io.github.shaonialife.cardeck.audio
 
 /**
- * B233 phone-speaker suppression safety policy, intentionally NOT wired to AudioManager.
+ * B233 phone-speaker suppression safety policy, intentionally NOT wired to platform audio controls.
  *
  * This is a pure decision model for a future opt-in experiment, not evidence that
  * Android PlaybackCapture remains nonzero after changing STREAM_MUSIC volume.
