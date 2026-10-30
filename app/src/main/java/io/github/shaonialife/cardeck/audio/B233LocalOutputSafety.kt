@@ -47,14 +47,20 @@ internal object B233LocalOutputSafety {
      * to a nonzero value, leave it alone. A user selecting zero again cannot be
      * distinguished from the app's zero without an external ownership signal;
      * this helper deliberately does not claim to solve process-death recovery.
+     * A user may change volume away from zero and then return it to zero;
+     * checking currentVolume alone would overwrite that user decision.
+     * A future caller MUST independently track volumeChangeObservedSinceMute
+     * and fail closed if volume-change observation was lost.
      */
     internal fun restoreOriginalVolume(
         sameSessionOwner: Boolean,
+        volumeChangeObservedSinceMute: Boolean,
         originalVolume: Int,
         currentVolume: Int,
         maxVolume: Int,
     ): Boolean =
         sameSessionOwner &&
+            !volumeChangeObservedSinceMute &&
             originalVolume in 1..maxVolume &&
             maxVolume > 0 &&
             currentVolume == 0
