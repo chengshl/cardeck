@@ -159,6 +159,109 @@ class AacLcEncoder(
                 runCatching { created?.release() }
             }
         }
+
+        /** Off-thread diagnostic result. Only anonymized counts and peak leave this method. */
+        internal data class DecodeWindowResult(
+            val queuedFrames: Int,
+            val decodedSamples: Int,
+            val peak: Int,
+            val errorKind: String?,
+        )
+
+        /**
+         * T76: decode several consecutive RAW AAC access units from a single encoder,
+         * using its actual AudioSpecificConfig when available. Hard one-shot deadline.
+         * This does not touch the sender's live MediaCodec or change the wire payload.
+         */
+        internal fun decodeWindow(
+            frames: List<ByteArray>,
+            sampleRate: Int,
+            channels: Int,
+            csd0: ByteArray?,
+        ): DecodeWindowResult {
+            if (frames.isEmpty()) return DecodeWindowResult(0, 0, 0, "no_encoded_frames")
+            var decoder: MediaCodec? = null
+            var queued = 0
+            var samples = 0
+            var peak = 0
+            var failure: String? = null
+            try {
+                val format = MediaFormat.createAudioFormat(MIME, sampleRate, channels)
+                format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                if (csd0 != null && csd0.isNotEmpty()) {
+                    format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(csd0))
+                }
+                val active = MediaCodec.createDecoderByType(MIME)
+                decoder = active
+                active.configure(format, null, null, 0)
+                active.start()
+                val info = MediaCodec.BufferInfo()
+                val deadline = System.nanoTime() + 1_200_000_000L
+                var eosSeen = false
+
+                fun drainOnce(timeoutUs: Long): Boolean {
+                    val index = active.dequeueOutputBuffer(info, timeoutUs)
+                    if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED ||
+                        index == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) return true
+                    if (index < 0) return false
+                    val output = active.getOutputBuffer(index)?.duplicate()
+                    if (output != null && info.size > 0) {
+                        output.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        output.position(info.offset)
+                        output.limit(info.offset + info.size)
+                        while (output.remaining() >= 2) {
+                            val value = output.short.toInt()
+                            val magnitude = if (value == Short.MIN_VALUE.toInt()) 32768 else kotlin.math.abs(value)
+                            if (magnitude > peak) peak = magnitude
+                            samples++
+                        }
+                    }
+                    eosSeen = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                    active.releaseOutputBuffer(index, false)
+                    return true
+                }
+
+                for (frame in frames) {
+                    if (System.nanoTime() >= deadline) break
+                    // Empty encoded frames are never considered proof of valid AAC.
+                    if (frame.isEmpty()) continue
+                    var index = active.dequeueInputBuffer(25_000L)
+                    if (index < 0) {
+                        drainOnce(10_000L)
+                        index = active.dequeueInputBuffer(25_000L)
+                    }
+                    if (index < 0) continue
+                    val input = active.getInputBuffer(index)
+                    if (input == null || frame.size > input.capacity()) {
+                        failure = "input_buffer_unavailable"
+                        break
+                    }
+                    input.clear()
+                    input.put(frame)
+                    active.queueInputBuffer(index, 0, frame.size,
+                        queued * 1_024_000_000L / sampleRate, 0)
+                    queued++
+                    drainOnce(0L)
+                }
+                if (queued > 0 && failure == null && System.nanoTime() < deadline) {
+                    val eosIndex = active.dequeueInputBuffer(25_000L)
+                    if (eosIndex >= 0) {
+                        active.queueInputBuffer(eosIndex, 0, 0,
+                            queued * 1_024_000_000L / sampleRate,
+                            MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                    }
+                }
+                while (!eosSeen && System.nanoTime() < deadline) {
+                    drainOnce(20_000L)
+                }
+            } catch (error: Exception) {
+                failure = error.javaClass.simpleName
+            } finally {
+                runCatching { decoder?.stop() }
+                runCatching { decoder?.release() }
+            }
+            return DecodeWindowResult(queued, samples, peak, failure)
+        }
     }
 
     private var codec: MediaCodec? = null
@@ -179,6 +282,14 @@ class AacLcEncoder(
 
     var started: Boolean = false
         private set
+
+    /** Encoder output's real csd-0 (AudioSpecificConfig); never print its bytes. */
+    fun codecSpecificData(): ByteArray? = runCatching {
+        val data = codec?.outputFormat?.getByteBuffer("csd-0") ?: return@runCatching null
+        val view = data.duplicate()
+        ByteArray(view.remaining()).also { view.get(it) }
+    }.getOrNull()
+
 
     fun start(): Boolean {
         if (started) return true

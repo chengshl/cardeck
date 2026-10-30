@@ -10,6 +10,7 @@ import android.content.Context
 internal object UpdatePreference {
     private const val PREFS = "car_deck_update_channel"
     private const val KEY = "selected_channel"
+    private const val KEY_PROJECT = "selected_experiment_source"
 
     enum class Channel(val key: String) {
         FORMAL("formal"),
@@ -22,6 +23,25 @@ internal object UpdatePreference {
 
     fun selected(context: Context): Channel =
         Channel.parse(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null))
+
+    /** 已选具体实验功能线；未选择时不自动跳到其他实验。 */
+    fun selectedProject(context: Context): String? =
+        validProjectSource(
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PROJECT, null),
+        )
+
+    /** 仅允许合法experiment短路径，源分支归属另由Release解析器验证。 */
+    internal fun validProjectSource(value: String?): String? =
+        value?.takeIf { it.matches(Regex("experiment/[a-z0-9_-]{3,100}")) }
+
+    fun selectProject(context: Context, sourceBranch: String?) {
+        require(sourceBranch == null || validProjectSource(sourceBranch) == sourceBranch) {
+            "非法实验项目"
+        }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply {
+            if (sourceBranch == null) remove(KEY_PROJECT) else putString(KEY_PROJECT, sourceBranch)
+        }.apply()
+    }
 
     fun select(context: Context, channel: Channel) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

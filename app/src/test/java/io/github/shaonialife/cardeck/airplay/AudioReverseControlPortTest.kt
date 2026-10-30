@@ -16,6 +16,17 @@ class AudioReverseControlPortTest {
     }
 
     @Test
+    fun d5RequestSequenceIsNotReportedAsRtcpLength() {
+        val request = byteArrayOf(
+            0x80.toByte(), 0xD5.toByte(), 0x00, 0x01, 0x03, 0x80.toByte(), 0x00, 0x02,
+        )
+        val header = AudioReverseControlPort.inspectHeader(request, request.size)
+        assertEquals(2, header?.version)
+        assertEquals(0xD5, header?.packetType)
+        assertNull(header?.declaredBytes)
+    }
+
+    @Test
     fun rejectsMissingOrOutOfBoundsControlHeader() {
         assertNull(AudioReverseControlPort.inspectHeader(byteArrayOf(0x80.toByte()), 1))
         assertNull(AudioReverseControlPort.inspectHeader(byteArrayOf(0x80.toByte(), 0xD3.toByte()), 3))

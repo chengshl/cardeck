@@ -8,6 +8,8 @@ import android.os.SystemClock
 import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioSender
+import io.github.shaonialife.cardeck.audio.AudioControlLiveness
+import io.github.shaonialife.cardeck.audio.AudioFailureTrace
 import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.audio.BuickAudioTimingPolicy
 import io.github.shaonialife.cardeck.iap2.Iap2Csm
@@ -118,10 +120,39 @@ class AirPlayClient(
      */
     @Volatile private var reverseAudioControlPort: AudioReverseControlPort? = null
 
+    /** T76 scoped to this AirPlay connection, not the global Test installation. */
+    @Volatile internal var audioFailureTrace: AudioFailureTrace? = null
+
+    /** T82 read-only: counts B233 event replies and progressing receiver audio clock. */
+    private val audioControlLiveness = AudioControlLiveness()
+
+    // T84: only the first 12 B233 resource requests per connection, numeric protocol
+    // fields only; no raw plist, reason text or identifiers. Read-only diagnostics.
+    private var b233ModeRequestAuditCount: Int = 0
+
+    // T85: initialized false for each AirPlayClient. Only after all audio
+    // prerequisites and an actual audio SETUP candidate exist may B233 begin
+    // claiming mainAudio. Keep the incoming changeModes reassertion consistent
+    // with that same decision (rather than the user's initial audio preference).
+    @Volatile internal var b233AudioClaimPrepared: Boolean = false
+
+    fun auditB233ModeRequest(command: Map<*, *>) {
+        if (!endpoint.isBuickB233) return
+        val ordinal = synchronized(this) {
+            if (b233ModeRequestAuditCount >= 12) null
+            else (++b233ModeRequestAuditCount)
+        } ?: return
+        log("AUDIO T84: changeModes request #$ordinal " + B233ModeRequestSummary.describe(command))
+    }
+
+    /** T79: assigned only after this client's current AudioSender has been selected. */
+    @Volatile internal var audioRtpSentCountProvider: (() -> Long?)? = null
+
     @Synchronized
     fun closeReverseAudioControlPort() {
         reverseAudioControlPort?.close()
         reverseAudioControlPort = null
+        audioRtpSentCountProvider = null
     }
 
     /** pair-verify 之后启用：所有后续 RTSP 报文整体加密封装。 */
@@ -446,6 +477,18 @@ class AirPlayClient(
             while (isSessionAlive()) {
                 try {
                     val (status, body) = request("POST", "/feedback", ByteArray(0))
+                    if (endpoint.isBuickB233 && status.contains("200")) {
+                        // T86: PCM streams use type=100, AAC uses type=102.
+                        // Read-only telemetry: this does not change /feedback transport.
+                        val sampleTime = runCatching {
+                            val parsed = BinaryPlist.parse(body) as? Map<*, *>
+                            AudioFeedbackSampleTime.fromParsedFeedback(parsed)
+                        }.getOrNull()
+                        audioControlLiveness.onFeedback(sampleTime)
+                        if (audioFailureTrace != null && sent + 1 in listOf(5, 10, 15, 20, 25)) {
+                            log("AUDIO T82: feedback #${sent + 1} ${audioControlLiveness.summary()}")
+                        }
+                    }
                     val now = SystemClock.uptimeMillis()
                     val gap = if (lastSuccessAt == 0L) 0L else now - lastSuccessAt
                     lastSuccessAt = now
@@ -470,6 +513,7 @@ class AirPlayClient(
                 } catch (error: IOException) {
                     if (endpoint.isBuickB233) {
                         log("AIRPLAY T62: B233 feedback 结束 #$sent 原因=${error.javaClass.simpleName}")
+                        audioFailureTrace?.event("feedback_error", "replies=$sent type=${error.javaClass.simpleName}")
                     }
                     break // 连接已断（会话结束）
                 }
@@ -514,6 +558,7 @@ class AirPlayClient(
     private fun isSessionAlive(): Boolean = socket?.isClosed == false
 
     fun close() {
+        audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
         runCatching { socket?.close() }
         socket = null
@@ -644,8 +689,8 @@ class AirPlayClient(
      * 回出畸形行 "OK 200 OK"；我们再回 → 无限回声，日志雪崩且空耗加密通道。
      * 通道写与 postEventCommand 共用一把锁，避免两线程加密帧交叉。
      */
-    private fun respondEventRequest(cseq: String?) {
-        val socket = eventCommandSocket ?: return
+    private fun respondEventRequest(cseq: String?): Boolean {
+        val socket = eventCommandSocket ?: return false
         val cipher = eventCommandCipher
         try {
             synchronized(eventCommandLock) {
@@ -658,7 +703,12 @@ class AirPlayClient(
                     flush()
                 }
             }
-        } catch (_: IOException) {
+            return true
+        } catch (error: IOException) {
+            if (audioFailureTrace != null) {
+                audioFailureTrace?.event("event_reply_write_error", error.javaClass.simpleName)
+            }
+            return false
         }
     }
 
@@ -1688,6 +1738,16 @@ class AirPlayClient(
      * 格式：优先 PCM 48k 立体声（bit15），车机只声明 44.1k 时退 bit11；采样率下发给
      * [AudioSender] 保持一致。
      */
+    /**
+     * Conservative lifetime evidence, per AirPlay connection. Once an audio SETUP
+     * has returned 200 or its outcome was not observed (I/O error/timeout), the
+     * receiver might retain an audio stream even if runAudioStream returns null.
+     * Never release main-audio ownership based solely on that null result.
+     */
+    @Volatile
+    var audioSetupMayHaveCreatedStream: Boolean = false
+        private set
+
     fun runAudioStream(
         sharedSecret: ByteArray,
         profile: AudioProfile,
@@ -1725,6 +1785,8 @@ class AirPlayClient(
                 val reverse = AudioReverseControlPort(
                     bindNetwork = { udp -> network.bindSocket(udp) },
                     log = log,
+                    failureTrace = audioFailureTrace,
+                    currentSentRtpCount = { audioRtpSentCountProvider?.invoke() },
                 )
                 val port = reverse.start()
                 if (port == 0) return null
@@ -1788,10 +1850,17 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
+                // No authoritative response: conservatively assume the receiver
+                // may have created a stream before the read/write failure.
+                audioSetupMayHaveCreatedStream = true
                 closeReverseAudioControlPort()
                 log("AIRPLAY: 音频流协商失败 - ${error.message}")
                 return null
             }
+        if (statusLine.contains("200")) {
+            // A 200 with a missing/malformed body remains a possible stream.
+            audioSetupMayHaveCreatedStream = true
+        }
         log("AIRPLAY: 音频 SETUP 往返 ${SystemClock.uptimeMillis() - startedAt}ms [$statusLine]")
         if (!statusLine.contains("200")) {
             closeReverseAudioControlPort()
@@ -2277,6 +2346,10 @@ class AirPlayClient(
                             }
                         if (count < 0) {
                             log("EVENT: 通道关闭（EOF）")
+                            if (audioFailureTrace != null) {
+                                audioFailureTrace?.event("event_channel_eof")
+                                log("AUDIO T82: event_eof ${audioControlLiveness.summary()}")
+                            }
                             break
                         }
                         pending += buffer.copyOf(count)
@@ -2303,7 +2376,9 @@ class AirPlayClient(
                             if (!isRequest) continue
                             // 车机请求：立即回 200（echo 请求 CSeq）；/command 走分发，其余节流留痕
                             val cseq = CSEQ_REGEX.find(message.head)?.groupValues?.get(1)
-                            respondEventRequest(cseq)
+                            if (endpoint.isBuickB233) audioControlLiveness.onEventRequest()
+                            val acked = respondEventRequest(cseq)
+                            if (endpoint.isBuickB233) audioControlLiveness.onEventAck(acked)
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
                                 if (unknownEventRequests <= 10) {
@@ -2357,6 +2432,10 @@ class AirPlayClient(
                     }
                 } catch (error: IOException) {
                     log("EVENT: 读取结束 - ${error.message}")
+                    if (audioFailureTrace != null) {
+                        audioFailureTrace?.event("event_channel_read_error", error.javaClass.simpleName)
+                        log("AUDIO T82: event_read_error ${audioControlLiveness.summary()}")
+                    }
                 }
             }, "event-reader").apply {
                 isDaemon = true
@@ -2599,6 +2678,7 @@ class AirPlayClient(
                 output.write(wire)
                 output.flush()
             } catch (error: Throwable) {
+                audioFailureTrace?.event("rtsp_write_error", "method=$method path=$path type=${error.javaClass.simpleName}")
                 pendingResponses.remove(cseq)
                 throw error
             }
@@ -2606,7 +2686,10 @@ class AirPlayClient(
         val response =
             try {
                 queue.poll(timeoutMillis.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
-                    ?: throw IOException("RTSP 超时（${timeoutMillis}ms，CSeq=$cseq $method $path）")
+                    ?: run {
+                        audioFailureTrace?.event("rtsp_reply_timeout", "method=$method path=$path cseq=$cseq")
+                        throw IOException("RTSP 超时（${timeoutMillis}ms，CSeq=$cseq $method $path）")
+                    }
             } catch (error: InterruptedException) {
                 Thread.currentThread().interrupt()
                 throw IOException("RTSP 被中断（CSeq=$cseq $method $path）")
@@ -2619,6 +2702,7 @@ class AirPlayClient(
             log("AIRPLAY: 慢应答 ${elapsed}ms（$method $path，CSeq=$cseq）——等待期间心跳未中断")
         }
         if (response.first == RTSP_CLOSED_MARK) {
+            audioFailureTrace?.event("rtsp_closed_reply", "method=$method path=$path cseq=$cseq")
             throw IOException("控制通道已关闭（CSeq=$cseq $method $path）")
         }
         lastRequestCSeq.set(cseq)
@@ -2652,7 +2736,14 @@ class AirPlayClient(
             val chunk = ByteArray(8192)
             while (true) {
                 val count = input.read(chunk)
-                if (count < 0) break
+                if (count < 0) {
+                    if (generation == readerGeneration && audioFailureTrace != null) {
+                        audioFailureTrace?.event("rtsp_peer_eof")
+                        log("AUDIO T82: rtsp_eof ${audioControlLiveness.summary()} " +
+                            "localSocketClosed=${client.isClosed}")
+                    }
+                    break
+                }
                 val encryption = cipher
                 if (encryption != null && !encryptedMode) {
                     // 切换点：清掉明文侧残留，之后一律走帧解密
@@ -2682,10 +2773,12 @@ class AirPlayClient(
                     dispatchResponse(parsed.statusLine, parsed.body, parsed.head)
                 }
             }
-        } catch (_: IOException) {
+        } catch (error: IOException) {
+            if (generation == readerGeneration) audioFailureTrace?.event("rtsp_read_error", error.javaClass.simpleName)
         } finally {
             // 只由「当前」读线程清账：重连会换 socket 与新读线程，旧线程不得误伤新会话
             if (generation == readerGeneration) {
+                audioFailureTrace?.event("rtsp_reader_exit")
                 failAllPending("控制通道读线程结束")
             }
         }
@@ -2718,6 +2811,18 @@ class AirPlayClient(
         head: String,
     ) {
         val message = RtspMessage(statusLine, body, head)
+        // T87: observe a peer-initiated TEARDOWN *before* matching CSeq.
+        // The receiver can reuse a locally pending CSeq, in which case the
+        // unmatched-message path below would never reveal its request.
+        // Classification retains no target/header/body and does not alter
+        // RTSP acknowledgements, queues, socket lifetime, or protocol output.
+        if (endpoint.isBuickB233 && audioFailureTrace != null &&
+            RtspPeerRequestEvidence.classify(statusLine) == RtspPeerRequestEvidence.Kind.TEARDOWN
+        ) {
+            val matchedPending = message.cseq?.let { pendingResponses.containsKey(it) } == true
+            audioFailureTrace?.event("rtsp_peer_teardown", "pendingCseqMatch=$matchedPending")
+            log("AUDIO T87: B233 peer RTSP TEARDOWN observed pendingCseqMatch=$matchedPending")
+        }
         message.cseq?.let { responseHeads[it] = head }
         val queue = message.cseq?.let { pendingResponses[it] }
         if (queue != null) {

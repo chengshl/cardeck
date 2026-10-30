@@ -236,13 +236,19 @@ class MainActivity : AppCompatActivity() {
                 "CarPlay 音频推送是试验性功能，不保证稳定运行。" +
                     "在别克 E5/B233 上曾触发视频断开和后续连接失败。" +
                     "\n\n不开启仍正常启动服务，视频照常推送，声音可继续使用普通蓝牙 A2DP。" +
-                    "\n开启后可能需要系统录音及投屏授权。",
+                    "\n开启后可能需要系统录音及投屏授权。" +
+                    "\n\nT77 仅限主动选择：最多35秒低幅度440Hz正弦测试音，" +
+                    "替换同期手机播放捕获，帮助验证AAC编码与车机播放。请先调低车机音量。" +
+                    "普通音频选项不会注入测试音。",
             actions = listOf(
                 DarkMessageDialog.Action(
                     "不推送音频",
                     DarkMessageDialog.Emphasis.PRIMARY,
                 ) { beginWithAudio(enabled = false) },
                 DarkMessageDialog.Action("试验性开启音频") { beginWithAudio(enabled = true) },
+                DarkMessageDialog.Action("T77：音频+35秒低音量测试音") {
+                    beginWithAudio(enabled = true, testTone = true)
+                },
             ),
         )
     }
@@ -481,13 +487,17 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun beginWithAudio(enabled: Boolean) {
+    private fun beginWithAudio(enabled: Boolean, testTone: Boolean = false) {
         // T68: user's explicit choice must survive transport failure and
         // automatic video-only fallback; never mislabel that as a user OFF.
         SessionController.audioRequestedByUserForSession = enabled
         SessionController.audioAttemptedForSession = false
         SessionController.audioAutoDowngradedForSession = false
         SessionController.audioEnabledForSession = enabled
+        SessionController.audioDiagnosticToneForSession = enabled && testTone
+        if (enabled && testTone) {
+            log("AUDIO T77: 用户主动选择 B233 低幅度测试音模式；仅本次连接有效")
+        }
         // 声音只剩一个模式：通路协商（AAC-LC 优先，不行自动退 PCM）在会话内自动完成，
         // 不再有「兼容档」这种人工分支。
         SessionController.audioPreferCompat = false

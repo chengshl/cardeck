@@ -42,6 +42,7 @@ import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 import io.github.shaonialife.cardeck.ui.ScreenDimmer
 import io.github.shaonialife.cardeck.util.Bg
+import io.github.shaonialife.cardeck.audio.AudioFailureTrace
 import io.github.shaonialife.cardeck.util.DebugFileLog
 import io.github.shaonialife.cardeck.video.VideoSender
 import io.github.shaonialife.cardeck.video.SafeDiagnosticFrameSource
@@ -151,6 +152,17 @@ object SessionController {
         // （2026-10-18 实测 216 个），这里替换成可见占位符——顺带让「字符串里有脏字节」
         // 在日志上直接可见，而不是隐形成 InetSocketAddress 的解析失败。
         val clean = if (message.indexOf('\u0000') >= 0) message.replace("\u0000", "␀") else message
+        // T76 observes the first video/BT error on its originating thread,
+        // before onEnded and cleanup can obscure cause/effect ordering.
+        // T76's own event lines do not match these prefixes (no recursion).
+        if (clean.startsWith("VIDEO: 推流中止") ||
+            clean.startsWith("VIDEO: 编码器取帧异常") ||
+            clean.startsWith("VIDEO: 数据端口连接失败")
+        ) {
+            currentClient?.audioFailureTrace?.event("video_failure_observed")
+        } else if (clean.startsWith("BT-C: 已主动断开当前控制会话")) {
+            currentClient?.audioFailureTrace?.event("iap2_detach_observed")
+        }
         android.util.Log.i("CarPlaySender", clean)
         appContext?.let {
             DebugFileLog
@@ -273,6 +285,10 @@ object SessionController {
     /** 本次会话是否应尝试在车机侧播放声音（断链后可能自动降级）。 */
     @Volatile
     var audioEnabledForSession: Boolean = false
+
+    /** T77: this session only, explicit user choice, never persisted or auto-enabled. */
+    @Volatile
+    var audioDiagnosticToneForSession: Boolean = false
 
     /**
      * 「开启声音（兼容档）」：候选里把非 media 档（compatibility 等）排前面。
@@ -526,7 +542,7 @@ object SessionController {
         sessionStarting.set(false)
         val hadProjection = CarPlayService.mediaProjection != null
         pendingEndpointUpdate = null
-        retireSession()
+        retireSession("user_disconnect")
         // BT 控制会话只在这里（用户终态）退役，socket close 让保活读循环立刻退出：
         // 否则它阻塞到对端超时（实测 ~24s）才结束，用户取消后英雄卡持续转圈。
         // 配对中绝不能断——DiPlay 在隧道 iAP2 就绪前看到 RFCOMM 断开即判
@@ -552,11 +568,12 @@ object SessionController {
 
     /** 会话结束/新周期开始前彻底退役上一代会话（旧管线泄漏会累积编码器/虚拟显示器，最终 dequeueBuffer -19）。 */
     @Synchronized
-    fun retireSession() {
+    fun retireSession(reason: String = "unspecified") {
         // E5 T38 fix: revoke ownership BEFORE stop/close triggers onEnded.
         val retiredVideo = videoSender
         videoSender = null
         val retiredClient = currentClient
+        retiredClient?.audioFailureTrace?.event("session_retire_requested", reason)
         currentClient = null
         retiredClient?.cancelled = true
         // T28: finish EGL producer before stopping/releasing MediaCodec input Surface.
@@ -636,18 +653,21 @@ object SessionController {
         host: String?,
     ): Boolean {
         if (currentClient !== client || connectCancelled) {
+            client.audioFailureTrace?.event("audio_start_aborted", "session_changed_or_cancelled")
             appendLog("AUDIO T70: 会话已改变或被取消，忽略迟到的音频启动")
             return false
         }
         if (audioSender?.isRunning == true) return true
         if (!startAudioChannel(context, client, sharedSecret, host)) return false
         val owningSender = audioSender ?: return false
+        client.audioFailureTrace?.event("audio_record_request")
         appendLog("AUDIO T70: 音频流后加入会话，补发 RECORD 激活（首次/晚授权共用）")
         return io.github.shaonialife.cardeck.audio.AudioStreamActivation.finish(
             isBuickB233 = client.currentEndpoint.isBuickB233,
             record = { client.record() },
             onConfirmed = {
                 if (currentClient === client && audioSender === owningSender) {
+                    client.audioFailureTrace?.event("audio_record_confirmed")
                     owningSender.activateSyncAfterRecord()
                 } else {
                     appendLog("AUDIO T70: RECORD 返回时会话已退役，忽略旧音频同步激活")
@@ -655,6 +675,7 @@ object SessionController {
             },
             onRejected = {
                 if (currentClient === client && audioSender === owningSender) {
+                    client.audioFailureTrace?.event("audio_record_rejected")
                     appendLog("AUDIO T70: B233 音频 RECORD 未确认，停止音频、保留视频")
                     audioSender = null
                     activeAudioProfile = null
@@ -1235,6 +1256,37 @@ object SessionController {
     // ---- 以下方法体自 MainActivity 原样迁入（会话逻辑不依赖 Activity）----
 
     /**
+     * No accepted or unresolved audio SETUP remained after all candidates.
+     * Revert only B233's already-declared main-audio claim, leaving the live
+     * screen session and normal Bluetooth A2DP untouched. Do not use this path
+     * for a missing MediaProjection permission (late authorization may recover),
+     * or if SETUP returned 200/timeout/error with an uncertain receiver state.
+     */
+    private fun releaseB233UnnegotiatedAudioClaim(client: AirPlayClient, reason: String) {
+        val eligible = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.shouldReleaseUnnegotiatedAudioClaim(
+            isBuickB233 = client.currentEndpoint.isBuickB233,
+            audioEnabledForSession = audioEnabledForSession,
+            sameClient = currentClient === client,
+            cancelled = connectCancelled,
+            videoRunning = videoSender?.isRunning == true,
+            audioSetupMayHaveCreatedStream = client.audioSetupMayHaveCreatedStream,
+        )
+        if (!eligible) return
+        // T85: disarm per-client mainAudio before switching back to video-only.
+        client.b233AudioClaimPrepared = false
+        // Mark video-only intent first: concurrent incoming changeModes must not
+        // reassert main audio just because the user initially enabled audio.
+        audioEnabledForSession = false
+        audioAutoDowngradedForSession = true
+        val transportOk = client.assertModes(claimAudioResource = false)
+        appendLog(
+            "AUDIO T83: all_audio_setup_failed; keep video/A2DP; " +
+                "video_only_modes_transport200=$transportOk; " +
+                "app_resource_acceptance=unverified reason=$reason",
+        )
+    }
+
+    /**
      * 音频通道（手机 → 车机，RTP over UDP）：SETUP type=100 协商 → 播放捕获 → ChaCha 封包推流。
      *
      * 依赖 MediaProjection（AudioPlaybackCapture 的授权来源），且需用户在「启动连接」
@@ -1275,6 +1327,10 @@ object SessionController {
                     "现在点「申请投屏权限」也可即时补启（无需重连）；注意「断开连接」会停服务并连带失效投屏授权",
             )
             return false
+        }
+        if (client.currentEndpoint.isBuickB233 && client.audioFailureTrace == null) {
+            client.audioFailureTrace = AudioFailureTrace(::appendLog)
+            client.audioFailureTrace?.event("audio_attempt_begin")
         }
         return try {
             // 车机身份 → 只用于「本车机哪些音频档位踩过雷」的持久化记忆。
@@ -1372,6 +1428,7 @@ object SessionController {
             }
             if (ordered.isEmpty()) {
                 appendLog("AUDIO: 没有可用音频档位（候选=${candidates.map { it.label }}）——仅推视频")
+                releaseB233UnnegotiatedAudioClaim(client, "no_audio_candidates")
                 return false
             }
             appendLog(
@@ -1379,6 +1436,26 @@ object SessionController {
                     "（本车机记忆：${AudioProfileMemory.describe(entry)}；" +
                     "封装=${tuning.detail}）",
             )
+            // T85: in B233 only, claim mainAudio just before the first actual
+            // audio SETUP, NOT during initial screen/session SETUP. Screen RECORD
+            // and initial visual mode are unchanged, as are PCM/AAC and RTP/RTCP.
+            // This is an unverified L3 timing hypothesis, not a protocol fix.
+            if (client.currentEndpoint.isBuickB233) {
+                client.b233AudioClaimPrepared = true
+                val transportOk = client.assertModes(claimAudioResource = true)
+                appendLog(
+                    "AUDIO T85: delayed_mainAudio_claim before_audio_setup " +
+                        "rtsp_transport200=$transportOk app_resource_acceptance=unverified",
+                )
+                if (!transportOk) {
+                    // Uncertain control response: do not risk creating a new
+                    // audio stream; retain established video without retrying
+                    // or sending a compensating modesChanged on this path.
+                    client.b233AudioClaimPrepared = false
+                    appendLog("AUDIO T85: mainAudio declaration unconfirmed; skip audio SETUP, keep video")
+                    return false
+                }
+            }
             // SETUP 失败不会扰动会话（车机只是不接这条流的请求），所以本会话内就把候选
             // 试完，不必等下一次连接。这一点对当前场景很关键：102/AAC-LC 与 100/PCM 是
             // 两条完全不同的通路，前者不被接受时应当立刻退到后者，而不是让用户白连一次。
@@ -1406,6 +1483,7 @@ object SessionController {
             val audio = streamInfo
             if (profile == null || audio == null) {
                 appendLog("AUDIO: 全部候选档位协商失败（共 ${ordered.size} 档）——本次仅推视频")
+                releaseB233UnnegotiatedAudioClaim(client, "no_accepted_or_unresolved_audio_setup")
                 return false
             }
             val modernB233Timing =
@@ -1436,6 +1514,9 @@ object SessionController {
                     codec = profile.codec,
                     streamType = profile.streamType,
                     adtsFrames = tuning.adts,
+                    failureTrace = client.audioFailureTrace,
+                    diagnosticToneEnabled =
+                        client.currentEndpoint.isBuickB233 && audioDiagnosticToneForSession,
                     vehicleNetwork =
                         if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                     // T71/B233 type=102 media: catplay modern TX does not actively
@@ -1534,6 +1615,11 @@ object SessionController {
                         },
                 )
             audioSender = sender
+            // T79: observe only this live sender's successful RTP sequence window.
+            // No media packet retention or retransmission; stale sender -> no snapshot.
+            client.audioRtpSentCountProvider = {
+                if (audioSender === sender) sender.sentPacketCountSnapshot() else null
+            }
             if (!sender.start(projection)) {
                 client.closeReverseAudioControlPort()
                 audioSender = null
@@ -1589,11 +1675,14 @@ object SessionController {
             return
         }
         if (currentClient?.currentEndpoint?.isBuickB233 == true) {
-            // This specific failure was a non-ACKed 0x5001 CSM whose LOCAL
-            // 4s x 5 retransmit watchdog died at +20s; AUDIO ECONNREFUSED
-            // occurred afterwards. Don't label PCM/AAC incompatible based
-            // on this session-level failure. Explicit sync-port refusal is
-            // still handled and remembered by the onSyncPortRefused callback.
+            // A short B233 session is not evidence that PCM/AAC is incompatible.
+            // A historical run involved a non-ACKed 0x5001 CSM watchdog, but
+            // that cause must NOT be generalized: T85 PCM audio still had
+            // advancing receiver sampleTime, event ACKs and feedback when
+            // RTSP reached EOF at first-RTP +20.215s. Its 0x5001 occurrence
+            // in logs was a capability declaration, NOT proof of a 0x5001
+            // retransmission failure. Do not blacklist codecs on this basis.
+            // Explicit sync-port refusal remains handled separately.
             appendLog(
                 "AUDIO T11: B233 会话仅存活 ${lived / 1000}s；" +
                     "未证明音频格式不兼容，不写入音频档位黑名单",
@@ -2051,7 +2140,7 @@ object SessionController {
                                 appendLog("EVENT: 车机媒体键（iAP2 0x6802）→ keyCode=$keyCode 已注入")
                             }
                         }
-                    retireSession()
+                    retireSession("new_connection_prepare")
                     if (connectCancelled) {
                         appendLog("SESSION T7: 手动断开已生效，旧配对线程不能重新创建会话")
                         sessionStarting.set(false)
@@ -2347,12 +2436,16 @@ object SessionController {
                                     }
 
                                     "changeModes" -> {
+                                        // T84 numeric-only, bounded evidence before existing T26 behavior.
+                                        // No change to event ACK, resource decision, or modesChanged.
+                                        if (client.currentEndpoint.isBuickB233) client.auditB233ModeRequest(command)
                                         // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
                                         // T26: B233 video-only/A2DP should not take
                                         // ownership of CarPlay main audio on reassert.
                                         val claimAudio = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
                                             client.currentEndpoint.isBuickB233,
                                             audioEnabledForSession,
+                                            b233AudioClaimPrepared = client.b233AudioClaimPrepared,
                                         )
                                         appendLog(
                                             "EVENT T26: 车机请求 changeModes → 回 modesChanged；" +
@@ -2384,6 +2477,7 @@ object SessionController {
                             val claimAudioForCarPlay = io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
                                 client.currentEndpoint.isBuickB233,
                                 audioEnabledForSession,
+                                b233AudioClaimPrepared = client.b233AudioClaimPrepared,
                             )
                             appendLog(
                                 "AIRPLAY T26: resource experiment B233=" +
@@ -2573,6 +2667,7 @@ object SessionController {
                                                 if (videoSender !== owningSender || currentClient !== client) {
                                                     appendLog("SESSION T7: 忽略已退役视频流的迟到 onEnded")
                                                 } else {
+                                                    client.audioFailureTrace?.event("video_on_ended")
                                                     appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
                                                     BtSessionGate.sessionActive = false
                                                     ScreenDimmer.setSessionActive(false)
@@ -2608,13 +2703,14 @@ object SessionController {
                                                     }
                                                     // B233: release naturally ended streams as well.
                                                     if (client.currentEndpoint.isBuickB233) {
-                                                        retireSession()
+                                                        retireSession("video_on_ended")
                                                         if (b233AudioEnded) {
                                                             // Old iAP2 may remain alive after the
                                                             // AirPlay receiver has killed video and
                                                             // audio. Retire it and give the car time
                                                             // to reopen its 0x4300/0x4301 slot;
                                                             // preserve Wi-Fi and all other cars.
+                                                            client.audioFailureTrace?.event("iap2_recovery_requested", "audio_teardown")
                                                             bluetoothClient?.recoverAfterB233AudioTeardown()
                                                             phaseHint = "音频异常断开；车机握手冷却后自动重试…"
                                                         } else {

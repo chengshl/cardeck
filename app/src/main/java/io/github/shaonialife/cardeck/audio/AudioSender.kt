@@ -75,6 +75,10 @@ class AudioSender(
     private val vehicleNetwork: android.net.Network? = null,
     /** T73: release the phone-local reverse RTCP listener when this audio sender stops. */
     private val onStopped: (() -> Unit)? = null,
+    /** T76: observation-only per-AirPlay-session monotonic timeline. */
+    private val failureTrace: AudioFailureTrace? = null,
+    /** T77: user-selected B233-only 35s test signal, default false. Never enabled silently. */
+    private val diagnosticToneEnabled: Boolean = false,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -177,6 +181,7 @@ class AudioSender(
     /** 首个音频包标记（打完就清）；AAC 自检只跑一次。 */
     private var markerPending = true
     private var selfChecked = false
+    private val aacSelfCheckWindow = AacSelfCheckWindow()
 
     /** 每包/每帧对应的 PCM 字节数（PCM 通路=一包的负载；AAC 通路=一帧的输入）。 */
     private val framePcmBytes: Int
@@ -195,6 +200,9 @@ class AudioSender(
 
     /** 采集+推流统计（日志限流用）。 */
     private var packetsSent = 0L
+    /** T79: published only after a successful send(), for receive-only 0xD5 diagnostics. */
+    @Volatile private var diagnosticSentPacketCount = 0L
+    internal fun sentPacketCountSnapshot(): Long = diagnosticSentPacketCount
     private var bytesSent = 0L
     private var lastLogAt = 0L
     private var diagnosticStartedAt = 0L
@@ -284,6 +292,7 @@ class AudioSender(
     fun start(projection: MediaProjection): Boolean {
         if (running.get()) return true
         stopped.set(false)
+        failureTrace?.event("audio_sender_start")
         return try {
             val client = DatagramSocket()
             vehicleNetwork?.let { network ->
@@ -395,6 +404,7 @@ class AudioSender(
      */
     fun stop() {
         if (!stopped.compareAndSet(false, true)) return
+        failureTrace?.event("audio_sender_stop_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         running.set(false)
         runCatching { record?.stop() }
         runCatching { record?.release() }
@@ -513,6 +523,18 @@ class AudioSender(
         val recorder = record ?: return
         val frameBytes = framePcmBytes
         val pcm = ByteArray(frameBytes)
+        // T77: uses AudioRecord only as a pacing clock, never changes RTP codec/SETUP/RTCP.
+        // Injection happens only after the user expressly chooses the diagnostic-signal option.
+        val diagnosticTone = if (diagnosticToneEnabled) DiagnosticPcmTone(sampleRate) else null
+        val toneStartedAtMs = android.os.SystemClock.uptimeMillis()
+        // Per-capture-thread, success-only RTP cadence. No new network calls,
+        // no sender pacing changes and no cross-session diagnostic carryover.
+        val cadence = if (failureTrace != null) AudioRtpCadenceWindow() else null
+        var toneStopLogged = false
+        if (diagnosticTone != null) {
+            log("AUDIO T77: 用户明确选择 440Hz 低幅度诊断音；仅首35秒替换本地捕获的 PCM，音量峰值=1000/32768，不代表手机外部音乐被捕获")
+            failureTrace?.event("diagnostic_tone_started", "hz=440 peak=1000 durationMs=35000")
+        }
         // 诊断抽样节拍：PCM 约 125 包/s（每 20s 一次）；AAC 约 47 帧/s
         val diagnosticStride = if (codec == AudioCodec.AAC_LC) 600 else 1875
         try {
@@ -535,6 +557,15 @@ class AudioSender(
                 }
                 if (read < frameBytes) continue // 残包（缓冲尾部）：丢弃，等下一个整包
                 readFailures = 0
+                if (diagnosticTone != null) {
+                    if (android.os.SystemClock.uptimeMillis() - toneStartedAtMs < 35_000L) {
+                        diagnosticTone.fill(pcm, read)
+                    } else if (!toneStopLogged) {
+                        toneStopLogged = true
+                        log("AUDIO T77: 35秒低幅度测试音窗口结束，恢复原 AudioPlaybackCapture 音源")
+                        failureTrace?.event("diagnostic_tone_finished")
+                    }
+                }
 
                 // 内容诊断（2026-10-17）：播放捕获可能拿到全零（app 禁止捕获 / 音频路由
                 // 到蓝牙 / 无音频播放）。全零时车机静音但手机仍在响，用户会报「声音在
@@ -566,7 +597,8 @@ class AudioSender(
                         } else ""
                     log(
                         "AUDIO: 采集样本 seq=$sequence 非零$percent% 峰值=$peak$activity" +
-                            if (peak == 0) "（⚠ 全零：音乐可能未播放、来源禁止捕获或走了其他音频路由）" else "",
+                            (if (diagnosticTone != null && !toneStopLogged) " source=T77_opt_in_tone" else "") +
+                            (if (peak == 0) "（⚠ 全零：音乐可能未播放、来源禁止捕获或走了其他音频路由）" else ""),
                     )
                 }
 
@@ -578,19 +610,31 @@ class AudioSender(
                     } else {
                         listOf(pcm)
                     }
-                if (payloads.isEmpty()) continue
-
-                // 一次性自检：把编码结果自己解一遍，证明比特流有效且非静音。
-                // 这是「车机无声」最需要的一条证据——如果自解码峰值是 0，问题在编码器，
-                // 如果自解码有声音而车机静音，问题在车机侧（会话/音量/路由）。
-                if (!selfChecked) {
+                // T76: wait for actual nonzero PCM and then accumulate 12 contiguous
+                // encoded frames (max 64KiB/1s). The live RTP path is unchanged.
+                if (!selfChecked && codec == AudioCodec.AAC_LC) {
+                    val wasArmed = aacSelfCheckWindow.armed
+                    val ready = aacSelfCheckWindow.accept(
+                        nonzeroPcm = peakPcm16Le(pcm) > 0,
+                        encoded = payloads,
+                        nowNanos = System.nanoTime(),
+                    )
+                    if (!wasArmed && aacSelfCheckWindow.armed) {
+                        failureTrace?.event("nonzero_pcm_first_seen")
+                    }
+                    if (ready != null) {
+                        selfChecked = true
+                        verifyEncodedFrames(ready, aacEncoder?.codecSpecificData())
+                    }
+                } else if (!selfChecked && codec == AudioCodec.PCM && payloads.isNotEmpty()) {
                     selfChecked = true
-                    verifyEncodedFrame(payloads.first())
+                    log("AUDIO T12: PCM 首帧自检 ${payloads.first().size}B peak=${peakPcm16Le(payloads.first())}")
                 }
+                if (payloads.isEmpty()) continue
 
                 var sendFailed = false
                 for (payload in payloads) {
-                    if (!sendPayload(payload)) {
+                    if (!sendPayload(payload, cadence)) {
                         sendFailed = true
                         break
                     }
@@ -617,57 +661,82 @@ class AudioSender(
             // 后台线程未捕获异常会杀死整个进程——音频异常绝不允许冒泡
             log("AUDIO: 采集线程异常退出 - ${error.message}")
         } finally {
+            // A successful-send-driven window cannot report a terminal 20s
+            // silence by itself. Snapshot before stop(), even with zero sends.
+            runCatching {
+                cadence?.tailSnapshotAt(System.nanoTime())?.let { tail ->
+                    failureTrace?.event(
+                        "audio_rtp_tail",
+                        "ok=${tail.successfulSendObserved} ageMs=${tail.lastSuccessAgeMs ?: "never"} " +
+                            "elapsedMs=${tail.elapsedSinceFirstSuccessMs ?: "never"} " +
+                            "pkts=${tail.unreportedPackets} frames=${tail.unreportedSampleFrames} " +
+                            "gapMs=${tail.maxCompletedGapMs} sendUs=${tail.maxSendUs}",
+                    )
+                }
+            }
+            failureTrace?.event("audio_capture_loop_exit")
             stop()
         }
     }
 
     /** 封包 + 发送一包（同步更新 seq/ts/nonce 游标）。返回 false 表示链路已断。 */
-    private fun sendPayload(payload: ByteArray): Boolean {
+    private fun sendPayload(payload: ByteArray, cadence: AudioRtpCadenceWindow?): Boolean {
         val wire = sealPacket(payload, sequence, timestamp, nonceCounter, markerPending)
         markerPending = false
         sequence = (sequence + 1) and 0xFFFF
         timestamp += samplesPerPacket
         nonceCounter++
         val client = socket ?: return false
+        val sendBeginNanos = if (cadence != null) System.nanoTime() else 0L
         return try {
             client.send(DatagramPacket(wire, wire.size))
+            val sendEndNanos = if (cadence != null) System.nanoTime() else 0L
             packetsSent++
+            diagnosticSentPacketCount = packetsSent
             bytesSent += wire.size
+            if (packetsSent == 1L) failureTrace?.firstRtpSent()
+            // Only a successfully returned send() counts; log at most once
+            // per 1s window within the original 45s failure observation.
+            // Telemetry must never interrupt the media path, even if a
+            // diagnostic sink throws; sender success remains send()-defined.
+            runCatching {
+                val window = cadence?.successfulSend(sendBeginNanos, sendEndNanos, samplesPerPacket)
+                if (window != null && window.elapsedMs <= 45_000L) {
+                    failureTrace?.event(
+                        "audio_rtp_window",
+                        "elapsedMs=${window.elapsedMs} packets=${window.packets} " +
+                            "frames=${window.sampleFrames} maxGapMs=${window.maxGapMs} maxSendUs=${window.maxSendUs}",
+                    )
+                }
+            }
             true
         } catch (error: IOException) {
+            failureTrace?.event("audio_rtp_udp_error", error.javaClass.simpleName)
             log("AUDIO: UDP 发送失败 - ${error.message}")
             false
         }
     }
 
-    /** PCM directly checks capture; only AAC requires platform decoder self-test. */
-    private fun verifyEncodedFrame(frame: ByteArray) {
-        if (codec == AudioCodec.PCM) {
-            log("AUDIO T12: PCM 首帧自检 ${frame.size}B peak=${peakPcm16Le(frame)}" +
-                "（原版误把 PCM 交给 AAC 解码器）")
-            return
-        }
-        val payload = frame.copyOf()
+    /**
+     * T76: one bounded asynchronous decoder run over consecutive AAC frames.
+     * Success proves only that this plaintext segment decodes locally; it does
+     * not prove receiver decryption, timing, routing or audible playback.
+     */
+    private fun verifyEncodedFrames(frames: List<ByteArray>, csd0: ByteArray?) {
+        failureTrace?.event("aac_selfcheck_started", "frames=${frames.size} csdBytes=${csd0?.size ?: 0}")
         Thread(
             {
-                try {
-                    val result = AacLcEncoder.decodePeak(payload, sampleRate, CHANNELS)
-                    if (result == null) {
-                        log("AUDIO: 自检 = 本机解码器没解出样本（首帧 ${payload.size}B）——无法证伪，继续推流")
-                        return@Thread
-                    }
-                    val (peak, samples) = result
-                    log(
-                        "AUDIO: 自检 = 首帧 ${payload.size}B 本机解码 $samples 个样本，峰值 $peak" +
-                            if (peak > 0) {
-                                "（✓ 比特流有效且非静音：车机若无声，问题不在编码/加密）"
-                            } else {
-                                "（⚠ 解码为全零：AAC 编码器输出的是静音数据）"
-                            },
-                    )
-                } catch (error: Exception) {
-                    log("AUDIO: 自检解码异常 - ${error.message}")
-                }
+                val result = AacLcEncoder.decodeWindow(frames, sampleRate, CHANNELS, csd0)
+                log(
+                    "AUDIO T76: 自检 frames=${frames.size} queued=${result.queuedFrames} " +
+                        "decodedSamples=${result.decodedSamples} peak=${result.peak} " +
+                        "csdPresent=${csd0 != null && csd0.isNotEmpty()} error=${result.errorKind ?: "none"} " +
+                        "（仅证明本机明文AAC解码，不代表车机解密/播放）",
+                )
+                failureTrace?.event(
+                    "aac_selfcheck_done",
+                    "samples=${result.decodedSamples} peak=${result.peak} error=${result.errorKind ?: "none"}",
+                )
             },
             "audio-selfcheck",
         ).apply {
