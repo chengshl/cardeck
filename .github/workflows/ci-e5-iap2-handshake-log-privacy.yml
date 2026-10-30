@@ -34,7 +34,8 @@ jobs:
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
           ).splitlines())
           bt_path = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
-          assert files == {path, bt_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          session_path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          assert files == {path, bt_path, session_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
           old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + path], text=True)
           new = Path(path).read_text()
           assert old.count('编码=${availabilityFrame.joinToString') == 1
@@ -114,6 +115,35 @@ jobs:
           assert 'BtProfiles.disconnect(context, device)' in bt_new
           assert 'TargetDevicePrefs.matches(target, it.address)' in bt_new
           assert 'channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)' in bt_new
+          # Fail closed: preserve all SessionController networking, UI hints,
+          # pairing, video and session lifecycle; only replace diagnostic text.
+          session_old = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + session_path], text=True
+          )
+          session_expected = session_old
+          session_replacements = [
+              ["appendLog(\"CTRL: 广播已在启动连接时发布，此处对齐到热点 ${wifi.ssid}\")","appendLog(\"CTRL: 广播已在启动连接时发布，此处对齐到车机热点（SSID 已脱敏）\")"],
+              ["appendLog(\"WIFI: 用户选择手动连接——等待 WLAN 连上 \\\"${wifi.ssid}\\\"（最长 120 秒）\")","appendLog(\"WIFI: 用户选择手动连接——等待 WLAN 连上车机热点（SSID 已脱敏，最长 120 秒）\")"],
+              ["appendLog(\"WIFI: 已切到车机热点 ${wifi.ssid}\")","appendLog(\"WIFI: 已切到车机热点（SSID 已脱敏）\")"],
+              ["port=${effective.airPlayPort} ips=${effective.ipAddresses}","port=${effective.airPlayPort} ipCount=${effective.ipAddresses.size}"],
+              ["appendLog(\">>> [$source] mDNS 未发现，兜底使用网关地址 $gateway:7000（车机热点网关=车机）\")","appendLog(\">>> [$source] mDNS 未发现，兜底使用网关 port=7000（地址已脱敏）\")"],
+              ["appendLog(\">>> [$source] mDNS 解析到车机地址 $address:${info.port}\")","appendLog(\">>> [$source] mDNS 解析到车机地址（地址已脱敏）port=${info.port}\")"],
+              ["\">>> [$source] 拿到接收端热点：SSID=${endpoint.ssid}；\"","\">>> [$source] 拿到接收端热点：ssidPresent=${endpoint.ssid.isNotBlank()}；\""],
+              ["appendLog(\">>> [Buick T19] 0x4301 SSID=${endpoint.ssid} 当前WiFi=$currentSsid port=${endpoint.airPlayPort} ips=${endpoint.ipAddresses}；优先复用已连接热点\")","appendLog(\">>> [Buick T19] 0x4301 ssidPresent=${endpoint.ssid.isNotBlank()} currentWifiPresent=${!currentSsid.isNullOrBlank()} port=${endpoint.airPlayPort} ipCount=${endpoint.ipAddresses.size}；优先复用已连接热点\")"],
+              ["appendLog(\">>> [$source] 手机当前不在该热点——请到 设置>WLAN 加入 \\\"${endpoint.ssid}\\\" 后断开重连\")","appendLog(\">>> [$source] 手机当前不在车机热点——请到 设置>WLAN 加入已显示的目标热点后断开重连（SSID 已脱敏）\")"],
+              ["appendLog(\"AIRPLAY: 0x4301 端点完整（${endpoint.ipAddresses.firstOrNull()}:${endpoint.airPlayPort}）——直接配对，不等 ctrl 邀请\")","appendLog(\"AIRPLAY: 0x4301 端点完整（ipPresent=${endpoint.ipAddresses.isNotEmpty()} port=${endpoint.airPlayPort}）——直接配对，不等 ctrl 邀请\")"],
+              ["port=${effectiveEndpoint.airPlayPort} ips=${effectiveEndpoint.ipAddresses}","port=${effectiveEndpoint.airPlayPort} ipCount=${effectiveEndpoint.ipAddresses.size}"],
+              ["appendLog(\">>> [$source] 已绑定车机热点 ${endpoint.ssid}，跳过重复绑定\")","appendLog(\">>> [$source] 已绑定车机热点（SSID 已脱敏），跳过重复绑定\")"],
+              ["appendLog(\"WIFI: 等待切换到车机热点（当前 $current）…\")","appendLog(\"WIFI: 等待切换到车机热点（当前WiFi存在=${!current.isNullOrBlank()}；SSID 已脱敏）…\")"],
+              ["appendLog(\">>> [$source] 等待车机热点超时（当前 WiFi: $current）——请到 设置>WLAN 加入 \\\"${endpoint.ssid}\\\" 后重新连接\")","appendLog(\">>> [$source] 等待车机热点超时（当前WiFi存在=${!current.isNullOrBlank()}；SSID 已脱敏）——请到 设置>WLAN 加入已显示的目标热点后重新连接\")"],
+          ]
+          for before, after in session_replacements:
+              assert session_expected.count(before) == 1, 'SessionController log baseline drift'
+              session_expected = session_expected.replace(before, after)
+          assert Path(session_path).read_text() == session_expected, (
+              'Unexpected SessionController behavior/UI/networking change'
+          )
+          print(f'SessionController: {len(session_replacements)} diagnostic-only redactions verified')
           print('Bluetooth target names, addresses, identity and raw exception text removed from logs')
           print('Only iAP2 diagnostic redaction; CSM payload, ACK and handshake unchanged')
           PY
