@@ -176,10 +176,19 @@ class VideoSender(
     // ---- 编码输出 → 协议封装发送 ----
 
     private fun drainEncoder() {
-        val codec = encoder ?: return
-        val output = socket?.getOutputStream() ?: return
-        val bufferInfo = MediaCodec.BufferInfo()
+        // #28: acquisition can race with stop()/socket close. Keep *all* startup
+        // paths inside try/finally so a failed getOutputStream() cannot crash
+        // the drain thread or skip session retirement.
         try {
+            val codec = encoder ?: run {
+                log("VIDEO: 推流启动中止 - 编码器已释放")
+                return
+            }
+            val output = socket?.getOutputStream() ?: run {
+                log("VIDEO: 推流启动中止 - 数据端口已关闭")
+                return
+            }
+            val bufferInfo = MediaCodec.BufferInfo()
             while (running.get()) {
                 val index =
                     try {
