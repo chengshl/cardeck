@@ -31,6 +31,24 @@ internal class RtspSocketLifecycle {
         }
     }
 
+    /**
+     * Keep a reader's socket-identity check and installation atomic with
+     * socket publication and retirement. No network connect/read happens here.
+     * A request that captured a retired socket must not install a reader over
+     * the replacement connection.
+     */
+    fun runIfCurrent(
+        isCurrent: () -> Boolean,
+        action: () -> Unit,
+    ): Boolean = synchronized(lock) {
+        if (!isCurrent()) {
+            false
+        } else {
+            action()
+            true
+        }
+    }
+
     fun retire(retireCurrent: () -> Unit) {
         synchronized(lock) {
             epoch++
