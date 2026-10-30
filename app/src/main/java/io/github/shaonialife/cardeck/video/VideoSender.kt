@@ -183,17 +183,20 @@ class VideoSender(
     // ---- 编码输出 → 协议封装发送 ----
 
     private fun drainEncoder() {
-        val codec = encoder ?: run {
-            log("VIDEO DIAG #28: DRAIN_ABORTED phase=encoder-missing (no frame output)")
-            return
-        }
-        val output = socket?.getOutputStream() ?: run {
-            log("VIDEO DIAG #28: DRAIN_ABORTED phase=output-stream-missing (no frame output)")
-            return
-        }
-        log("VIDEO DIAG #28: DRAIN_ENTERED (no video frame proven yet)")
-        val bufferInfo = MediaCodec.BufferInfo()
+        // #28/#83: preserve the observation markers, but ensure an early
+        // acquisition failure still reaches the terminal DRAIN_EXIT and
+        // stop/onEnded cleanup. No video protocol or recovery change.
         try {
+            val codec = encoder ?: run {
+                log("VIDEO DIAG #28: DRAIN_ABORTED phase=encoder-missing (no frame output)")
+                return
+            }
+            val output = socket?.getOutputStream() ?: run {
+                log("VIDEO DIAG #28: DRAIN_ABORTED phase=output-stream-missing (no frame output)")
+                return
+            }
+            log("VIDEO DIAG #28: DRAIN_ENTERED (no video frame proven yet)")
+            val bufferInfo = MediaCodec.BufferInfo()
             while (running.get()) {
                 val index =
                     try {
