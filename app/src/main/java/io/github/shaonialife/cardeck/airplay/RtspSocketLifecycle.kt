@@ -81,3 +81,26 @@ internal object RtspReaderDispatchGate {
         }
     }
 }
+
+
+/**
+ * Request-side ownership check, evaluated under rtspWriteLock immediately
+ * before CSeq registration and cipher encryption. A request may have captured
+ * a socket before close/reconnect even when its earlier startReader succeeded.
+ * Rejecting it prevents a stale request from consuming the replacement
+ * cipher's outbound nonce or registering a waiter on the new session.
+ *
+ * This helper does not acquire the lock: the caller already holds it for
+ * CSeq allocation, cipher encryption and the socket write.
+ */
+internal object RtspRequestWriteOwnership {
+    fun isCurrent(
+        requestSocket: Any,
+        publishedSocket: Any?,
+        activeReaderSocket: Any?,
+        requestSocketClosed: Boolean,
+    ): Boolean =
+        requestSocket === publishedSocket &&
+            requestSocket === activeReaderSocket &&
+            !requestSocketClosed
+}
