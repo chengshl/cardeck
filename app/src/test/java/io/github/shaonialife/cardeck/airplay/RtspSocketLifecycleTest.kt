@@ -103,6 +103,55 @@ class RtspSocketLifecycleTest {
         assertFalse(invoked)
     }
     @Test
+    fun retireReaderAndCipherBeforeAllowingNextSocketPublication() {
+        // Model AirPlayClient.close() resetting all RTSP state INSIDE retire().
+        // Previously its reader/cipher cleanup happened after retire() returned,
+        // so the next published socket could have its new state erased.
+        val gate = RtspSocketLifecycle()
+        var socketOwner: String? = "old"
+        var cipherOwner: String? = "old"
+        var readerOwner: String? = "old"
+        val firstEpoch = gate.snapshot()
+        val readyToFinishRetirement = CountDownLatch(1)
+        val resumeRetirement = CountDownLatch(1)
+        val publicationStarted = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val retirement = executor.submit {
+                gate.retire {
+                    socketOwner = null
+                    readyToFinishRetirement.countDown()
+                    check(resumeRetirement.await(5, TimeUnit.SECONDS))
+                    cipherOwner = null
+                    readerOwner = null
+                }
+            }
+            assertTrue(readyToFinishRetirement.await(5, TimeUnit.SECONDS))
+            val publication = executor.submit<Boolean> {
+                publicationStarted.countDown()
+                // The old epoch has been retired, but its teardown must finish
+                // before the next publication can acquire the lifecycle lock.
+                gate.tryPublish(firstEpoch + 1) {
+                    socketOwner = "new"
+                    cipherOwner = "new"
+                    readerOwner = "new"
+                    true
+                }
+            }
+            assertTrue(publicationStarted.await(5, TimeUnit.SECONDS))
+            resumeRetirement.countDown()
+            retirement.get(5, TimeUnit.SECONDS)
+            assertTrue(publication.get(5, TimeUnit.SECONDS))
+            assertEquals("new", socketOwner)
+            assertEquals("new", cipherOwner)
+            assertEquals("new", readerOwner)
+        } finally {
+            resumeRetirement.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun parallelConnectAttemptsPublishAtMostOneSocket() {
         val gate = RtspSocketLifecycle()
         val sameEpoch = gate.snapshot()
