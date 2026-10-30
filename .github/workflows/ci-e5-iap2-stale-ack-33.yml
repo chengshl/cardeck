@@ -32,16 +32,19 @@ jobs:
           import subprocess
           base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
           previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
-          expected = '163ce5e629c4bd82e9036e1dfbe0732ca4c6a1a4'
+          expected = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
           assert base == expected, f'E5 baseline drift; re-review before proceeding: {base}'
           # #77 changes only release-preflight tests, #79 changes only synthetic
           # ACK replay tests and CI; unknown stable changes must still fail.
           # Never silently widen the L3 runtime scope.
+          # #82 only changed official APK auto-publish workflow and its regression tests.
+          # The merged stable base is exact, #33/#34 runtime sources are untouched.
           stable_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', previous_reviewed, expected], text=True
           ).splitlines())
           assert stable_delta == {
               '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
               '.github/workflows/ci-e5-upstream-replay-33.yml',
               'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
           }, f'Unreviewed stable drift since #33 baseline: {sorted(stable_delta)}'
