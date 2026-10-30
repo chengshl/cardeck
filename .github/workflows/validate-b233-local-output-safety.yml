@@ -48,7 +48,8 @@ jobs:
           if 'setStreamVolume(' in policy or 'AudioManager.' in policy or 'android.' in policy:
               raise SystemExit('Policy must remain pure; no Android volume writes')
           for token in ('postSuppressionCapturePeak > 0', 'carAudioStillConfirmed', '!callActive',
-                        'sameSessionOwner', 'currentVolume == 0', 'originalVolume in 1..maxVolume'):
+                        'sameSessionOwner', '!volumeChangeObservedSinceMute',
+                        'currentVolume == 0', 'originalVolume in 1..maxVolume'):
               if token not in policy:
                   raise SystemExit('Missing fail-closed safety gate: ' + token)
           print('Only pure policy, tests and offline workflow changed')
