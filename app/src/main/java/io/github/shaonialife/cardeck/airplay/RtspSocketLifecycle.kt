@@ -130,31 +130,3 @@ internal object RtspReaderGenerationCleanup {
         return waiting
     }
 }
-
-
-/**
- * Owns an RTSP TCP candidate only until publication succeeds.
- *
- * B233 retries previously leaked a newly allocated Socket if connect() threw
- * before publication. A failed or rejected candidate must be closed, but an
- * accepted candidate belongs to the active RTSP session and must remain open.
- * Non-B233 callers may retain their existing exception path by disabling
- * cleanupOnFailure. No connect, network or protocol operation is performed here.
- */
-internal object RtspSocketCandidateCleanup {
-    fun <T : java.io.Closeable> publishOrClose(
-        candidate: T,
-        cleanupOnFailure: Boolean,
-        attempt: () -> Boolean,
-    ): Boolean {
-        var published = false
-        try {
-            published = attempt()
-            return published
-        } finally {
-            if (cleanupOnFailure && !published) {
-                runCatching { candidate.close() }
-            }
-        }
-    }
-}
