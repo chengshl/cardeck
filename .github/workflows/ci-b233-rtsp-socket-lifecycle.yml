@@ -1,9 +1,7 @@
 name: B233 RTSP socket lifecycle isolation (test only)
 
 on:
-  push:
-    branches:
-      - experiment/buick-b233-rtsp-socket-lifecycle
+  # One authoritative Android CI for the PR; avoid duplicate push+PR builds.
   pull_request:
     branches:
       - experiment/buick-test-t89-pcm-reverse-rtcp
@@ -16,6 +14,12 @@ on:
 
 permissions:
   contents: read
+
+# Cancel superseded, still-running validation after a newer commit to this PR.
+# Never apply this policy to signing or release workflows.
+concurrency:
+  group: rtsp-lifecycle-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
