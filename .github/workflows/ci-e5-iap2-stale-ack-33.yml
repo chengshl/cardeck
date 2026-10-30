@@ -1,7 +1,8 @@
 name: E5 iAP2 stale ACK regression isolation (#33)
 on:
-  push:
-    branches: [work/e5-iap2-stale-ack-guard-33]
+  # Open PR is the single CI authority; each commit must not consume two
+  # identical Android build runners via simultaneous push and PR events.
+  # workflow_dispatch stays available for an explicit isolated rerun.
   pull_request:
     branches: [Buick-E5]
     paths:
