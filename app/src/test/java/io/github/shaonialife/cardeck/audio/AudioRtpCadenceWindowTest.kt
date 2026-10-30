@@ -42,4 +42,52 @@ class AudioRtpCadenceWindowTest {
             w.successfulSend(0L, 1L, 0L)
         }
     }
+
+    @Test
+    fun noSuccessfulSendIsDistinctFromAZeroAge() {
+        val w = AudioRtpCadenceWindow()
+        val tail = w.tailSnapshotAt(20_215_000_000L)
+        assertEquals(false, tail.successfulSendObserved)
+        assertNull(tail.elapsedSinceFirstSuccessMs)
+        assertNull(tail.lastSuccessAgeMs)
+        assertEquals(0, tail.unreportedPackets)
+        assertEquals(0L, tail.unreportedSampleFrames)
+    }
+
+    @Test
+    fun terminalSilenceAfterPartialWindowIsVisibleWithoutLaterSuccess() {
+        // System.nanoTime() can have a negative origin. No successful send
+        // follows the first two packets before the simulated 20.215s EOF.
+        val w = AudioRtpCadenceWindow()
+        assertNull(w.successfulSend(-5_000_100_000L, -5_000_000_000L, 352L))
+        assertNull(w.successfulSend(-4_500_100_000L, -4_500_000_000L, 352L))
+        val tail = w.tailSnapshotAt(15_215_000_000L)
+        assertEquals(true, tail.successfulSendObserved)
+        assertEquals(20_215L, tail.elapsedSinceFirstSuccessMs)
+        assertEquals(19_715L, tail.lastSuccessAgeMs)
+        assertEquals(2, tail.unreportedPackets)
+        assertEquals(704L, tail.unreportedSampleFrames)
+        assertEquals(tail, w.tailSnapshotAt(15_215_000_000L))
+
+        // Taking a snapshot does NOT reset the window or change future
+        // successfulSend() semantics; the resumed packet reports its gap.
+        val resumed = checkNotNull(w.successfulSend(15_216_000_000L, 15_217_000_000L, 352L))
+        assertEquals(3, resumed.packets)
+        assertEquals(1_056L, resumed.sampleFrames)
+        assertEquals(19_717L, resumed.maxGapMs)
+    }
+
+    @Test
+    fun terminalSilenceAfterCompletedWindowHasZeroPendingButNonzeroAge() {
+        val w = AudioRtpCadenceWindow()
+        assertNull(w.successfulSend(0L, 100_000L, 352L))
+        checkNotNull(w.successfulSend(1_000_000_000L, 1_000_100_000L, 352L))
+        val tail = w.tailSnapshotAt(20_215_100_000L)
+        assertEquals(true, tail.successfulSendObserved)
+        assertEquals(20_215L, tail.elapsedSinceFirstSuccessMs)
+        assertEquals(19_215L, tail.lastSuccessAgeMs)
+        assertEquals(0, tail.unreportedPackets)
+        assertEquals(0L, tail.unreportedSampleFrames)
+    }
+
 }
