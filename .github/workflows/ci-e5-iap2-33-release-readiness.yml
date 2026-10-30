@@ -19,21 +19,21 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-iap2-stale-ack-guard-33"
-          git fetch --no-tags origin Buick-E5 work/e5-iap2-stale-ack-guard-33 fix/e5-iap2-stale-ack-chinese-label-33
-          test "$(git rev-parse origin/Buick-E5)" = "06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
+          git fetch --no-tags origin Buick-E5 work/e5-iap2-stale-ack-guard-33
+          test "$(git rev-parse origin/Buick-E5)" = "8b62f9a878378cf2705e93d00fcd7263d055ad4b"
           test "$(git rev-parse origin/work/e5-iap2-stale-ack-guard-33)" = "65ea8768d7792855e6bfa8e8b043b22707fba41a"
           git merge-base --is-ancestor origin/work/e5-iap2-stale-ack-guard-33 HEAD
           test "$(git diff --name-only origin/work/e5-iap2-stale-ack-guard-33...HEAD)" = "$(printf '%s\n' '.github/workflows/ci-e5-iap2-33-release-readiness.yml' '.github/workflows/publish-e5-iap2-ack-33.yml' 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt' 'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt')"
-          test "$(git merge-base HEAD origin/Buick-E5)" = "$(git rev-parse origin/Buick-E5)"
+          test "$(git merge-base HEAD origin/Buick-E5)" = "06cdfdd5b3f58e797e68c57e2a4bc43820d19de0"
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
           source = 'experiment/buick-e5-iap2-stale-ack-guard-33'
           label = f'"{source}" -> "iAP2 重连 ACK 防误确认（#33）"'
           catalog = 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt'
-          planned = subprocess.check_output(['git','show',f'origin/fix/e5-iap2-stale-ack-chinese-label-33:{catalog}'], text=True)
+          planned = subprocess.check_output(['git','show',f'origin/Buick-E5:{catalog}'], text=True)
           stable = subprocess.check_output(['git','show',f'origin/Buick-E5:{catalog}'], text=True)
-          assert label in planned, 'PR #69 no longer contains exact trusted Chinese mapping'
+          assert label in planned, 'Merged stable catalog lacks exact trusted Chinese mapping'
           local = Path(catalog).read_text()
           assert local == planned, 'Experiment APK catalog differs from PR #69 trusted Chinese mapping'
           local_tests = Path('app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt').read_text()
@@ -63,7 +63,7 @@ jobs:
           assert 'CarDeck-Buick-E5-IAP2-ACK-Guard.apk' in signing
           assert 'Experiment APK would revert Chinese label after installation' in signing
           assert not Path('.github/release-intents/e5-iap2-33-sign.txt').exists(), 'Release intent must not be present before recovery is ready'
-          print('Source branch, PR #68 code snapshot, narrow diff and PR #69 Chinese mapping verified')
+          print('Source branch, PR #68 code snapshot, narrow diff and merged stable Chinese mapping verified')
           if label not in stable:
               print('::notice::BLOCKED: current official E5 APK lacks #33 trusted Chinese label; no signing allowed')
               with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a') as f:
@@ -90,15 +90,18 @@ jobs:
               release = json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/releases/tags/{tag}'],text=True))
               body = dict(line.split('=',1) for line in release['body'].splitlines() if '=' in line and not line.startswith('#'))
               code = int(body['versionCode'])
+              if tag == 'buick-e5-latest':
+                  assert body.get('commit') == '8b62f9a878378cf2705e93d00fcd7263d055ad4b', 'Official release not bound to merged stable SHA'
+                  assert body.get('branch') == 'Buick-E5', 'Wrong official source branch'
               assets = [x['name'] for x in release['assets']]
               assert any(x.endswith('.apk') for x in assets), (tag, assets)
               assert any(x.endswith('.apk.sha256') for x in assets), (tag, assets)
               codes.append(code)
-          assert codes[0] == 89204263 and codes[1] == 89204507 and codes[2] == 89204866, codes
-          assert codes[0] < codes[1] < codes[2], codes
-          print('Published 014 -> 015 -> 016: release metadata, APK and SHA256 asset presence verified')
+          assert codes[0] > 89204866 and codes[1] == 89204507 and codes[2] == 89204866, codes
+          assert codes[1] < codes[2] < codes[0], codes
+          print('Historical #28 experiment 015 -> recovery 016 -> new official E5: metadata and asset presence verified')
           with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a') as f:
-              f.write(f'\nPrior signed E5 chain: {codes[0]} → {codes[1]} → {codes[2]}. Future #33 chain requires **new official > {codes[2]} → #33 experiment > official → data-preserving recovery > experiment → subsequent official > recovery**. Source/asset checks are not signing-certificate or device validation.\n')
+              f.write(f'\nHistorical #28 chain: 015={codes[1]} → recovery 016={codes[2]}; current official={codes[0]} must exceed 016. Future #33 experiment > current official → recovery > experiment → subsequent official > recovery. Source/asset checks are not signing-certificate or device validation.\n')
           PY
       - name: Verify real 014/015/016 APK SHA256, applicationId, versionCode and signing identity
         env:
@@ -109,6 +112,9 @@ jobs:
           AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$AAPT" && test -x "$APKSIGNER"
+          OFFICIAL_CODE="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq .body | sed -n 's/^versionCode=//p' | head -n 1)"
+          [[ "$OFFICIAL_CODE" =~ ^[0-9]+$ ]]
+          (( OFFICIAL_CODE > 89204866 ))
           cert_first=""
           while IFS='|' read -r tag apk code origin; do
             mkdir -p "$RUNNER_TEMP/e5-chain/$code"
@@ -133,8 +139,8 @@ jobs:
             if [[ -z "$cert_first" ]]; then cert_first="$cert"; else
               test "${cert,,}" = "${cert_first,,}"
             fi
-          done <<'E5_CHAIN'
-          buick-e5-latest|CarDeck-Buick-E5.apk|89204263|Buick-E5
+          done <<E5_CHAIN
+          buick-e5-latest|CarDeck-Buick-E5.apk|$OFFICIAL_CODE|Buick-E5
           exp-buick-e5-video-firstframe-observability-EXP--OBSERVABILITY-96375CDB4EA9-261029015|CarDeck-Buick-E5-Video-Observation.apk|89204507|experiment/buick-e5-video-firstframe-observability
           e5-stable-restore-after-video-observation-v2-20261029|CarDeck-Buick-E5-Stable-Restore.apk|89204866|Buick-E5
           E5_CHAIN
