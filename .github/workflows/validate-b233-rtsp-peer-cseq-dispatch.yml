@@ -42,6 +42,34 @@ jobs:
           done
           grep -Fq 'prioritizePathRequestBeforePendingCseq' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
           grep -Fq 'b233PathRequestCollisionBypassesPendingQueue' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt
+          # Unit tests exercise the pure predicate. This additional guard verifies
+          # that production dispatch actually applies it before CSeq queue delivery.
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          source = Path("app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt").read_text()
+          start = source.index("    private fun dispatchResponse(")
+          end = source.index("    /** 无匹配报文计数", start)
+          dispatch = source[start:end]
+          assert "RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(" in dispatch, (
+              "B233 peer-request classification is no longer wired to dispatch"
+          )
+          guarded_queue = re.compile(
+              r"if \(!prioritizePeerRequest\) \{\s*"
+              r"message\.cseq\?\.let \{ responseHeads\[it\] = head \}\s*"
+              r"val queue = message\.cseq\?\.let \{ pendingResponses\[it\] \}\s*"
+              r"if \(queue != null\) \{\s*"
+              r"queue\.offer\(message\.statusLine to message\.body\)\s*"
+              r"return\s*\}\s*\}"
+          )
+          match = guarded_queue.search(dispatch)
+          assert match, "Pending response queue or header can consume a B233 peer request"
+          assert dispatch.find("if (message.isRequest)", match.end()) != -1, (
+              "Peer request ACK path no longer follows guarded CSeq response routing"
+          )
+          print("Production B233 RTSP CSeq dispatch integration guard passed")
+          PY
           echo 'Only B233 RTSP peer path-form CSeq dispatch priority changed; no signing or release.'
       - name: Android unit tests, lint and Kotlin compile (offline only)
         run: |
