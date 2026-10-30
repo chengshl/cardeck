@@ -62,7 +62,7 @@ jobs:
                   raise SystemExit("TimingServer network behavior drift: " + token)
           before = new.index("s.send(DatagramPacket(")
           after = new.index("sendMetrics.responseSentOk(", before)
-          if before >= after or "sendMetrics.responseSendFailed()" not in new:
+          if before >= after or "sendMetrics.responseSendFailed(System.nanoTime() / 1_000_000L)" not in new:
               raise SystemExit("Successful send is not measured after actual send")
           # A replacement socket must log its own first three outcomes.
           if "var shouldLog = sendMetrics.snapshot().requestRx <= 3L || now - lastSyncLogAt >= 30_000L" not in new:
