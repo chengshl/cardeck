@@ -11,6 +11,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -146,6 +147,66 @@ internal object ExperimentalUpdates {
                             if (index == 0) null else projects[index - 1].sourceBranch)
                         onChanged()
                     }
+                }
+            }
+        }
+    }
+
+
+    /**
+     * Explicit recovery only. The currently installed #33 experiment002 does not contain
+     * this entry; a future build cannot retroactively update its UI.
+     */
+    fun restoreCurrentExperiment(activity: Activity) {
+        val origin = activity.getString(
+            io.github.shaonialife.cardeck.R.string.cardeck_installed_build_origin
+        )
+        if (activity.packageName != "io.github.buick.e5.cardeck" ||
+            origin != E5RecoveryPolicy.EXPERIMENT_SOURCE) {
+            message(activity, "当前安装包不是受支持的 E5 #33 实验，拒绝推荐恢复包。")
+            return
+        }
+        thread(name = "e5-recovery-release-check") {
+            try {
+                val pkg = activity.packageManager.getPackageInfo(activity.packageName, 0)
+                val code = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
+                    @Suppress("DEPRECATION")
+                    pkg.versionCode.toLong()
+                }
+                val name = pkg.versionName.orEmpty()
+                val candidate = E5RecoveryPolicy.eligible(
+                    requestJson(activity, "https://api.github.com/repos/$REPOSITORY/releases?per_page=100"),
+                    origin, name, code,
+                )
+                ui.post {
+                    if (activity.isFinishing || activity.isDestroyed) return@post
+                    if (candidate == null) {
+                        message(activity, "没有与本机已安装 #33 实验精确匹配、且版本号更高的可信恢复包。请勿安装其他实验的恢复包。")
+                    } else {
+                        UpdateDialogUi.details(
+                            a = activity,
+                            title = "恢复 E5 稳定运行代码",
+                            subtitle = "仅恢复当前 #33 实验 · 不卸载、不清数据",
+                            fields = listOf(
+                                "已安装实验来源" to origin,
+                                "当前版本" to "$name / $code",
+                                "恢复包真实来源" to candidate.sourceBranch,
+                                "恢复版本" to "${candidate.versionName} / ${candidate.versionCode}",
+                                "构建完成" to ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName),
+                                "校验" to "官方独立恢复 Release、精确 recoveryFor、SHA-256、同包名同签名及严格递增版本号",
+                            ),
+                            notes = candidate.notes,
+                            warning = "此操作将退出当前 CarPlay 会话，并由 Android 系统请求确认安装。恢复后不能覆盖安装更低版本的实验或旧正式包；需等待更高版本正式更新。",
+                            primary = "下载并验证恢复包",
+                            onPrimary = { download(activity, candidate, saveOnly = false, recovery = true) },
+                            secondary = "取消",
+                        )
+                    }
+                }
+            } catch (error: Exception) {
+                ui.post {
+                    if (!activity.isFinishing && !activity.isDestroyed)
+                        message(activity, "恢复包查询失败：" + error.message)
                 }
             }
         }
@@ -328,10 +389,25 @@ internal object ExperimentalUpdates {
         throw IllegalStateException("全部网络线路失败：${problem?.message}", problem)
     }
 
-    private fun download(activity: Activity, candidate: Candidate, saveOnly: Boolean) {
-        val progress = UpdateDialogUi.progress(activity, "下载并验证实验 APK")
+    private fun matchingSigningCertificates(activity: Activity, apk: File): Boolean {
+        if (Build.VERSION.SDK_INT < 28) return false
+        val pm = activity.packageManager
+        @Suppress("DEPRECATION")
+        val installed = pm.getPackageInfo(activity.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+        @Suppress("DEPRECATION")
+        val archive = pm.getPackageArchiveInfo(apk.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
+            ?: return false
+        val currentSigners = installed.signingInfo?.apkContentsSigners
+            ?.map { it.toCharsString() }?.sorted().orEmpty()
+        val targetSigners = archive.signingInfo?.apkContentsSigners
+            ?.map { it.toCharsString() }?.sorted().orEmpty()
+        return currentSigners.isNotEmpty() && currentSigners == targetSigners
+    }
+
+    private fun download(activity: Activity, candidate: Candidate, saveOnly: Boolean, recovery: Boolean = false) {
+        val progress = UpdateDialogUi.progress(activity, if (recovery) "下载并验证 E5 恢复 APK" else "下载并验证实验 APK")
         thread(name = "experiment-apk-download") {
-            val target = File(activity.cacheDir, "updates/experiments/${candidate.tag}/${candidate.apkName}")
+            val target = File(activity.cacheDir, "updates/${if (recovery) "recoveries" else "experiments"}/${candidate.tag}/${candidate.apkName}")
             var problem: Exception? = null
             var verified = false
             target.parentFile?.mkdirs()
@@ -380,6 +456,17 @@ internal object ExperimentalUpdates {
                         archive.versionCode.toLong()
                     }
                     require(archiveVersion == candidate.versionCode) { "APK 版本号与发布元数据不一致" }
+                    if (recovery) {
+                        val current = activity.packageManager.getPackageInfo(activity.packageName, 0)
+                        val installedCode = if (Build.VERSION.SDK_INT >= 28) current.longVersionCode else {
+                            @Suppress("DEPRECATION")
+                            current.versionCode.toLong()
+                        }
+                        require(archiveVersion > installedCode) { "恢复包版本号必须高于本机版本" }
+                        require(matchingSigningCertificates(activity, target)) {
+                            "恢复包签名与已安装应用不一致"
+                        }
+                    }
                     verified = true
                     break
                 } catch (error: Exception) {
@@ -411,7 +498,7 @@ internal object ExperimentalUpdates {
                     }
                     saveOnly -> message(activity,
                         "APK 已校验，但保存到下载目录失败：${exported?.exceptionOrNull()?.message}")
-                    else -> install(activity, target)
+                    else -> install(activity, target, if (recovery) candidate.versionCode else null)
                 }
             }
         }
@@ -452,8 +539,18 @@ internal object ExperimentalUpdates {
         }
     }
 
-    private fun install(activity: Activity, apk: File) {
+    private fun install(activity: Activity, apk: File, recoveryCode: Long? = null) {
         if (!apk.isFile || apk.length() == 0L) return message(activity, "已验证的安装包不存在。")
+        if (recoveryCode != null) {
+            val current = activity.packageManager.getPackageInfo(activity.packageName, 0)
+            val installed = if (Build.VERSION.SDK_INT >= 28) current.longVersionCode else {
+                @Suppress("DEPRECATION")
+                current.versionCode.toLong()
+            }
+            if (recoveryCode <= installed || !matchingSigningCertificates(activity, apk)) {
+                return message(activity, "安装前版本或签名校验失败，已拒绝恢复。")
+            }
+        }
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
             UpdateDialogUi.details(
                 a = activity,
