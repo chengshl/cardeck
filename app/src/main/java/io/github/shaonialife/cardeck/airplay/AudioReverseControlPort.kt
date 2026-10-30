@@ -87,61 +87,61 @@ internal class AudioReverseControlPort(
             }
             try {
                 while (!datagram.isClosed) {
-                try {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    receivePacket(datagram, packet)
-                    lastReceiveNanos = System.nanoTime()
-                    val n = received.incrementAndGet()
-                    val header = inspectHeader(buffer, packet.length)
-                    if (n <= 8 || n % 30 == 0) {
-                        log("AUDIO T75: 反向RTCP包 #${n} size=${packet.length} " +
-                            "version=${header?.version ?: -1} pt=${header?.packetType ?: -1} " +
-                            (if (header?.packetType == AudioRetransmitRequest.TYPE)
-                                 "requestLayout=D5_not_RTCP_length"
-                             else "declaredBytes=${header?.declaredBytes ?: -1}"))
-                    }
-                    // T79: receive-only. requestSeq alone is never a deduplication key.
-                    // No media bytes, sender address or keys are captured or sent.
-                    if (header?.packetType == AudioRetransmitRequest.TYPE) {
-                        when (val decoded = AudioRetransmitRequest.inspect(buffer, packet.length)) {
-                            is AudioRetransmitRequest.Parse.Valid -> {
-                                val f = decoded.fields
-                                val sent = currentSentRtpCount()
-                                val coverage = AudioRetransmitRequest.coverage(f, sent)
-                                if (n <= 32 || n % 30 == 0) {
-                                    log("AUDIO T79: 反向重传请求 #$n requestSeq=${f.requestSeq} " +
-                                        "firstMissingSeq=${f.firstMissingSeq} count=${f.count} " +
-                                        "lastMissingSeq=${f.lastMissingSeq} seqWrap=${f.wrapsRtpSequence} " +
-                                        "sentCount=${sent ?: "unknown"} coverage=$coverage (未响应)")
-                                    failureTrace?.event("reverse_audio_resend_request",
-                                        "req=${f.requestSeq} first=${f.firstMissingSeq} count=${f.count} inSent=$coverage")
+                    try {
+                        val packet = DatagramPacket(buffer, buffer.size)
+                        receivePacket(datagram, packet)
+                        lastReceiveNanos = System.nanoTime()
+                        val n = received.incrementAndGet()
+                        val header = inspectHeader(buffer, packet.length)
+                        if (n <= 8 || n % 30 == 0) {
+                            log("AUDIO T75: 反向RTCP包 #${n} size=${packet.length} " +
+                                "version=${header?.version ?: -1} pt=${header?.packetType ?: -1} " +
+                                (if (header?.packetType == AudioRetransmitRequest.TYPE)
+                                     "requestLayout=D5_not_RTCP_length"
+                                 else "declaredBytes=${header?.declaredBytes ?: -1}"))
+                        }
+                        // T79: receive-only. requestSeq alone is never a deduplication key.
+                        // No media bytes, sender address or keys are captured or sent.
+                        if (header?.packetType == AudioRetransmitRequest.TYPE) {
+                            when (val decoded = AudioRetransmitRequest.inspect(buffer, packet.length)) {
+                                is AudioRetransmitRequest.Parse.Valid -> {
+                                    val f = decoded.fields
+                                    val sent = currentSentRtpCount()
+                                    val coverage = AudioRetransmitRequest.coverage(f, sent)
+                                    if (n <= 32 || n % 30 == 0) {
+                                        log("AUDIO T79: 反向重传请求 #$n requestSeq=${f.requestSeq} " +
+                                            "firstMissingSeq=${f.firstMissingSeq} count=${f.count} " +
+                                            "lastMissingSeq=${f.lastMissingSeq} seqWrap=${f.wrapsRtpSequence} " +
+                                            "sentCount=${sent ?: "unknown"} coverage=$coverage (未响应)")
+                                        failureTrace?.event("reverse_audio_resend_request",
+                                            "req=${f.requestSeq} first=${f.firstMissingSeq} count=${f.count} inSent=$coverage")
+                                    }
                                 }
-                            }
-                            is AudioRetransmitRequest.Parse.Invalid -> {
-                                if (n <= 32 || n % 30 == 0) {
-                                    log("AUDIO T79: 反向0xD5报文 #$n 拒绝解析 reason=${decoded.reason} size=${packet.length}")
-                                    failureTrace?.event("reverse_audio_resend_invalid", decoded.reason)
+                                is AudioRetransmitRequest.Parse.Invalid -> {
+                                    if (n <= 32 || n % 30 == 0) {
+                                        log("AUDIO T79: 反向0xD5报文 #$n 拒绝解析 reason=${decoded.reason} size=${packet.length}")
+                                        failureTrace?.event("reverse_audio_resend_invalid", decoded.reason)
+                                    }
                                 }
                             }
                         }
+                        reportWindow()
+                    } catch (_: SocketTimeoutException) {
+                        // 在30秒高风险窗口内，连0包也如实记录；没有包不等于协议错误。
+                        reportWindow()
+                    } catch (error: SocketException) {
+                        if (!datagram.isClosed) {
+                            exitReason = "socket_exception"
+                            log("AUDIO T73: 反向 RTCP 套接字异常：${error.javaClass.simpleName}")
+                        }
+                        break
+                    } catch (error: Exception) {
+                        if (!datagram.isClosed) {
+                            exitReason = "receive_exception"
+                            log("AUDIO T73: 反向 RTCP 接收异常：${error.javaClass.simpleName}")
+                        }
+                        break
                     }
-                    reportWindow()
-                } catch (_: SocketTimeoutException) {
-                    // 在30秒高风险窗口内，连0包也如实记录；没有包不等于协议错误。
-                    reportWindow()
-                } catch (error: SocketException) {
-                    if (!datagram.isClosed) {
-                        exitReason = "socket_exception"
-                        log("AUDIO T73: 反向 RTCP 套接字异常：${error.javaClass.simpleName}")
-                    }
-                    break
-                } catch (error: Exception) {
-                    if (!datagram.isClosed) {
-                        exitReason = "receive_exception"
-                        log("AUDIO T73: 反向 RTCP 接收异常：${error.javaClass.simpleName}")
-                    }
-                    break
-                }
                 }
             } finally {
                 // An unexpectedly dead receive thread must never advertise a stale UDP
@@ -160,6 +160,9 @@ internal class AudioReverseControlPort(
                     val elapsedMs = ((System.nanoTime() - listenerStartNanos) / 1_000_000L).coerceAtLeast(0L)
                     log("AUDIO T89: 反向RTCP监听退出 reason=$exitReason elapsedMs=$elapsedMs")
                     failureTrace?.event("reverse_rtcp_listener_exit", "reason=$exitReason elapsedMs=$elapsedMs")
+                } else {
+                    // Already closed/replaced by the owner; no mutation of newer socket.
+                    log("AUDIO T89: 旧监听线程退出，保留当前Socket")
                 }
             }
         }, "b233-audio-rtcp-reverse").apply { isDaemon = true; start() }
