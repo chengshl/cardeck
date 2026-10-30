@@ -21,6 +21,29 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
+      - name: Fail closed on accidental signed-release triggers
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/publish-e5-detailed-diagnostics.yml')
+          content = path.read_text()
+          push = content.split('on:\n  push:\n', 1)[1].split('  workflow_dispatch:', 1)[0]
+          expected = {
+              'app/src/main/**', 'app/src/release/**',
+              'app/build.gradle.kts', 'app/proguard-rules.pro',
+              'build.gradle.kts', 'settings.gradle.kts',
+              'gradle.properties', 'gradle/**', 'gradlew', 'gradlew.bat',
+          }
+          assert 'paths-ignore:' not in push
+          assert '    paths:\n' in push
+          actual = {line.strip()[3:-1] for line in push.splitlines()
+                    if line.strip().startswith("- '") and line.strip().endswith("'")}
+          assert actual == expected, (actual, expected)
+          assert 'group: cardeck-global-signed-release-version' in content
+          assert 'cancel-in-progress: false' in content
+          assert '  workflow_dispatch:' in content
+          print('Workflow/test/docs-only pushes cannot auto-sign; manual dispatch preserved')
+          PY
       - name: Unit tests and debug compilation
         run: |
           chmod +x gradlew

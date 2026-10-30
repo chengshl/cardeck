@@ -3,13 +3,24 @@ on:
   push:
     branches:
       - experiment/buick-e5-detailed-diagnostics
-    paths-ignore:
-      - 'docs/**'
-      - 'AGENTS.md'
+    # Only production APK sources/build inputs may auto-mint a signed prerelease.
+    # CI, unit tests, docs and workflow-only edits must not trigger signing.
+    paths:
+      - 'app/src/main/**'
+      - 'app/src/release/**'
+      - 'app/build.gradle.kts'
+      - 'app/proguard-rules.pro'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
   workflow_dispatch:
 concurrency:
-  group: e5-detailed-diagnostics-signed-prerelease
-  cancel-in-progress: true
+  # Serialize signed version allocation with official E5 and other channels.
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
 permissions:
   contents: write
 jobs:
