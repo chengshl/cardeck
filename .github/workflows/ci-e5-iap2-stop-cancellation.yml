@@ -27,11 +27,20 @@ jobs:
           from pathlib import Path
           base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
           original_base = '8271f2a71be7b4acc740c2748bf3281810ea9aa1'
-          current_base = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          current_base = '7945c16254e71c12f2824c7d90e4de960649f6f0'
           assert base == current_base, f'E5 baseline changed; review and refresh before proceeding: {base}'
           # The E5 baseline advanced only through reviewed L1 changes:
           # #65/#69 Chinese experiment labels and #73 release-floor tests.
           # Keep this exact delta lease; never silently widen #34's L3 scope.
+          # #77 only added release-preflight regression coverage; no iAP2,
+          # Bluetooth, session teardown, or other runtime file changed.
+          latest_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_reviewed, current_base], text=True
+          ).splitlines())
+          assert latest_delta == {'.github/scripts/test_e5_release_preflight.py'}, (
+              f'Unexpected new E5 stable delta: {sorted(latest_delta)}'
+          )
           stable_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', original_base, current_base], text=True
           ).splitlines())
