@@ -563,7 +563,7 @@ internal object ExperimentalUpdates {
                 matchingSigningCertificates(activity, apk)
             }.getOrDefault(false)
             if (recoveryCode <= installed || archive?.packageName != activity.packageName ||
-                archiveCode != recoveryCode || archive.versionName != recoveryName || !signatureMatches) {
+                archiveCode != recoveryCode || archive?.versionName != recoveryName || !signatureMatches) {
                 return message(activity, "安装前版本、包名或签名校验失败，已拒绝恢复。")
             }
         }
