@@ -2534,31 +2534,23 @@ class AirPlayClient(
                 }
             try {
                 val newSocket = newVehicleSocket()
-                // The B233 retry path owns this candidate until it is
-                // published. connect() can throw before tryPublish(), and the
-                // old catch path leaked the newly allocated Socket on failure.
-                val accepted = RtspSocketCandidateCleanup.publishOrClose(
-                    newSocket,
-                    cleanupOnFailure = target.isBuickB233,
-                ) {
-                    newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
-                    // Reader input remains blocking; request() owns reply timeout.
-                    newSocket.soTimeout = 0
-                    socketLifecycle.tryPublish(connectEpoch) {
-                        if (generation != endpointGeneration) {
-                            false
-                        } else {
-                            socket = newSocket
-                            activeAddress = address
-                            activeHost = addressLiteral(address)
-                            true
-                        }
+                newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
+                // 读由独立读线程负责（阻塞等数据），请求超时由待响应表的 poll 控制；
+                // 这里若留 soTimeout，读线程会周期性收到 SocketTimeoutException 而退出
+                newSocket.soTimeout = 0
+                val accepted = socketLifecycle.tryPublish(connectEpoch) {
+                    if (generation != endpointGeneration) {
+                        false
+                    } else {
+                        socket = newSocket
+                        activeAddress = address
+                        activeHost = addressLiteral(address)
+                        true
                     }
                 }
                 if (!accepted) {
-                    // Legacy receivers retain the existing rejected-publication
-                    // cleanup; B233 already closed its rejected candidate.
-                    if (!target.isBuickB233) runCatching { newSocket.close() }
+                    // close() or endpoint change occurred during connect: never publish a stale socket.
+                    runCatching { newSocket.close() }
                     return false
                 }
                 log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")
