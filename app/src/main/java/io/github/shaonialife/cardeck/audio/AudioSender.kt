@@ -527,6 +527,9 @@ class AudioSender(
         // Injection happens only after the user expressly chooses the diagnostic-signal option.
         val diagnosticTone = if (diagnosticToneEnabled) DiagnosticPcmTone(sampleRate) else null
         val toneStartedAtMs = android.os.SystemClock.uptimeMillis()
+        // Per-capture-thread, success-only RTP cadence. No new network calls,
+        // no sender pacing changes and no cross-session diagnostic carryover.
+        val cadence = if (failureTrace != null) AudioRtpCadenceWindow() else null
         var toneStopLogged = false
         if (diagnosticTone != null) {
             log("AUDIO T77: 用户明确选择 440Hz 低幅度诊断音；仅首35秒替换本地捕获的 PCM，音量峰值=1000/32768，不代表手机外部音乐被捕获")
@@ -631,7 +634,7 @@ class AudioSender(
 
                 var sendFailed = false
                 for (payload in payloads) {
-                    if (!sendPayload(payload)) {
+                    if (!sendPayload(payload, cadence)) {
                         sendFailed = true
                         break
                     }
@@ -658,25 +661,48 @@ class AudioSender(
             // 后台线程未捕获异常会杀死整个进程——音频异常绝不允许冒泡
             log("AUDIO: 采集线程异常退出 - ${error.message}")
         } finally {
+            // A successful-send-driven window cannot report a terminal 20s
+            // silence by itself. Snapshot before stop(), even with zero sends.
+            cadence?.tailSnapshotAt(System.nanoTime())?.let { tail ->
+                failureTrace?.event(
+                    "audio_rtp_tail",
+                    "sent=${tail.successfulSendObserved} ageMs=${tail.lastSuccessAgeMs ?: "never"} " +
+                        "elapsedMs=${tail.elapsedSinceFirstSuccessMs ?: "never"} " +
+                        "pendingPackets=${tail.unreportedPackets} pendingFrames=${tail.unreportedSampleFrames} " +
+                        "maxGapMs=${tail.maxCompletedGapMs} maxSendUs=${tail.maxSendUs}",
+                )
+            }
             failureTrace?.event("audio_capture_loop_exit")
             stop()
         }
     }
 
     /** 封包 + 发送一包（同步更新 seq/ts/nonce 游标）。返回 false 表示链路已断。 */
-    private fun sendPayload(payload: ByteArray): Boolean {
+    private fun sendPayload(payload: ByteArray, cadence: AudioRtpCadenceWindow?): Boolean {
         val wire = sealPacket(payload, sequence, timestamp, nonceCounter, markerPending)
         markerPending = false
         sequence = (sequence + 1) and 0xFFFF
         timestamp += samplesPerPacket
         nonceCounter++
         val client = socket ?: return false
+        val sendBeginNanos = if (cadence != null) System.nanoTime() else 0L
         return try {
             client.send(DatagramPacket(wire, wire.size))
+            val sendEndNanos = if (cadence != null) System.nanoTime() else 0L
             packetsSent++
             diagnosticSentPacketCount = packetsSent
             bytesSent += wire.size
             if (packetsSent == 1L) failureTrace?.firstRtpSent()
+            // Only a successfully returned send() counts; log at most once
+            // per 1s window within the original 45s failure observation.
+            val window = cadence?.successfulSend(sendBeginNanos, sendEndNanos, samplesPerPacket)
+            if (window != null && window.elapsedMs <= 45_000L) {
+                failureTrace?.event(
+                    "audio_rtp_window",
+                    "elapsedMs=${window.elapsedMs} packets=${window.packets} " +
+                        "frames=${window.sampleFrames} maxGapMs=${window.maxGapMs} maxSendUs=${window.maxSendUs}",
+                )
+            }
             true
         } catch (error: IOException) {
             failureTrace?.event("audio_rtp_udp_error", error.javaClass.simpleName)
