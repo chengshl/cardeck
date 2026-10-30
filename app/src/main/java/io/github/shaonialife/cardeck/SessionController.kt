@@ -1387,7 +1387,7 @@ object SessionController {
                                                         // Buick B233 in a stale streaming state. The call
                                                         // is capped at 900ms and scoped to Buick by client.
                                                         runCatching { client.tryTeardownBuickScreen(setup.displayUuid) }
-                                                            .onFailure { appendLog("AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.message}") }
+                                                            .onFailure { appendLog("AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.javaClass.simpleName}（详细异常已脱敏）") }
                                                         retireSession()
                                                     } finally {
                                                         // Preserve Bluetooth RFCOMM during pairing;
@@ -1455,7 +1455,7 @@ object SessionController {
                     }
                 } catch (error: Throwable) {
                     // 配对线程任何异常都不能留下「已有会话在处理中」的卡死状态
-                    appendLog("AIRPLAY: 配对线程异常 - ${error.message ?: error.javaClass.simpleName}")
+                    appendLog("AIRPLAY: 配对线程异常 - ${error.javaClass.simpleName}（详细异常已脱敏）")
                 } finally {
                     sessionStarting.set(false)
                     // 配对未成功建立推流（fail/异常/start 失败提前退出）时解除静默降噪，
