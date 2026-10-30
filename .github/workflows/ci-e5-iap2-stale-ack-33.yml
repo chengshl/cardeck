@@ -61,6 +61,11 @@ jobs:
           assert 'invalidAckMustNotDrainQueuedControlFrame' in tests
           # RFCOMM read boundaries must not turn a partial ACK109 into a confirmation.
           assert 'fragmentedAck109AfterRetransmitMustConfirmExactlyOnce' in tests
+          # ACK109 and the 0x4301 response may share an RFCOMM read, with the
+          # response link frame split across subsequent reads.
+          assert 'ack109AndResponse4301AcrossRfcommReadsDoNotBlockControlDelivery' in tests
+          assert 'partial 0x4301 frame must not be delivered' in tests
+          assert '0x4301 must survive ACK+data coalescing' in tests
           assert 'partial ACK must not advance acknowledgement' in tests
           assert 'completed ACK109 must release seq109' in tests
           assert 'invalid ACKs must not flush seq102' in tests
