@@ -42,26 +42,8 @@ jobs:
           assert changed == {client, route, test, workflow}, f'Unexpected diff: {changed}'
           old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + client], text=True)
           new = Path(client).read_text()
-          before = '''                if (!t35Buick) run {
-                    val dropped = BtProfiles.disconnect(context, device)'''
-          after = '''                // #24 BT-A: keep ordinary HFP/A2DP connected for a narrowly
-                // identified B233 candidate. This does not change RFCOMM,
-                // iAP2 handshakes, retry pacing or other receivers.
-                val selected = targetProvider()
-                val protectB233Profiles = BuickB233Route.shouldProtectProfiles(
-                    advertisedName = name,
-                    selectedName = selected?.name,
-                    selectedMatchesDevice = selected != null &&
-                        TargetDevicePrefs.matches(selected, device.address),
-                )
-                if (protectB233Profiles) {
-                    val now = android.os.SystemClock.uptimeMillis()
-                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
-                        lastProfileLogAt = now
-                        log("BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped")
-                    }
-                } else run {
-                    val dropped = BtProfiles.disconnect(context, device)'''
+          before = "                if (!t35Buick) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          after = "                // #24 BT-A: keep ordinary HFP/A2DP connected for a narrowly\n                // identified B233 candidate. This does not change RFCOMM,\n                // iAP2 handshakes, retry pacing or other receivers.\n                val selected = targetProvider()\n                val protectB233Profiles = BuickB233Route.shouldProtectProfiles(\n                    advertisedName = name,\n                    selectedName = selected?.name,\n                    selectedMatchesDevice = selected != null &&\n                        TargetDevicePrefs.matches(selected, device.address),\n                )\n                if (protectB233Profiles) {\n                    val now = android.os.SystemClock.uptimeMillis()\n                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {\n                        lastProfileLogAt = now\n                        log(\"BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped\")\n                    }\n                } else run {\n                    val dropped = BtProfiles.disconnect(context, device)"
           assert old.count(before) == 1
           assert new == old.replace(before, after), 'Unrelated runtime behavior changed'
           policy = Path(route).read_text()
