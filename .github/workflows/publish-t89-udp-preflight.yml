@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VALIDATED="3dc12e9f88875edfb77f7e6f66d223b3b5d54465"
+          VALIDATED="e9a35e1f955bd436447e5575b8cf7dce21e60db9"
           test "$GITHUB_REF_NAME" = "experiment/buick-test-t89-pcm-reverse-rtcp"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$VALIDATED" "$GITHUB_SHA"
@@ -42,12 +42,12 @@ jobs:
           }
           # If the offline run is still in progress, wait for its actual result.
           for i in $(seq 1 24); do
-            STATUS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41006642184" --jq '.status')"
+            STATUS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41007451161" --jq '.status')"
             if [ "$STATUS" = completed ]; then break; fi
             sleep 10
           done
-          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41006642184" --jq '.conclusion')" = success
-          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41006642184" --jq '.head_sha')" = "$VALIDATED"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41007451161" --jq '.conclusion')" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41007451161" --jq '.head_sha')" = "$VALIDATED"
           grep -Fq 'b233NetworkForAudioFreePreflight' app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt
           grep -Fq 'mode=receive_only' app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt
           grep -Fq 'network.bindSocket(udp)' app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt
