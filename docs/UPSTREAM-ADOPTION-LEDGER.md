@@ -57,3 +57,20 @@
 3. 选用上游优化/借鉴思路或从 E5 移植成功后，**在 #23 + 本文档中留下源→目标 commit 与验证证据**，保持状态从候选、实验、CI 到设备验收和最终合并逐级晋升。
 4. 根据风险分级建立目标分支试验，禁止将 main 全部合并进 E5 或 Test；不修改 `main`。
 5. 不论采用、弃用、被后续上游推翻或回滚，都保留原判断和时间，新增修订记录。
+
+## E. 2026-10-30 上游实时同步和 E5/T89 针对性复审
+
+**实时来源校验**：2026-10-30 再查上游 `shaonialife/cardeck@main` 与 Fork `chengshl/cardeck@main`：两端均为 `503ed3730d5a9365272294b79306cea5fcce115b`，上游最近 push 是 **2026-10-24 07:07 UTC**，源码最新版本号提交为 **0.1.28**；当前上游 GitHub Release 列表最新公开版本为 **v0.1.13（2026-10-22）**，不得混淆 Git 源码版本和可安装发布版。上游 PR #19/#17 已于 10-24 合并，之后未发现更新的 main commit 或新合并 PR。本轮只是源码、提交、Release、Issue 及目标分支的只读对照，**没有代码移植、合并、CI、APK 或新实车验收**。权威治理 v2.2 与 E5 单一非音频主线优先。
+
+| 条目与新核对 | 最新针对性判断 | 采用/验收门禁 |
+|---|---|---|
+| **U01 GM/Cinemo 延迟 `0x4301`**：[上游 PR #19](https://github.com/shaonialife/cardeck/pull/19) / `09b39199` | 上游 `Iap2SenderSession` 允许车机已承诺但窗口内缺少 `0x4301` 时返回空端点、不拆链，并在 `SessionController` 增加最长5分钟等待、晚到事件重触发及人工确认 Wi-Fi 兜底。E5 `SessionController` 确无 `PENDING_START_SESSION_WAIT_MS`/该观察器。**但本车 E5 #33 已见 0x4300/seq109 本身未获链路 ACK，属于更前置故障；只加5分钟等待不会让 ACK109 自动回来**。 | **有价值，L3 备选**：先在 #33 现有 Draft ACK 诊断线补完整链路 seq109→ACK→0x4301 分层回归；后续只有实证“ACK已有、0x4301只是迟到”才考虑最小空端点等待试验。不移植整个 SessionController，不增加驾驶时弹窗。 |
+| **U02 MFi 错误成功记忆纠正**：`1cd903c4` | 上游 `MfiLengthMemory.recordHardRejected` 会在挑战导致硬断链时推翻旧成功长度；E5/Test 均无此方法。当前 #33 真实失败出现在已经完成 MFi 的后续 seq109 阶段，**不是已证实的 MFi 记忆问题**。 | **条件采用，L3**：仅在未来日志证明认证长度记忆错误/同长度硬拒绝时，做隔离回归与选择性移植，暂不影响现有 #33 实车队列。 |
+| **U03 跨车型重放**：`3095d64e` | 上游 `BtLinkReplayTest`、`CarFixture`、`ScriptedCarStream` 可将已脱敏的真实字节流喂到 iAP2 生产路径，适合对 0x4300/ACK109/0x4301 做非车载负向回归；E5/Test 暂无同框架。**注意上游测试在 fixture 缺席时会直接打印“跳过”并返回，不能把无 fixture 的绿色 CI 当真实录制回归通过**。 | **优先借鉴，L2 测试基础设施**：在隔离测试线上改造为适合 B233 的去标识化确定性 fixture，同时 CI 显式校验 fixture 存在和测试实际执行，不上传原始秘密、MAC、密钥或完整私人帧，不需要新的用户实车验收包。 |
+| **Honda 音频协商**：[上游 PR #9](https://github.com/shaonialife/cardeck/pull/9) | 核心是不同车机的 PCM/AAC/type/采样率候选、失败退档和协议回应。当前 Test/T89 已有候选和持久化记忆；最新 T89 仍在 PCM/type100、手机反向RTCP端口有效、车机真实有声后首RTP约 **20.267秒 RTSP EOF**。所以**不是本 E5 20秒问题的新修复**。 | **现有同类能力、不得重复移植/重复要求同包验收**，音频维持 #11 根因独立诊断。 |
+| **上游手机静音**：`AudioSender.mutePhoneMedia` | 上游默认静音 `STREAM_MUSIC` 并在停止时恢复；Test/T89 已有同函数，但 B233 T12 特设 `mutePhoneOutput=false` 保留本地音量，用户已实车确认手机、车机同时响。T12 曾有 Sony 静音使捕获全零的疑虑。 | **不可直接照搬上游默认静音**。先单独核验非零 PlaybackCapture、车机有声、其它媒体/通话及失败/退出后的原音量恢复，不能与20秒EOF协议变量合发。 |
+| **视频关键帧请求**：[上游 PR #10](https://github.com/shaonialife/cardeck/pull/10) | 上游 `VideoSender.requestKeyFrame` 可响应车机 `forceKeyFrame`；E5 尚无此方法。但 E5 #28 曾出现的是 RECORD 后数据端口/编码器未起、0 FPS，**强制关键帧不能修复尚未启动的编码器**，且旧 #28 的015/016验收已完成。 | **条件保留，L3**：仅在 B233 真实 `forceKeyFrame` 或有帧但不显示的证据下另行评估；不重测既有 #28。 |
+| **应用列表漏扫**：[上游 `b11ec84d`](https://github.com/shaonialife/cardeck/commit/b11ec84db4867c4f8b868dd9aaa454e29a31bd94) | E5 `VirtualLauncher.scanLaunchableApps` 仍存在排序前 `.take(200)`，上游修复移除截断、隔离个别 APK 的标签/图标异常并同包去重，**是实在的非音频改进差异**。 | **暂缓**：尚无本车应用漏扫实证，属 v2.2 冻结的非核心 UI/新功能；不应为它额外创建 E5 实验包/实车测试。 |
+| **上游别克 4.0 用户报告**：[Issue #24](https://github.com/shaonialife/cardeck/issues/24) / [#20](https://github.com/shaonialife/cardeck/issues/20) | 同集团部分其他车机报告“声明会发0x4301但仍走旧0x5702/等待0x5703”，可用于分类新旧代际能力，**不等于 2023 E5 B233 的同一失败阶段，也不属于上游已确认的新代码修复**。 | 仅作协议画像参考，不直接变更 E5 当前连接路径。 |
+
+**本轮建议次序**：①优先把 U03 真实链路流回放方法适配到 #33 的离线验证（可直接减少重复实车）；②对 U01 建立“seq109未ACK”和“ACK已确认而0x4301迟到”两类判据，前者不应用后者5分钟兜底；③双端同时出声另行研究安全输出路由；④MFi、关键帧、应用扫描按实际故障证据再启动。**所有上游源码仍只留在 main，不做跨分支整合并。**
