@@ -2776,10 +2776,20 @@ class AirPlayClient(
         } catch (error: IOException) {
             if (generation == readerGeneration) audioFailureTrace?.event("rtsp_read_error", error.javaClass.simpleName)
         } finally {
-            // 只由「当前」读线程清账：重连会换 socket 与新读线程，旧线程不得误伤新会话
-            if (generation == readerGeneration) {
+            // 读线程退役与新请求登记使用同一把写锁。只在锁内核对代次并摘走旧等待队列：
+            // 若在锁外先核对 generation，重连线程可在核对后登记新 CSeq，
+            // 旧读线程随后 failAllPending() 会错误清除新会话的等待队列。
+            val waiting = synchronized(rtspWriteLock) {
+                RtspReaderGenerationCleanup.drainIfCurrent(
+                    generation, readerGeneration, pendingResponses,
+                )
+            }
+            if (waiting != null) {
                 audioFailureTrace?.event("rtsp_reader_exit")
-                failAllPending("控制通道读线程结束")
+                if (waiting.isNotEmpty()) {
+                    log("AIRPLAY: 控制通道读线程结束——唤醒 ${waiting.size} 个待响应请求")
+                    waiting.forEach { it.offer(RTSP_CLOSED_MARK to ByteArray(0)) }
+                }
             }
         }
     }
