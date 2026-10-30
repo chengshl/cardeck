@@ -50,6 +50,9 @@ jobs:
               'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt',
               'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
               '.github/workflows/ci-e5-chinese-project-labels.yml',
+              'app/src/main/java/io/github/shaonialife/cardeck/update/E5RecoveryPolicy.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/update/E5RecoveryPolicyTest.kt',
+              '.github/workflows/ci-e5-recovery-entry-17.yml',
           }
           diff = set(subprocess.check_output(
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
@@ -93,4 +96,12 @@ jobs:
           assert 'ExperimentProjectCatalog.name(candidate.sourceBranch)' in history
           assert 'if (ReleaseBuildTime.metadata(body, "artifactKind") != "experiment") continue' in history
           assert 'if (!ReleaseVersionName.isExperimental(name, source)) continue' in history
+          # The separate #17 workflow enforces exact 6-file scope. Keep this
+          # Chinese-source gate active for shared updater/UI changes as well.
+          recovery = Path('app/src/main/java/io/github/shaonialife/cardeck/update/E5RecoveryPolicy.kt')
+          if recovery.exists():
+              policy = recovery.read_text()
+              assert 'field("recoveryFor") != installedRelease.tag' in policy
+              assert 'field("sourceBranch") != RECOVERY_SOURCE' in policy
+              assert 'field("stableRuntimeCommit") != STABLE_RUNTIME' in policy
           PY
