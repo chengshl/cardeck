@@ -52,6 +52,10 @@ jobs:
               raise SystemExit("TimingServer start/bind/stop changed; forbidden in observation-only run")
           if old.split(companion,1)[1] != new_wo_metrics.split(companion,1)[1]:
               raise SystemExit("TimingServer NTP packet/epoch/serialization changed")
+          # Old worker may finish after restart: never aggregate two socket generations.
+          before_loop, after_loop = new.split(loop_start, 1)
+          if "val sendMetrics = TimingSendMetrics()" in before_loop or after_loop.count("val sendMetrics = TimingSendMetrics()") != 1:
+              raise SystemExit("Timing telemetry must be local to each UDP worker generation")
           for token in ("s.receive(packet)", "buildResponse(request, System.nanoTime())",
                         "s.send(DatagramPacket(response, response.size, packet.address, packet.port))"):
               if old.count(token) != 1 or new.count(token) != 1:
