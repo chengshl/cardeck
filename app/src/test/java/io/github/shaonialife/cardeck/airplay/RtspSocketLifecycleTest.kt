@@ -102,4 +102,43 @@ class RtspSocketLifecycleTest {
         })
         assertFalse(invoked)
     }
+    @Test
+    fun parallelConnectAttemptsPublishAtMostOneSocket() {
+        val gate = RtspSocketLifecycle()
+        val sameEpoch = gate.snapshot()
+        val bothReady = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        val candidates = listOf(Socket(), Socket())
+        var current: Socket? = null
+        try {
+            val results = candidates.map { candidate ->
+                executor.submit<Boolean> {
+                    bothReady.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    gate.tryPublish(sameEpoch) {
+                        current = candidate
+                        true
+                    }
+                }
+            }
+            assertTrue("both attempts must reach publication", bothReady.await(5, TimeUnit.SECONDS))
+            release.countDown()
+            assertEquals(
+                "a competing successful TCP connect must not overwrite the first published socket",
+                1,
+                results.count { it.get(5, TimeUnit.SECONDS) },
+            )
+            assertTrue(candidates.contains(current))
+            gate.retire {
+                current?.close()
+                current = null
+            }
+        } finally {
+            release.countDown()
+            candidates.forEach { it.close() }
+            executor.shutdownNow()
+        }
+    }
+
 }
