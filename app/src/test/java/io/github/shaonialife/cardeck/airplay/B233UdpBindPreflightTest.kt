@@ -8,7 +8,7 @@ import org.junit.Test
 class B233UdpBindPreflightTest {
     @Test
     fun holdsRealReceiveOnlyListenerWithoutSendingPackets() {
-        val logs = mutableListOf<String>()
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
         var binds = 0
         val result = B233UdpBindPreflight(
             bindNetwork = { binds++ },
