@@ -562,24 +562,46 @@ class AirPlayClient(
     fun close() {
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
-        // Retire the RTSP socket, cipher, reader ownership and pending replies as
-        // one publication barrier. A concurrent ensureConnected() must not publish
-        // its new socket between retiring the old socket and clearing old state.
-        // Close the socket first so in-flight RTSP writes can unblock before
-        // acquiring rtspWriteLock; TCP connect remains outside this gate.
+        // Keep B233 teardown atomic with an in-flight RTSP request writer:
+        // that writer already owns rtspWriteLock while selecting the cipher,
+        // registering CSeq and sending. Closing the socket FIRST interrupts a
+        // blocked write; only then acquire the writer lock to clear the entire
+        // RTSP state and drain pending replies. The lifecycle gate still keeps
+        // a new socket from publishing until this teardown is complete.
+        var b233RetiredPending: List<java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>>? = null
         socketLifecycle.retire {
             runCatching { socket?.close() }
-            socket = null
-            activeHost = null
-            activeAddress = null
-            // A new RTSP connection starts unencrypted until pair-verify.
-            cipher = null
-            synchronized(rtspWriteLock) {
-                readerSocket = null
-                readerThread = null
-                readerGeneration++
+            if (endpoint.isBuickB233) {
+                synchronized(rtspWriteLock) {
+                    socket = null
+                    activeHost = null
+                    activeAddress = null
+                    cipher = null
+                    readerSocket = null
+                    readerThread = null
+                    readerGeneration++
+                    b233RetiredPending = pendingResponses.values.toList()
+                    pendingResponses.clear()
+                }
+            } else {
+                // Preserve the legacy teardown ordering on other receivers.
+                socket = null
+                activeHost = null
+                activeAddress = null
+                cipher = null
+                synchronized(rtspWriteLock) {
+                    readerSocket = null
+                    readerThread = null
+                    readerGeneration++
+                }
+                failAllPending("控制通道关闭")
             }
-            failAllPending("控制通道关闭")
+        }
+        // Wake drained B233 waiters outside BOTH locks. They belong to the
+        // retired session; a replacement may now register its own CSeq.
+        b233RetiredPending?.takeIf { it.isNotEmpty() }?.let { waiting ->
+            log("AIRPLAY: 控制通道关闭——唤醒 ${waiting.size} 个待响应请求")
+            waiting.forEach { it.offer(RTSP_CLOSED_MARK to ByteArray(0)) }
         }
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
