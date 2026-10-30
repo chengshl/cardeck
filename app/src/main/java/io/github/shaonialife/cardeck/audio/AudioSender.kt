@@ -663,14 +663,16 @@ class AudioSender(
         } finally {
             // A successful-send-driven window cannot report a terminal 20s
             // silence by itself. Snapshot before stop(), even with zero sends.
-            cadence?.tailSnapshotAt(System.nanoTime())?.let { tail ->
-                failureTrace?.event(
-                    "audio_rtp_tail",
-                    "ok=${tail.successfulSendObserved} ageMs=${tail.lastSuccessAgeMs ?: "never"} " +
-                        "elapsedMs=${tail.elapsedSinceFirstSuccessMs ?: "never"} " +
-                        "pkts=${tail.unreportedPackets} frames=${tail.unreportedSampleFrames} " +
-                        "gapMs=${tail.maxCompletedGapMs} sendUs=${tail.maxSendUs}",
-                )
+            runCatching {
+                cadence?.tailSnapshotAt(System.nanoTime())?.let { tail ->
+                    failureTrace?.event(
+                        "audio_rtp_tail",
+                        "ok=${tail.successfulSendObserved} ageMs=${tail.lastSuccessAgeMs ?: "never"} " +
+                            "elapsedMs=${tail.elapsedSinceFirstSuccessMs ?: "never"} " +
+                            "pkts=${tail.unreportedPackets} frames=${tail.unreportedSampleFrames} " +
+                            "gapMs=${tail.maxCompletedGapMs} sendUs=${tail.maxSendUs}",
+                    )
+                }
             }
             failureTrace?.event("audio_capture_loop_exit")
             stop()
@@ -695,13 +697,17 @@ class AudioSender(
             if (packetsSent == 1L) failureTrace?.firstRtpSent()
             // Only a successfully returned send() counts; log at most once
             // per 1s window within the original 45s failure observation.
-            val window = cadence?.successfulSend(sendBeginNanos, sendEndNanos, samplesPerPacket)
-            if (window != null && window.elapsedMs <= 45_000L) {
-                failureTrace?.event(
-                    "audio_rtp_window",
-                    "elapsedMs=${window.elapsedMs} packets=${window.packets} " +
-                        "frames=${window.sampleFrames} maxGapMs=${window.maxGapMs} maxSendUs=${window.maxSendUs}",
-                )
+            // Telemetry must never interrupt the media path, even if a
+            // diagnostic sink throws; sender success remains send()-defined.
+            runCatching {
+                val window = cadence?.successfulSend(sendBeginNanos, sendEndNanos, samplesPerPacket)
+                if (window != null && window.elapsedMs <= 45_000L) {
+                    failureTrace?.event(
+                        "audio_rtp_window",
+                        "elapsedMs=${window.elapsedMs} packets=${window.packets} " +
+                            "frames=${window.sampleFrames} maxGapMs=${window.maxGapMs} maxSendUs=${window.maxSendUs}",
+                    )
+                }
             }
             true
         } catch (error: IOException) {
