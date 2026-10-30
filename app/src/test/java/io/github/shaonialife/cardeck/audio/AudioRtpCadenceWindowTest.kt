@@ -90,4 +90,23 @@ class AudioRtpCadenceWindowTest {
         assertEquals(0L, tail.unreportedSampleFrames)
     }
 
+
+    @Test
+    fun slowSuccessfulUdpSendIsDistinguishedFromTerminalSilence() {
+        val w = AudioRtpCadenceWindow()
+        assertNull(w.successfulSend(0L, 100_000L, 352L))
+        // Synthetic send() blocks for 19.215s, then returns successfully.
+        // The receiver-side 20s EOF cause is NOT inferred from this fixture.
+        val window = checkNotNull(w.successfulSend(1_000_000_000L, 20_215_000_000L, 352L))
+        assertEquals(2, window.packets)
+        assertEquals(704L, window.sampleFrames)
+        assertEquals(20_214L, window.maxGapMs)
+        assertEquals(19_215_000L, window.maxSendUs)
+        // At return time there is no post-send silence, unlike a stalled
+        // sender whose last successful send was ~20s earlier.
+        val tail = w.tailSnapshotAt(20_215_000_000L)
+        assertEquals(0L, tail.lastSuccessAgeMs)
+        assertEquals(0, tail.unreportedPackets)
+    }
+
 }
