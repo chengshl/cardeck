@@ -72,7 +72,7 @@ jobs:
           # Request write guard must execute *inside* the CSeq/cipher lock.
           # A helper-only test would miss accidental wiring after encryption.
           request = source.split('    private fun request(', 1)[1].split(
-              '    /**\\n     * 控制通道读线程', 1
+              '    /**', 1
           )[0]
           lock_start = request.split('        synchronized(rtspWriteLock) {', 1)[1]
           cseq_pos = lock_start.index('cseq = ++cSeq')
