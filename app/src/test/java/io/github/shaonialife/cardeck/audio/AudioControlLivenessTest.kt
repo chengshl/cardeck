@@ -56,4 +56,31 @@ class AudioControlLivenessTest {
         assertTrue(s.contains("sampleFirst=900000 sampleLast=0"))
         assertTrue(s.contains("sampleAdvance=0 sampleStall=0"))
     }
+
+    @Test fun negativeMonotonicOriginKeepsControlAndFeedbackAgesVisible() {
+        // System.nanoTime() origin is arbitrary, not necessarily positive.
+        var now = -2_000_000_000L
+        val health = AudioControlLiveness { now }
+        health.onEventRequest()
+        health.onEventAck(true)
+        health.onFeedback(0L)
+        now = -1_500_000_000L
+        val s = health.summary()
+        assertTrue(s.contains("eventRx=1 eventAck=1 eventAckFail=0 eventAgeMs=500"))
+        assertTrue(s.contains("ackAgeMs=500"))
+        assertTrue(s.contains("feedback=1 feedbackAgeMs=500"))
+        assertTrue(s.contains("sampleFirst=0 sampleLast=0"))
+    }
+
+    @Test fun zeroMonotonicTimestampIsAnObservedEventNotNever() {
+        var now = 0L
+        val health = AudioControlLiveness { now }
+        health.onEventRequest()
+        health.onFeedback(null)
+        now = 1_000_000L
+        val s = health.summary()
+        assertTrue(s.contains("eventRx=1 eventAck=0 eventAckFail=0 eventAgeMs=1"))
+        assertTrue(s.contains("feedback=1 feedbackAgeMs=1"))
+        assertTrue(s.contains("ackAgeMs=never"))
+    }
 }
