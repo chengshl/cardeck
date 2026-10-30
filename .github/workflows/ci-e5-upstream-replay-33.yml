@@ -1,0 +1,142 @@
+name: E5 B233 upstream replay adaptation (test-only)
+
+on:
+  push:
+    branches:
+      - experiment/buick-e5-upstream-replay-33-20261030
+  pull_request:
+    branches:
+      - Buick-E5
+    paths:
+      - 'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt'
+      - '.github/workflows/ci-e5-upstream-replay-33.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Fail closed if runtime files or stable code changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin Buick-E5 --quiet
+          git diff --name-only origin/Buick-E5...HEAD > /tmp/e5-replay-changed-files
+          test -s /tmp/e5-replay-changed-files
+          while IFS= read -r path; do
+            case "$path" in
+              app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt|.github/workflows/ci-e5-upstream-replay-33.yml) ;;
+              *) echo "Unauthorized change in test-only replay PR: $path"; exit 1 ;;
+            esac
+          done < /tmp/e5-replay-changed-files
+          grep -Fxq 'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt' /tmp/e5-replay-changed-files
+          test "$(grep -c 'Fixture(' app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt)" -ge 3
+      - name: Run all three synthetic B233 ACK109 scenarios on the production link engine
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.replay.B233HandshakeReplayTest --stacktrace
+      - name: Full Android JUnit and Debug compile
+        shell: bash
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Compare full Lint diagnostics against exact E5 stable baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='7945c16254e71c12f2824c7d90e4de960649f6f0'
+          test "$(git rev-parse origin/Buick-E5)" = "$expected" || {
+            echo 'E5 stable HEAD changed; re-review baseline before trusting this CI.'
+            exit 1
+          }
+          # A green CI requires identical full Lint errors on PR and stable base.
+          # We run the real Lint task twice; neither failure is called a pass.
+          set +e
+          ./gradlew :app:lintDebug --stacktrace > /tmp/e5-replay-head-lint.log 2>&1
+          head_rc=$?
+          set -e
+          if [ "$head_rc" -eq 0 ]; then
+            echo 'Full Lint: passed' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          baseline_dir="$RUNNER_TEMP/e5-replay-lint-base"
+          git worktree add --detach "$baseline_dir" "$expected"
+          (
+            cd "$baseline_dir"
+            chmod +x gradlew
+            set +e
+            ./gradlew :app:lintDebug --stacktrace > /tmp/e5-replay-base-lint.log 2>&1
+            echo $? > /tmp/e5-replay-base-lint.rc
+          )
+          baseline_rc="$(cat /tmp/e5-replay-base-lint.rc)"
+          test "$baseline_rc" -ne 0 || {
+            echo 'E5 stable Lint passes but PR Lint fails: regression.'
+            tail -n 70 /tmp/e5-replay-head-lint.log
+            exit 1
+          }
+          python3 - "$PWD" "$baseline_dir" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          def diagnostics(root):
+              root = Path(root)
+              xml = root / 'app/build/reports/lint-results-debug.xml'
+              if xml.is_file():
+                  result = []
+                  for issue in ET.parse(xml).getroot().iter('issue'):
+                      if issue.get('severity') not in ('Error', 'Fatal'):
+                          continue
+                      locations = []
+                      for loc in issue.findall('location'):
+                          path = loc.get('file', '').replace(str(root) + '/', '')
+                          locations.append((path, loc.get('line', ''), loc.get('column', '')))
+                      result.append((issue.get('id', ''), issue.get('message', ''), tuple(locations)))
+                  return sorted(result)
+              report = root / 'app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt'
+              if not report.is_file():
+                  raise RuntimeError(f'No Lint report produced in {root}')
+              errors = []
+              for line in report.read_text().splitlines():
+                  match = re.search(r'^(.+?):(\d+): (Error|Fatal): (.+) \[([^]]+)\]$', line)
+                  if match:
+                      file, line_no, severity, message, issue_id = match.groups()
+                      file = file.replace(str(root) + '/', '')
+                      errors.append((issue_id, message, ((file, line_no, ''),)))
+              return sorted(errors)
+
+          head = diagnostics(sys.argv[1])
+          base = diagnostics(sys.argv[2])
+          if not base or head != base:
+              print(f'Lint diagnostics differ: base={len(base)} head={len(head)}')
+              for issue in head:
+                  if issue not in base:
+                      print('NEW:', issue)
+              for issue in base:
+                  if issue not in head:
+                      print('REMOVED:', issue)
+              sys.exit(1)
+          assert any(issue[0] == 'WrongConstant' and
+                     any('CarInputServiceImpl.kt' in loc[0] for loc in issue[2])
+                     for issue in base), 'Expected unchanged E5 WrongConstant baseline absent'
+          print(f'Exact baseline match: {len(base)} pre-existing Lint errors; no new errors.')
+          PY
+          echo '::warning::Full Lint fails identically on exact E5 stable baseline; this test-only PR introduces no new Lint errors.'
+          echo 'Full Lint: FAILED on both exact stable baseline and test-only HEAD, identical diagnostic set; not marked as Lint pass.' >> "$GITHUB_STEP_SUMMARY"
+
+# Only synthesized message IDs, no recordings/keys/MAC/AP credentials.
+# The test does NOT certify real-car replay, successful 0x4301 or screen takeover.
