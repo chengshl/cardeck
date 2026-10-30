@@ -59,6 +59,9 @@ jobs:
           grep -Fq 'replacingReaderCannotInterleaveBetweenOwnershipCheckAndDispatch' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'delayedOldRequestCannotInstallReaderOverReconnectedSocket' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'readerInstallAndRetirementCannotInterleave' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'delayedRequestCannotConsumeReplacementCipherNonce' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'currentButClosedRequestSocketCannotRegisterOrEncrypt' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'internal object RtspRequestWriteOwnership' app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycle.kt
           grep -Fq 'socketLifecycle.runIfCurrent(' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
           grep -Fq 'RtspReaderDispatchGate.dispatchIfCurrent(' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
           # Keep the actual AirPlayClient teardown inside the same retire gate.
@@ -66,6 +69,20 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           source = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          # Request write guard must execute *inside* the CSeq/cipher lock.
+          # A helper-only test would miss accidental wiring after encryption.
+          request = source.split('    private fun request(', 1)[1].split(
+              '    /**\\n     * 控制通道读线程', 1
+          )[0]
+          lock_start = request.split('        synchronized(rtspWriteLock) {', 1)[1]
+          cseq_pos = lock_start.index('cseq = ++cSeq')
+          guard_pos = lock_start.index('RtspRequestWriteOwnership.isCurrent(')
+          if not guard_pos < cseq_pos:
+              raise SystemExit('B233 request ownership check must precede CSeq/cipher use')
+          if 'endpoint.isBuickB233' not in lock_start[:guard_pos]:
+              raise SystemExit('B233 request write guard scope missing')
+          if 'client, socket, readerSocket, client.isClosed' not in lock_start:
+              raise SystemExit('B233 request identity check incomplete')
           # The request reader must reject stale sockets before it can replace
           # a new reader or close the replacement's live socket.
           start_reader = source.split('    private fun startReader(client: Socket) {', 1)[1].split(
