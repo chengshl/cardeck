@@ -270,18 +270,24 @@ class VideoSender(
         lastKeepAliveAt = now
         keepAliveCount++
         val frame = buildKeepAliveFrame(keepAliveWithStats, frames, bytesPerSecond, framesPerSecond)
+        val flushStartedAtMs = android.os.SystemClock.uptimeMillis()
         output.write(frame)
         output.flush()
+        // The scheduling timestamp above is intentionally unchanged. Evidence
+        // must use the POST-flush clock: a blocked socket write/flush can take
+        // seconds, and the pre-write timestamp would understate the frame gap.
+        val flushedAtMs = android.os.SystemClock.uptimeMillis()
+        val flushDurationMs = (flushedAtMs - flushStartedAtMs).coerceAtLeast(0L)
         // Reuse this existing 1-second tick; do not add a watchdog thread or recovery action.
         val evidence = videoFrameDiagnostics
         if (evidence != null) {
-            when (evidence.keepAliveFlushed(now)) {
+            when (evidence.keepAliveFlushed(flushedAtMs)) {
                 VideoFrameDiagnostics.Signal.NO_FIRST_FRAME_6S ->
-                    log("VIDEO DIAG #28: NO_FIRST_FRAME_6S encoderAgeMs=${evidence.ageMs(now)} " +
-                        "keepAliveOk=true frameCount=$framesSent (observe-only; no teardown)")
+                    log("VIDEO DIAG #28: NO_FIRST_FRAME_6S encoderAgeMs=${evidence.ageMs(flushedAtMs)} " +
+                        "keepAliveOk=true flushDurationMs=$flushDurationMs frameCount=$framesSent (observe-only; no teardown)")
                 VideoFrameDiagnostics.Signal.NO_FRAMES_15S ->
-                    log("VIDEO DIAG #28: NO_FRAMES_15S frameGapMs=${evidence.gapMs(now)} " +
-                        "frameCount=$framesSent (observe-only; no reconnect)")
+                    log("VIDEO DIAG #28: NO_FRAMES_15S frameGapMs=${evidence.gapMs(flushedAtMs)} " +
+                        "flushDurationMs=$flushDurationMs frameCount=$framesSent (observe-only; no reconnect)")
                 else -> Unit
             }
         }
@@ -289,7 +295,7 @@ class VideoSender(
             log(
                 "VIDEO: keepAlive #$keepAliveCount " +
                     "opcode=${if (keepAliveWithStats) OP_KEEP_ALIVE_WITH_BODY else OP_KEEP_ALIVE} " +
-                    "body=${frame.size - HEADER_LEN}B fps=$framesPerSecond",
+                    "body=${frame.size - HEADER_LEN}B fps=$framesPerSecond flushDurationMs=$flushDurationMs",
             )
         }
     }
