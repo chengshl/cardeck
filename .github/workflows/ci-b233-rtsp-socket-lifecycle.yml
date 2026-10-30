@@ -50,6 +50,22 @@ jobs:
           grep -Fq 'socketLifecycle.tryPublish(connectEpoch)' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
           grep -Fq 'closeDuringConnectRejectsLatePublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'staleEpochNeverExecutesPublicationCallback' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'retireReaderAndCipherBeforeAllowingNextSocketPublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          # Keep the actual AirPlayClient teardown inside the same retire gate.
+          # A model-only JUnit could otherwise pass while real cleanup still races.
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          close = source.split('    fun close() {', 1)[1].split('    /**', 1)[0]
+          gated = close.split('        socketLifecycle.retire {', 1)[1].split(
+              '        }\\n        runCatching { iapTunnel', 1
+          )[0]
+          for token in ('socket = null', 'cipher = null', 'synchronized(rtspWriteLock)',
+                        'readerGeneration++', 'failAllPending("控制通道关闭")'):
+              if token not in gated:
+                  raise SystemExit('RTSP teardown escaped retire gate: ' + token)
+          print('RTSP reader, cipher and pending teardown remain within retire gate')
+          PY
           echo 'T89 runtime source unchanged except RTSP socket lifecycle, no signing or release.'
       - name: Deterministic stale-publication regression
         run: |
