@@ -19,7 +19,16 @@ internal class RtspSocketLifecycle {
         expectedEpoch: Long,
         publish: () -> Boolean,
     ): Boolean = synchronized(lock) {
-        expectedEpoch == epoch && publish()
+        if (expectedEpoch != epoch) {
+            false
+        } else {
+            val accepted = publish()
+            // A successful publication consumes this epoch. Concurrent TCP
+            // attempts which started from the same snapshot must not replace
+            // the already-published socket and orphan its reader/transport.
+            if (accepted) epoch++
+            accepted
+        }
     }
 
     fun retire(retireCurrent: () -> Unit) {
