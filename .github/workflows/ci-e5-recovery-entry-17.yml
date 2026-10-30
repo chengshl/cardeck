@@ -38,6 +38,7 @@ jobs:
               'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt',
               'app/src/main/java/io/github/shaonialife/cardeck/UpdateCenterActivity.kt',
               '.github/workflows/ci-e5-recovery-entry-17.yml',
+              '.github/workflows/ci-e5-chinese-project-labels.yml',
           }
           changed = set(subprocess.check_output(
               ['git','diff','--name-only','origin/Buick-E5...HEAD'], text=True
