@@ -32,16 +32,21 @@ jobs:
           import subprocess
           base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
           previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
-          expected = '7945c16254e71c12f2824c7d90e4de960649f6f0'
+          expected = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
           assert base == expected, f'E5 baseline moved; re-review required: {base}'
-          # #77 is an L1-only release-preflight test. Audit its exact file
-          # delta before reusing the isolated #24 runtime comparison.
+          # Reviewed stable delta since the original #24 BT-A baseline:
+          # #77 release preflight test, #79 synthetic ACK replay test/CI,
+          # #82 official release trigger guard. No BT/iAP2/AirPlay runtime changed.
+          # Fail closed if future stable changes any file outside this exact set.
           stable_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', previous_reviewed, expected], text=True
           ).splitlines())
-          assert stable_delta == {'.github/scripts/test_e5_release_preflight.py'}, (
-              f'Unreviewed E5 stable drift: {sorted(stable_delta)}'
-          )
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+          }, f'Unreviewed E5 stable drift: {sorted(stable_delta)}'
           client = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
           route = 'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt'
           test = 'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt'
