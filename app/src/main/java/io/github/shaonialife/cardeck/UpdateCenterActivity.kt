@@ -15,6 +15,7 @@ import androidx.appcompat.widget.SwitchCompat
 import io.github.shaonialife.cardeck.update.BuickUpdater
 import io.github.shaonialife.cardeck.update.ExperimentalUpdates
 import io.github.shaonialife.cardeck.update.ExperimentProjectCatalog
+import io.github.shaonialife.cardeck.update.E5RecoveryPolicy
 import io.github.shaonialife.cardeck.update.InstalledBuildIdentity
 import io.github.shaonialife.cardeck.update.UpdatePreference
 
@@ -37,6 +38,7 @@ class UpdateCenterActivity : AppCompatActivity() {
     private lateinit var currentChannelLabel: TextView
     private lateinit var autoToggle: SwitchCompat
     private lateinit var browse: TextView
+    private lateinit var recovery: TextView
     private lateinit var projectPanel: LinearLayout
     private lateinit var projectName: TextView
 
@@ -204,6 +206,14 @@ class UpdateCenterActivity : AppCompatActivity() {
             setOnClickListener { ExperimentalUpdates.browse(this@UpdateCenterActivity) }
         }
         page.line(browse, 9)
+        recovery = txt("恢复当前 #33 实验为稳定代码（保留数据）", 14f, accent, true).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(50)
+            setPadding(dp(10), dp(11), dp(10), dp(11))
+            background = shape(surface, outline)
+            setOnClickListener { ExperimentalUpdates.restoreCurrentExperiment(this@UpdateCenterActivity) }
+        }
+        page.line(recovery, 9)
         page.line(txt(
             "版本详情显示来源、更新内容与安装包构建完成时间（北京时间）。" +
                 "旧包无真实构建时间时会明确标注版本时间。" +
@@ -238,6 +248,8 @@ class UpdateCenterActivity : AppCompatActivity() {
         projectName.text = if (subscribed == null) "未手动订阅（手动检查沿用安装来源）"
             else ExperimentProjectCatalog.name(subscribed) + "\n" + subscribed
         browse.visibility = if (isExperiment) View.VISIBLE else View.GONE
+        recovery.visibility = if (packageName == "io.github.buick.e5.cardeck" &&
+            ownOrigin == E5RecoveryPolicy.EXPERIMENT_SOURCE) View.VISIBLE else View.GONE
         autoToggle.isEnabled = !isExperiment
     }
 }
