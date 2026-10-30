@@ -64,6 +64,10 @@ jobs:
           # ACK109 and the 0x4301 response may share an RFCOMM read, with the
           # response link frame split across subsequent reads.
           assert 'ack109AndResponse4301AcrossRfcommReadsDoNotBlockControlDelivery' in tests
+          # A 0x4301 data frame can itself acknowledge seq109 without a separate ACK-only frame.
+          assert 'piggybackedAck109On4301WithoutStandaloneAckConfirmsAndDelivers' in tests
+          assert 'piggybacked ACK109 must confirm pending seq109' in tests
+          assert '0x4301 must be delivered without standalone ACK' in tests
           assert 'partial 0x4301 frame must not be delivered' in tests
           assert '0x4301 must survive ACK+data coalescing' in tests
           assert 'partial ACK must not advance acknowledgement' in tests
