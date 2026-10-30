@@ -55,6 +55,9 @@ jobs:
           grep -Fq 'closeDuringConnectRejectsLatePublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'staleEpochNeverExecutesPublicationCallback' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'retireReaderAndCipherBeforeAllowingNextSocketPublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'supersededReaderCannotRouteLateResponseToNewPendingRequest' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'replacingReaderCannotInterleaveBetweenOwnershipCheckAndDispatch' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'RtspReaderDispatchGate.dispatchIfCurrent(' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
           # Keep the actual AirPlayClient teardown inside the same retire gate.
           # A model-only JUnit could otherwise pass while real cleanup still races.
           python3 - <<'PY'
