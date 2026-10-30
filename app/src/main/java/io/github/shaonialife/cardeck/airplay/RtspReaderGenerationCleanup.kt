@@ -11,14 +11,19 @@ package io.github.shaonialife.cardeck.airplay
  * empty list = current reader exited without any pending request.
  */
 internal object RtspReaderGenerationCleanup {
+    /** Caller holds rtspWriteLock; drain must be atomic with reader-generation changes. */
+    fun <T> drainAll(pending: MutableMap<Int, T>): List<T> {
+        val waiting = pending.values.toList()
+        pending.clear()
+        return waiting
+    }
+
     fun <T> drainIfCurrent(
         exitingGeneration: Int,
         activeGeneration: Int,
         pending: MutableMap<Int, T>,
     ): List<T>? {
         if (exitingGeneration != activeGeneration) return null
-        val waiting = pending.values.toList()
-        pending.clear()
-        return waiting
+        return drainAll(pending)
     }
 }
