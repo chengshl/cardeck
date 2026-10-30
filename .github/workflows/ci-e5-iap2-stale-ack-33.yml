@@ -59,6 +59,10 @@ jobs:
           assert 'futureAckAcrossSequenceWrapCannotSuppressRetry' in tests
           # A bogus ACK must not free the send window and leak queued CSM packets.
           assert 'invalidAckMustNotDrainQueuedControlFrame' in tests
+          # RFCOMM read boundaries must not turn a partial ACK109 into a confirmation.
+          assert 'fragmentedAck109AfterRetransmitMustConfirmExactlyOnce' in tests
+          assert 'partial ACK must not advance acknowledgement' in tests
+          assert 'completed ACK109 must release seq109' in tests
           assert 'invalid ACKs must not flush seq102' in tests
           assert 'valid ACK must release the queued frame' in tests
           assert 'phone.feed(ackOnly(110), tick())' in tests
