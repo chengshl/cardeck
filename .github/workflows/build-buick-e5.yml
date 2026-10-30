@@ -4,17 +4,21 @@ on:
   workflow_dispatch:
   push:
     branches: [Buick-E5]
-    # Pure governance/doc commits must never publish another APK.
-    paths-ignore:
-      - 'docs/**'
-      - 'AGENTS.md'
-      - 'README.md'
-      - 'SECURITY.md'
-      - 'DISCLAIMER.md'
-      # CI-only release guard changes must not trigger a signed E5 APK.
-      - '.github/workflows/build-buick-e5.yml'
-      - '.github/workflows/ci-e5-release-preflight.yml'
-      - '.github/scripts/test_e5_release_preflight.py'
+    # Auto-release only when APK runtime/build inputs change. Changes limited to
+    # docs, JVM tests, lint baselines or CI/workflows must not mint new official
+    # versionCodes and invalidate previously published experimental/recovery APKs.
+    # A deliberate manual official build remains available via workflow_dispatch.
+    paths:
+      - 'app/src/main/**'
+      - 'app/src/release/**'
+      - 'app/build.gradle.kts'
+      - 'app/proguard-rules.pro'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
 
 concurrency:
   group: cardeck-global-signed-release-version
