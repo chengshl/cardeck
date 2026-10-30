@@ -31,16 +31,19 @@ jobs:
           import subprocess
           base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
           previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
-          expected = '7945c16254e71c12f2824c7d90e4de960649f6f0'
+          expected = '163ce5e629c4bd82e9036e1dfbe0732ca4c6a1a4'
           assert base == expected, f'E5 baseline drift; re-review before proceeding: {base}'
-          # #77 is a reviewed L1-only release preflight test; reject any other
-          # stable change before reusing the isolated #33 runtime comparison.
+          # #77 changes only release-preflight tests, #79 changes only synthetic
+          # ACK replay tests and CI; unknown stable changes must still fail.
+          # Never silently widen the L3 runtime scope.
           stable_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', previous_reviewed, expected], text=True
           ).splitlines())
-          assert stable_delta == {'.github/scripts/test_e5_release_preflight.py'}, (
-              f'Unreviewed stable drift since #33 baseline: {sorted(stable_delta)}'
-          )
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+          }, f'Unreviewed stable drift since #33 baseline: {sorted(stable_delta)}'
           source = 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngine.kt'
           test = 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2LinkEngineTest.kt'
           allowed = {source, test, '.github/workflows/ci-e5-iap2-stale-ack-33.yml'}
