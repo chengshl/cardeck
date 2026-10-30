@@ -2788,16 +2788,19 @@ class AirPlayClient(
                 while (true) {
                     val parsed = parseRtspMessage(buffer) ?: break
                     buffer = parsed.rest
-                    // A superseded reader must never route its delayed response
-                    // into the replacement RTSP session's pending CSeq queue.
-                    // Reader generation, socket identity and dispatch are
-                    // serialized with startReader()/close() by rtspWriteLock.
-                    if (!RtspReaderDispatchGate.dispatchIfCurrent(
-                            rtspWriteLock,
-                            { generation == readerGeneration && readerSocket === client },
-                            { dispatchResponse(parsed.statusLine, parsed.body, parsed.head) },
-                        )
-                    ) return
+                    if (endpoint.isBuickB233) {
+                        // B233 only: a retired reader must not deliver stale
+                        // replies into the replacement connection's pending map.
+                        // Other receivers keep their pre-existing dispatch path.
+                        if (!RtspReaderDispatchGate.dispatchIfCurrent(
+                                rtspWriteLock,
+                                { generation == readerGeneration && readerSocket === client },
+                                { dispatchResponse(parsed.statusLine, parsed.body, parsed.head) },
+                            )
+                        ) return
+                    } else {
+                        dispatchResponse(parsed.statusLine, parsed.body, parsed.head)
+                    }
                 }
             }
         } catch (error: IOException) {
