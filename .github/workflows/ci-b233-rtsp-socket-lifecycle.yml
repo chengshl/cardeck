@@ -56,6 +56,7 @@ jobs:
           grep -Fq 'staleEpochNeverExecutesPublicationCallback' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'retireReaderAndCipherBeforeAllowingNextSocketPublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'supersededReaderCannotRouteLateResponseToNewPendingRequest' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'retiredReaderCannotSnapshotReplacementInboundCipher' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'replacingReaderCannotInterleaveBetweenOwnershipCheckAndDispatch' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'delayedOldRequestCannotInstallReaderOverReconnectedSocket' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'readerInstallAndRetirementCannotInterleave' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
@@ -100,6 +101,21 @@ jobs:
           reader = source.split('    private fun readLoop(', 1)[1].split(
               '    private class RtspMessage(', 1
           )[0]
+          # Stale reader bytes must be rejected BEFORE they can consume a
+          # replacement session's inbound cipher nonce. Checking only at
+          # dispatch would be too late for encrypted RTSP frames.
+          cipher_snapshot = reader.split('val encryption =', 1)[1].split(
+              'if (encryption != null && !encryptedMode)', 1
+          )[0]
+          for token in ('if (endpoint.isBuickB233) {',
+                        'RtspReaderDispatchGate.dispatchIfCurrent(',
+                        'generation == readerGeneration && readerSocket === client',
+                        'ownedCipher = cipher',
+                        ') return',
+                        '} else {',
+                        'cipher'):
+              if token not in cipher_snapshot:
+                  raise SystemExit('B233 pre-decrypt reader ownership guard missing: ' + token)
           dispatch = reader.split('buffer = parsed.rest', 1)[1].split('        } catch (error: IOException)', 1)[0]
           for token in ('if (endpoint.isBuickB233) {',
                         'RtspReaderDispatchGate.dispatchIfCurrent(',
