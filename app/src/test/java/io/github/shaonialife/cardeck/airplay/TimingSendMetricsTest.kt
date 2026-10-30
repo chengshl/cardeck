@@ -118,6 +118,22 @@ class TimingSendMetricsTest {
     }
 
     @Test
+    fun negativeMonotonicOriginDoesNotHideFirstFailureOrLastSuccess() {
+        // nanoTime has an arbitrary origin; signed values are valid.
+        val metrics = TimingSendMetrics()
+        metrics.requestReceived()
+        metrics.responseSendFailed(-10_000L)
+        metrics.requestReceived()
+        metrics.responseSendFailed(-9_000L)
+        metrics.responseSentOk(-8_000L)
+        val snapshot = metrics.snapshot()
+        assertEquals(2L, snapshot.sendError)
+        assertEquals(-10_000L, snapshot.firstSendErrorMonoMs)
+        assertEquals(1L, snapshot.responseSendOk)
+        assertEquals(-8_000L, snapshot.lastSuccessMonoMs)
+    }
+
+    @Test
     fun snapshotsRemainConsistentUnderConcurrentWriters() {
         val metrics = TimingSendMetrics()
         val threads = (0 until 4).map {
