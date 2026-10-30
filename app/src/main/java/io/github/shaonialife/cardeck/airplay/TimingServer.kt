@@ -116,7 +116,7 @@ class TimingServer(
             sendMetrics.exited(exitReason)
             val snapshot = sendMetrics.snapshot()
             val exitMonoMs = System.nanoTime() / 1_000_000L
-            val lastSuccessAgeMs = if (snapshot.lastSuccessMonoMs < 0L) -1L else
+            val lastSuccessAgeMs = if (snapshot.responseSendOk == 0L) -1L else
                 (exitMonoMs - snapshot.lastSuccessMonoMs).coerceAtLeast(0L)
             log("TIMING OBS: loopExit=${snapshot.loopExit} reason=${snapshot.lastLoopExitReason} " +
                 "requestRx=${snapshot.requestRx} responseSendOk=${snapshot.responseSendOk} " +
