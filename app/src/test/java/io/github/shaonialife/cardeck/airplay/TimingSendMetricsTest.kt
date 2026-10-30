@@ -53,6 +53,34 @@ class TimingSendMetricsTest {
     }
 
     @Test
+    fun retiredSocketCannotPolluteReplacementTelemetry() {
+        // A previous UDP worker can finish AFTER a replacement has received data.
+        // Their counters and final exit reasons must never share one instance.
+        val retired = TimingSendMetrics()
+        retired.requestReceived()
+        retired.responseSentOk(1_000L)
+
+        val replacement = TimingSendMetrics()
+        replacement.requestReceived()
+        replacement.responseSendFailed()
+        retired.exited("stop")
+
+        val oldSnapshot = retired.snapshot()
+        val newSnapshot = replacement.snapshot()
+        assertEquals(1L, oldSnapshot.requestRx)
+        assertEquals(1L, oldSnapshot.responseSendOk)
+        assertEquals(0L, oldSnapshot.sendError)
+        assertEquals(1L, oldSnapshot.loopExit)
+        assertEquals(1_000L, oldSnapshot.lastSuccessMonoMs)
+        assertEquals(1L, newSnapshot.requestRx)
+        assertEquals(0L, newSnapshot.responseSendOk)
+        assertEquals(1L, newSnapshot.sendError)
+        assertEquals(0L, newSnapshot.loopExit)
+        assertEquals("none", newSnapshot.lastLoopExitReason)
+        assertEquals(-1L, newSnapshot.lastSuccessMonoMs)
+    }
+
+    @Test
     fun snapshotsRemainConsistentUnderConcurrentWriters() {
         val metrics = TimingSendMetrics()
         val threads = (0 until 4).map {
