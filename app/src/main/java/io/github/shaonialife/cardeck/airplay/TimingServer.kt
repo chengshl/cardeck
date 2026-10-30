@@ -62,9 +62,10 @@ class TimingServer(
         socket = null
     }
 
-    private val sendMetrics = TimingSendMetrics()
-
     private fun loop(s: DatagramSocket) {
+        // Telemetry belongs to this UDP socket generation, never a restarted one.
+        // The previous worker may exit after a replacement listener has started.
+        val sendMetrics = TimingSendMetrics()
         val buffer = ByteArray(256)
         var exitReason = "stop"
         try {
