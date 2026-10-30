@@ -2835,11 +2835,19 @@ class AirPlayClient(
                 log("AUDIO T88: B233 peer RTSP request observed $evidence")
             }
         }
-        message.cseq?.let { responseHeads[it] = head }
-        val queue = message.cseq?.let { pendingResponses[it] }
-        if (queue != null) {
-            queue.offer(message.statusLine to message.body)
-            return
+        // B233: a peer-originated path-form request may reuse our pending CSeq.
+        // Do not consume it as a response or overwrite the pending response header.
+        // This changes only routing priority, not ACK format, encryption or timing.
+        val prioritizePeerRequest = RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(
+            statusLine, endpoint.isBuickB233,
+        )
+        if (!prioritizePeerRequest) {
+            message.cseq?.let { responseHeads[it] = head }
+            val queue = message.cseq?.let { pendingResponses[it] }
+            if (queue != null) {
+                queue.offer(message.statusLine to message.body)
+                return
+            }
         }
         // 无匹配：车机可能在控制通道上发自己的请求（须回 200 否则它会拆通道）。
         // 仅节流留痕，不静默丢弃——此前同步实现会把它错当成前一个请求的应答。

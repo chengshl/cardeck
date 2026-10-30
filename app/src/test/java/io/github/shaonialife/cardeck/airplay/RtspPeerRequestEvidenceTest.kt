@@ -5,6 +5,39 @@ import org.junit.Test
 
 /** Synthetic RTSP start lines only: no vehicle capture, target, or identifiers. */
 class RtspPeerRequestEvidenceTest {
+    /**
+     * Synthetic routing regression for the real B233 dispatch predicate.
+     * An incoming peer request with the same CSeq as our pending request must
+     * be acknowledged via the existing path, never fed to the response queue.
+     * No captured URI, receiver address or private trace is used.
+     */
+    @Test fun b233PathRequestCollisionBypassesPendingQueue() {
+        val pendingCseq = 7
+        fun wouldDeliverToPending(startLine: String, incomingCseq: Int, b233: Boolean): Boolean =
+            incomingCseq == pendingCseq &&
+                !RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(startLine, b233)
+
+        assertEquals(false, wouldDeliverToPending("SET_PARAMETER / RTSP/1.0", 7, true))
+        assertEquals(false, wouldDeliverToPending("TEARDOWN / RTSP/1.0", 7, true))
+        assertEquals(true, wouldDeliverToPending("RTSP/1.0 200 OK", 7, true))
+        assertEquals(false, wouldDeliverToPending("RTSP/1.0 200 OK", 8, true))
+        // No behavior change for other receivers in this isolated L3 trial.
+        assertEquals(true, wouldDeliverToPending("SET_PARAMETER / RTSP/1.0", 7, false))
+    }
+
+    @Test fun absoluteUriRemainsUnchangedAndIsNotMistakenForAResponseFix() {
+        // Absolute-URI requests remain a separate unaddressed ACK-routing gap.
+        assertEquals(false, RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(
+            "SET_PARAMETER rtsp://receiver.invalid/session RTSP/1.0", true,
+        ))
+        assertEquals(false, RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(
+            "SET_PARAMETER / HTTP/1.1", true,
+        ))
+        assertEquals(false, RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(
+            "RTSP/1.0 200 OK", true,
+        ))
+    }
+
     @Test fun peerTeardownIsRecognizedBeforeAnyCseqDispatch() {
         assertEquals(
             RtspPeerRequestEvidence.Kind.TEARDOWN,

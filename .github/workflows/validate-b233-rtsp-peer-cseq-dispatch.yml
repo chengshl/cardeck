@@ -1,0 +1,77 @@
+name: B233 RTSP Peer CSeq Dispatch Offline Regression
+on:
+  push:
+    branches:
+      - experiment/buick-b233-rtsp-peer-cseq-dispatch
+    paths:
+      - '.github/workflows/validate-b233-rtsp-peer-cseq-dispatch.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidence.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: b233-rtsp-peer-cseq-dispatch
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Gate B233 RTSP CSeq-only changes against signed T88
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4eedb7f5c42bdddb3bb23a73146c10b42f29829f
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --name-only "$BASE" HEAD | while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/validate-b233-rtsp-peer-cseq-dispatch.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidence.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt) ;;
+              *) echo "::error::Out-of-scope change: $path"; exit 1 ;;
+            esac
+          done
+          grep -Fq 'prioritizePathRequestBeforePendingCseq' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          grep -Fq 'b233PathRequestCollisionBypassesPendingQueue' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt
+          # Unit tests exercise the pure predicate. This additional guard verifies
+          # that production dispatch actually applies it before CSeq queue delivery.
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          source = Path("app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt").read_text()
+          start = source.index("    private fun dispatchResponse(")
+          end = source.index("    /** 无匹配报文计数", start)
+          dispatch = source[start:end]
+          assert "RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(" in dispatch, (
+              "B233 peer-request classification is no longer wired to dispatch"
+          )
+          guarded_queue = re.compile(
+              r"if \(!prioritizePeerRequest\) \{\s*"
+              r"message\.cseq\?\.let \{ responseHeads\[it\] = head \}\s*"
+              r"val queue = message\.cseq\?\.let \{ pendingResponses\[it\] \}\s*"
+              r"if \(queue != null\) \{\s*"
+              r"queue\.offer\(message\.statusLine to message\.body\)\s*"
+              r"return\s*\}\s*\}"
+          )
+          match = guarded_queue.search(dispatch)
+          assert match, "Pending response queue or header can consume a B233 peer request"
+          assert dispatch.find("if (message.isRequest)", match.end()) != -1, (
+              "Peer request ACK path no longer follows guarded CSeq response routing"
+          )
+          print("Production B233 RTSP CSeq dispatch integration guard passed")
+          PY
+          echo 'Only B233 RTSP peer path-form CSeq dispatch priority changed; no signing or release.'
+      - name: Android unit tests, lint and Kotlin compile (offline only)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:compileDebugKotlin --stacktrace
