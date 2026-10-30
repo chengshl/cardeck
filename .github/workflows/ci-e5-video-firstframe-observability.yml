@@ -35,6 +35,25 @@ jobs:
           python3 - <<'PY'
           import subprocess
           from pathlib import Path
+          # #28 remains an isolated L3 observation PR. Fail closed when the
+          # stable source or the reviewed L1-only delta changes.
+          original_base = '8271f2a71be7b4acc740c2748bf3281810ea9aa1'
+          reviewed_stable = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          actual_stable = subprocess.check_output(
+              ['git', 'rev-parse', 'origin/Buick-E5'], text=True
+          ).strip()
+          assert actual_stable == reviewed_stable, (
+              f'E5 stable baseline moved: {actual_stable}; re-review #28 before CI acceptance'
+          )
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', original_base, reviewed_stable], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/ci-e5-chinese-project-labels.yml',
+              'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
+          }, f'Unexpected stable delta across #28 observation base: {sorted(stable_delta)}'
           files = set(subprocess.check_output(
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
           ).splitlines())
