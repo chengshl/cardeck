@@ -153,6 +153,62 @@ class RtspSocketLifecycleTest {
     }
 
     @Test
+    fun b233CloseDoesNotResetCipherOrDrainWaitersWhileWriterOwnsLock() {
+        // A request may hold the writer lock during CSeq registration and
+        // encryption. Closing the old socket must wake a blocked write, but
+        // clearing cipher/pending before that writer exits is unsafe.
+        val lifecycle = RtspSocketLifecycle()
+        val writerLock = Any()
+        val oldSocket = Socket()
+        val cipherOwner = java.util.concurrent.atomic.AtomicReference<String?>("old")
+        val pending = ConcurrentHashMap<Int, String>()
+        val writerEntered = CountDownLatch(1)
+        val socketClosed = CountDownLatch(1)
+        val releaseWriter = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        var retired: List<String> = emptyList()
+        try {
+            val writer = executor.submit {
+                synchronized(writerLock) {
+                    pending[101] = "old-waiter"
+                    writerEntered.countDown()
+                    check(socketClosed.await(5, TimeUnit.SECONDS))
+                    // The old implementation reset cipher without taking this
+                    // lock, so an active writer could see it turn null.
+                    assertEquals("old", cipherOwner.get())
+                    check(releaseWriter.await(5, TimeUnit.SECONDS))
+                }
+            }
+            assertTrue(writerEntered.await(5, TimeUnit.SECONDS))
+            val close = executor.submit {
+                lifecycle.retire {
+                    oldSocket.close()
+                    socketClosed.countDown()
+                    synchronized(writerLock) {
+                        cipherOwner.set(null)
+                        retired = pending.values.toList()
+                        pending.clear()
+                    }
+                }
+            }
+            assertTrue(socketClosed.await(5, TimeUnit.SECONDS))
+            assertTrue("close must interrupt the old socket before waiting for writer", oldSocket.isClosed)
+            assertEquals("old", cipherOwner.get())
+            assertEquals("old-waiter", pending[101])
+            releaseWriter.countDown()
+            writer.get(5, TimeUnit.SECONDS)
+            close.get(5, TimeUnit.SECONDS)
+            assertEquals(null, cipherOwner.get())
+            assertTrue(pending.isEmpty())
+            assertEquals(listOf("old-waiter"), retired)
+        } finally {
+            releaseWriter.countDown()
+            oldSocket.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun retiredReaderCannotSnapshotReplacementInboundCipher() {
         val readerLock = Any()
         val oldCipher = Any()
