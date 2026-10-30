@@ -55,6 +55,7 @@ jobs:
           grep -Fq 'closeDuringConnectRejectsLatePublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'staleEpochNeverExecutesPublicationCallback' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'retireReaderAndCipherBeforeAllowingNextSocketPublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'b233CloseDoesNotResetCipherOrDrainWaitersWhileWriterOwnsLock' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'supersededReaderCannotRouteLateResponseToNewPendingRequest' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'retiredReaderCannotSnapshotReplacementInboundCipher' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
           grep -Fq 'staleReaderFinallyCannotDrainReplacementPendingReply' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
@@ -145,13 +146,32 @@ jobs:
                   raise SystemExit('B233 scoped dispatch / legacy fallback missing: ' + token)
           close = source.split('    fun close() {', 1)[1].split('    /**', 1)[0]
           gated = close.split('        socketLifecycle.retire {', 1)[1].split(
-              '        }\n        runCatching { iapTunnel', 1
+              '        // Wake drained B233 waiters outside BOTH locks.', 1
           )[0]
-          for token in ('socket = null', 'cipher = null', 'synchronized(rtspWriteLock)',
-                        'readerGeneration++', 'failAllPending("控制通道关闭")'):
-              if token not in gated:
-                  raise SystemExit('RTSP teardown escaped retire gate: ' + token)
-          print('RTSP reader, cipher and pending teardown remain within retire gate')
+          if gated.index('runCatching { socket?.close() }') > gated.index('if (endpoint.isBuickB233) {'):
+              raise SystemExit('RTSP socket must close before waiting for writer lock')
+          b233 = gated.split('            if (endpoint.isBuickB233) {', 1)[1].split(
+              '            } else {', 1
+          )[0]
+          if 'synchronized(rtspWriteLock) {' not in b233:
+              raise SystemExit('B233 teardown must hold RTSP writer lock')
+          under_lock = b233.split('synchronized(rtspWriteLock) {', 1)[1]
+          for token in ('socket = null', 'activeHost = null', 'activeAddress = null',
+                        'cipher = null', 'readerSocket = null', 'readerThread = null',
+                        'readerGeneration++', 'b233RetiredPending = pendingResponses.values.toList()',
+                        'pendingResponses.clear()'):
+              if token not in under_lock:
+                  raise SystemExit('B233 teardown state escaped writer lock: ' + token)
+          legacy = gated.split('            } else {', 1)[1]
+          if 'failAllPending("控制通道关闭")' not in legacy:
+              raise SystemExit('non-B233 legacy teardown path missing')
+          wake = close.split('        // Wake drained B233 waiters outside BOTH locks.', 1)[1]
+          for token in ('b233RetiredPending?.takeIf', 'waiting.forEach { it.offer(RTSP_CLOSED_MARK'):
+              if token not in wake:
+                  raise SystemExit('retired B233 waiter notification missing: ' + token)
+          if not close.index('        // Wake drained B233 waiters') < close.index('        runCatching { iapTunnel'):
+              raise SystemExit('retired B233 waiters must be notified before iAP teardown')
+          print('B233 RTSP close state atomic with writer; non-B233 path preserved')
           PY
           echo 'T89 runtime source unchanged except RTSP socket lifecycle, no signing or release.'
       - name: Deterministic stale-publication regression
