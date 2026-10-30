@@ -109,6 +109,7 @@ class TimingServer(
                     val snapshot = sendMetrics.snapshot()
                     log("TIMING OBS: requestRx=${snapshot.requestRx} responseSendOk=${snapshot.responseSendOk} " +
                         "sendError=${snapshot.sendError} firstSendErrorMonoMs=${snapshot.firstSendErrorMonoMs} " +
+                        "lastSendErrorMonoMs=${snapshot.lastSendErrorMonoMs} " +
                         "lastSuccessMonoMs=${snapshot.lastSuccessMonoMs}")
                 }
             }
@@ -121,6 +122,7 @@ class TimingServer(
             log("TIMING OBS: loopExit=${snapshot.loopExit} reason=${snapshot.lastLoopExitReason} " +
                 "requestRx=${snapshot.requestRx} responseSendOk=${snapshot.responseSendOk} " +
                 "sendError=${snapshot.sendError} firstSendErrorMonoMs=${snapshot.firstSendErrorMonoMs} " +
+                "lastSendErrorMonoMs=${snapshot.lastSendErrorMonoMs} " +
                 "lastSuccessMonoMs=${snapshot.lastSuccessMonoMs} lastSuccessAgeMs=$lastSuccessAgeMs")
         }
     }

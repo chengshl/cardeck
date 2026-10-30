@@ -69,7 +69,7 @@ jobs:
               raise SystemExit("First-three timing send diagnostics must be worker-local")
           if "if (sendMetrics.snapshot().sendError == 1L) shouldLog = true" not in new:
               raise SystemExit("First failed send must be observable before 30s throttle")
-          if "lastSuccessAgeMs=" not in new or "firstSendErrorMonoMs=" not in new:
+          if "lastSuccessAgeMs=" not in new or "firstSendErrorMonoMs=" not in new or "lastSendErrorMonoMs=" not in new:
               raise SystemExit("First send error and exit-age telemetry absent")
           print("Read-only telemetry scope and unchanged TimingServer NTP/UDP logic verified")
           PY

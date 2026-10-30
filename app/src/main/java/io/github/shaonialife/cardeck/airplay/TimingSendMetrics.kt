@@ -14,6 +14,7 @@ internal data class TimingSendSnapshot(
     val loopExit: Long,
     val lastSuccessMonoMs: Long,
     val firstSendErrorMonoMs: Long,
+    val lastSendErrorMonoMs: Long,
     val lastLoopExitReason: String,
 )
 
@@ -24,6 +25,7 @@ internal class TimingSendMetrics {
     private var loopExit = 0L
     private var lastSuccessMonoMs = -1L
     private var firstSendErrorMonoMs = -1L
+    private var lastSendErrorMonoMs = -1L
     private var lastLoopExitReason = "none"
 
     @Synchronized fun requestReceived() { requestRx++ }
@@ -38,6 +40,7 @@ internal class TimingSendMetrics {
     @Synchronized fun responseSendFailed(nowMonoMs: Long) {
         sendError++
         if (sendError == 1L) firstSendErrorMonoMs = nowMonoMs
+        lastSendErrorMonoMs = nowMonoMs
     }
 
     /** Fixed-value reason only: stop, receive_error; never an exception message. */
@@ -49,6 +52,6 @@ internal class TimingSendMetrics {
 
     @Synchronized fun snapshot() = TimingSendSnapshot(
         requestRx, responseSendOk, sendError, loopExit, lastSuccessMonoMs,
-        firstSendErrorMonoMs, lastLoopExitReason,
+        firstSendErrorMonoMs, lastSendErrorMonoMs, lastLoopExitReason,
     )
 }
