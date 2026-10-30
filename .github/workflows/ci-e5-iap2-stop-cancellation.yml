@@ -1,7 +1,8 @@
 name: E5 iAP2 stop cancellation isolation (#34)
 on:
-  push:
-    branches: [work/e5-iap2-stop-cancellation-convergence-34]
+  # Open PR is the single CI authority; each commit must not consume two
+  # identical Android build runners via simultaneous push and PR events.
+  # workflow_dispatch stays available for an explicit isolated rerun.
   pull_request:
     branches: [Buick-E5]
     paths:
