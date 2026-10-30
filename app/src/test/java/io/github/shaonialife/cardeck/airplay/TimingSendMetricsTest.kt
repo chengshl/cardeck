@@ -81,6 +81,21 @@ class TimingSendMetricsTest {
     }
 
     @Test
+    fun replacementWorkerReportsItsFirstThreeRequestsIndependently() {
+        val retired = TimingSendMetrics()
+        repeat(10) { retired.requestReceived() }
+        assertTrue(retired.snapshot().requestRx > 3L)
+        val replacement = TimingSendMetrics()
+        repeat(3) {
+            replacement.requestReceived()
+            assertTrue(replacement.snapshot().requestRx <= 3L)
+        }
+        replacement.requestReceived()
+        assertTrue(replacement.snapshot().requestRx > 3L)
+        assertEquals(10L, retired.snapshot().requestRx)
+    }
+
+    @Test
     fun snapshotsRemainConsistentUnderConcurrentWriters() {
         val metrics = TimingSendMetrics()
         val threads = (0 until 4).map {

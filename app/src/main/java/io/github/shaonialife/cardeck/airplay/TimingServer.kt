@@ -91,7 +91,8 @@ class TimingServer(
                 syncRequests++
                 sendMetrics.requestReceived()
                 val now = System.currentTimeMillis()
-                val shouldLog = syncRequests <= 3 || now - lastSyncLogAt >= 30_000L
+                // Initial outcomes must be visible for EACH socket worker generation.
+                val shouldLog = sendMetrics.snapshot().requestRx <= 3L || now - lastSyncLogAt >= 30_000L
                 if (shouldLog) lastSyncLogAt = now
                 try {
                     // Outcome is recorded ONLY after send() returns normally.

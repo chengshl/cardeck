@@ -64,6 +64,9 @@ jobs:
           after = new.index("sendMetrics.responseSentOk(", before)
           if before >= after or "sendMetrics.responseSendFailed()" not in new:
               raise SystemExit("Successful send is not measured after actual send")
+          # A replacement socket must log its own first three outcomes.
+          if "val shouldLog = sendMetrics.snapshot().requestRx <= 3L || now - lastSyncLogAt >= 30_000L" not in new:
+              raise SystemExit("First-three timing send diagnostics must be worker-local")
           print("Read-only telemetry scope and unchanged TimingServer NTP/UDP logic verified")
           PY
       - name: Android unit tests, lint and debug compile (no signing or publication)
