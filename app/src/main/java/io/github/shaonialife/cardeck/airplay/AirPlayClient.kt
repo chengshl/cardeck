@@ -567,12 +567,15 @@ class AirPlayClient(
         // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
         // 清掉，否则重连后的读线程会把明文应答当密文帧解，后续所有请求超时。
         cipher = null
-        synchronized(rtspWriteLock) {
+        // Close retirement and new-session request registration share rtspWriteLock.
+        // Draining outside this lock could clear a waiter registered by the next session.
+        val waiting = synchronized(rtspWriteLock) {
             readerSocket = null
             readerThread = null
             readerGeneration++
+            RtspReaderGenerationCleanup.drainAll(pendingResponses)
         }
-        failAllPending("控制通道关闭")
+        wakePending("控制通道关闭", waiting)
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
         iapLink = null
@@ -2885,9 +2888,10 @@ class AirPlayClient(
     /** 无匹配报文计数（节流日志用）。 */
     private var unmatchedMessages = 0
 
-    private fun failAllPending(reason: String) {
-        val waiting = pendingResponses.values.toList()
-        pendingResponses.clear()
+    private fun wakePending(
+        reason: String,
+        waiting: List<java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>>,
+    ) {
         if (waiting.isEmpty()) return
         log("AIRPLAY: $reason——唤醒 ${waiting.size} 个待响应请求")
         waiting.forEach { it.offer(RTSP_CLOSED_MARK to ByteArray(0)) }
