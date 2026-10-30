@@ -475,7 +475,7 @@ object SessionController {
         // 时这是唯一一次重注册机会）；加入热点后 bindCarWifiAndRegister 还会 force
         // 重注册，把组播落到车机所在网络（真车实测必需）。
         ctrlAdvertiser?.ensureForNetwork(wifi.ssid)
-        appendLog("CTRL: 广播已在启动连接时发布，此处对齐到热点 ${wifi.ssid}")
+        appendLog("CTRL: 广播已在启动连接时发布，此处对齐到车机热点（SSID 已脱敏）")
         // 绑定与切换统一走自动加入流程：bindCurrentWifi 是「任意 WiFi 即成功」的盲绑，
         // 手机连着公司 WiFi 时会误判已在车机热点（ctrl 广播落在错误网络 → 双方互等死锁），
         // 必须先核对真实 SSID 再决定绑定或切换
@@ -587,7 +587,7 @@ object SessionController {
                 copyHotspotPsk(wifi.passphrase)
                 openWlanSettings()
                 phaseHint = "请在 WLAN 设置中连接 ${wifi.ssid}…"
-                appendLog("WIFI: 用户选择手动连接——等待 WLAN 连上 \"${wifi.ssid}\"（最长 120 秒）")
+                appendLog("WIFI: 用户选择手动连接——等待 WLAN 连上车机热点（SSID 已脱敏，最长 120 秒）")
                 val manualDeadline = android.os.SystemClock.uptimeMillis() + WLAN_WAIT_TIMEOUT_MS
                 while (android.os.SystemClock.uptimeMillis() < manualDeadline) {
                     if (connectCancelled) return@run
@@ -637,7 +637,7 @@ object SessionController {
                     return@run
                 }
                 if (ssid == wifi.ssid) {
-                    appendLog("WIFI: 已切到车机热点 ${wifi.ssid}")
+                    appendLog("WIFI: 已切到车机热点（SSID 已脱敏）")
                     bindCarWifiAndRegister(wifi)
                     return@run
                 }
@@ -915,7 +915,7 @@ object SessionController {
         if (!needHost && !needPort) return effective
 
         phaseHint = "mDNS 解析车机地址…"
-        appendLog(">>> [$source] 0x4301 端点不完整（port=${effective.airPlayPort} ips=${effective.ipAddresses}），取 mDNS 车机 _airplay._tcp…")
+        appendLog(">>> [$source] 0x4301 端点不完整（port=${effective.airPlayPort} ipCount=${effective.ipAddresses.size}），取 mDNS 车机 _airplay._tcp…")
         // 用常驻发现器的缓存（绑网时已开始后台发现，通常此时已命中）。
         // 此前现起一次发现并硬重试 3×6s：车机 mDNS 稳定时白等，不稳定时又拖满 18s。
         // 网段过滤（防误连同网 macOS 接收器）由 browser 的 accept 统一做。
@@ -926,7 +926,7 @@ object SessionController {
                 // 网关地址 + 默认端口 7000 直接连，AirPlay 端口是固定约定。
                 val gateway = wifiConnector?.gatewayAddress()
                 if (gateway != null && gateway.contains('.') && !gateway.contains(':')) {
-                    appendLog(">>> [$source] mDNS 未发现，兜底使用网关地址 $gateway:7000（车机热点网关=车机）")
+                    appendLog(">>> [$source] mDNS 未发现，兜底使用网关 port=7000（地址已脱敏）")
                     return effective.copy(
                         ipAddresses = listOf(gateway) + effective.ipAddresses,
                         airPlayPort = if (needPort) 7000 else effective.airPlayPort,
@@ -939,7 +939,7 @@ object SessionController {
         var result = effective
         if (address != null && address.contains('.') && !address.contains(':')) {
             result = result.copy(ipAddresses = listOf(address) + result.ipAddresses)
-            appendLog(">>> [$source] mDNS 解析到车机地址 $address:${info.port}")
+            appendLog(">>> [$source] mDNS 解析到车机地址（地址已脱敏）port=${info.port}")
         }
         if (needPort && info.port > 0) {
             result = result.copy(airPlayPort = info.port)
@@ -991,13 +991,13 @@ object SessionController {
             return
         }
         appendLog(
-            ">>> [$source] 拿到接收端热点：SSID=${endpoint.ssid}；" +
+            ">>> [$source] 拿到接收端热点：ssidPresent=${endpoint.ssid.isNotBlank()}；" +
                 "密码=${if (endpoint.passphrase.isEmpty()) "(空)" else "已获取"}",
         )
         phaseHint = "蓝牙已连上车机，解析热点地址…"
         if (source.contains("主动连车机")) {
             val currentSsid = shellWifiStatus().second
-            appendLog(">>> [Buick T19] 0x4301 SSID=${endpoint.ssid} 当前WiFi=$currentSsid port=${endpoint.airPlayPort} ips=${endpoint.ipAddresses}；优先复用已连接热点")
+            appendLog(">>> [Buick T19] 0x4301 ssidPresent=${endpoint.ssid.isNotBlank()} currentWifiPresent=${!currentSsid.isNullOrBlank()} port=${endpoint.airPlayPort} ipCount=${endpoint.ipAddresses.size}；优先复用已连接热点")
         }
         ssidSink?.invoke(endpoint.ssid)
         // 先绑网络再解析端点：mDNS 组播跟随 bindProcessToNetwork 的网络，解析放前面
@@ -1007,7 +1007,7 @@ object SessionController {
         val continueWithNetwork: (Boolean) -> Unit = proceed@{ bound ->
             if (!bound) {
                 phaseHint = "手机不在车机热点——请到 WLAN 设置加入 ${endpoint.ssid}"
-                appendLog(">>> [$source] 手机当前不在该热点——请到 设置>WLAN 加入 \"${endpoint.ssid}\" 后断开重连")
+                appendLog(">>> [$source] 手机当前不在车机热点——请到 设置>WLAN 加入已显示的目标热点后断开重连（SSID 已脱敏）")
                 sessionStarting.set(false)
                 return@proceed
             }
@@ -1028,7 +1028,7 @@ object SessionController {
                         return@run
                     }
                     if (endpointSelfContained) {
-                        appendLog("AIRPLAY: 0x4301 端点完整（${endpoint.ipAddresses.firstOrNull()}:${endpoint.airPlayPort}）——直接配对，不等 ctrl 邀请")
+                        appendLog("AIRPLAY: 0x4301 端点完整（ipPresent=${endpoint.ipAddresses.isNotEmpty()} port=${endpoint.airPlayPort}）——直接配对，不等 ctrl 邀请")
                     } else {
                         // 等 ctrl 邀请（catplay CarPlayCtrlServer：邀请=车机已发现手机且
                         // AirPlay 窗口已开，收到即刻连接）。此前是「固定睡 1.6s 赌它已到」，
@@ -1039,7 +1039,7 @@ object SessionController {
                     // 且这一步最长 3s——必须在后台线程做，不能占住网络回调线程。
                     val effectiveEndpoint = resolveEndpointHost(endpoint, source)
                     if (source.contains("主动连车机")) {
-                        appendLog(">>> [Buick T19] AirPlay 目标 port=${effectiveEndpoint.airPlayPort} ips=${effectiveEndpoint.ipAddresses}；准备尝试 TCP/RTSP 配对（网络绑定=${wifiConnector?.currentNetwork != null}）")
+                        appendLog(">>> [Buick T19] AirPlay 目标 port=${effectiveEndpoint.airPlayPort} ipCount=${effectiveEndpoint.ipAddresses.size}；准备尝试 TCP/RTSP 配对（网络绑定=${wifiConnector?.currentNetwork != null}）")
                     }
                     if (connectCancelled) {
                         appendLog("AIRPLAY: 用户已取消——中止配对")
@@ -1478,7 +1478,7 @@ object SessionController {
                 endpoint.securityType,
             )
         if (boundCarSsid == endpoint.ssid && wifiConnector?.currentNetwork != null) {
-            appendLog(">>> [$source] 已绑定车机热点 ${endpoint.ssid}，跳过重复绑定")
+            appendLog(">>> [$source] 已绑定车机热点（SSID 已脱敏），跳过重复绑定")
             continueWithNetwork(true)
         } else {
             // bindCurrentWifi 只按 TRANSPORT_WIFI 请求、**不校验 SSID**——切网途中会绑到
@@ -1496,7 +1496,7 @@ object SessionController {
                     if (android.os.SystemClock.uptimeMillis() - lastHintAt > 5_000) {
                         lastHintAt = android.os.SystemClock.uptimeMillis()
                         phaseHint = "等待手机加入车机热点 ${endpoint.ssid}…"
-                        appendLog("WIFI: 等待切换到车机热点（当前 $current）…")
+                        appendLog("WIFI: 等待切换到车机热点（当前WiFi存在=${!current.isNullOrBlank()}；SSID 已脱敏）…")
                     }
                     Thread.sleep(400)
                     current = shellWifiStatus().second
@@ -1507,7 +1507,7 @@ object SessionController {
                 }
                 if (current != null && current != endpoint.ssid) {
                     phaseHint = "手机不在车机热点——请到 WLAN 设置加入 ${endpoint.ssid}"
-                    appendLog(">>> [$source] 等待车机热点超时（当前 WiFi: $current）——请到 设置>WLAN 加入 \"${endpoint.ssid}\" 后重新连接")
+                    appendLog(">>> [$source] 等待车机热点超时（当前WiFi存在=${!current.isNullOrBlank()}；SSID 已脱敏）——请到 设置>WLAN 加入已显示的目标热点后重新连接")
                     uiHintSink?.invoke("未连上车机热点 \"${endpoint.ssid}\"——请到 WLAN 设置中主动连接")
                     sessionStarting.set(false)
                     return@run
