@@ -92,28 +92,36 @@ class TimingServer(
                 sendMetrics.requestReceived()
                 val now = System.currentTimeMillis()
                 // Initial outcomes must be visible for EACH socket worker generation.
-                val shouldLog = sendMetrics.snapshot().requestRx <= 3L || now - lastSyncLogAt >= 30_000L
-                if (shouldLog) lastSyncLogAt = now
+                var shouldLog = sendMetrics.snapshot().requestRx <= 3L || now - lastSyncLogAt >= 30_000L
                 try {
                     // Outcome is recorded ONLY after send() returns normally.
                     s.send(DatagramPacket(response, response.size, packet.address, packet.port))
                     sendMetrics.responseSentOk(System.nanoTime() / 1_000_000L)
                 } catch (_: Exception) {
                     // The existing wire/control behavior deliberately stays the same.
-                    sendMetrics.responseSendFailed()
+                    sendMetrics.responseSendFailed(System.nanoTime() / 1_000_000L)
+                    // The first failed UDP send must be visible even in the 20s window
+                    // after the first three requests, without changing send behavior.
+                    if (sendMetrics.snapshot().sendError == 1L) shouldLog = true
                 }
                 if (shouldLog) {
+                    lastSyncLogAt = now
                     val snapshot = sendMetrics.snapshot()
                     log("TIMING OBS: requestRx=${snapshot.requestRx} responseSendOk=${snapshot.responseSendOk} " +
-                        "sendError=${snapshot.sendError} lastSuccessMonoMs=${snapshot.lastSuccessMonoMs}")
+                        "sendError=${snapshot.sendError} firstSendErrorMonoMs=${snapshot.firstSendErrorMonoMs} " +
+                        "lastSuccessMonoMs=${snapshot.lastSuccessMonoMs}")
                 }
             }
         } finally {
             sendMetrics.exited(exitReason)
             val snapshot = sendMetrics.snapshot()
+            val exitMonoMs = System.nanoTime() / 1_000_000L
+            val lastSuccessAgeMs = if (snapshot.lastSuccessMonoMs < 0L) -1L else
+                (exitMonoMs - snapshot.lastSuccessMonoMs).coerceAtLeast(0L)
             log("TIMING OBS: loopExit=${snapshot.loopExit} reason=${snapshot.lastLoopExitReason} " +
                 "requestRx=${snapshot.requestRx} responseSendOk=${snapshot.responseSendOk} " +
-                "sendError=${snapshot.sendError} lastSuccessMonoMs=${snapshot.lastSuccessMonoMs}")
+                "sendError=${snapshot.sendError} firstSendErrorMonoMs=${snapshot.firstSendErrorMonoMs} " +
+                "lastSuccessMonoMs=${snapshot.lastSuccessMonoMs} lastSuccessAgeMs=$lastSuccessAgeMs")
         }
     }
 
