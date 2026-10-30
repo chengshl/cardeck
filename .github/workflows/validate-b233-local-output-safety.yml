@@ -1,0 +1,60 @@
+name: B233 Local Output Safety Policy (offline only)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-local-output-safety
+    paths:
+      - '.github/workflows/validate-b233-local-output-safety.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/audio/B233LocalOutputSafety.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/audio/B233LocalOutputSafetyTest.kt'
+permissions:
+  contents: read
+concurrency:
+  group: b233-local-output-safety-offline
+  cancel-in-progress: true
+jobs:
+  offline-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enforce test-only scope and zero runtime integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4eedb7f5c42bdddb3bb23a73146c10b42f29829f
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --name-only "$BASE" HEAD > /tmp/changed.txt
+          cat /tmp/changed.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          expected = {
+              '.github/workflows/validate-b233-local-output-safety.yml',
+              'app/src/main/java/io/github/shaonialife/cardeck/audio/B233LocalOutputSafety.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/audio/B233LocalOutputSafetyTest.kt',
+          }
+          actual = set(Path('/tmp/changed.txt').read_text().splitlines())
+          if actual != expected:
+              raise SystemExit(f"Unexpected changed files: {actual ^ expected}")
+          policy = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/B233LocalOutputSafety.kt').read_text()
+          if 'setStreamVolume(' in policy or 'AudioManager.' in policy or 'android.' in policy:
+              raise SystemExit('Policy must remain pure; no Android volume writes')
+          for token in ('postSuppressionCapturePeak > 0', 'carAudioStillConfirmed', '!callActive',
+                        'sameSessionOwner', '!volumeChangeObservedSinceMute',
+                        'currentVolume == 0', 'originalVolume in 1..maxVolume'):
+              if token not in policy:
+                  raise SystemExit('Missing fail-closed safety gate: ' + token)
+          print('Only pure policy, tests and offline workflow changed')
+          PY
+      - name: Android JUnit, lint and debug compile (no signing or APK publication)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
