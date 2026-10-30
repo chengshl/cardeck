@@ -94,6 +94,17 @@ jobs:
           assert 'CONFIG_FLUSHED (first video frame not yet proven)' in sender
           assert 'DRAIN_EXIT frameCount=$framesSent configFlushed=$configSent' in sender
           assert 'onEnded?.invoke()' in sender
+          # #83 selective safety guard: startup abort/exception must not bypass
+          # the existing terminal diagnostic, stop(), or onEnded callback.
+          drain = sender.split('private fun drainEncoder()', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
+          assert drain.index('try {') < drain.index('socket?.getOutputStream()')
+          assert drain.index('socket?.getOutputStream()') < drain.index('} catch (error: Exception)')
+          assert drain.index('} catch (error: Exception)') < drain.index('} finally {')
+          terminal = drain.split('} finally {', 1)[1]
+          assert 'DRAIN_EXIT frameCount=$framesSent' in terminal
+          assert terminal.index('DRAIN_EXIT frameCount=$framesSent') < terminal.index('stop()') < terminal.index('onEnded?.invoke()')
+          assert 'DRAIN_ABORTED phase=encoder-missing' in drain
+          assert 'DRAIN_ABORTED phase=output-stream-missing' in drain
           assert 'output.write(header)' in sender and 'output.write(sealed)' in sender
           assert 'output.flush()' in sender
           for forbidden in (
