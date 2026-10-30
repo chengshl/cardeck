@@ -38,3 +38,28 @@ internal class RtspSocketLifecycle {
         }
     }
 }
+
+
+/**
+ * Separates a retired RTSP reader's late packets from its successor's pending
+ * CSeq replies and unsolicited-request acknowledgement path.
+ *
+ * The caller must use the SAME lock as reader replacement/retirement and the
+ * RTSP request writer. The callback is intentionally part of this critical
+ * section; otherwise a reader can pass the ownership check and be superseded
+ * before it delivers the old packet to the new session.
+ */
+internal object RtspReaderDispatchGate {
+    fun dispatchIfCurrent(
+        readerLock: Any,
+        isCurrentReader: () -> Boolean,
+        dispatch: () -> Unit,
+    ): Boolean = synchronized(readerLock) {
+        if (!isCurrentReader()) {
+            false
+        } else {
+            dispatch()
+            true
+        }
+    }
+}
