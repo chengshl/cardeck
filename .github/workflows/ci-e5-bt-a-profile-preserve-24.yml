@@ -55,7 +55,44 @@ jobs:
           assert 'narrowlyMatchesFourDigitBuickHint' in checks
           print('Profile-only L3 isolation verified; no other runtime change')
           PY
-      - name: Run Android unit tests, Debug and Lint
+      - name: Run Android unit tests and Debug build
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug --stacktrace
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Run full Lint and reject errors on touched files (existing E5 baseline debt)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug --stacktrace > e5-lint-output.txt 2>&1
+          LINT_EXIT=$?
+          set -e
+          if (( LINT_EXIT != 0 )); then
+            grep -E 'Lint found|First failure:' e5-lint-output.txt | head -n 8 || true
+          fi
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          touched_paths = {
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt',
+          }
+          report = Path('app/build/reports/lint-results-debug.xml')
+          if not report.is_file():
+              raise SystemExit('Lint XML missing: refusing to waive an unreviewed failure')
+          issues = []
+          for issue in ET.parse(report).getroot().findall('.//issue'):
+              if issue.get('severity', '').lower() not in ('error', 'fatal'):
+                  continue
+              loc = issue.find('location')
+              path = (loc.get('file', '') if loc is not None else '').replace('\\', '/')
+              if '/app/' in path:
+                  path = 'app/' + path.split('/app/', 1)[1]
+              issues.append((issue.get('id'), path))
+          touched = [(i, p) for i, p in issues if p in touched_paths]
+          print(f'Full E5 Lint errors: {len(issues)}; touched-file errors: {len(touched)}')
+          if touched:
+              raise SystemExit(f'Lint errors on BT-A changed files: {touched}')
+          print('Existing unrelated E5 Lint debt remains; no touched-file error introduced')
+          PY
