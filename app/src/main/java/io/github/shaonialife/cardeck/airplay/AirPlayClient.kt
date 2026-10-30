@@ -2914,23 +2914,37 @@ class AirPlayClient(
     }
 
     private fun startReader(client: Socket) {
-        val previous: Socket?
-        synchronized(rtspWriteLock) {
-            if (readerSocket === client && readerThread?.isAlive == true) return
-            previous = readerSocket
-            readerSocket = client
-            val generation = ++readerGeneration
-            readerThread =
-                Thread({ readLoop(client, generation) }, "airplay-rtsp-reader").apply {
-                    isDaemon = true
-                    start()
-                }
+        var previous: Socket? = null
+        fun installReader() {
+            synchronized(rtspWriteLock) {
+                if (readerSocket === client && readerThread?.isAlive == true) return
+                previous = readerSocket
+                readerSocket = client
+                val generation = ++readerGeneration
+                readerThread =
+                    Thread({ readLoop(client, generation) }, "airplay-rtsp-reader").apply {
+                        isDaemon = true
+                        start()
+                    }
+            }
         }
-        // 旧 socket 由本线程持有其输入流：必须关掉（会抛 SocketException 让旧读线程退出），
-        // 否则两个读线程可能阻塞在同一连接上抢包——异步派发后这会导致响应错投
-        if (previous != null && previous !== client) {
-            runCatching { previous.close() }
+        if (endpoint.isBuickB233) {
+            // request() may have captured the old socket before close()/reconnect.
+            // Check identity AND install under the same lifecycle gate as
+            // tryPublish()/retire(); otherwise this stale caller can replace
+            // the new reader and close its live socket.
+            val accepted = socketLifecycle.runIfCurrent(
+                { socket === client && !client.isClosed },
+                { installReader() },
+            )
+            if (!accepted) throw IOException("RTSP reader socket already retired")
+        } else {
+            // Preserve the original reader-start behavior on other receivers.
+            installReader()
         }
+        // The old reader owns the old socket's input stream; closing it wakes
+        // that reader. Do not close the newly installed reader's socket.
+        previous?.takeIf { it !== client }?.let { runCatching { it.close() } }
     }
 
     /** 待响应的 CSeq → 响应队列（异步派发；feedback 不再被长请求饿死）。 */
