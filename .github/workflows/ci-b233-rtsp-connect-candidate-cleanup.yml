@@ -1,0 +1,84 @@
+name: B233 RTSP TCP candidate cleanup (offline only)
+
+on:
+  pull_request:
+    branches:
+      - experiment/buick-test-t89-pcm-reverse-rtcp
+    paths:
+      - '.github/workflows/ci-b233-rtsp-connect-candidate-cleanup.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspConnectCandidateCleanup.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspConnectCandidateCleanupTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b233-rtsp-candidate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify exact signed T89 base and four-file isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          git diff --name-only "$BASE" HEAD > /tmp/b233-candidate-scope
+          test "$(wc -l < /tmp/b233-candidate-scope)" -eq 4
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-rtsp-connect-candidate-cleanup.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspConnectCandidateCleanup.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspConnectCandidateCleanupTest.kt) ;;
+              *) echo "Unexpected file: $file"; exit 1 ;;
+            esac
+          done < /tmp/b233-candidate-scope
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          region = source.split('    private fun ensureConnected(', 1)[1].split(
+              '    private fun resolveAddress(', 1
+          )[0]
+          for token in ('RtspConnectCandidateCleanup.publishOrClose(',
+                        'cleanupOnFailure = target.isBuickB233',
+                        'newSocket.connect(InetSocketAddress(',
+                        'if (!target.isBuickB233) runCatching { newSocket.close() }'):
+              if token not in region:
+                  raise SystemExit('B233 candidate ownership wiring missing: ' + token)
+          if not region.index('RtspConnectCandidateCleanup.publishOrClose(') < region.index('newSocket.connect('):
+              raise SystemExit('cleanup must own candidate before TCP connect')
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspConnectCandidateCleanup.kt').read_text()
+          for token in ('if (cleanupOnFailure && !published)', 'candidate.close()'):
+              if token not in helper:
+                  raise SystemExit('failed candidate cleanup missing: ' + token)
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspConnectCandidateCleanupTest.kt').read_text()
+          for name in ('failedB233ConnectClosesCandidateBeforeRetry',
+                       'rejectedPublicationClosesCandidateWithoutNetwork',
+                       'successfulPublicationRetainsLiveSocketOwnership',
+                       'nonB233ExceptionPathRemainsUnchanged'):
+              if name not in tests:
+                  raise SystemExit('missing negative/legacy test: ' + name)
+          print('B233-only failed-connect cleanup wired before TCP connect')
+          PY
+      - name: Deterministic candidate ownership regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.RtspConnectCandidateCleanupTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# No signing, release, stable branch, network configuration or vehicle claim.
