@@ -279,6 +279,47 @@ class Iap2LinkEngineTest {
         assertFalse(phone.isDead)
     }
 
+    @Test
+    fun fragmentedAck109AfterRetransmitMustConfirmExactlyOnce() {
+        val phone = Iap2LinkEngine()
+        val car = Iap2LinkEngine()
+        phone.start(0)
+        car.start(0)
+        exchangeUntilNormal(phone, car)
+
+        // Advance to the observed #33 boundary: ACK108 received, seq109 pending.
+        repeat(9) { index ->
+            assertTrue(phone.sendControl(Iap2Csm.encode(0x5300 + index), tick()))
+            exchange(phone, car)
+            assertEquals(1, pollControls(car).size)
+        }
+        assertTrue(phone.sendControl(Iap2Csm.encode(0x4300), tick()))
+        val sent = phone.takeOutput()
+        assertTrue(sent.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(109, sent[5].toInt() and 0xFF)
+
+        val progress = mutableListOf<Pair<String, String>>()
+        phone.onAcknowledgementProgress = { _, before, after -> progress += before to after }
+        val ack = ackOnly(109)
+
+        // RFCOMM is a byte stream: a valid 9-byte ACK may span separate reads.
+        // A partial header must never confirm seq109 or cancel its retry timer.
+        phone.feed(ack.copyOfRange(0, 4), tick())
+        assertTrue("partial ACK must not advance acknowledgement", progress.isEmpty())
+        phone.advanceTime(10_000L)
+        val retry = phone.takeOutput()
+        assertTrue("pending seq109 must retry while ACK is incomplete", retry.size > Iap2LinkEngine.HEADER_BYTES)
+        assertEquals(109, retry[5].toInt() and 0xFF)
+
+        // Completing the same frame must confirm 109, without another retry.
+        phone.feed(ack.copyOfRange(4, ack.size), tick())
+        assertTrue("completed ACK109 must release seq109", progress.any { it.first == "109" && it.second.isEmpty() })
+        phone.feed(ackOnly(109), tick()) // duplicate cumulative ACK
+        phone.advanceTime(20_000L)
+        assertTrue("duplicate ACK must not restart retransmission", phone.takeOutput().isEmpty())
+        assertFalse(phone.isDead)
+    }
+
     private fun ackOnly(ack: Int): ByteArray {
         val frame = ByteArray(Iap2LinkEngine.HEADER_BYTES)
         frame[0] = 0xFF.toByte()
