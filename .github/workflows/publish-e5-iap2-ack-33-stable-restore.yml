@@ -1,0 +1,217 @@
+name: E5 #33 stable-runtime data-preserving recovery (guarded)
+on:
+  push:
+    branches: [experiment/buick-e5-iap2-ack-33-stable-restore]
+    paths:
+      - '.github/release-intents/e5-iap2-33-restore-sign.txt'
+# This template is prepared on a work/* branch. Only a later intent commit
+# on the exact recovery branch can sign; the branch itself must be based on
+# the *new* Buick-E5 official HEAD after the Chinese mapping is integrated.
+concurrency:
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  signed-stable-runtime-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fail closed on runtime ancestry, exact intent and signed experiment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RECOVERY="experiment/buick-e5-iap2-ack-33-stable-restore"
+          EXP_SOURCE="experiment/buick-e5-iap2-stale-ack-guard-33"
+          test "$GITHUB_REF_NAME" = "$RECOVERY"
+          INTENT=".github/release-intents/e5-iap2-33-restore-sign.txt"
+          test -s "$INTENT"
+          grep -Fxq "source=$RECOVERY" "$INTENT"
+          EXP_TAG="$(sed -n 's/^experimentTag=//p' "$INTENT")"
+          [[ "$EXP_TAG" == exp-buick-e5-iap2-stale-ack-guard-33-* ]]
+          test "$(grep -c '^experimentTag=' "$INTENT")" = 1
+          test "$(wc -l < "$INTENT")" = 2
+          git fetch --no-tags origin Buick-E5
+          STABLE="$(git rev-parse origin/Buick-E5)"
+          test "$(git merge-base HEAD origin/Buick-E5)" = "$STABLE"
+          # One workflow-only commit, then one explicit release-intent commit.
+          test "$(git rev-parse HEAD~2)" = "$STABLE"
+          test "$(git rev-list --count "$STABLE"..HEAD)" = 2
+          python3 - "$STABLE" <<'PY'
+          import subprocess,sys
+          changed=set(subprocess.check_output(
+              ['git','diff','--name-only',sys.argv[1]+'...HEAD'],text=True).splitlines())
+          expected={
+              '.github/workflows/publish-e5-iap2-ack-33-stable-restore.yml',
+              '.github/release-intents/e5-iap2-33-restore-sign.txt'}
+          assert changed==expected, f'Unexpected recovery source diff: {sorted(changed^expected)}'
+          PY
+          test -z "$(git diff --name-only "$STABLE" HEAD -- app tools gradle settings.gradle.kts)"
+          OFFICIAL="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          grep -Fxq "commit=$STABLE" <<< "$OFFICIAL"
+          OFFICIAL_CODE="$(sed -n 's/^versionCode=//p' <<< "$OFFICIAL" | head -n 1)"
+          [[ "$OFFICIAL_CODE" =~ ^[0-9]+$ ]]
+          (( OFFICIAL_CODE > 89204866 ))
+          EXP="$(gh release view "$EXP_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          grep -Fxq 'artifactKind=experiment' <<< "$EXP"
+          grep -Fxq 'updaterSchema=2' <<< "$EXP"
+          grep -Fxq 'baseBranch=Buick-E5' <<< "$EXP"
+          grep -Fxq "sourceBranch=$EXP_SOURCE" <<< "$EXP"
+          # Bind release metadata to the actual immutable tag target; text-only
+          # sourceBranch claims must not authorize a data-preserving recovery.
+          EXP_COMMIT="$(sed -n 's/^commit=//p' <<< "$EXP" | head -n 1)"
+          [[ "$EXP_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "refs/tags/$EXP_TAG"
+          test "$(git rev-parse FETCH_HEAD^{commit})" = "$EXP_COMMIT"
+          git fetch --no-tags origin "$EXP_SOURCE"
+          git merge-base --is-ancestor "$EXP_COMMIT" "origin/$EXP_SOURCE"
+          EXP_CODE="$(sed -n 's/^versionCode=//p' <<< "$EXP" | head -n 1)"
+          [[ "$EXP_CODE" =~ ^[0-9]+$ ]]
+          (( EXP_CODE > OFFICIAL_CODE ))
+          APK_NAME="$(sed -n 's/^apkName=//p' <<< "$EXP" | head -n 1)"
+          test "$APK_NAME" = 'CarDeck-Buick-E5-IAP2-ACK-Guard.apk'
+          mkdir -p "$RUNNER_TEMP/experiment"
+          gh release download "$EXP_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$APK_NAME" --pattern "$APK_NAME.sha256" --dir "$RUNNER_TEMP/experiment"
+          (cd "$RUNNER_TEMP/experiment" && sha256sum --check "$APK_NAME.sha256")
+          printf 'STABLE=%s\nOFFICIAL_CODE=%s\nEXP_CODE=%s\nEXP_TAG=%s\nEXP_SOURCE=%s\n' \
+            "$STABLE" "$OFFICIAL_CODE" "$EXP_CODE" "$EXP_TAG" "$EXP_SOURCE" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify unchanged stable Android JUnit and Debug
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Check stable-source Lint without hiding new errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug > "$RUNNER_TEMP/e5-ack-recovery-lint.log" 2>&1
+          rc=$?
+          set -e
+          if (( rc != 0 )); then
+            python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          reports=sorted(Path('app/build/reports').glob('lint-results-debug*.xml'))
+          if not reports: raise SystemExit('Lint failed without XML evidence')
+          issues=ET.parse(reports[-1]).getroot().findall('issue')
+          errors=[x for x in issues if x.get('severity','').lower() in ('error','fatal')]
+          if len(errors)>13: raise SystemExit(f'Stable-source Lint regression: {len(errors)} errors')
+          print(f'::warning::Unmodified stable source has {len(errors)} inherited Lint errors')
+          PY
+          fi
+      - name: Restore existing production E5 signing identity
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/e5-ack-restore.p12"
+          chmod 600 "$RUNNER_TEMP/e5-ack-restore.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/e5-ack-restore.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Allocate global monotonic version, retain stable runtime origin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/release/allocate_version.py
+          echo 'CARDECK_RELEASE_BRANCH=Buick-E5' >> "$GITHUB_ENV"
+      - name: Build signed stable-runtime recovery APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify installed package, version, source and identical signing cert
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -s "$APK" && test -x "$AAPT" && test -x "$APKSIGNER"
+          (( CARDECK_BUILD_VERSION_CODE > EXP_CODE && CARDECK_BUILD_VERSION_CODE > OFFICIAL_CODE ))
+          # Compare actual signed experiment APK, not just release-note metadata.
+          EXP_BADGING="$("$AAPT" dump badging "$RUNNER_TEMP/experiment/CarDeck-Buick-E5-IAP2-ACK-Guard.apk")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$EXP_BADGING"
+          grep -Fq "versionCode='$EXP_CODE'" <<< "$EXP_BADGING"
+          # Inspect the APK's embedded build origin, not only editable Release
+          # notes. Do not accept an unrelated same-package signed APK.
+          EXP_RES="$("$AAPT" dump --values resources "$RUNNER_TEMP/experiment/CarDeck-Buick-E5-IAP2-ACK-Guard.apk")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$EXP_RES"
+          grep -Fq "$EXP_SOURCE" <<< "$EXP_RES"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          RES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$RES"
+          grep -Fq 'Buick-E5' <<< "$RES"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/new-cert.txt"
+          ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/new-cert.txt"
+          mkdir -p "$RUNNER_TEMP/official"
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \
+            --pattern 'CarDeck-Buick-E5.apk' --pattern 'CarDeck-Buick-E5.apk.sha256' --dir "$RUNNER_TEMP/official"
+          (cd "$RUNNER_TEMP/official" && sha256sum --check 'CarDeck-Buick-E5.apk.sha256')
+          OFFICIAL_BADGING="$("$AAPT" dump badging "$RUNNER_TEMP/official/CarDeck-Buick-E5.apk")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$OFFICIAL_BADGING"
+          grep -Fq "versionCode='$OFFICIAL_CODE'" <<< "$OFFICIAL_BADGING"
+          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/official/CarDeck-Buick-E5.apk" > "$RUNNER_TEMP/official-cert.txt"
+          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/experiment/CarDeck-Buick-E5-IAP2-ACK-Guard.apk" > "$RUNNER_TEMP/experiment-cert.txt"
+          python3 - <<'PY'
+          import os,re,pathlib
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          def cert(name):
+              s=(root/name).read_text()
+              m=re.search(r'Certificate SHA-256 digest:\s*([0-9a-fA-F]{64})',s,re.I)
+              if not m: raise SystemExit(f'Cannot read certificate: {name}')
+              return m.group(1).lower()
+          assert cert('new-cert.txt')==cert('official-cert.txt')==cert('experiment-cert.txt'), 'APK signing identities differ'
+          PY
+          # Detect official baseline movement during the signing job.
+          CURRENT="$(gh release view buick-e5-latest --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          grep -Fxq "commit=$STABLE" <<< "$CURRENT"
+          grep -Fxq "versionCode=$OFFICIAL_CODE" <<< "$CURRENT"
+          cp "$APK" CarDeck-Buick-E5-IAP2-ACK-Stable-Restore.apk
+          sha256sum CarDeck-Buick-E5-IAP2-ACK-Stable-Restore.apk > CarDeck-Buick-E5-IAP2-ACK-Stable-Restore.apk.sha256
+      - name: Publish independent recovery prerelease, never official latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'experiment/buick-e5-iap2-ack-33-stable-restore'
+          test "$CARDECK_RELEASE_BRANCH" = 'Buick-E5'
+          TAG="e5-stable-restore-after-iap2-ack-33-$CARDECK_RELEASE_VERSION_NAME"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then exit 1; fi
+          APK='CarDeck-Buick-E5-IAP2-ACK-Stable-Restore.apk'
+          {
+            printf 'artifactKind=recovery\nrecoveryFor=%s\nbaseBranch=Buick-E5\nsourceBranch=%s\n' \
+              "$EXP_TAG" "$GITHUB_REF_NAME"
+            printf 'stableRuntimeCommit=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\nbuildCommit=%s\n' \
+              "$STABLE" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" \
+              "$(date -u +%FT%TZ)" "$APK" "$GITHUB_SHA"
+            printf '\n## #33 保留数据稳定代码恢复包\n'
+            printf '同 E5 正式源码、包名及签名，版本码高于 #33 实验；不含未经实车验证的 ACK 运行改动。\n'
+            printf '安装/覆盖前仍须检查实际 APK 与 SHA256；后续正式版必须具有更高 versionCode。\n'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "E5 #33 ACK 实验后数据保留恢复" \
+            --notes-file release-notes.txt --prerelease --latest=false
