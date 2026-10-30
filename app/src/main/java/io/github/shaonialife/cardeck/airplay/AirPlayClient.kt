@@ -87,6 +87,8 @@ class AirPlayClient(
         }
     }
 
+    /** Serializes RTSP socket publication and retirement; never hold while connecting. */
+    private val socketLifecycleLock = Any()
     private var socket: Socket? = null
     private var cSeq = 0
 
@@ -560,10 +562,12 @@ class AirPlayClient(
     fun close() {
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
-        runCatching { socket?.close() }
-        socket = null
-        activeHost = null
-        activeAddress = null
+        synchronized(socketLifecycleLock) {
+            runCatching { socket?.close() }
+            socket = null
+            activeHost = null
+            activeAddress = null
+        }
         // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
         // 清掉，否则重连后的读线程会把明文应答当密文帧解，后续所有请求超时。
         cipher = null
@@ -2526,17 +2530,19 @@ class AirPlayClient(
             try {
                 val newSocket = newVehicleSocket()
                 newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
-                if (generation != endpointGeneration) {
-                    // 连接途中端点已更新：丢弃这条旧连接，下一轮按新地址重连
-                    runCatching { newSocket.close() }
-                    return false
-                }
                 // 读由独立读线程负责（阻塞等数据），请求超时由待响应表的 poll 控制；
                 // 这里若留 soTimeout，读线程会周期性收到 SocketTimeoutException 而退出
                 newSocket.soTimeout = 0
-                socket = newSocket
-                activeAddress = address
-                activeHost = addressLiteral(address)
+                synchronized(socketLifecycleLock) {
+                    if (generation != endpointGeneration) {
+                        // 连接途中端点已更新：丢弃旧连接，不能覆盖新端点
+                        runCatching { newSocket.close() }
+                        return false
+                    }
+                    socket = newSocket
+                    activeAddress = address
+                    activeHost = addressLiteral(address)
+                }
                 log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")
                 return true
             } catch (error: IOException) {
