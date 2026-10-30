@@ -464,6 +464,9 @@ internal object ExperimentalUpdates {
                             current.versionCode.toLong()
                         }
                         require(archiveVersion > installedCode) { "恢复包版本号必须高于本机版本" }
+                        require(archive.versionName == candidate.versionName) {
+                            "恢复包版本名称与发布元数据不一致"
+                        }
                         require(matchingSigningCertificates(activity, target)) {
                             "恢复包签名与已安装应用不一致"
                         }
@@ -499,7 +502,9 @@ internal object ExperimentalUpdates {
                     }
                     saveOnly -> message(activity,
                         "APK 已校验，但保存到下载目录失败：${exported?.exceptionOrNull()?.message}")
-                    else -> install(activity, target, if (recovery) candidate.versionCode else null)
+                    else -> install(activity, target,
+                        if (recovery) candidate.versionCode else null,
+                        if (recovery) candidate.versionName else null)
                 }
             }
         }
@@ -540,7 +545,7 @@ internal object ExperimentalUpdates {
         }
     }
 
-    private fun install(activity: Activity, apk: File, recoveryCode: Long? = null) {
+    private fun install(activity: Activity, apk: File, recoveryCode: Long? = null, recoveryName: String? = null) {
         if (!apk.isFile || apk.length() == 0L) return message(activity, "已验证的安装包不存在。")
         if (recoveryCode != null) {
             val current = activity.packageManager.getPackageInfo(activity.packageName, 0)
@@ -548,8 +553,18 @@ internal object ExperimentalUpdates {
                 @Suppress("DEPRECATION")
                 current.versionCode.toLong()
             }
-            if (recoveryCode <= installed || !matchingSigningCertificates(activity, apk)) {
-                return message(activity, "安装前版本或签名校验失败，已拒绝恢复。")
+            val archive = activity.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)
+            val archiveCode = if (archive != null && Build.VERSION.SDK_INT >= 28) archive.longVersionCode
+                else {
+                    @Suppress("DEPRECATION")
+                    archive?.versionCode?.toLong()
+                }
+            val signatureMatches = runCatching {
+                matchingSigningCertificates(activity, apk)
+            }.getOrDefault(false)
+            if (recoveryCode <= installed || archive?.packageName != activity.packageName ||
+                archiveCode != recoveryCode || archive.versionName != recoveryName || !signatureMatches) {
+                return message(activity, "安装前版本、包名或签名校验失败，已拒绝恢复。")
             }
         }
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
