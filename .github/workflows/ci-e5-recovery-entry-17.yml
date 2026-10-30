@@ -98,6 +98,8 @@ jobs:
           assert 'matchingSigningCertificates(activity, target)' in updater
           assert 'matchingSigningCertificates(activity, apk)' in updater
           assert 'archiveVersion > installedCode' in updater
+          assert 'archive.versionName == candidate.versionName' in updater
+          assert 'archive?.versionName != recoveryName' in updater
           assert 'SessionController.disconnect(activity.applicationContext)' in updater
           assert 'refusesAmbiguousExperimentMetadataAndUntrustedStableRuntime' in tests
           assert 'rejectsWrongRecoveryForAndCrossExperimentSource' in tests
