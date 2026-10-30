@@ -104,3 +104,29 @@ internal object RtspRequestWriteOwnership {
             requestSocket === activeReaderSocket &&
             !requestSocketClosed
 }
+
+
+/**
+ * Reader-exit cleanup must be serialized with reader replacement and CSeq
+ * registration (rtspWriteLock). A stale reader may finish after its successor
+ * has registered replies; it must not drain the successor's pending map.
+ *
+ * Adapted from this repository's independent Draft PR #72
+ * (experiment/buick-b233-rtsp-reader-generation-cleanup), without changing
+ * other receiver behavior or importing that branch wholesale.
+ *
+ * null: stale reader; empty: current reader with no pending replies.
+ * Caller holds rtspWriteLock; drained queues are notified after unlocking.
+ */
+internal object RtspReaderGenerationCleanup {
+    fun <T> drainIfCurrent(
+        exitingGeneration: Int,
+        activeGeneration: Int,
+        pending: MutableMap<Int, T>,
+    ): List<T>? {
+        if (exitingGeneration != activeGeneration) return null
+        val waiting = pending.values.toList()
+        pending.clear()
+        return waiting
+    }
+}
