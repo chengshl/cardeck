@@ -1,0 +1,74 @@
+name: E5 video drain startup teardown isolation (#28)
+on:
+  push:
+    branches: [experiment/buick-e5-video-drain-startup-safety-28]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - '.github/workflows/ci-e5-video-drain-startup-safety-28.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  video-drain-startup-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Fail closed on stable drift and unrelated runtime edits
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          baseline = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          stable = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          assert stable == baseline, f'E5 moved to {stable}; re-review before accepting CI'
+          source_path = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+          workflow_path = '.github/workflows/ci-e5-video-drain-startup-safety-28.yml'
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          assert changed == {source_path, workflow_path}, f'Unexpected files: {sorted(changed)}'
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + source_path], text=True)
+          new = Path(source_path).read_text()
+          before = """    private fun drainEncoder() {
+                  val codec = encoder ?: return
+                  val output = socket?.getOutputStream() ?: return
+                  val bufferInfo = MediaCodec.BufferInfo()
+                  try {
+                      while (running.get()) {""".replace('                  ', '        ')
+          after = """    private fun drainEncoder() {
+                  // #28: acquisition can race with stop()/socket close. Keep *all* startup
+                  // paths inside try/finally so a failed getOutputStream() cannot crash
+                  // the drain thread or skip session retirement.
+                  try {
+                      val codec = encoder ?: run {
+                          log("VIDEO: 推流启动中止 - 编码器已释放")
+                          return
+                      }
+                      val output = socket?.getOutputStream() ?: run {
+                          log("VIDEO: 推流启动中止 - 数据端口已关闭")
+                          return
+                      }
+                      val bufferInfo = MediaCodec.BufferInfo()
+                      while (running.get()) {""".replace('                  ', '        ')
+          assert old.count(before) == 1, 'Original drain startup not found exactly once'
+          assert new == old.replace(before, after), 'Unexpected change outside reviewed startup guard'
+          tail = new.split('private fun drainEncoder()', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
+          assert tail.index('try {') < tail.index('getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
+          assert 'stop()' in tail.split('} finally {', 1)[1]
+          assert 'onEnded?.invoke()' in tail.split('} finally {', 1)[1]
+          print('Exact one-block L3 startup exception/early-return cleanup isolation verified')
+          PY
+      - name: Android JUnit and Debug compilation (no signing)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
