@@ -228,6 +228,16 @@ class VideoSender(
             // 后台线程未捕获异常会杀死整个进程（曾导致锁屏后 app 消失）
             log("VIDEO: 推流中止 - ${error.message}（等待接收端恢复后重连）")
         } finally {
+            // #28: a stopped drain loop can end before the 6s/15s keepAlive probes fire.
+            // Preserve one terminal summary even on encoder errors or socket EOF.
+            val evidence = videoFrameDiagnostics
+            val stoppedAtMs = android.os.SystemClock.uptimeMillis()
+            log(
+                "VIDEO DIAG #28: DRAIN_EXIT frameCount=$framesSent configFlushed=$configSent " +
+                    "keepAliveCount=$keepAliveCount encoderAgeMs=${evidence?.ageMs(stoppedAtMs) ?: -1L} " +
+                    "lastFrameGapMs=${evidence?.gapMs(stoppedAtMs) ?: -1L} " +
+                    "(application-side only; receiver display not proven)",
+            )
             stop()
             // 会话真实结束信号（静默降噪解除 / 状态收尾）
             runCatching { onEnded?.invoke() }
@@ -322,6 +332,8 @@ class VideoSender(
         output.write(body)
         output.flush()
         configSent = true
+        // #28: config flush is distinct from the first encrypted video-frame flush.
+        log("VIDEO DIAG #28: CONFIG_FLUSHED (first video frame not yet proven)")
         log(
             "VIDEO: ✓ VideoConfig 已发送 avcC=${body.size}B（SPS ${sps.size}B/PPS ${pps.size}B，" +
                 "profile=${sps[1].toInt() and 0xFF} level=${sps[3].toInt() and 0xFF} " +
