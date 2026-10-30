@@ -1,0 +1,62 @@
+name: B233 RTSP socket lifecycle isolation (test only)
+
+on:
+  push:
+    branches:
+      - experiment/buick-b233-rtsp-socket-lifecycle
+  pull_request:
+    branches:
+      - experiment/buick-test-t89-pcm-reverse-rtcp
+    paths:
+      - '.github/workflows/ci-b233-rtsp-socket-lifecycle.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycle.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Lock to signed T89 base and four isolated files
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          git diff --name-only "$BASE" HEAD > /tmp/rtsp-scope
+          test "$(wc -l < /tmp/rtsp-scope)" -eq 4
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-rtsp-socket-lifecycle.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycle.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt) ;;
+              *) echo "Out-of-scope runtime change: $file"; exit 1 ;;
+            esac
+          done < /tmp/rtsp-scope
+          grep -Fq 'socketLifecycle.retire {' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          grep -Fq 'socketLifecycle.tryPublish(connectEpoch)' app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt
+          grep -Fq 'closeDuringConnectRejectsLatePublication' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          grep -Fq 'staleEpochNeverExecutesPublicationCallback' app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspSocketLifecycleTest.kt
+          echo 'T89 runtime source unchanged except RTSP socket lifecycle, no signing or release.'
+      - name: Deterministic stale-publication regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.RtspSocketLifecycleTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# This CI cannot prove the B233 peer EOF cause; no physical car/audio packet changes.
