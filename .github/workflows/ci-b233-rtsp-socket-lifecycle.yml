@@ -58,7 +58,7 @@ jobs:
           source = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
           close = source.split('    fun close() {', 1)[1].split('    /**', 1)[0]
           gated = close.split('        socketLifecycle.retire {', 1)[1].split(
-              '        }\\n        runCatching { iapTunnel', 1
+              '        }\n        runCatching { iapTunnel', 1
           )[0]
           for token in ('socket = null', 'cipher = null', 'synchronized(rtspWriteLock)',
                         'readerGeneration++', 'failAllPending("控制通道关闭")'):
