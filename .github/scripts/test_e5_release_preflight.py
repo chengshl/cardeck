@@ -46,18 +46,69 @@ class E5SignedReleasePreflightTest(unittest.TestCase):
         self.assertIn('exit 1', block)
         self.assertLess(w.index(STEP), w.index("Publish only Buick-E5 update"))
 
-    def test_pure_release_workflow_changes_do_not_sign(self):
-        w = self.workflow
-        head = w.split("concurrency:", 1)[0]
-        for path in (
-            "docs/**",
+    def test_only_apk_inputs_trigger_automatic_signing(self):
+        # The 2026-10-31 test-only #79 merge unexpectedly minted an official
+        # E5 APK (89313871), making older experiments/recovery non-installable
+        # over that newer version. Fail closed on the exact push allowlist.
+        import fnmatch
+        import re
+
+        header = self.workflow.split("concurrency:", 1)[0]
+        self.assertIn("workflow_dispatch:", header)
+        self.assertIn("branches: [Buick-E5]", header)
+        self.assertNotIn("paths-ignore:", header)
+        self.assertEqual(header.count("    paths:\n"), 1)
+        patterns = re.findall(r"(?m)^      - '([^']+)'$", header.split("    paths:\n", 1)[1])
+        self.assertEqual(patterns, [
+            "app/src/main/**",
+            "app/src/release/**",
+            "app/build.gradle.kts",
+            "app/proguard-rules.pro",
+            "build.gradle.kts",
+            "settings.gradle.kts",
+            "gradle.properties",
+            "gradle/**",
+            "gradlew",
+            "gradlew.bat",
+        ])
+
+        def automatically_publishes(path):
+            return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+
+        for runtime_input in (
+            "app/src/main/java/io/github/shaonialife/cardeck/MainActivity.kt",
+            "app/src/main/res/values/strings.xml",
+            "app/src/main/AndroidManifest.xml",
+            "app/src/release/AndroidManifest.xml",
+            "app/build.gradle.kts",
+            "app/proguard-rules.pro",
+            "build.gradle.kts",
+            "settings.gradle.kts",
+            "gradle.properties",
+            "gradle/wrapper/gradle-wrapper.properties",
+            "gradlew",
+            "gradlew.bat",
+        ):
+            with self.subTest(should_publish=runtime_input):
+                self.assertTrue(automatically_publishes(runtime_input))
+
+        for non_runtime_input in (
+            "app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt",
+            "app/src/androidTest/java/example/UITest.kt",
+            "app/src/debug/AndroidManifest.xml",
+            "app/lint-baseline.xml",
+            ".github/workflows/ci-e5-upstream-replay-33.yml",
             ".github/workflows/build-buick-e5.yml",
             ".github/workflows/ci-e5-release-preflight.yml",
             ".github/scripts/test_e5_release_preflight.py",
+            "tools/release/allocate_version.py",
+            "tools/gateway/test_gateway.py",
+            "docs/PROJECT-GOVERNANCE.md",
+            "AGENTS.md",
+            "README.md",
         ):
-            self.assertIn("'" + path + "'", head)
-        self.assertIn("paths-ignore:", head)
-        self.assertIn("branches: [Buick-E5]", head)
+            with self.subTest(must_not_publish=non_runtime_input):
+                self.assertFalse(automatically_publishes(non_runtime_input))
 
     def test_original_signed_release_checks_remain(self):
         w = self.workflow
