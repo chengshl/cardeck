@@ -38,12 +38,21 @@ jobs:
           # #28 remains an isolated L3 observation PR. Fail closed when the
           # stable source or the reviewed L1-only delta changes.
           original_base = '8271f2a71be7b4acc740c2748bf3281810ea9aa1'
-          reviewed_stable = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          reviewed_stable = '7945c16254e71c12f2824c7d90e4de960649f6f0'
           actual_stable = subprocess.check_output(
               ['git', 'rev-parse', 'origin/Buick-E5'], text=True
           ).strip()
           assert actual_stable == reviewed_stable, (
               f'E5 stable baseline moved: {actual_stable}; re-review #28 before CI acceptance'
+          )
+          # #77 was a reviewed L1-only release-preflight regression test.
+          # It did not change video/session runtime; reject any other drift.
+          reviewed_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_reviewed, reviewed_stable], text=True
+          ).splitlines())
+          assert reviewed_delta == {'.github/scripts/test_e5_release_preflight.py'}, (
+              f'Unexpected #77 stable delta: {sorted(reviewed_delta)}'
           )
           stable_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', original_base, reviewed_stable], text=True
@@ -73,6 +82,10 @@ jobs:
           assert 'val videoStartSucceeded = videoSender?.start' in controller
           assert 'NO_FIRST_FRAME_6S' in sender and 'NO_FRAMES_15S' in sender
           assert 'FIRST_FRAME_FLUSHED' in sender and 'keepAliveFlushed(now)' in sender
+          # #28 early-exit evidence: CONFIG flush is not proof of a video frame,
+          # and DRAIN_EXIT must be emitted even before the 6s/15s timers.
+          assert 'CONFIG_FLUSHED (first video frame not yet proven)' in sender
+          assert 'DRAIN_EXIT frameCount=$framesSent configFlushed=$configSent' in sender
           assert 'onEnded?.invoke()' in sender
           assert 'output.write(header)' in sender and 'output.write(sealed)' in sender
           assert 'output.flush()' in sender
