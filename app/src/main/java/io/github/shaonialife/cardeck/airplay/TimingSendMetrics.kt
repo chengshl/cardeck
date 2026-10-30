@@ -37,7 +37,7 @@ internal class TimingSendMetrics {
     /** First failed send timestamp is preserved even if subsequent sends succeed. */
     @Synchronized fun responseSendFailed(nowMonoMs: Long) {
         sendError++
-        if (firstSendErrorMonoMs < 0L) firstSendErrorMonoMs = nowMonoMs
+        if (sendError == 1L) firstSendErrorMonoMs = nowMonoMs
     }
 
     /** Fixed-value reason only: stop, receive_error; never an exception message. */
