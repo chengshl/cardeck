@@ -501,7 +501,7 @@ object SessionController {
         if (!shizukuReady) {
             phaseHint = "手机不在车机热点——请到 WLAN 设置加入 ${wifi.ssid}"
             appendLog(
-                ">>> 手机不在车机热点 \"${wifi.ssid}\" 且 Shizuku 未就绪（无法自动加入）——" +
+                ">>> 手机不在车机热点（SSID 已脱敏）且 Shizuku 未就绪（无法自动加入）——" +
                     "请到 系统设置>WLAN 手动加入（密码可点「去连接」复制）",
             )
             return
@@ -603,9 +603,9 @@ object SessionController {
             }
             phaseHint = "正在自动加入车机热点 ${wifi.ssid}…"
             appendLog(
-                ">>> 手机当前 WiFi: ${current ?: "未连接"}（非车机热点）——" +
-                    "经 Shizuku 自动切换到 \"${wifi.ssid}\"。注意：热点无互联网，系统可能自动切回原 WiFi；" +
-                    "若出现断连，请到 系统设置>WLAN 手动连接 \"${wifi.ssid}\"（手动连接不会被切回）",
+                ">>> 当前WiFi存在=${!current.isNullOrBlank()}（非车机热点，SSID 已脱敏）——" +
+                    "经 Shizuku 自动切换到车机热点。注意：热点无互联网，系统可能自动切回原 WiFi；" +
+                    "若出现断连，请到 系统设置>WLAN 手动连接目标热点（SSID 已脱敏；手动连接不会被切回）",
             )
             if (connectCancelled) return@run
             val security =
@@ -616,7 +616,7 @@ object SessionController {
             if (!result.ok) {
                 phaseHint = "自动加入热点失败——请到 WLAN 设置加入 ${wifi.ssid}"
                 appendLog(
-                    "WIFI: connect-network 失败（${result.output.take(80).ifEmpty { "exit=${result.exitCode}" }}）" +
+                    "WIFI: connect-network 失败（exit=${result.exitCode}；outputChars=${result.output.length}；原始输出已脱敏）" +
                         "——请到 系统设置>WLAN 手动加入（密码可点「去连接」复制）",
                 )
                 return@run
@@ -649,7 +649,7 @@ object SessionController {
             )
             appendLog(
                 ">>> WiFi 自动加入超时（可能被系统切回原 WiFi）——" +
-                    "请到 系统设置>WLAN 手动连接 \"${wifi.ssid}\"（手动连接不会被自动切回）",
+                    "请到 系统设置>WLAN 手动连接目标热点（SSID 已脱敏；手动连接不会被自动切回）",
             )
         }
     }
@@ -699,7 +699,7 @@ object SessionController {
         } else if (!connectCancelled) {
             phaseHint = "手机不在车机热点——请到 WLAN 设置加入 ${wifi.ssid}"
             appendLog(
-                ">>> 等待 ${WIFI_BIND_WAIT_S}s 仍未绑定到 \"${wifi.ssid}\"——" +
+                ">>> 等待 ${WIFI_BIND_WAIT_S}s 仍未绑定到车机热点（SSID 已脱敏）——" +
                     "请在 系统设置>WLAN 手动加入该热点后重新连接",
             )
         }
