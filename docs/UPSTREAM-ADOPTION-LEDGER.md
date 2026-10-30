@@ -74,3 +74,28 @@
 | **上游别克 4.0 用户报告**：[Issue #24](https://github.com/shaonialife/cardeck/issues/24) / [#20](https://github.com/shaonialife/cardeck/issues/20) | 同集团部分其他车机报告“声明会发0x4301但仍走旧0x5702/等待0x5703”，可用于分类新旧代际能力，**不等于 2023 E5 B233 的同一失败阶段，也不属于上游已确认的新代码修复**。 | 仅作协议画像参考，不直接变更 E5 当前连接路径。 |
 
 **本轮建议次序**：①优先把 U03 真实链路流回放方法适配到 #33 的离线验证（可直接减少重复实车）；②对 U01 建立“seq109未ACK”和“ACK已确认而0x4301迟到”两类判据，前者不应用后者5分钟兜底；③双端同时出声另行研究安全输出路由；④MFi、关键帧、应用扫描按实际故障证据再启动。**所有上游源码仍只留在 main，不做跨分支整合并。**
+
+## F. 2026-10-30 U03 先行落地：实验线合成回放（未融合）
+
+| 字段 | 本轮权威事实 |
+|---|---|
+| 来源与权利归属 | 上游 `shaonialife/cardeck` [`3095d64e`](https://github.com/shaonialife/cardeck/commit/3095d64ed1fbe2ea6f52b202a80f28d7dd7749d1)，借鉴 `BtLinkReplayTest` / `ScriptedCarStream` 的“脚本输入驱动真实 iAP2 生产路径”**测试方法**，不是原代码的全量 cherry-pick |
+| 目标与实验起点 | `Buick-E5@7945c16254e71c12f2824c7d90e4de960649f6f0`；`experiment/buick-e5-upstream-replay-33-20261030`，Draft [PR #79](https://github.com/chengshl/cardeck/pull/79) |
+| 实际提交 | [`114fe7f4`](https://github.com/chengshl/cardeck/commit/114fe7f485aceea0105fdaff82c82a0751ce20f4) 合成 ACK109 三态回放测试；[`a231048e`](https://github.com/chengshl/cardeck/commit/a231048e42ce35320f6289dcf3cb057d31084438) 新增专项 CI 严格锁定两处测试/工作流文件 |
+| 适配差异与敏感数据边界 | **只有无真实个人标识的合成 CSM 消息 ID**；无原始真实车辆日志、MFi、MAC、AP/SSID、UUID、token、密钥。真实车辆链路序列不应在公开 GitHub 作为原始 fixture；若需要录制回放，先完成私有证据审核、确定性脱敏和覆盖评估。与上游“fixture 不存在即跳过”不同，本次强制三态全部执行。 |
+| 当前测试状态 | 测试/专用 CI 已提交；同一 HEAD `a231048e` 的 [Push CI #41073960624](https://github.com/chengshl/cardeck/actions/runs/41073960624) 与 [PR CI #41074042726](https://github.com/chengshl/cardeck/actions/runs/41074042726) **创建时正在运行，结果以 GitHub 当前状态为准**；[隐私检查 #41074042803](https://github.com/chengshl/cardeck/actions/runs/41074042803) completed/success |
+| 运行/发布与融合 | **未改任何生产代码，未签名、未发 APK，未进行新的设备验收，未合入 Buick-E5 或 Buick 正式分支**；旧 #33 ACK002 实车负向与恢复003待确认不被此测试覆盖。 |
+| 下一门禁 | 精确 HEAD 的测试/CI 全通过 → 代码审查脱敏和 3 fixture 执行断言 → 按当时治理规则决定是否可做 **L2 test-only 选择性融合**；真实录制回放或运行时修复须另行论证，不能以合成测试成功代替。 |
+
+### 上游引用最终融合记录格式（必须在融合当轮填写）
+
+对任何上游功能、测试、协议策略及其借鉴改写，先在 #23 和本文件创建不可抹除来源记录；目标最终合入 `Buick-E5` 或 `Buick` 时，在**对应原记录**追加准确字段，不把“代码在实验线”写成“正式已融合”：
+
+1. `sourceRepo / sourceCommit / upstreamPR / scope`：精确来源，不以“上游最新”代替 SHA；
+2. `adoptionType`：直接移植 / 借鉴改写 / 文件同源 / 行为等价 / 未采用，连同目标与源的具体差异；
+3. `experimentBranch / experimentCommit / PR / CI exact SHA`、通过/失败结果、测试是否真实加载非空 fixtures；
+4. `targetBranch / baseHeadAtMerge / mergeOrCherryPickCommit / mergeTime`：若多个目标分别独立登记；没有目标 commit 就明确**未融合**；
+5. `releaseTag / sourceBranch / versionName / versionCode / signingCheck`（有 APK 才填）；`acceptance`：用户真实设备/实车数据及范围、或纯测试代码门禁不适用的客观理由；区分离线和实机；
+6. `rollback / supersededBy / withdrawn / securityReview`：可执行回退及后续撤回史；有失败继续保留，不覆盖此前状态。
+
+**严格门禁：最终合并时若缺来源或目标 SHA、精确 CI、验收级别与回退，禁止标记“最终融合完毕”**。治理与台账只写在 Buick，本地 E5/Test 不建立分叉记录；GitHub main 只同步上游、不写自有功能或记录。
