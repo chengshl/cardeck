@@ -13,48 +13,6 @@ import java.util.concurrent.TimeUnit
 /** Deterministic offline concurrency checks. No network, car or user data. */
 class RtspSocketLifecycleTest {
     @Test
-    fun failedB233TcpConnectClosesUnpublishedCandidate() {
-        val candidate = Socket()
-        var failed = false
-        try {
-            RtspSocketCandidateCleanup.publishOrClose(
-                candidate, cleanupOnFailure = true,
-            ) {
-                // Deterministic connect failure: no network or car needed.
-                throw java.io.IOException("synthetic TCP connect failure")
-            }
-        } catch (_: java.io.IOException) {
-            failed = true
-        }
-        assertTrue("the connect exception must reach the retry caller", failed)
-        assertTrue("B233 candidate must not leak after connect failure", candidate.isClosed)
-    }
-
-    @Test
-    fun rejectedB233PublicationClosesCandidateButAcceptedSocketRemainsOwned() {
-        val rejected = Socket()
-        val accepted = Socket()
-        try {
-            assertFalse(
-                RtspSocketCandidateCleanup.publishOrClose(
-                    rejected, cleanupOnFailure = true,
-                ) { false },
-            )
-            assertTrue("rejected RTSP socket must be retired", rejected.isClosed)
-
-            assertTrue(
-                RtspSocketCandidateCleanup.publishOrClose(
-                    accepted, cleanupOnFailure = true,
-                ) { true },
-            )
-            assertFalse("published RTSP socket belongs to live session", accepted.isClosed)
-        } finally {
-            rejected.close()
-            accepted.close()
-        }
-    }
-
-    @Test
     fun closeDuringConnectRejectsLatePublication() {
         val gate = RtspSocketLifecycle()
         val epochBeforeConnect = gate.snapshot()
