@@ -42,7 +42,7 @@ jobs:
           git merge-base --is-ancestor "$BASE" HEAD
           CHANGED="$(git diff --name-only "$BASE" HEAD)"
           printf '%s\n' "$CHANGED"
-          BAD="$(printf '%s\n' "$CHANGED" | grep -Ev '^(\.github/workflows/validate-t89-pcm-reverse-rtcp\.yml|app/src/main/java/io/github/shaonialife/cardeck/(airplay/(AirPlayClient|AudioReverseControlPort|B233UdpBindPreflight)|audio/BuickAudioTimingPolicy|SessionController|BuickMenuActivity)\.kt|app/src/test/java/io/github/shaonialife/cardeck/(audio/BuickAudioTimingPolicyTest|airplay/(AudioReverseControlPortTest|B233UdpBindPreflightTest))\.kt)$' || true)"
+          BAD="$(printf '%s\n' "$CHANGED" | grep -Ev '^(\.github/workflows/(validate-t89-pcm-reverse-rtcp|publish-t89-udp-preflight)\.yml|app/src/main/java/io/github/shaonialife/cardeck/(airplay/(AirPlayClient|AudioReverseControlPort|B233UdpBindPreflight)|audio/BuickAudioTimingPolicy|SessionController|BuickMenuActivity)\.kt|app/src/test/java/io/github/shaonialife/cardeck/(audio/BuickAudioTimingPolicyTest|airplay/(AudioReverseControlPortTest|B233UdpBindPreflightTest))\.kt)$' || true)"
           test -z "$BAD" || { echo "::error::T89 out-of-scope changes: $BAD"; exit 1; }
           # The only executable AirPlayClient change from signed T88 must be
           # the one predicate selecting whether the phone advertises a local
@@ -88,6 +88,7 @@ jobs:
           grep -Fq 'b233NetworkForAudioFreePreflight' app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt
           grep -Fq 'networkStillValid' app/src/main/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflight.kt
           grep -Fq 'reportsBindEpermAsInvalidExperimentWithoutOpeningPort' app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt
+          grep -Fq 'CopyOnWriteArrayList' app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt
           # Preflight must never request WiFi or change VPN/audio, or send RTP.
           ! grep -Eq 'requestNetwork|joinCarPlayNetwork|bindProcessToNetwork|AudioSender\\(|runAudioStream\\(|DatagramSocket\\.send\\(' app/src/main/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflight.kt
           echo 'T89 preflight is manual, receive-only, and restricted to an existing B233 audio-free Network.'
