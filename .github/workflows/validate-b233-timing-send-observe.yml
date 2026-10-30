@@ -1,0 +1,79 @@
+name: B233 Timing Send Outcome Observation Offline (isolated)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-timing-send-observe
+    paths:
+      - '.github/workflows/validate-b233-timing-send-observe.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingServer.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingSendMetrics.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/TimingSendMetricsTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validate-b233-timing-send-observe
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify T88 fixed base, diagnostics-only changed files, unchanged protocol implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4eedb7f5c42bdddb3bb23a73146c10b42f29829f
+          git merge-base --is-ancestor "$BASE" HEAD
+          CHANGED="$(git diff --name-only "$BASE" HEAD)"
+          printf '%s\n' "$CHANGED"
+          BAD="$(printf '%s\n' "$CHANGED" | grep -Ev '^(\.github/workflows/validate-b233-timing-send-observe\.yml|app/src/(main/java/io/github/shaonialife/cardeck/airplay/(TimingServer|TimingSendMetrics)|test/java/io/github/shaonialife/cardeck/airplay/TimingSendMetricsTest)\.kt)$' || true)"
+          test -z "$BAD" || { echo "::error::Out-of-scope changes: $BAD"; exit 1; }
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          base = "4eedb7f5c42bdddb3bb23a73146c10b42f29829f"
+          path = "app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingServer.kt"
+          old = subprocess.check_output(["git", "show", f"{base}:{path}"], text=True)
+          new = Path(path).read_text(encoding="utf-8")
+          new_wo_metrics = new.replace("    private val sendMetrics = TimingSendMetrics()\n\n", "", 1)
+          loop_start = "    private fun loop(s: DatagramSocket) {"
+          companion = "    companion object {"
+          if old.split(loop_start)[0] != new_wo_metrics.split(loop_start)[0]:
+              raise SystemExit("TimingServer start/bind/stop changed; forbidden in observation-only run")
+          if old.split(companion,1)[1] != new_wo_metrics.split(companion,1)[1]:
+              raise SystemExit("TimingServer NTP packet/epoch/serialization changed")
+          # Old worker may finish after restart: never aggregate two socket generations.
+          before_loop, after_loop = new.split(loop_start, 1)
+          if "val sendMetrics = TimingSendMetrics()" in before_loop or after_loop.count("val sendMetrics = TimingSendMetrics()") != 1:
+              raise SystemExit("Timing telemetry must be local to each UDP worker generation")
+          for token in ("s.receive(packet)", "buildResponse(request, System.nanoTime())",
+                        "s.send(DatagramPacket(response, response.size, packet.address, packet.port))"):
+              if old.count(token) != 1 or new.count(token) != 1:
+                  raise SystemExit("TimingServer network behavior drift: " + token)
+          before = new.index("s.send(DatagramPacket(")
+          after = new.index("sendMetrics.responseSentOk(", before)
+          if before >= after or "sendMetrics.responseSendFailed(System.nanoTime() / 1_000_000L)" not in new:
+              raise SystemExit("Successful send is not measured after actual send")
+          # A replacement socket must log its own first three outcomes.
+          if "var shouldLog = sendMetrics.snapshot().requestRx <= 3L || now - lastSyncLogAt >= 30_000L" not in new:
+              raise SystemExit("First-three timing send diagnostics must be worker-local")
+          if "if (sendMetrics.snapshot().sendError == 1L) shouldLog = true" not in new:
+              raise SystemExit("First failed send must be observable before 30s throttle")
+          if "lastSuccessAgeMs=" not in new or "firstSendErrorMonoMs=" not in new or "lastSendErrorMonoMs=" not in new:
+              raise SystemExit("First send error and exit-age telemetry absent")
+          print("Read-only telemetry scope and unchanged TimingServer NTP/UDP logic verified")
+          PY
+      - name: Android unit tests, lint and debug compile (no signing or publication)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
