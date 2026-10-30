@@ -16,6 +16,14 @@ class BuickB233ProfilePreserveTest {
         assertFalse(BuickB233Route.isKnownReceiver(null))
     }
 
+    @Test fun legacyT35GuardRemainsActiveForAllCandidates() {
+        // Before BT-A, the T35 target skipped profile disconnect for all candidates.
+        assertFalse(BuickB233Route.shouldDisconnectProfiles(true, false))
+        assertFalse(BuickB233Route.shouldDisconnectProfiles(true, true))
+        assertFalse(BuickB233Route.shouldDisconnectProfiles(false, true))
+        assertTrue(BuickB233Route.shouldDisconnectProfiles(false, false))
+    }
+
     @Test fun protectsOnlyB233CandidateOrExplicitlyMatchedSelection() {
         assertTrue(BuickB233Route.shouldProtectProfiles(hint(9, 9, 9, 9), null, false))
         assertTrue(BuickB233Route.shouldProtectProfiles("RenamedCar", hint(1, 2, 3, 4), true))

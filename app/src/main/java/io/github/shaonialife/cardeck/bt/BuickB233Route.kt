@@ -15,4 +15,8 @@ internal object BuickB233Route {
         selectedMatchesDevice: Boolean,
     ): Boolean = isKnownReceiver(advertisedName) ||
         (selectedMatchesDevice && isKnownReceiver(selectedName))
+
+    /** Keep the pre-existing T35 Buick no-disconnect exception for every candidate. */
+    fun shouldDisconnectProfiles(legacyT35Buick: Boolean, protectB233Profiles: Boolean): Boolean =
+        !legacyT35Buick && !protectB233Profiles
 }
