@@ -38,28 +38,35 @@ jobs:
           # #28 remains an isolated L3 observation PR. Fail closed when the
           # stable source or the reviewed L1-only delta changes.
           original_base = '8271f2a71be7b4acc740c2748bf3281810ea9aa1'
-          previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
-          reviewed_stable = '7945c16254e71c12f2824c7d90e4de960649f6f0'
+          previous_reviewed = '7945c16254e71c12f2824c7d90e4de960649f6f0'
+          reviewed_stable = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
           actual_stable = subprocess.check_output(
               ['git', 'rev-parse', 'origin/Buick-E5'], text=True
           ).strip()
           assert actual_stable == reviewed_stable, (
               f'E5 stable baseline moved: {actual_stable}; re-review #28 before CI acceptance'
           )
-          # #77 was a reviewed L1-only release-preflight regression test.
-          # It did not change video/session runtime; reject any other drift.
+          # Since 7945c162, #79 added only B233 synthetic replay tests/CI
+          # and #82 corrected official release trigger/preflight. Neither
+          # changed VideoSender or SessionController runtime. Reject other drift.
           reviewed_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', previous_reviewed, reviewed_stable], text=True
           ).splitlines())
-          assert reviewed_delta == {'.github/scripts/test_e5_release_preflight.py'}, (
-              f'Unexpected #77 stable delta: {sorted(reviewed_delta)}'
-          )
+          assert reviewed_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+          }, f'Unexpected #79/#82 stable delta: {sorted(reviewed_delta)}'
           stable_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', original_base, reviewed_stable], text=True
           ).splitlines())
           assert stable_delta == {
               '.github/scripts/test_e5_release_preflight.py',
               '.github/workflows/ci-e5-chinese-project-labels.yml',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
               'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
               'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
           }, f'Unexpected stable delta across #28 observation base: {sorted(stable_delta)}'
