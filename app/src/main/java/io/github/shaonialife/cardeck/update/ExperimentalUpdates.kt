@@ -34,7 +34,8 @@ import kotlin.concurrent.thread
  */
 internal object ExperimentalUpdates {
     private const val REPOSITORY = "chengshl/cardeck"
-    private val ui = Handler(Looper.getMainLooper())
+    // Keep pure Release parsing testable without Android's main Looper; UI behavior is unchanged.
+    private val ui by lazy { Handler(Looper.getMainLooper()) }
     private data class Route(val network: Network?)
 
     internal data class Candidate(
