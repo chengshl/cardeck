@@ -88,7 +88,18 @@ jobs:
           assert 'SURFACE_ATTACH_BEGIN' in controller and 'SURFACE_ATTACH_RESULT' in controller
           assert 'val videoStartSucceeded = videoSender?.start' in controller
           assert 'NO_FIRST_FRAME_6S' in sender and 'NO_FRAMES_15S' in sender
-          assert 'FIRST_FRAME_FLUSHED' in sender and 'keepAliveFlushed(now)' in sender
+          assert 'FIRST_FRAME_FLUSHED' in sender and 'keepAliveFlushed(flushedAtMs)' in sender
+          # A stalled socket write/flush must not be measured using the timestamp
+          # captured before the write. Keep the existing 1-second schedule intact.
+          keepalive = sender.split('private fun maybeSendKeepAlive(', 1)[1].split(
+              'private fun sendVideoConfig(', 1
+          )[0]
+          assert keepalive.index('lastKeepAliveAt = now') < keepalive.index('output.write(frame)')
+          assert keepalive.index('output.write(frame)') < keepalive.index('output.flush()')
+          assert keepalive.index('output.flush()') < keepalive.index('val flushedAtMs')
+          assert keepalive.index('val flushedAtMs') < keepalive.index('keepAliveFlushed(flushedAtMs)')
+          assert 'flushDurationMs=$flushDurationMs' in keepalive
+          assert 'keepAliveFlushed(now)' not in keepalive
           # #28 early-exit evidence: CONFIG flush is not proof of a video frame,
           # and DRAIN_EXIT must be emitted even before the 6s/15s timers.
           assert 'CONFIG_FLUSHED (first video frame not yet proven)' in sender
