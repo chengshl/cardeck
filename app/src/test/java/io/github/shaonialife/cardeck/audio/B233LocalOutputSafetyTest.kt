@@ -43,12 +43,20 @@ class B233LocalOutputSafetyTest {
     }
 
     @Test fun onlyOwnedUnchangedMuteMayRestoreOriginal() {
-        assertTrue(B233LocalOutputSafety.restoreOriginalVolume(true, 7, 0, 15))
-        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(false, 7, 0, 15))
-        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, 7, 5, 15))
-        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, 0, 0, 15))
-        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, 16, 0, 15))
-        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, 7, 0, 0))
+        assertTrue(B233LocalOutputSafety.restoreOriginalVolume(true, false, 7, 0, 15))
+        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(false, false, 7, 0, 15))
+        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, false, 7, 5, 15))
+        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, false, 0, 0, 15))
+        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, false, 16, 0, 15))
+        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, false, 7, 0, 0))
+    }
+
+    @Test fun userVolumeChangedThenReturnedToZeroMustNeverBeOverwritten() {
+        // Synthetic sequence: app mute 7 -> 0, user selects 5, then selects 0.
+        // Final zero does not mean the app still owns that volume state.
+        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, true, 7, 0, 15))
+        assertFalse(B233LocalOutputSafety.restoreOriginalVolume(true, true, 7, 5, 15))
+        assertTrue(B233LocalOutputSafety.restoreOriginalVolume(true, false, 7, 0, 15))
     }
 
     @Test fun postMuteCaptureDropRequiresImmediateAbortNotSuccessClaim() {
