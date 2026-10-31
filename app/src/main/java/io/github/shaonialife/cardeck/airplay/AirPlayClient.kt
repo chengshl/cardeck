@@ -573,6 +573,7 @@ class AirPlayClient(
     private fun isSessionAlive(): Boolean = socket?.isClosed == false
 
     fun close() {
+        if (endpoint.isBuickB233) b233ResourceEofEvidence.resetForNewConnection()
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
         runCatching { socket?.close() }
@@ -2589,6 +2590,9 @@ class AirPlayClient(
                 // 读由独立读线程负责（阻塞等数据），请求超时由待响应表的 poll 控制；
                 // 这里若留 soTimeout，读线程会周期性收到 SocketTimeoutException 而退出
                 newSocket.soTimeout = 0
+                // A reused client must start each RTSP connection with empty
+                // resource/EOF evidence, even after an unexpected peer EOF.
+                if (target.isBuickB233) b233ResourceEofEvidence.resetForNewConnection()
                 socket = newSocket
                 activeAddress = address
                 activeHost = addressLiteral(address)
