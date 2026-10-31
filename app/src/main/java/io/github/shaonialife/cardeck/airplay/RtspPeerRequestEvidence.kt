@@ -63,6 +63,29 @@ internal object RtspPeerRequestEvidence {
             target.port <= 65535
     }
 
+    /** B233 path-form peer requests must not consume a local pending CSeq. */
+    fun prioritizePathRequestBeforePendingCseq(startLine: String, isBuickB233: Boolean): Boolean {
+        if (!isBuickB233) return false
+        val fields = startLine.trim().split(Regex("""\s+"""))
+        return fields.size == 3 && fields[1].startsWith("/") &&
+            classify(startLine) != Kind.RESPONSE_OR_UNKNOWN
+    }
+
+    /** B233 diagnostic: never echo a request URI, reason phrase or malformed line. */
+    fun safeUnmatchedStartLine(startLine: String): String {
+        return when (classify(startLine)) {
+            Kind.TEARDOWN -> "peer_request=TEARDOWN"
+            Kind.OTHER_REQUEST -> "peer_request=OTHER"
+            Kind.RESPONSE_OR_UNKNOWN -> {
+                val fields = startLine.trim().split(Regex("""\s+"""))
+                val code = fields.getOrNull(1)
+                if (fields.firstOrNull() == "RTSP/1.0" &&
+                    code != null && code.matches(Regex("""[1-5][0-9]{2}"""))
+                ) "response_status=$code" else "unrecognized"
+            }
+        }
+    }
+
     fun classify(startLine: String): Kind {
         val fields = startLine.trim().split(Regex("""\s+"""))
         if (fields.size != 3 || fields[2] != "RTSP/1.0") return Kind.RESPONSE_OR_UNKNOWN

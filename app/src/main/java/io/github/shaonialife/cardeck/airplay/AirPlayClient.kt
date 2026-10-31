@@ -2843,7 +2843,10 @@ class AirPlayClient(
         val absoluteUriPeerRequest = RtspPeerRequestEvidence.isB233AbsoluteUriRequest(
             statusLine, endpoint.isBuickB233,
         )
-        if (!absoluteUriPeerRequest) {
+        val pathPeerRequest = RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(
+            statusLine, endpoint.isBuickB233,
+        )
+        if (!absoluteUriPeerRequest && !pathPeerRequest) {
             message.cseq?.let { responseHeads[it] = head }
             val queue = message.cseq?.let { pendingResponses[it] }
             if (queue != null) {
@@ -2858,9 +2861,12 @@ class AirPlayClient(
         if (!absoluteUriPeerRequest) {
             unmatchedMessages++
             if (unmatchedMessages <= 5) {
+                val safeStartLine = if (endpoint.isBuickB233) {
+                    RtspPeerRequestEvidence.safeUnmatchedStartLine(statusLine)
+                } else statusLine
                 log(
                     "AIRPLAY: 控制通道无匹配报文（#$unmatchedMessages）" +
-                        "[$statusLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
+                        "[$safeStartLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
                 )
             }
         }

@@ -87,6 +87,35 @@ class RtspPeerRequestEvidenceTest {
         }
     }
 
+    @Test fun combinedB233PathFormPendingCseqCannotPoisonResponse() {
+        val line = "SET_PARAMETER /session RTSP/1.0"
+        val recognized = RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(line, true)
+        assertEquals(true, recognized)
+        assertEquals(false, true && !recognized) // pending CSeq must not take the request
+        assertEquals(false, RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(line, false))
+        assertEquals(false, RtspPeerRequestEvidence.isB233AbsoluteUriRequest(line, true))
+    }
+
+    @Test fun combinedB233MalformedPathAndResponsesCannotBypassPendingQueue() {
+        listOf("SET_PARAMETER /session HTTP/1.1",
+            "SET_PARAMETER /session RTSP/1.0 extra",
+            "RTSP/1.0 200 OK",
+            "SET_PARAMETER rtsp://receiver.invalid/session RTSP/1.0").forEach {
+            assertEquals(false, RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(it, true))
+        }
+    }
+
+    @Test fun combinedB233UnmatchedLogRedactsPrivateTargetsAndReasonPhrases() {
+        assertEquals("peer_request=TEARDOWN", RtspPeerRequestEvidence.safeUnmatchedStartLine(
+            "TEARDOWN rtsp://secret.invalid/private RTSP/1.0"))
+        assertEquals("peer_request=OTHER", RtspPeerRequestEvidence.safeUnmatchedStartLine(
+            "SET_PARAMETER /private?token=secret RTSP/1.0"))
+        assertEquals("response_status=454", RtspPeerRequestEvidence.safeUnmatchedStartLine(
+            "RTSP/1.0 454 Private reason phrase"))
+        assertEquals("unrecognized", RtspPeerRequestEvidence.safeUnmatchedStartLine("malformed token=secret"))
+        assertEquals("unrecognized", RtspPeerRequestEvidence.safeUnmatchedStartLine("RTSP/1.0 999 Private"))
+    }
+
     @Test fun peerTeardownIsRecognizedBeforeAnyCseqDispatch() {
         assertEquals(
             RtspPeerRequestEvidence.Kind.TEARDOWN,

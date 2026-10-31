@@ -1,4 +1,4 @@
-name: B233 RTSP absolute URI peer ACK isolation (test only)
+name: B233 RTSP peer dispatch integration and privacy (offline)
 
 on:
   pull_request:
@@ -64,6 +64,16 @@ jobs:
           assert 'message.cseq?.let { responseHeads[it] = head }' in dispatch
           assert 'CSeq: $it' in dispatch and 'Content-Length: 0' in dispatch
           assert 'if (!isBuickB233) return false' in helper
+          assert 'val pathPeerRequest = RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(' in dispatch
+          assert dispatch.index('val pathPeerRequest =') < dispatch.index('val queue =')
+          assert 'if (!absoluteUriPeerRequest && !pathPeerRequest) {' in dispatch
+          assert 'RtspPeerRequestEvidence.safeUnmatchedStartLine(statusLine)' in dispatch
+          assert '[$safeStartLine]' in dispatch and '[$statusLine]' not in dispatch
+          for name in ('combinedB233PathFormPendingCseqCannotPoisonResponse',
+                       'combinedB233MalformedPathAndResponsesCannotBypassPendingQueue',
+                       'combinedB233UnmatchedLogRedactsPrivateTargetsAndReasonPhrases'):
+              assert name in tests
+          assert 'fun safeUnmatchedStartLine(startLine: String)' in helper
           assert 'fields[1].startsWith("rtsp://")' in helper
           assert 'classify(startLine) == Kind.RESPONSE_OR_UNKNOWN' in helper
           assert 'java.net.URI(fields[1])' in helper
@@ -99,4 +109,5 @@ jobs:
         run: |
           ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
 
-# Offline L3 experiment only. No signing, release, merge or real-car claim.
+# Offline L3 integration: #71 path-form + #87 privacy + #88 absolute-URI.
+# No signing, release, stable merge or real-car claim.
