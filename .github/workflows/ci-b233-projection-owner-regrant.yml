@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: b233-projection-owner-${{ github.event.pull_request.number || github.ref }}
@@ -31,13 +32,19 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Exact T89 ancestry, four-file source scope and FGS fail-closed wiring
+      - name: Exact T89 ancestry, validated code and workflow-only follow-up
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
-          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
-          git diff --name-only "$BASE" HEAD > /tmp/projection-scope
+          VALIDATED=3a70cad100cd6e0e3aac7e2700c16f80738b4834
+          git merge-base --is-ancestor "$BASE" "$VALIDATED"
+          git merge-base --is-ancestor "$VALIDATED" HEAD
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq .head_sha)" = "$VALIDATED"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq .conclusion)" = success
+          git diff --name-only "$BASE" "$VALIDATED" > /tmp/projection-scope
           test "$(wc -l < /tmp/projection-scope)" -eq 4
           while IFS= read -r f; do
             case "$f" in
@@ -45,6 +52,16 @@ jobs:
               *) echo "out-of-scope file: $f"; exit 1 ;;
             esac
           done < /tmp/projection-scope
+          # Exact signed source is frozen; only the independent publish workflow
+          # and this CI gate may change after its already-successful HEAD.
+          git diff --name-only "$VALIDATED" HEAD > /tmp/projection-workflow-only
+          test "$(wc -l < /tmp/projection-workflow-only)" -eq 2
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-projection-owner-regrant.yml|.github/workflows/publish-t91-projection-regrant.yml) ;;
+              *) echo "::error::Unexpected post-validation code: $file"; exit 1 ;;
+            esac
+          done < /tmp/projection-workflow-only
           git diff --check "$BASE" HEAD
           python3 - <<'PY'
           from pathlib import Path
