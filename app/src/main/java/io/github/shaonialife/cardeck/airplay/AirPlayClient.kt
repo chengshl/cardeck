@@ -2847,9 +2847,15 @@ class AirPlayClient(
         // 仅节流留痕，不静默丢弃——此前同步实现会把它错当成前一个请求的应答。
         unmatchedMessages++
         if (unmatchedMessages <= 5) {
+            // B233 peer request targets and response reason phrases may contain
+            // receiver-specific or private data. Log only a fixed classification
+            // and validated status code; keep legacy receiver behavior intact.
+            val diagnosticStartLine =
+                if (endpoint.isBuickB233) RtspPeerRequestEvidence.safeUnmatchedStartLine(statusLine)
+                else statusLine
             log(
                 "AIRPLAY: 控制通道无匹配报文（#$unmatchedMessages）" +
-                    "[$statusLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
+                    "[$diagnosticStartLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
             )
         }
         if (message.isRequest) {
