@@ -152,6 +152,11 @@ jobs:
           ]:
               assert expected.count(before_text) == 1, f'{name} original block missing or ambiguous'
               expected = expected.replace(before_text, after_text)
+          concurrent_before = '\n'.join(["            val published = synchronized(dataPortLock) {","                if (dataPortEpoch != epochAtConnect) {","                    false","                } else {","                    socket = client","                    true","                }","            }","            if (!published) {","                // stop() ran while connectTcp() was blocking; do not resurrect its socket.","                runCatching { client.close() }","                return false","            }","            pendingSocket = null"])
+          concurrent_after = '\n'.join(["            val publication = synchronized(dataPortLock) {","                when {","                    dataPortEpoch != epochAtConnect -> \"stale\"","                    socket?.isClosed == false -> \"existing\"","                    else -> {","                        socket = client","                        \"published\"","                    }","                }","            }","            if (publication != \"published\") {","                // A concurrent openDataPort() must not replace or leak the live socket.","                runCatching { client.close() }","                return publication == \"existing\"","            }","            pendingSocket = null"])
+          assert expected.count(concurrent_before) == 1, 'Expected single old socket publication block'
+          expected = expected.replace(concurrent_before, concurrent_after)
+          assert 'socket?.isClosed == false -> "existing"' in new
           assert new == expected, 'Unexpected change outside reviewed video startup/stop ownership guards'
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
           assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
