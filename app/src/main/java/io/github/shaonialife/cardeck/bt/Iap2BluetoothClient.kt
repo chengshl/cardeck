@@ -103,9 +103,14 @@ class Iap2BluetoothClient(
             log("BT-C: 蓝牙不可用或未开启")
             return false
         }
-        running = true
-        val myGeneration = generation.incrementAndGet()
-        val target = targetProvider()
+        // Read the selected target and log it before publishing running=true.
+        // A failing provider/logger must never leave a phantom running worker.
+        val target = try {
+            targetProvider()
+        } catch (error: Exception) {
+            log("BT-C: 读取目标失败（${error.javaClass.simpleName}）")
+            return false
+        }
         log(
             "BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）" +
                 if (target != null) {
@@ -114,12 +119,24 @@ class Iap2BluetoothClient(
                     "（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）"
                 },
         )
-        Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
-            isDaemon = true
-            thread = this
-            start()
+        running = true
+        val myGeneration = generation.incrementAndGet()
+        return try {
+            Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
+                isDaemon = true
+                thread = this
+                start()
+            }
+            true
+        } catch (error: Exception) {
+            // start() and stop() share this lifecycle lock. A worker that never
+            // started cannot be retired by the normal worker finally block.
+            running = false
+            generation.incrementAndGet()
+            thread = null
+            log("BT-C: 连接线程启动失败（${error.javaClass.simpleName}）")
+            false
         }
-        return true
     }
 
     // Own the worker's exit even when BluetoothManager disappears or an
