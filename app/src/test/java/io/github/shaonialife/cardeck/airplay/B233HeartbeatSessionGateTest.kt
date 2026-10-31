@@ -113,6 +113,21 @@ class B233HeartbeatSessionGateTest {
     }
 
     @Test
+    fun retirementBeforeReaderSetupCannotDisplaceNewSessionReader() {
+        val gate = B233HeartbeatSessionGate()
+        val oldToken = gate.snapshot()
+        val oldSocket = Any()
+        val captured = gate.captureIfCurrent(oldToken) { oldSocket }
+        // A later reconnect publishes another socket before the old request
+        // acquires its RTSP write lock to invoke startReader().
+        gate.retire()
+        val newSocket = Any()
+        val mayBindReader = gate.isCurrent(oldToken) && captured === newSocket
+        assertFalse(mayBindReader)
+        assertTrue(gate.captureIfCurrent(gate.snapshot()) { newSocket } === newSocket)
+    }
+
+    @Test
     fun retirementIsNotBlockedByPausedRtspWriteAfterSocketCapture() {
         val gate = B233HeartbeatSessionGate()
         val token = gate.snapshot()
