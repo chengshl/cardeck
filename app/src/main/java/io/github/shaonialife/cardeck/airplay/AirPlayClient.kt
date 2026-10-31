@@ -2690,15 +2690,30 @@ class AirPlayClient(
         val startedAt = SystemClock.uptimeMillis()
         val queue = java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>(1)
         var cseq = -1
-        // For B233 heartbeat requests, bind reader + CSeq + write to the
-        // captured RTSP session under the same gate that close() retires.
-        // This closes the check-then-use race where an old worker could pass
-        // its loop guard, pause, then capture a replacement socket after reconnect.
-        val writeRequest = {
-            val client = socket ?: throw IOException("未连接")
-            startReader(client)
-            synchronized(rtspWriteLock) {
-                cseq = ++cSeq
+        // For B233 heartbeat requests, atomically capture the old session's
+        // socket before writing. No blocking TCP operation may hold the
+        // session gate, or close() could be prevented from tearing it down.
+        val client =
+            if (expectedB233SessionToken != null) {
+                // Capture only the session-owned socket while close() cannot
+                // retire the token. Never hold the gate across TCP write/flush:
+                // a blocked write must not prevent close() from closing it.
+                b233HeartbeatSessionGate.captureIfCurrent(expectedB233SessionToken) {
+                    (socket ?: throw IOException("未连接")).also { startReader(it) }
+                } ?: throw IOException("B233 心跳所属 RTSP 会话已退役")
+            } else {
+                (socket ?: throw IOException("未连接")).also { startReader(it) }
+            }
+        synchronized(rtspWriteLock) {
+            // If the socket was retired after capture, fail before writing.
+            // A later close can race with write, but it will only close the
+            // *captured old socket*, never route this worker to a new session.
+            if (expectedB233SessionToken != null &&
+                !b233HeartbeatSessionGate.isCurrent(expectedB233SessionToken)
+            ) {
+                throw IOException("B233 心跳所属 RTSP 会话已退役")
+            }
+            cseq = ++cSeq
                 // 先登记再写：响应可能在 write 返回前就到达
                 pendingResponses[cseq] = queue
                 try {
@@ -2727,13 +2742,6 @@ class AirPlayClient(
                     throw error
                 }
             }
-        }
-        if (expectedB233SessionToken != null) {
-            if (!b233HeartbeatSessionGate.runIfCurrent(expectedB233SessionToken, writeRequest)) {
-                throw IOException("B233 心跳所属 RTSP 会话已退役")
-            }
-        } else {
-            writeRequest()
         }
         val response =
             try {
