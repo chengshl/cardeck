@@ -53,7 +53,7 @@ class B233ModeReplySummaryTest {
         val invalid = B233ModeReplySummary.describe("not plist".toByteArray())
         assertTrue(invalid.contains("unrecognized"))
         assertTrue(invalid.contains("unverified"))
-        val huge = B233ModeReplySummary.describe(ByteArray(4097) { 0x61 })
+        val huge = B233ModeReplySummary.describe(ByteArray(4097) { 0x61.toByte() })
         assertEquals("body=over-limit ownership=unverified", huge)
     }
 
