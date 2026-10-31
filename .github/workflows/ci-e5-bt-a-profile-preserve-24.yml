@@ -88,7 +88,7 @@ jobs:
           assert 'test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"' in release
           # A signed L3 candidate must never be published without an independently
           # installable, higher-version, same-signed original-E5 recovery APK.
-          assert '  workflow_dispatch:' in release and '\\n  push:' not in release
+          assert '  workflow_dispatch:' in release and '  push:' not in release.splitlines()
           assert 'EXP_TAG="exp-buick-e5-bt-a-profile-preserve-24-$EXP_NAME"' in release
           assert 'REST_TAG="e5-stable-restore-bt-a-24-$CARDECK_RELEASE_VERSION_NAME"' in release
           assert 'GITHUB_REF_NAME=Buick-E5' in release
