@@ -221,11 +221,24 @@ class VideoSender(
         // paths inside try/finally so a failed getOutputStream() cannot crash
         // the drain thread or skip session retirement.
         try {
-            val codec = encoder ?: run {
+            // A retired drain must not pick up a newer session's codec/socket.
+            // Snapshot both resources under the same lock used by start()/stop().
+            val resources = synchronized(startupLock) {
+                if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != epoch }) {
+                    null
+                } else {
+                    Pair(encoder, socket)
+                }
+            }
+            if (resources == null) {
+                log("VIDEO: 推流启动中止 - 会话已过期")
+                return
+            }
+            val codec = resources.first ?: run {
                 log("VIDEO: 推流启动中止 - 编码器已释放")
                 return
             }
-            val output = socket?.getOutputStream() ?: run {
+            val output = resources.second?.getOutputStream() ?: run {
                 log("VIDEO: 推流启动中止 - 数据端口已关闭")
                 return
             }
