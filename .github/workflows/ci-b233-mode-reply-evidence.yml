@@ -1,0 +1,77 @@
+name: B233 modesChanged response evidence (offline only)
+
+on:
+  pull_request:
+    branches: [experiment/buick-b233-projection-owner-regrant-guard]
+    paths:
+      - '.github/workflows/ci-b233-mode-reply-evidence.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummary.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummaryTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: b233-mode-reply-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact signed T91 ancestor, three-file + CI scope and privacy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=5565df378ad139ebbb7902068dd273bb09b25149
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41183730099 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41183730099 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD > /tmp/t93-scope
+          test "$(wc -l < /tmp/t93-scope)" -eq 4
+          while IFS= read -r f; do
+            case "$f" in
+              .github/workflows/ci-b233-mode-reply-evidence.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummary.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummaryTest.kt) ;;
+              *) echo "::error::out-of-scope: $f"; exit 1 ;;
+            esac
+          done < /tmp/t93-scope
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          summary = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummary.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummaryTest.kt').read_text()
+          method = src.split('fun assertModes(claimAudioResource: Boolean = true): Boolean {',1)[1].split('    /**',1)[0]
+          assert 'val (statusLine, replyBody)' in method
+          assert 'if (endpoint.isBuickB233)' in method
+          assert 'B233ModeReplySummary.describe(replyBody)' in method
+          assert 'statusLine.contains("200")' in method
+          assert 'MAX_PLIST_BYTES = 4096' in summary
+          assert 'ownership=unverified' in summary
+          assert 'secret' in tests and 'invalidAndOversizePayloadsAreBoundedAndNonfatal' in tests
+          # The signed T91 already has actual B233 credential suppression.
+          assert 'channel.suppressSensitiveRawFrames()' in Path('app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt').read_text()
+          PY
+      - name: B233 response-summary privacy regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233ModeReplySummaryTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# No signed APK, Release, car acceptance, upstream or stable merge.
