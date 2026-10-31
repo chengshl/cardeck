@@ -86,9 +86,22 @@ jobs:
           assert "versionCode='$CARDECK_BUILD_VERSION_CODE'" in release
           assert "versionName='$CARDECK_RELEASE_VERSION_NAME'" in release
           assert 'test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"' in release
-          assert 'TAG="exp-buick-e5-bt-a-profile-preserve-24-$CARDECK_RELEASE_VERSION_NAME"' in release
+          # A signed L3 candidate must never be published without an independently
+          # installable, higher-version, same-signed original-E5 recovery APK.
+          assert '  workflow_dispatch:' in release and '\\n  push:' not in release
+          assert 'EXP_TAG="exp-buick-e5-bt-a-profile-preserve-24-$EXP_NAME"' in release
+          assert 'REST_TAG="e5-stable-restore-bt-a-24-$CARDECK_RELEASE_VERSION_NAME"' in release
+          assert 'GITHUB_REF_NAME=Buick-E5' in release
+          assert 'GITHUB_SHA=5e565a08b228d157ff1d739f38b8c09fad80f8a5' in release
+          assert 'test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"' in release
+          assert 'test "${REC_CERT,,}" = "${EXP_CERT,,}"' in release
+          assert 'sha256sum CarDeck-Buick-E5-BT-A-Stable-Restore.apk' in release
+          assert release.index('gh release create "$REST_TAG"') < release.index('gh release create "$EXP_TAG"')
+          assert 'recoveryFor=%s' in release and 'recoveryTag=%s' in release
+          assert 'sourceBranch=work/e5-bt-a-profile-preserve-24-20261030' in release
           assert 'baseBranch=Buick-E5' in release and 'artifactKind=experiment' in release
-          assert 'updaterSchema=2' in release and 'sourceBranch=%s' in release
+          assert 'updaterSchema=2' in release and 'artifactKind=recovery' in release
+          assert '持续采集运行超过4小时' not in release, 'Stale Rescue acceptance copied into BT-A release notes'
 
           old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + client], text=True)
           new = Path(client).read_text()
