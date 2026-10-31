@@ -25,7 +25,7 @@ internal object RtspPeerRequestEvidence {
      */
     fun isB233AbsoluteUriRequest(startLine: String, isBuickB233: Boolean): Boolean {
         if (!isBuickB233) return false
-        val fields = startLine.trim().split(Regex("""\\s+"""))
+        val fields = startLine.trim().split(Regex("""\s+"""))
         return fields.size == 3 &&
             fields[1].startsWith("rtsp://") &&
             fields[1].length > "rtsp://".length &&
