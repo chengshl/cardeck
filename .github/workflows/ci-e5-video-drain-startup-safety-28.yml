@@ -297,6 +297,22 @@ jobs:
               expected = expected.replace(old_text, new_text)
           assert new.count('openDataPortForEpoch(startEpoch)') == 1
           assert new.count('if (requiredEpoch != null && dataPortEpoch != requiredEpoch) return false') == 1
+          # A synchronous onSurfaceReady callback may stop() and start() the
+          # same sender. running=true alone cannot identify the original epoch.
+          # Verify the complete previous reviewed source before the sole change.
+          reviewed_source = subprocess.check_output(
+              ['git', 'show', '101a15811e81afd7ad031e8e3e9cd0c3b1af8426:' + source_path],
+              text=True,
+          )
+          assert expected == reviewed_source, 'Reviewed #83 callback baseline drifted'
+          callback_before = """                // onSurfaceReady may synchronously stop this sender; never spawn a retired drain.
+                if (!running.get()) return@synchronized false"""
+          callback_after = """                // onSurfaceReady may stop and restart this sender; never launch the old epoch's drain.
+                if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != startEpoch }) {
+                    return@synchronized false
+                }"""
+          assert expected.count(callback_before) == 1, 'Original callback retirement guard ambiguous'
+          expected = expected.replace(callback_before, callback_after)
           assert new == expected, 'Unexpected change outside reviewed drain epoch fence'
           assert new.count('Pair(encoder, socket)') == 1
           assert new.count('dataPortEpoch != epoch })') == 2
