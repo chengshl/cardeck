@@ -2853,12 +2853,16 @@ class AirPlayClient(
         }
         // 无匹配：车机可能在控制通道上发自己的请求（须回 200 否则它会拆通道）。
         // 仅节流留痕，不静默丢弃——此前同步实现会把它错当成前一个请求的应答。
-        unmatchedMessages++
-        if (unmatchedMessages <= 5) {
-            log(
-                "AIRPLAY: 控制通道无匹配报文（#$unmatchedMessages）" +
-                    "[$statusLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
-            )
+        // An accepted absolute-URI peer request is not an unmatched reply.
+        // Never echo its potentially sensitive URI in the legacy raw-line log.
+        if (!absoluteUriPeerRequest) {
+            unmatchedMessages++
+            if (unmatchedMessages <= 5) {
+                log(
+                    "AIRPLAY: 控制通道无匹配报文（#$unmatchedMessages）" +
+                        "[$statusLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
+                )
+            }
         }
         if (message.isRequest || absoluteUriPeerRequest) {
             // 复用请求 CSeq 回空应答（与事件通道同一约定）
