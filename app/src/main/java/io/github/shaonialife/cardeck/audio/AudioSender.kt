@@ -79,6 +79,8 @@ class AudioSender(
     private val failureTrace: AudioFailureTrace? = null,
     /** T77: user-selected B233-only 35s test signal, default false. Never enabled silently. */
     private val diagnosticToneEnabled: Boolean = false,
+    /** B233 only: preserve partial AudioRecord reads instead of dropping samples. */
+    private val completePartialPcmReads: Boolean = false,
 ) {
     companion object {
         const val CHANNELS = 2
@@ -523,6 +525,7 @@ class AudioSender(
         val recorder = record ?: return
         val frameBytes = framePcmBytes
         val pcm = ByteArray(frameBytes)
+        val readWindow = if (completePartialPcmReads) PcmCaptureFrameWindow(frameBytes) else null
         // T77: uses AudioRecord only as a pacing clock, never changes RTP codec/SETUP/RTCP.
         // Injection happens only after the user expressly chooses the diagnostic-signal option.
         val diagnosticTone = if (diagnosticToneEnabled) DiagnosticPcmTone(sampleRate) else null
@@ -536,23 +539,48 @@ class AudioSender(
         val diagnosticStride = if (codec == AudioCodec.AAC_LC) 600 else 1875
         try {
             while (running.get()) {
-                val read =
+                val bytesRead =
                     try {
-                        recorder.read(pcm, 0, pcm.size, AudioRecord.READ_BLOCKING)
+                        recorder.read(
+                            pcm,
+                            readWindow?.offset ?: 0,
+                            readWindow?.remaining ?: pcm.size,
+                            AudioRecord.READ_BLOCKING,
+                        )
                     } catch (error: Exception) {
                         log("AUDIO: 采集读取异常 - ${error.message}")
                         break
                     }
-                if (read < 0) {
+                if (bytesRead < 0) {
+                    // A partial frame from the previous successful read is
+                    // invalid after an AudioRecord error, never splice it into
+                    // the next RTP frame.
+                    readWindow?.discard()
                     readFailures++
                     if (readFailures == 1 || readFailures % 100 == 0) {
-                        log("AUDIO: 采集错误码 $read（连续 $readFailures 次）")
+                        log("AUDIO: 采集错误码 $bytesRead（连续 $readFailures 次）")
                     }
                     if (readFailures > 500) break
                     Thread.sleep(READ_TIMEOUT_QUIET_MILLIS)
                     continue
                 }
-                if (read < frameBytes) continue // 残包（缓冲尾部）：丢弃，等下一个整包
+                val read =
+                    if (readWindow == null) {
+                        // All other receivers keep the exact old capture logic.
+                        if (bytesRead < frameBytes) continue
+                        bytesRead
+                    } else {
+                        // Wait for one complete s16 frame before encoding,
+                        // timestamp advancement, nonce consumption or RTP send.
+                        // READ_BLOCKING normally fills the frame but the Android
+                        // API permits short reads when recording is interrupted.
+                        if (bytesRead == 0) {
+                            Thread.sleep(READ_TIMEOUT_QUIET_MILLIS)
+                            continue
+                        }
+                        if (!readWindow.accept(bytesRead)) continue
+                        frameBytes
+                    }
                 readFailures = 0
                 if (diagnosticTone != null) {
                     if (android.os.SystemClock.uptimeMillis() - toneStartedAtMs < 35_000L) {
