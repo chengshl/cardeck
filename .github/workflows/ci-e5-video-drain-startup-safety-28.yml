@@ -171,7 +171,7 @@ jobs:
           ])
           assert expected.count(null_buffer_before) == 1, 'MediaCodec null slot baseline drift'
           expected = expected.replace(null_buffer_before, null_buffer_after)
-          assert new.count('codec.releaseOutputBuffer(index, false)') == 2
+          assert new.count('codec.releaseOutputBuffer(index, false)') == 3
           assert 'socket?.isClosed == false -> "existing"' in new
           # Replay the #28 start/stop ownership race fix byte-for-byte from reviewed HEAD.
           previous_head = '9d20738193b9997365607c1e7389919d453c14f6'
@@ -248,9 +248,24 @@ jobs:
           release_after = "                        val flags = bufferInfo.flags\n                        try {\n                            if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                                sendVideoConfig(buffer, bufferInfo.size, output)\n                            } else if (bufferInfo.size > 0) {\n                                sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                            }\n                        } finally {\n                            // dequeueOutputBuffer transferred this slot even if frame writing fails.\n                            codec.releaseOutputBuffer(index, false)\n                        }\n                        maybeSendKeepAlive(output)"
           assert expected.count(release_before) == 1, 'Original output slot release block ambiguous'
           expected = expected.replace(release_before, release_after)
-          assert new == expected, 'Unexpected change outside reviewed drain resource snapshot guard'
+          # An old worker can wake after stop() and a newer start() sets running=true.
+          # Replay only the epoch fence around dequeue and the post-dequeue slot return.
+          prior_epoch_head = '8d1948ee65d278c57870cd131b939ead907b9172'
+          prior_epoch_source = subprocess.check_output(
+              ['git', 'show', prior_epoch_head + ':' + source_path], text=True
+          )
+          assert expected == prior_epoch_source, 'Reviewed #83 output-slot baseline drifted'
+          epoch_loop_before = '            while (running.get()) {'
+          epoch_loop_after = '            // A prior drain must not resume when stop() is followed by a new start().\n            while (running.get() && synchronized(dataPortLock) { dataPortEpoch == epoch }) {'
+          assert expected.count(epoch_loop_before) == 1, 'Original drain loop missing'
+          expected = expected.replace(epoch_loop_before, epoch_loop_after)
+          epoch_when_before = '                when {\n                    index == MediaCodec.INFO_TRY_AGAIN_LATER -> {'
+          epoch_when_after = '                // stop()/start() may race with a blocking dequeue. Never send an\n                // old-session buffer to a retired socket after the epoch changes.\n                if (synchronized(dataPortLock) { dataPortEpoch != epoch }) {\n                    if (index >= 0) runCatching { codec.releaseOutputBuffer(index, false) }\n                    break\n                }\n                when {\n                    index == MediaCodec.INFO_TRY_AGAIN_LATER -> {'
+          assert expected.count(epoch_when_before) == 1, 'Original post-dequeue dispatch missing'
+          expected = expected.replace(epoch_when_before, epoch_when_after)
+          assert new == expected, 'Unexpected change outside reviewed drain epoch fence'
           assert new.count('Pair(encoder, socket)') == 1
-          assert new.count('dataPortEpoch != epoch })') == 1
+          assert new.count('dataPortEpoch != epoch })') == 2
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
           assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
           assert start.index('inputSurface = surface') < start.index('codec.start()')
