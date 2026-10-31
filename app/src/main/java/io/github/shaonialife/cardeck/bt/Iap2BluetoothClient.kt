@@ -312,11 +312,22 @@ class Iap2BluetoothClient(
             runCatching { socket.close() }
             return
         }
-        val stream =
-            StreamDuplexStream(socket.inputStream, socket.outputStream) {
+        // BluetoothSocket stream acquisition and channel construction can throw
+        // before the session's normal finally block is entered. Retire only this
+        // generation's socket, so the connect loop can recover without a leak.
+        val channel =
+            try {
+                val stream =
+                    StreamDuplexStream(socket.inputStream, socket.outputStream) {
+                        runCatching { socket.close() }
+                    }
+                Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
+            } catch (error: Exception) {
+                currentSocket.compareAndSet(socket, null)
                 runCatching { socket.close() }
+                log("BT-C: 控制通道初始化失败（${error.javaClass.simpleName}；仅释放本轮连接）")
+                return
             }
-        val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
         // A late old worker must not overwrite the new generation's channel.
         if (!activeChannel.compareAndSet(null, channel)) {
             currentSocket.compareAndSet(socket, null)
