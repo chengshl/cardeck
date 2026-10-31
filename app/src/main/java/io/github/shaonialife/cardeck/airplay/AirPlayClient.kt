@@ -28,6 +28,32 @@ import java.util.Base64
 import java.util.UUID
 
 /**
+ * Allowlisted, bounded /feedback diagnostics. This is deliberately separate
+ * from playback-clock extraction and never affects RTSP/session behavior.
+ */
+internal fun safeAudioFeedbackLogLines(body: ByteArray): List<String> {
+    val root = runCatching { BinaryPlist.parse(body) as? Map<*, *> }.getOrNull()
+        ?: return listOf("AIRPLAY: feedback body 解析失败（${body.size}B）")
+    val streams = root["streams"] as? List<*>
+        ?: return listOf("AIRPLAY: feedback 无 streams（${body.size}B）")
+    fun numberOnly(value: Any?): String = when (value) {
+        is Byte, is Short, is Int, is Long -> value.toString()
+        is Float -> if (value.isFinite()) value.toString() else "invalid"
+        is Double -> if (value.isFinite()) value.toString() else "invalid"
+        else -> "invalid"
+    }
+    val lines = streams.take(8).mapIndexed { index, entry ->
+        val stream = entry as? Map<*, *>
+            ?: return@mapIndexed "AIRPLAY: feedback.stream[$index] invalid"
+        "AIRPLAY: feedback.stream[$index] " +
+            "type=${numberOnly(stream["type"])} sr=${numberOnly(stream["sr"])} " +
+            "sampleTime=${numberOnly(stream["sampleTime"])} " +
+            "ts=${numberOnly(stream["timestamp"])} tsRawNs=${numberOnly(stream["timestampRawNs"])}"
+    }
+    return if (streams.size > 8) lines + "AIRPLAY: feedback streams truncated count=${streams.size}" else lines
+}
+
+/**
  * AirPlay 客户端（Phase 2）：
  *  - /info 能力清单拉取与 bplist 解析
  *  - /pair-setup + /pair-verify 完整配对（持久 RTSP 连接上顺序 POST TLV8）
@@ -529,29 +555,10 @@ class AirPlayClient(
         }
     }
 
-    /** 解析并打印 /feedback 应答（bplist）。字段对照 catplay `StreamFeedback`：
-     *  sr / type / streamConnectionID / sampleTime / timestamp / timestampRawNs
-     *  （没有包计数——车机回的是自己侧的播放时钟，可据此判断音频流是否被推进）。 */
+    /** Diagnostic-only /feedback view: never publish raw bplist, unknown fields,
+     *  streamConnectionID, or arbitrary values to uploadable logs. */
     private fun logFeedbackBody(body: ByteArray) {
-        val root =
-            runCatching { BinaryPlist.parse(body) as? Map<*, *> }.getOrNull()
-        if (root == null) {
-            log("AIRPLAY: feedback body 解析失败（${body.size}B）hex=${body.joinToString("") { "%02x".format(it) }}")
-            return
-        }
-        val streams = root["streams"] as? List<*>
-        if (streams == null) {
-            log("AIRPLAY: feedback 无 streams 键（keys=${root.keys}）全字段=$root")
-            return
-        }
-        streams.forEachIndexed { index, entry ->
-            val stream = entry as? Map<*, *> ?: return@forEachIndexed
-            log(
-                "AIRPLAY: feedback.stream[$index] type=${stream["type"]} sr=${stream["sr"]} " +
-                    "connId=${stream["streamConnectionID"]} sampleTime=${stream["sampleTime"]} " +
-                    "ts=${stream["timestamp"]} tsRawNs=${stream["timestampRawNs"]} 全字段=$stream",
-            )
-        }
+        safeAudioFeedbackLogLines(body).forEach(log)
     }
 
     /** 心跳线程的存活判据：RTSP socket 仍连着。 */
@@ -732,13 +739,19 @@ class AirPlayClient(
                 ),
             )
         return try {
-            val (statusLine, _) =
+            val (statusLine, replyBody) =
                 request(
                     "POST",
                     "/command",
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
+            // T95: transport 200 is not evidence of main-audio ownership.
+            // The decoder emits only bounded allowlisted shape, no peer IDs.
+            if (endpoint.isBuickB233) {
+                log("AUDIO T95: modesChanged reply " +
+                    B233ModeReplySummary.describe(replyBody))
+            }
             log(
                 "AIRPLAY T26: modesChanged（主屏=CarPlay，主音频=" +
                     (if (claimAudioResource) "CarPlay" else "未声明/保留普通蓝牙 A2DP") +
