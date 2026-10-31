@@ -10,12 +10,19 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import io.github.shaonialife.cardeck.airplay.B233UdpBindPreflight
+import io.github.shaonialife.cardeck.airplay.AudioReverseControlPort
 import java.util.concurrent.atomic.AtomicBoolean
 import io.github.shaonialife.cardeck.update.BuickUpdater
 
 /** Buick-only menu. Keep diagnostics and updates out of upstream SettingsMenus. */
 class BuickMenuActivity : AppCompatActivity() {
-    private val preflightRunning = AtomicBoolean(false)
+    companion object { private val preflightRunning = AtomicBoolean(false) }
+    @Volatile private var preflightCancelled = false
+
+    override fun onDestroy() {
+        preflightCancelled = true
+        super.onDestroy()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_buick_menu)
@@ -31,7 +38,7 @@ class BuickMenuActivity : AppCompatActivity() {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MenuHolder =
             MenuHolder(layoutInflater.inflate(R.layout.item_phone_settings_menu, parent, false))
 
-        override fun getItemCount() = 4
+        override fun getItemCount() = if (packageName == "io.github.buick.test.cardeck") 4 else 3
 
         override fun onBindViewHolder(holder: MenuHolder, position: Int) {
             holder.itemView.setOnLongClickListener(null)
@@ -95,11 +102,15 @@ class BuickMenuActivity : AppCompatActivity() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("T89 · 25秒同 UID 网络预检")
             .setMessage(
-                "只启动手机端接收型 UDP 监听；不发送任何 UDP 包、不启动音频、不修改 VPN 或 Wi-Fi。" +
+                "请确认车辆已停稳。只启动手机端接收型 UDP 监听；不发送任何 UDP 包、不启动音频、不修改 VPN 或 Wi-Fi。" +
                     "需保持现有 B233 视频会话和网络连接。完成后会写入脱敏日志。"
             )
             .setNegativeButton("取消", null)
             .setPositiveButton("开始") { _, _ ->
+                if (preflightCancelled || SessionController.b233NetworkForAudioFreePreflight() != network) {
+                    android.widget.Toast.makeText(this, "未执行：纯视频会话或车机 Wi-Fi 已变化", android.widget.Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
                 if (!preflightRunning.compareAndSet(false, true)) return@setPositiveButton
                 SessionController.appendLog("AUDIO T89 PRECHECK: started durationMs=25000 mode=receive_only")
                 Thread({
@@ -107,9 +118,10 @@ class BuickMenuActivity : AppCompatActivity() {
                         val outcome = B233UdpBindPreflight(
                             bindNetwork = { udp -> network.bindSocket(udp) },
                             networkStillValid = {
-                                SessionController.b233NetworkForAudioFreePreflight() == network
+                                !preflightCancelled &&
+                                    SessionController.b233NetworkForAudioFreePreflight() == network
                             },
-                            onBindError = ::safeBindErrno,
+                            onBindError = AudioReverseControlPort::bindFailureCategory,
                             log = SessionController::appendLog,
                         ).run()
                         val summary =
@@ -140,22 +152,6 @@ class BuickMenuActivity : AppCompatActivity() {
                 }, "t89-wifi-udp-preflight").apply { isDaemon = true; start() }
             }
             .show()
-    }
-
-    private fun safeBindErrno(error: Throwable): String {
-        var cause: Throwable? = error
-        repeat(8) {
-            if (cause is android.system.ErrnoException) {
-                return android.system.OsConstants.errnoName(
-                    (cause as android.system.ErrnoException).errno
-                )
-            }
-            cause = cause?.cause
-        }
-        val message = generateSequence(error as Throwable?) { it.cause }
-            .take(8).mapNotNull { it.message }.joinToString(" ").uppercase()
-        return listOf("EPERM", "EACCES", "ENETUNREACH", "ENETDOWN", "EADDRNOTAVAIL")
-            .firstOrNull { message.contains(it) } ?: "UNCLASSIFIED"
     }
 
     private class MenuHolder(view: View) : RecyclerView.ViewHolder(view) {

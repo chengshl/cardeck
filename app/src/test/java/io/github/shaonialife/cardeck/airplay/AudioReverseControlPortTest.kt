@@ -60,6 +60,57 @@ class AudioReverseControlPortTest {
      * never mistake a fallback profile or absent audio for a negative trial.
      */
     @Test
+    fun t96BindFailureReasonsAreFixedAndNeverEchoPeerData() {
+        val risky = java.net.SocketException(
+            "Binding socket to network 119 failed: EPERM (Operation not permitted) private=do-not-log 192.0.2.17"
+        )
+        val reason = AudioReverseControlPort.bindFailureCategory(risky)
+        assertEquals("permission_denied", reason)
+        assertTrue(!reason.contains("119") && !reason.contains("do-not-log") && !reason.contains("192.0.2.17"))
+        assertEquals("permission_denied", AudioReverseControlPort.bindFailureCategory(
+            java.io.IOException("wrap", java.net.SocketException("EACCES"))
+        ))
+        assertEquals("network_unreachable", AudioReverseControlPort.bindFailureCategory(
+            java.net.SocketException("connect ENETUNREACH")
+        ))
+        assertEquals("socket_invalid", AudioReverseControlPort.bindFailureCategory(
+            java.net.SocketException("bind EBADF")
+        ))
+        assertEquals("security_exception", AudioReverseControlPort.bindFailureCategory(
+            SecurityException("sensitive security details")
+        ))
+        assertEquals("other", AudioReverseControlPort.bindFailureCategory(
+            java.net.SocketException("remote name, port, credentials unknown")
+        ))
+        // No substring classifications: EPERMISSIONS must not become EPERM.
+        assertEquals("other", AudioReverseControlPort.bindFailureCategory(
+            java.net.SocketException("EPERMISSIONS")
+        ))
+    }
+
+    @Test
+    fun t96EpermSkipNeverAdvertisesPortAndEmitsOnlyBoundedCategory() {
+        val lines = mutableListOf<String>()
+        val receiver = AudioReverseControlPort(
+            bindNetwork = {
+                throw java.net.SocketException("Binding socket 119 failed: EPERM secret-marker 192.0.2.17")
+            },
+            log = { lines.add(it) },
+        )
+        try {
+            assertEquals(0, receiver.start())
+            assertEquals(0, receiver.port)
+            assertTrue(lines.any {
+                it == "AUDIO T96: reverse_rtcp_bind_unavailable category=permission_denied listener=false"
+            })
+            assertTrue(lines.none { it.contains("secret-marker") || it.contains("192.0.2.17") })
+            assertTrue(lines.none { it.contains("已监听") })
+        } finally {
+            receiver.close()
+        }
+    }
+
+    @Test
     fun t89VpnEpermCannotAdvertiseControlPort() {
         val lines = mutableListOf<String>()
         val receiver = AudioReverseControlPort(

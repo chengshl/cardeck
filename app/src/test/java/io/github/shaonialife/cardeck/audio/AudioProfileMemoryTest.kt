@@ -103,6 +103,51 @@ class AudioProfileMemoryTest {
     }
 
     @Test
+    fun b233LocalReverseRtcpBindFailureCannotPersistReceiverRejection() {
+        val id = "b233-pre-setup-local-EPERM"
+        val pcmMedia = AudioProfile("media", 1L shl 15, 48_000, 250)
+        val pcmCompat = AudioProfile("compatibility", 1L shl 15, 48_000, 250)
+        AudioProfileMemory.reset(null, id)
+        try {
+            // T94: the first profile was never sent to the receiver;
+            // the second profile actually completed SETUP and played.
+            assertFalse(AudioProfileMemory.shouldRecordRejectedAfterAttempt(
+                isBuickB233 = true, setupRequestAttempted = false))
+            if (AudioProfileMemory.shouldRecordRejectedAfterAttempt(true, false)) {
+                AudioProfileMemory.recordRejected(
+                    null, id, pcmMedia.key, setOf(pcmMedia.key, pcmCompat.key),
+                    markExhausted = false)
+            }
+            val clean = AudioProfileMemory.load(null, id)
+            assertFalse(clean.rejected.contains(pcmMedia.key))
+            assertFalse(clean.disabled)
+            assertEquals(listOf(pcmMedia, pcmCompat),
+                AudioProfileMemory.orderForBuickB233(listOf(pcmMedia, pcmCompat), clean))
+
+            // Receiver-facing SETUP refusal is still a valid weak rejection.
+            assertTrue(AudioProfileMemory.shouldRecordRejectedAfterAttempt(
+                isBuickB233 = true, setupRequestAttempted = true))
+            if (AudioProfileMemory.shouldRecordRejectedAfterAttempt(true, true)) {
+                AudioProfileMemory.recordRejected(
+                    null, id, pcmMedia.key, setOf(pcmMedia.key, pcmCompat.key),
+                    markExhausted = false)
+            }
+            val rejected = AudioProfileMemory.load(null, id)
+            assertTrue(rejected.rejected.contains(pcmMedia.key))
+            assertFalse(rejected.disabled)
+            assertEquals(pcmCompat.key,
+                AudioProfileMemory.orderForBuickB233(
+                    listOf(pcmMedia, pcmCompat), rejected).first().key)
+
+            // Non-B233 historical behavior must remain exactly unchanged.
+            assertTrue(AudioProfileMemory.shouldRecordRejectedAfterAttempt(
+                isBuickB233 = false, setupRequestAttempted = false))
+        } finally {
+            AudioProfileMemory.reset(null, id)
+        }
+    }
+
+    @Test
     fun b233RestoresAdvertisedAac48MediaFirstAndPcmFallback() {
         val pcm48 = AudioProfile("media", 1L shl 15, 48_000, 250)
         val aac48 = AudioProfile(
