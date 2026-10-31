@@ -198,7 +198,11 @@ class VideoSender(
                 true
             } catch (error: Exception) {
                 log("VIDEO: 启动失败 - ${error.message}")
-                stop()
+                // A reentrant onSurfaceReady may have stopped this epoch and started another.
+                // Do not let the retired start() tear down the replacement session.
+                if (synchronized(dataPortLock) { dataPortEpoch == startEpoch }) {
+                    stop()
+                }
                 false
             }
         }
