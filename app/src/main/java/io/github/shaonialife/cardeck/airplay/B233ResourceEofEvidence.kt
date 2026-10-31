@@ -22,6 +22,22 @@ internal class B233ResourceEofEvidence {
     private var incomingScreenOnly = 0
     private var incomingMainAudio = 0
 
+    /**
+     * A single AirPlayClient can be reused after close/reconnect. Never let
+     * previous-session claims or receiver requests appear in the next EOF.
+     * Advancing the token also invalidates any old RTSP response still in flight.
+     */
+    @Synchronized
+    fun resetForNewConnection() {
+        claimGeneration = if (claimGeneration == Long.MAX_VALUE) 1L else claimGeneration + 1L
+        claims = 0
+        claimAtMillis = -1
+        lastReply = ClaimReply.NONE
+        replyBodyShape = "absent"
+        incomingScreenOnly = 0
+        incomingMainAudio = 0
+    }
+
     @Synchronized
     fun claimMainAudio(nowMillis: Long): Long {
         claimGeneration = if (claimGeneration == Long.MAX_VALUE) 1L else claimGeneration + 1L
