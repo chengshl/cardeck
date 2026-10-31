@@ -1,0 +1,89 @@
+name: CarPlay B233 event TCP candidate cleanup (offline)
+
+on:
+  pull_request:
+    branches: [experiment/buick-b233-pcm-partial-read-continuity]
+    paths:
+      - '.github/workflows/ci-b233-event-tcp-cleanup.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233EventSocketConnection.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233EventSocketConnectionTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: audio-event-tcp-cleanup-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Signed T94 ancestor, exact four-file scope and B233 runtime wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/audio-event-tcp-changed
+          printf '%s\n' \
+            '.github/workflows/ci-b233-event-tcp-cleanup.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233EventSocketConnection.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233EventSocketConnectionTest.kt' > /tmp/audio-event-tcp-expected
+          diff -u /tmp/audio-event-tcp-expected /tmp/audio-event-tcp-changed
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233EventSocketConnection.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233EventSocketConnectionTest.kt').read_text()
+          live = src.split('fun connectEventChannel(', 1)[1].split('registerEventCommandChannel(socket, cipher)', 1)[0]
+          assert 'if (endpoint.isBuickB233)' in live
+          assert 'B233EventSocketConnection.connect(socket, 5_000)' in live
+          assert 'InetSocketAddress(resolveAddress(host), setup.eventPort)' in live
+          assert 'socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)' in live
+          assert 'candidate.connect(address(), timeoutMillis)' in helper
+          assert 'candidate.close()' in helper and 'throw error' in helper
+          assert 'private val b233EventSocketOwner = B233EventSocketOwner()' in src
+          close = src.split('fun close()', 1)[1].split('fun sendHidSetInputMode', 1)[0]
+          register = src.split('private fun registerEventCommandChannel(', 1)[1].split('fun postEventCommand(', 1)[0]
+          reader = src.split('fun connectEventChannel(', 1)[1].split('private class RtspAccumulator', 1)[0]
+          assert 'b233EventSocketOwner.retire()' in close
+          assert 'b233EventSocketOwner.publish(socket)' in register
+          assert 'b233EventSocketOwner.retireIfCurrent(socket)' in reader
+          assert 'finally {' in reader
+          for case in ('sessionCloseRetiresPublishedEventSocket',
+                       'reconnectClosesOldSocketWithoutRetiringReplacement',
+                       'activeReaderExitReleasesItsOwnedSocket'):
+              assert case in tests
+          for case in ('addressResolutionFailureClosesUnpublishedSocket',
+                       'tcpConnectFailureClosesUnpublishedSocket',
+                       'successfulTcpConnectTransfersLiveSocketToCaller'):
+              assert case in tests
+          PY
+      - name: B233 event TCP candidate negative JVM regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233EventSocketConnectionTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline-only candidate: no signing, APK release, installation, stable merge or vehicle acceptance.
