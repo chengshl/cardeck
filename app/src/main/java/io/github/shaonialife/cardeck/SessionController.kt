@@ -1167,13 +1167,13 @@ object SessionController {
                                                 dispatchMediaKey(keyCode)
                                                 appendLog(
                                                     "EVENT: 车机媒体键 ${ConsumerKeys.nameOf(consumerUsage)}" +
-                                                        "（uuid=$uuid usage=0x%02x → keyCode=$keyCode）"
+                                                        "（usage=0x%02x → keyCode=$keyCode）"
                                                             .format(consumerUsage),
                                                 )
                                             } else {
                                                 appendLog(
                                                     "EVENT: 车机媒体键 ${ConsumerKeys.nameOf(consumerUsage)}" +
-                                                        "（uuid=$uuid usage=0x%02x）无对应 Android 键，忽略"
+                                                        "（usage=0x%02x）无对应 Android 键，忽略"
                                                             .format(consumerUsage),
                                                 )
                                             }
@@ -1199,8 +1199,8 @@ object SessionController {
                                             }
                                         } else if (report != null) {
                                             appendLog(
-                                                "EVENT: 其他 HID 报告 uuid=$uuid bytes=${report.size}" +
-                                                    " hex=${report.joinToString(" ") { "%02x".format(it) }}",
+                                                "EVENT: 其他 HID 报告 bytes=${report.size}" +
+                                                    "（原始HID内容已脱敏）",
                                             )
                                         }
                                     }
@@ -1211,7 +1211,7 @@ object SessionController {
                                         val params = command["params"] as? Map<*, *>
                                         val data = params?.get("data") as? ByteArray
                                         if (data == null) {
-                                            appendLog("EVENT: iAPSendMessage 无 data（params=$params）")
+                                            appendLog("EVENT: iAPSendMessage 无 data（参数内容已脱敏）")
                                         } else {
                                             iapEventMessageCount++
                                             client.onIapEventBytes(data)
@@ -1251,13 +1251,12 @@ object SessionController {
                                 tunnel?.onIapMessage = { frame ->
                                     // 触摸证据采集：先全量记录，格式确认后接 TouchRouter
                                     if (frame.messageId != 0x0000) {
-                                        val hex = frame.body.joinToString(" ") { "%02x".format(it) }
                                         appendLog(
                                             "TUNNEL: rx 0x${frame.messageId.toString(16)} " +
                                                 "(${Iap2MessageIds.nameOf(
                                                     frame.messageId,
                                                 )}) ${frame.body.size}B" +
-                                                if (frame.body.isNotEmpty()) " hex=${hex.take(120)}" else "",
+                                                "（原始体已脱敏）",
                                         )
                                     }
                                 }

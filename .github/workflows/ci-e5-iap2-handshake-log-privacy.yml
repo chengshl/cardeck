@@ -147,6 +147,13 @@ jobs:
               ["\"WIFI: connect-network 失败（${result.output.take(80).ifEmpty { \"exit=${result.exitCode}\" }}）\"","\"WIFI: connect-network 失败（exit=${result.exitCode}；outputChars=${result.output.length}；原始输出已脱敏）\""],
               ["appendLog(\"AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.message}\")","appendLog(\"AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.javaClass.simpleName}（详细异常已脱敏）\")"],
               ["appendLog(\"AIRPLAY: 配对线程异常 - ${error.message ?: error.javaClass.simpleName}\")","appendLog(\"AIRPLAY: 配对线程异常 - ${error.javaClass.simpleName}（详细异常已脱敏）\")"],
+              ["（uuid=$uuid usage=0x%02x → keyCode=$keyCode）", "（usage=0x%02x → keyCode=$keyCode）"],
+              ["（uuid=$uuid usage=0x%02x）无对应 Android 键，忽略", "（usage=0x%02x）无对应 Android 键，忽略"],
+              ["EVENT: 其他 HID 报告 uuid=$uuid bytes=", "EVENT: 其他 HID 报告 bytes="],
+              [" hex=${report.joinToString(\" \") { \"%02x\".format(it) }}", "（原始HID内容已脱敏）"],
+              ["params=$params", "参数内容已脱敏"],
+              ["                                        val hex = frame.body.joinToString(\" \") { \"%02x\".format(it) }\n", ""],
+              ["if (frame.body.isNotEmpty()) \" hex=${hex.take(120)}\" else \"\"", "\"（原始体已脱敏）\""],
           ]
           for before, after in session_replacements:
               assert session_expected.count(before) == 1, 'SessionController log baseline drift'
