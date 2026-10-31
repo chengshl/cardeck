@@ -59,7 +59,7 @@ jobs:
           ack = 'if (message.isRequest || absoluteUriPeerRequest) {'
           assert pred in dispatch and 'statusLine, endpoint.isBuickB233' in dispatch
           assert dispatch.index(pred) < dispatch.index(gate) < dispatch.index(queue) < dispatch.index(ack)
-          assert 'if (!absoluteUriPeerRequest) {\\n            unmatchedMessages++' in dispatch
+          assert 'if (!absoluteUriPeerRequest) {\n            unmatchedMessages++' in dispatch
           assert 'queue.offer(message.statusLine to message.body)' in dispatch
           assert 'message.cseq?.let { responseHeads[it] = head }' in dispatch
           assert 'CSeq: $it' in dispatch and 'Content-Length: 0' in dispatch
