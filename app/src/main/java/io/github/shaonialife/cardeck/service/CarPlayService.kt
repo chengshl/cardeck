@@ -20,6 +20,8 @@ import io.github.shaonialife.cardeck.util.DebugFileLog
 class CarPlayService : Service() {
     private var wakeLock: android.os.PowerManager.WakeLock? = null
     private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+    // A service instance must only retire its own projection on destruction.
+    private var ownedProjection: android.media.projection.MediaProjection? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -116,6 +118,7 @@ class CarPlayService : Service() {
                     android.os.Handler(android.os.Looper.getMainLooper()),
                 )
             }
+            ownedProjection = projection
             mediaProjection = projection
             if (projection != null) {
                 fileLog("SVC: MediaProjection 就绪（投影创建成功）")
@@ -144,12 +147,16 @@ class CarPlayService : Service() {
 
     override fun onDestroy() {
         releaseLocks()
-        // Android 14+：MediaProjection 与前台的 mediaProjection 类型绑定——
-        // 保活服务停止（如用户点「断开连接」）时系统会连带停止投影。
-        fileLog(
-            "SVC: onDestroy（保活服务停止）mediaProjection=" +
-                (if (mediaProjection != null) "仍在（即将被系统回收）" else "null"),
-        )
+        // stop(context) covers explicit disconnects. Android may also destroy
+        // the service without that helper; synchronously revoke this instance's
+        // grant so the UI cannot mistake it for a live audio permission.
+        // An older Service must NEVER revoke a replacement Service's grant.
+        val owned = ownedProjection
+        ownedProjection = null
+        val revoked = owned != null && projectionLease.retireOwned(owned) { grant ->
+            runCatching { grant.stop() }
+        }
+        fileLog("SVC T92: onDestroy；本服务投屏授权同步退役=$revoked")
         super.onDestroy()
     }
 

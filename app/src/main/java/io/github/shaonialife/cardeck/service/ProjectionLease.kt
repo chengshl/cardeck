@@ -21,4 +21,11 @@ internal class ProjectionLease<T : Any> {
     fun clearCurrent(): T? = active.getAndSet(null)
 
     fun clearIfCurrent(stopped: T): Boolean = active.compareAndSet(stopped, null)
+
+    /** Retire only the matching owner's grant; never stop a newer grant. */
+    fun retireOwned(owned: T, onRetire: (T) -> Unit): Boolean {
+        if (!active.compareAndSet(owned, null)) return false
+        onRetire(owned)
+        return true
+    }
 }
