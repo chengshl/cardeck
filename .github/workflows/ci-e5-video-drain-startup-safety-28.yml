@@ -60,8 +60,31 @@ jobs:
                       }
                       val bufferInfo = MediaCodec.BufferInfo()
                       while (running.get()) {""".replace('                  ', '        ')
+          init_before = '\n'.join([
+              '            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)',
+              '            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)',
+              '            val surface = codec.createInputSurface()',
+              '            codec.start()',
+              '            encoder = codec',
+              '            inputSurface = surface',
+          ])
+          init_after = '\n'.join([
+              '            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)',
+              '            // Publish resources before fallible initialization so stop() can release them.',
+              '            encoder = codec',
+              '            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)',
+              '            val surface = codec.createInputSurface()',
+              '            inputSurface = surface',
+              '            codec.start()',
+          ])
           assert old.count(before) == 1, 'Original drain startup not found exactly once'
-          assert new == old.replace(before, after), 'Unexpected change outside reviewed startup guard'
+          assert old.count(init_before) == 1, 'Original codec initialization not found exactly once'
+          expected = old.replace(before, after).replace(init_before, init_after)
+          assert new == expected, 'Unexpected change outside reviewed drain and codec cleanup guards'
+          start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
+          assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
+          assert start.index('inputSurface = surface') < start.index('codec.start()')
+          assert 'stop()' in start.split('} catch (error: Exception)', 1)[1]
           tail = new.split('private fun drainEncoder()', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
           assert tail.index('try {') < tail.index('socket?.getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
           assert 'stop()' in tail.split('} finally {', 1)[1]

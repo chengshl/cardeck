@@ -140,11 +140,12 @@ class VideoSender(
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 }
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            // Publish resources before fallible initialization so stop() can release them.
+            encoder = codec
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             val surface = codec.createInputSurface()
-            codec.start()
-            encoder = codec
             inputSurface = surface
+            codec.start()
             running.set(true)
             lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
 
