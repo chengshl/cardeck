@@ -68,10 +68,11 @@ jobs:
           assert 'expectedB233SessionToken: Long? = null' in src
           request = src.split('    private fun request(',1)[1].split('    /**',1)[0]
           assert 'b233HeartbeatSessionGate.captureIfCurrent(expectedB233SessionToken)' in request
-          assert 'val client =' in request and 'startReader(it)' in request
+          assert 'val client =' in request and 'startReader(client)' in request
           assert request.index('captureIfCurrent(expectedB233SessionToken)') < request.index('synchronized(rtspWriteLock)')
           assert '!b233HeartbeatSessionGate.isCurrent(expectedB233SessionToken)' in request
-          assert request.index('synchronized(rtspWriteLock)') < request.index('output.write(wire)')
+          assert 'socket !== client' in request
+          assert request.index('synchronized(rtspWriteLock)') < request.index('startReader(client)') < request.index('output.write(wire)')
           assert 'runIfCurrent(expectedB233SessionToken, writeRequest)' not in request
           assert 'fun <T : Any> captureIfCurrent(token: Long, capture: () -> T): T?' in gate
           assert 'expectedB233SessionToken = if (b233HeartbeatWorker) heartbeatToken else null' in feedback
@@ -81,6 +82,7 @@ jobs:
                        'feedbackResponseAfterCloseCannotBeReportedAsNewSession',
                        'runIfCurrentRejectsStaleNetworkActionsAfterRetirement',
                        'capturedRtspSocketCannotAdoptNewSessionAfterRetirement',
+                       'retirementBeforeReaderSetupCannotDisplaceNewSessionReader',
                        'retirementIsNotBlockedByPausedRtspWriteAfterSocketCapture',
                        'nonB233LegacyWorkerDoesNotDependOnGate'):
               assert name in test, name
