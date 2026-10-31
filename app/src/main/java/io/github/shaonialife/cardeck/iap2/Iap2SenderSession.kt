@@ -143,7 +143,7 @@ class Iap2SenderSession(
         val identityText = identityText(identification)
         val legacyCar = LEGACY_RECEIVER_MARKERS.any { identityText.contains(it) }
         if (legacyCar) {
-            log("iap2 识别为真车系（$identityText）——MFi 首选 20B（真 iPhone 实录长度；32B 对真车处置不稳定）")
+            log("iap2 识别为真车系（身份内容已脱敏）——MFi 首选 20B（真 iPhone 实录长度；32B 对真车处置不稳定）")
         }
         send(Iap2MessageIds.MFI_REQUEST_CERTIFICATE)
         val certificate = expect(Iap2MessageIds.MFI_CERTIFICATE, deadline)
@@ -175,7 +175,7 @@ class Iap2SenderSession(
                 Iap2MessageIds.EA_OPEN_SESSION,
                 Iap2Csm.u8(0, protocolId) + Iap2Csm.u16(1, protocolId),
             )
-            log("iap2 tx=0xea00 startEASession protocol=$protocolId name=$name")
+            log("iap2 tx=0xea00 startEASession protocol=$protocolId namePresent=${name.isNotBlank()}")
         }
 
         // ---- 订阅与 HID：0x6800 是可选步骤 ----
@@ -192,10 +192,10 @@ class Iap2SenderSession(
                 mac.equals("02:00:00:00:00:00", ignoreCase = true) ||
                 mac.equals("00:00:00:00:00:00", ignoreCase = true)
             ) {
-                log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 mac=$mac")
+                log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC，拒绝发送 0x4300；等待下一次重连 (MAC redacted)")
                 throw IOException("Buick T10: 无有效蓝牙 MAC，避免占位地址污染配对")
             }
-            log("iap2 Buick/GM T15: 使用真实蓝牙 MAC=$mac；恢复最多 2 秒监听 0x6800 StartHID")
+            log("iap2 Buick/GM T15: 本机蓝牙 MAC 格式与非占位校验通过（值已脱敏）；恢复最多 2 秒监听 0x6800 StartHID")
         }
         if (isBuickE5) {
             log("iap2 Buick/GM T15: 开始监听 0x6800（如收到则回应 0x6801；超时继续）")
@@ -250,9 +250,9 @@ class Iap2SenderSession(
                         Iap2Csm.u8(0, 1),
                         Iap2Csm.string(1, bluetoothMac),
                     )
-            log("iap2 Buick/GM T17: 0x4300 双参数结构，deviceId=${carPlayDeviceIdentifier()} bodyBytes=${availabilityBody.size} frameBytes=${availabilityBody.size + 6}")
-            val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
-            log("iap2 Buick/GM T10: 0x4300 参数字节数=${availabilityBody.size}，编码=${availabilityFrame.joinToString("") { "%02x".format(it) }}")
+            log("iap2 Buick/GM T17: 0x4300 双参数结构，bodyBytes=${availabilityBody.size} frameBytes=${availabilityBody.size + 6} (identifiers redacted)")
+            // Never log the encoded 0x4300 body: it contains the device identifier and Bluetooth MAC.
+            log("iap2 Buick/GM T10: 0x4300 参数字节数=${availabilityBody.size} (payload redacted)")
             log("iap2 Buick/GM T10: 车机收到 0x4300 的链路 ACK 不等于 CarPlay 会话接受")
             log("iap2 Buick/GM T20: 0x4300 发送与 ACK 为异步事件；不能将 send() 返回视为链路确认")
             send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)
@@ -306,7 +306,7 @@ class Iap2SenderSession(
                 }
             }
             val endpoint = parseStartSession(start, WifiConfiguration("", "", 0, 0))
-            log("iap2 Buick/GM T19: parsed ssid=${endpoint.ssid} passwordPresent=${endpoint.passphrase.isNotEmpty()} port=${endpoint.airPlayPort} device=${endpoint.deviceIdentifier} srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()}")
+            log("iap2 Buick/GM T19: parsed ssidPresent=${endpoint.ssid.isNotBlank()} passwordPresent=${endpoint.passphrase.isNotEmpty()} port=${endpoint.airPlayPort} deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()} sourceVersionPresent=${!endpoint.sourceVersion.isNullOrBlank()} ipCount=${endpoint.ipAddresses.size} publicKeyPresent=${!endpoint.publicKey.isNullOrEmpty()} (identifiers redacted)")
             if (endpoint.ssid.isBlank()) {
                 throw IOException("Buick T19: 0x4301 未包含有效 SSID，拒绝空热点进入后续配对")
             }
@@ -319,7 +319,7 @@ class Iap2SenderSession(
         val wifiConfiguration = expect(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION, deadline)
         val wifi = parseWifiConfiguration(wifiConfiguration)
         log(
-            "iap2 rx=0x5703 ssid=${wifi.ssid} channel=${wifi.channel} " +
+            "iap2 rx=0x5703 ssidPresent=${wifi.ssid.isNotBlank()} channel=${wifi.channel} " +
                 "security=${wifi.securityType} psk=${if (wifi.passphrase.isEmpty()) "(空)" else "***"}",
         )
         // 真车死锁解药（catplay CarPlayInviter 实证）：车机在 WiFi 网络上发现手机的
@@ -350,7 +350,7 @@ class Iap2SenderSession(
             )
             log(
                 "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c 设备状态问候" +
-                    "（name=$deviceName mac=$bluetoothMac）",
+                    "（设备名称与蓝牙标识已脱敏）",
             )
 
         }
@@ -401,8 +401,8 @@ class Iap2SenderSession(
         if (startSession != null) {
             log(
                 "iap2 rx=0x4301 airPlayPort=${endpoint.airPlayPort} " +
-                    "device=${endpoint.deviceIdentifier} publicKey=${endpoint.publicKey?.take(16)}… " +
-                    "srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses}",
+                    "deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()} publicKeyPresent=${!endpoint.publicKey.isNullOrBlank()} " +
+                    "sourceVersionPresent=${!endpoint.sourceVersion.isNullOrBlank()} ipCount=${endpoint.ipAddresses.size} (identifiers redacted)",
             )
         }
 
@@ -805,7 +805,7 @@ class Iap2SenderSession(
                     ?.and(0xFF) ?: continue
             val name = sub[1]?.value?.asStringOrEmpty() ?: "?"
             out += protocolId to name
-            log("iap2 0x1d01 EA 组件[$groupId] protocol=$protocolId name=$name")
+            log("iap2 0x1d01 EA 组件[$groupId] protocol=$protocolId namePresent=${name.isNotBlank()}")
         }
         return out
     }
@@ -815,7 +815,7 @@ class Iap2SenderSession(
         val name = params[0]?.value?.asStringOrEmpty()
         val model = params[1]?.value?.asStringOrEmpty()
         val manufacturer = params[2]?.value?.asStringOrEmpty()
-        log("iap2 rx=0x1d01 车机身份 name=$name model=$model manufacturer=$manufacturer")
+        log("iap2 rx=0x1d01 车机身份 namePresent=${!name.isNullOrBlank()} modelPresent=${!model.isNullOrBlank()} manufacturerPresent=${!manufacturer.isNullOrBlank()} (identity redacted)")
         // 参 6/7 = 车机声明「它会发送/它可接收」的消息 ID 清单。
         // 参 7（它可接收）直接告诉我们它是否认可 0x4300 —— 真车排查的关键证据。
         val sends = params[6]?.value?.asU16List()
@@ -834,7 +834,8 @@ class Iap2SenderSession(
         if (receives != null) {
             log("iap2 0x1d01 车机可收清单(${receives.size})=" + receives.joinToString(" ") { "0x%04x".format(it) })
         }
-        log("iap2 0x1d01 原始体=" + frame.body.joinToString("") { "%02x".format(it) })
+        // Identification may include receiver-specific identifiers: retain parsed ID lists only.
+        log("iap2 0x1d01 原始体长度=${frame.body.size} (payload redacted)")
     }
 
     private fun remainingMillis(deadlineNanos: Long): Long {

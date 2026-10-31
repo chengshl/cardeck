@@ -105,7 +105,7 @@ class Iap2BluetoothClient(
         log(
             "BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）" +
                 if (target != null) {
-                    "，目标：「${target.name}」${target.address}（只连该设备）"
+                    "，已指定目标设备（只连该设备；名称/地址不写入日志）"
                 } else {
                     "（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）"
                 },
@@ -155,12 +155,6 @@ class Iap2BluetoothClient(
             var connected: BluetoothSocket? = null
             for (device in candidates) {
                 if (!running || generation.get() != myGeneration) return
-                val name =
-                    try {
-                        device.name
-                    } catch (_: SecurityException) {
-                        null
-                    } ?: device.address
                 runCatching { adapter.cancelDiscovery() }
                 // 「只配对、不连接」：奥迪 MIB3 实测手机与车机处于蓝牙已连接状态
                 // （HFP/A2DP 在线）时，车机不开放无线 CarPlay 的 iAP2 服务窗口——
@@ -174,7 +168,7 @@ class Iap2BluetoothClient(
                             lastProfileLogAt = now
                             val left = BtProfiles.stillConnected(context, device.address)
                             log(
-                                "BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString("/")}）——已断开" +
+                                "BT-C: 候选车机处于蓝牙已连接状态（${dropped.joinToString("/")}）——已断开" +
                                     if (left.isEmpty()) "" else "（仍有 ${left.joinToString("/")} 在线）",
                             )
                             log("BT-C: 车机在「蓝牙已连接」状态下不接受 CarPlay——保持仅配对")
@@ -183,14 +177,14 @@ class Iap2BluetoothClient(
                 }
                 val socket = tryConnect(device)
                 if (socket != null) {
-                    log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
+                    log("BT-C: ✓ 已连入候选车机的无线 iAP2 服务（RFCOMM 建立；身份已脱敏）")
                     connected = socket
                     break
                 } else {
                     val now = android.os.SystemClock.uptimeMillis()
                     if (now - lastFailureLogAt > FAILURE_LOG_THROTTLE_MILLIS) {
                         lastFailureLogAt = now
-                        log("BT-C: 连接 $name 失败（车机未就绪或不在无线配对窗口），${if (t35Buick) "6" else "3"} 秒后重试…")
+                        log("BT-C: 连接候选车机失败（车机未就绪或不在无线配对窗口），${if (t35Buick) "6" else "3"} 秒后重试…")
                     }
                 }
             }
@@ -256,7 +250,7 @@ class Iap2BluetoothClient(
                 if (now - lastTargetMissingLogAt > FAILURE_LOG_THROTTLE_MILLIS) {
                     lastTargetMissingLogAt = now
                     log(
-                        "BT-C: 目标设备「${target.name}」(${target.address}) 不在已配对列表" +
+                        "BT-C: 已指定目标不在已配对列表（名称/地址已脱敏）" +
                             "——请到系统蓝牙设置完成配对，或在「连接准备」改选目标",
                     )
                 }
@@ -308,10 +302,10 @@ class Iap2BluetoothClient(
                     mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
                 }
             }
-            log("BT-C T10: pre-session identity=" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) "unavailable" else mac)
+            log("BT-C T10: pre-session identity=" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) "unavailable" else "present-redacted")
             channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)
         } catch (error: IOException) {
-            log("BT-C: SESSION 失败 - ${error.message}")
+            log("BT-C: SESSION 失败（${error.javaClass.simpleName}；详细原因已脱敏）")
             // T39: an old T24/T25/T26/T28 diagnostic timeout must not
             // permanently disable the Buick connector. The caller's backoff and
             // BtSessionGate prevent overlap with a live incoming RFCOMM session.
