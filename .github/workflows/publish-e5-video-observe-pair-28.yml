@@ -20,7 +20,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-video-observe-delivery-28"
-          test "$(git rev-parse HEAD^)" = "8043e557add2d4e49e14ecb2d496e1556ec32d15"
+          test "$(git rev-parse HEAD^)" = "745fecbf9f0a1ba0bb2fdc0b0e58bf8a98e4b720"
           test "$(git rev-parse origin/Buick-E5)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
           python3 - <<'PY'
           import subprocess
@@ -30,7 +30,7 @@ jobs:
           source='8043e557add2d4e49e14ecb2d496e1556ec32d15'
           publish='.github/workflows/publish-e5-video-observe-pair-28.yml'
           assert changed(source,'HEAD') == {publish}, 'Only one delivery workflow may be added'
-          assert int(subprocess.check_output(['git','rev-list','--count',source+'..HEAD'],text=True)) == 1
+          assert int(subprocess.check_output(['git','rev-list','--count',source+'..HEAD'],text=True)) == 2
           expected={publish,
               '.github/workflows/ci-e5-video-firstframe-observability.yml',
               'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt',
@@ -183,8 +183,8 @@ jobs:
           test -s "$EXP_APK" && test -s "$EXP_APK.sha256"
           test -s "$REST_APK" && test -s "$REST_APK.sha256"
           test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"
-          test "$(git rev-parse HEAD)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
-          if gh release view "$REST_TAG" >/dev/null 2>&1 || gh release view "$EXP_TAG" >/dev/null 2>&1; then
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
+          if gh release view "$REST_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release view "$EXP_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Refusing to replace an existing test or recovery release"
             exit 1
           fi
