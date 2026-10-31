@@ -96,6 +96,9 @@ class VideoSender(
     fun openDataPort(): Boolean {
         val existing = socket
         if (existing != null && !existing.isClosed) return true
+        // connectTcp() owns failed connections; after it returns, this method owns
+        // the socket until publication. Do not leak it if TCP options fail.
+        var pendingSocket: Socket? = null
         return try {
             val client = CarPlayNetworkSockets.connectTcp(
                 carWifiNetwork,
@@ -104,11 +107,14 @@ class VideoSender(
                 5_000,
                 log,
             )
+            pendingSocket = client
             client.tcpNoDelay = true
             socket = client
+            pendingSocket = null
             log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
             true
         } catch (error: Exception) {
+            runCatching { pendingSocket?.close() }
             log("VIDEO: 数据端口连接失败 - ${error.message}")
             false
         }
