@@ -35,6 +35,42 @@ internal fun connectOwnedAudioDatagramSocket(
 }
 
 /**
+ * B233-only: stop can race a blocking UDP connect or AudioRecord construction.
+ * Serialize ownership publication with retirement so a late startup cannot
+ * leave an RTP/RTCP socket open or resurrect capture after stop().
+ */
+internal class AudioDatagramSessionGate {
+    private val lock = Any()
+    private var retired = false
+
+    fun publish(socket: DatagramSocket, isActive: () -> Boolean, install: () -> Unit): Boolean =
+        synchronized(lock) {
+            if (retired || !isActive()) {
+                socket.close()
+                false
+            } else {
+                install()
+                true
+            }
+        }
+
+    fun runIfActive(isActive: () -> Boolean, action: () -> Unit): Boolean =
+        synchronized(lock) {
+            if (retired || !isActive()) false else {
+                action()
+                true
+            }
+        }
+
+    fun retire(closeOwned: () -> Unit) {
+        synchronized(lock) {
+            retired = true
+            closeOwned()
+        }
+    }
+}
+
+/**
  * CarPlay 主音频发送端（手机 → 车机，RTP over UDP）。
  *
  * 线格式（对照 DiPlay `AudioStream.kt` 解密路径与 catplay `rtp_cipher_chacha.rs`）：
@@ -175,6 +211,7 @@ class AudioSender(
 
     /** stop() 幂等闸门（多条收尾路径都会调 stop）。 */
     private val stopped = AtomicBoolean(false)
+    private val b233DatagramGate = AudioDatagramSessionGate()
     private var socket: DatagramSocket? = null
     private var syncSocket: DatagramSocket? = null
     private var record: AudioRecord? = null
@@ -323,7 +360,14 @@ class AudioSender(
                     .onSuccess { log("AUDIO T24: RTP UDP 指定车机 WiFi Network=$network") }
                     .onFailure { log("AUDIO T24: RTP WiFi 路由绑定失败 - ${it.message}") }
             }
-            socket = connectOwnedAudioDatagramSocket(client, host, dataPort)
+            val connected = connectOwnedAudioDatagramSocket(client, host, dataPort)
+            if (verboseStartupDiagnostics) {
+                if (!b233DatagramGate.publish(connected, { !stopped.get() }) { socket = connected }) {
+                    return false // stop() retired this B233 sender during UDP connect
+                }
+            } else {
+                socket = connected
+            }
 
             // AAC 通路先把编码器立起来：编不出来就没必要采集（也避免「有包无声」的假象）
             if (codec == AudioCodec.AAC_LC) {
@@ -360,8 +404,18 @@ class AudioSender(
                 socket = null
                 return false
             }
-            record = recorder
-            running.set(true)
+            if (verboseStartupDiagnostics) {
+                if (!b233DatagramGate.runIfActive({ !stopped.get() }) {
+                    record = recorder
+                    running.set(true)
+                }) {
+                    runCatching { recorder.release() }
+                    return false // stop() won while AudioRecord was being constructed
+                }
+            } else {
+                record = recorder
+                running.set(true)
+            }
             if (verboseStartupDiagnostics) {
                 diagnosticStartedAt = android.os.SystemClock.uptimeMillis()
                 lastLogAt = diagnosticStartedAt - 1_000L
@@ -433,10 +487,19 @@ class AudioSender(
         record = null
         aacEncoder?.stop()
         aacEncoder = null
-        runCatching { socket?.close() }
-        socket = null
-        runCatching { syncSocket?.close() }
-        syncSocket = null
+        if (verboseStartupDiagnostics) {
+            b233DatagramGate.retire {
+                runCatching { socket?.close() }
+                socket = null
+                runCatching { syncSocket?.close() }
+                syncSocket = null
+            }
+        } else {
+            runCatching { socket?.close() }
+            socket = null
+            runCatching { syncSocket?.close() }
+            syncSocket = null
+        }
         syncThread = null
         thread = null
         if (mutePhoneOutput) restorePhoneMedia()
@@ -488,7 +551,13 @@ class AudioSender(
                 log("AUDIO: 同步包套接字创建失败 - ${error.message}")
                 return
             }
-        syncSocket = client
+        if (verboseStartupDiagnostics) {
+            if (!b233DatagramGate.publish(client, { !stopped.get() }) { syncSocket = client }) {
+                return // stop() retired this B233 sender during RTCP connect
+            }
+        } else {
+            syncSocket = client
+        }
         log("AUDIO: 同步包已启用 → $host:$controlPort（每 ${SYNC_INTERVAL_MILLIS}ms 一个，建立 RTP↔NTP 锚点）")
         val worker =
             Thread(
