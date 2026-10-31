@@ -732,13 +732,20 @@ class AirPlayClient(
                 ),
             )
         return try {
-            val (statusLine, _) =
+            val (statusLine, replyBody) =
                 request(
                     "POST",
                     "/command",
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
+            // T93: B233's HTTP 200 proves transport success only, not resource
+            // acceptance. Record a bounded, allowlisted structural reply
+            // summary; never print reply text, unknown fields or raw plist.
+            if (endpoint.isBuickB233) {
+                log("AUDIO T93: modesChanged reply " +
+                    B233ModeReplySummary.describe(replyBody))
+            }
             log(
                 "AIRPLAY T26: modesChanged（主屏=CarPlay，主音频=" +
                     (if (claimAudioResource) "CarPlay" else "未声明/保留普通蓝牙 A2DP") +
