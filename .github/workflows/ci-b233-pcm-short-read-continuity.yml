@@ -69,7 +69,14 @@ jobs:
           assert 'if (bytesRead < frameBytes) continue' in start
           assert start.index('if (!readWindow.accept(bytesRead)) continue') < start.index('val payloads: List<ByteArray>')
           assert 'require(bytes >= 0 && bytes <= remaining)' in gate
-          for name in ('partialReadsMustAccumulateBeforeAnyRtpTimestampOrSequenceProgress',
+          assert 'readWindow.accept(0)' in start
+          assert 'val captureState = readWindow?.let { " " + it.diagnosticSummary() } ?: ""' in start
+          assert 'AUDIO T94: B233 PCM capture shutdown' in start
+          assert 'shortReads=$shortReadCount zeroReads=$zeroReadCount' in gate
+          assert 'discardedByteCount += pendingBytes.toLong()' in gate
+          for name in ('numericSummaryShowsWhetherShortReadsReallyHappenedWithoutSamples',
+                       'errorResetSummaryCountsOnlyActuallyDiscardedPartialBytes',
+                       'partialReadsMustAccumulateBeforeAnyRtpTimestampOrSequenceProgress',
                        'temporaryZeroReadCannotAdvanceOrLosePendingSamples',
                        'captureErrorDropsOnlyIncompleteWindowAndNeverSplicesOldAndNewAudio',
                        'readerCannotOverfillFrameOrAcceptInvalidSizes'):
