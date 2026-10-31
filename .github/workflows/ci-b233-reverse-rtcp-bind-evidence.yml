@@ -91,7 +91,7 @@ jobs:
           assert 'bindNetwork = { udp -> selected.bindSocket(udp) }' in ui
           assert 'networkStillValid = {' in ui and '!audioPreflightCancelled' in ui
           assert '.setPositiveButton("开始检测")' in ui and 'Thread({' in ui
-          assert '不发送任何 UDP' in ui
+          assert '未发送任何 UDP' in ui
           assert 'fun run(holdMillis: Long = 25_000L)' in preflight
           assert 'receiver.start()' in preflight and 'receiver.close()' in preflight
           PY
