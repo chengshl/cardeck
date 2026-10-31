@@ -106,10 +106,10 @@ jobs:
           assert 'activeChannel.set(channel)' not in client
           assert 'activeChannel.compareAndSet(null, channel)' in client
           assert 'activeChannel.compareAndSet(channel, null)' in client
-          assert client.count('activeChannel.getAndSet(null)') == 2
+          assert client.count('activeChannel.getAndSet(null)') == 3
           assert 'currentSocket.compareAndSet(connected, null)' in client
           assert client.count('currentSocket.compareAndSet(socket, null)') == 7  # includes permission-revocation close
-          assert client.count('currentSocket.getAndSet(null)') == 2  # only explicit detach/stop
+          assert client.count('currentSocket.getAndSet(null)') == 3  # detach/stop + generation-owned worker exit
           assert 'currentSocket.set(socket)' not in client
           assert 'runCatching { connected.close() }' in client
           assert 'val socket = tryConnect(device, myGeneration)' in client
@@ -165,12 +165,35 @@ jobs:
           for before_text, after_text in permission_read_changes:
               assert expected_client.count(before_text) == 1, 'Permission read-site drift'
               expected_client = expected_client.replace(before_text, after_text)
-          assert client == expected_client, 'Unexpected iAP2 runtime/protocol change'
+          reviewed_591 = subprocess.check_output(
+              ['git', 'show', '591cfeec245bf335326b8b9f6abc0bb6dcc8846c:' + client_path], text=True
+          )
+          assert expected_client == reviewed_591, 'Previous exact #34 Bluetooth revocation changes drifted'
+          # A worker may return when the adapter disappears or a callback fails.
+          # Lock its lifecycle retirement against a concurrent stop/new start.
+          # The reviewed runtime lease is one immutable source-only commit.
+          reviewed_worker = subprocess.check_output(
+              ['git', 'show', 'a917f08b8684331a96c8ca64bc95b639f89beb02:' + client_path], text=True
+          )
+          assert client == reviewed_worker, 'Unexpected runtime edits beyond reviewed #34 worker-lifecycle fix'
+          assert '@Synchronized\n    fun start(): Boolean' in client
+          worker = client.split('private fun connectLoop(myGeneration: Long)', 1)[1].split('private fun connectLoopBody(', 1)[0]
+          assert 'connectLoopBody(myGeneration)' in worker
+          assert 'catch (error: Exception)' in worker and 'finally {' in worker
+          assert 'val retired = synchronized(this)' in worker
+          assert 'if (generation.get() != myGeneration) null else {' in worker
+          assert 'running = false' in worker and 'thread = null' in worker
+          assert 'currentSocket.getAndSet(null)' in worker and 'activeChannel.getAndSet(null)' in worker
+          assert worker.index('synchronized(this)') < worker.index('retired?.first?.let')
+          stop_method = client.split('fun stop() {', 1)[1].split('private fun sleepQuietly', 1)[0]
+          assert 'val retired = synchronized(this)' in stop_method
+          assert stop_method.index('generation.incrementAndGet()') < stop_method.index('retired.first?.let')
+          assert 'retired.third?.interrupt()' in stop_method
           assert 'SecurityException' in client
           assert client.count('SESSION 意外异常') == 1
           assert client.count('finally {\n            // Only retire resources owned by this session') == 1
-          print('Previous #34 guards plus three Bluetooth permission read-site protections replayed exactly')
-          print('Stop-cancellation only; no protocol timing, Bluetooth profile or reconnect behavior expanded')
+          print('Previous #34 guards and exact generation-owned worker retirement verified') 
+          print('L3 isolated: Android worker recovery + safe stop/start; no Bluetooth or CarPlay wire change')
           PY
       - uses: actions/setup-java@v4
         with:
