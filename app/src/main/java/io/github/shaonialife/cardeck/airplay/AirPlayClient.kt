@@ -1825,7 +1825,7 @@ class AirPlayClient(
                                 put(
                                     "supportsHighAccuracyTimestamps",
                                     tuning.highAccuracyTimestamps ||
-                                        BuickAudioTimingPolicy.useModernSenderTiming(
+                                        BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(
                                             isBuickB233 = endpoint.isBuickB233,
                                             profile = profile,
                                         ),

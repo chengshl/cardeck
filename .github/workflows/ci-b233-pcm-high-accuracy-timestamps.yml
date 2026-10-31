@@ -1,0 +1,83 @@
+name: B233 PCM high-accuracy timestamp isolation (T90)
+
+on:
+  pull_request:
+    branches:
+      - experiment/buick-test-t89-pcm-reverse-rtcp
+    paths:
+      - '.github/workflows/ci-b233-pcm-high-accuracy-timestamps.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b233-pcm-high-accuracy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact validated T90 source, workflow-only follow-up, and SETUP wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          VALIDATED=2480a98a33c7b4fcfb63260c7155c7b835fa32c0
+          test "$(git merge-base "$BASE" "$VALIDATED")" = "$BASE"
+          test "$(git merge-base "$VALIDATED" HEAD)" = "$VALIDATED"
+          # The exact four-file T90 protocol change already passed CI on VALIDATED.
+          git diff --name-only "$BASE" "$VALIDATED" > /tmp/t90-original-scope
+          test "$(wc -l < /tmp/t90-original-scope)" -eq 4
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-pcm-high-accuracy-timestamps.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt) ;;
+              *) echo "Unexpected T90 validated source: $file"; exit 1 ;;
+            esac
+          done < /tmp/t90-original-scope
+          # Subsequent commits are workflow-only: the signed APK code is unchanged.
+          git diff --name-only "$VALIDATED" HEAD | sort -u > /tmp/t90-workflow-scope
+          test "$(wc -l < /tmp/t90-workflow-scope)" -eq 2
+          grep -Fxq '.github/workflows/ci-b233-pcm-high-accuracy-timestamps.yml' /tmp/t90-workflow-scope
+          grep -Fxq '.github/workflows/publish-t90-pcm-high-accuracy-timestamps.yml' /tmp/t90-workflow-scope
+          git diff --check "$BASE" HEAD
+          git diff --quiet "$BASE" HEAD -- app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          policy = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt').read_text()
+          client = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt').read_text()
+          setup = client.split('    fun runAudioStream(', 1)[1].split('    /**', 1)[0]
+          assert 'fun advertiseHighAccuracyTimestamps(' in policy
+          helper = policy.split('fun advertiseHighAccuracyTimestamps(', 1)[1].split('    fun useModernSenderTiming(', 1)[0]
+          for token in ('isBuickB233', 'profile.streamType == 100L', 'profile.codec == AudioCodec.PCM', 'profile.audioType.equals("media", ignoreCase = true)'):
+              assert token in helper, token
+          assert 'BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(' in setup
+          assert 'BuickAudioTimingPolicy.useModernSenderTiming(' not in setup
+          assert 't90HighAccuracyTimestampIsLimitedToB233PcmMedia' in tests
+          assert 'assertFalse(BuickAudioTimingPolicy.useModernSenderTiming(true, pcmMedia))' in tests
+          print('T90 changes only the B233 PCM/media SETUP capability; RTP, RTCP policy and other profiles stay unchanged.')
+          PY
+      - name: T90 PCM timing-policy regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.audio.BuickAudioTimingPolicyTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# No signing, release, stable merge or vehicle acceptance from this workflow.

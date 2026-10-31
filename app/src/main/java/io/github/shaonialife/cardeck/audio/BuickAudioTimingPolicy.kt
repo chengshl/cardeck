@@ -34,6 +34,25 @@ internal object BuickAudioTimingPolicy {
                 profile.codec == AudioCodec.PCM &&
                 profile.audioType.equals("media", ignoreCase = true))
 
+    /**
+     * T90: explicitly advertise high-accuracy RTP timestamp support for B233
+     * PCM/type100 media. T89 proved that the receiver consumes advancing PCM
+     * while returning no remote controlPort; the phone-local reverse port was
+     * advertised but received no packets. This changes only the SETUP boolean.
+     *
+     * Keep useModernSenderTiming() AAC-only: PCM still retains its existing
+     * legacy 0xD4 sender policy if a receiver ever supplies a remote controlPort.
+     */
+    fun advertiseHighAccuracyTimestamps(
+        isBuickB233: Boolean,
+        profile: AudioProfile,
+    ): Boolean =
+        useModernSenderTiming(isBuickB233, profile) ||
+            (isBuickB233 &&
+                profile.streamType == 100L &&
+                profile.codec == AudioCodec.PCM &&
+                profile.audioType.equals("media", ignoreCase = true))
+
     fun useModernSenderTiming(
         isBuickB233: Boolean,
         profile: AudioProfile,
