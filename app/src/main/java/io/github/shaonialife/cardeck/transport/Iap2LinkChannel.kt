@@ -49,12 +49,18 @@ class Iap2LinkChannel(
     /** 原始字节转储预算（每方向每连接），真车字节级对照用。 */
     private var rxDumpBudget = RAW_DUMP_LIMIT
     private var txDumpBudget = RAW_DUMP_LIMIT_TX
+    /** B233 credential exchange: retain frame lengths, never emit raw bytes. */
+    private var suppressRawPayloads = false
 
     /** 逐帧摘要日志预算（每方向每连接）。 */
     private var rxFrameLogs = 0
     private var txFrameLogs = 0
 
     val isAlive: Boolean get() = !terminated
+
+    fun suppressSensitiveRawFrames() = synchronized(lock) {
+        suppressRawPayloads = true
+    }
 
     init {
         engine.onPeerSynchronizationAdopted = { sync ->
@@ -250,7 +256,11 @@ class Iap2LinkChannel(
     private fun dumpInbound(bytes: ByteArray) {
         if (bytes.isEmpty() || rxDumpBudget <= 0) return
         val shown = minOf(bytes.size, rxDumpBudget)
-        log("RAW rx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })
+        if (suppressRawPayloads) {
+            log("RAW rx: redacted bytes=$shown")
+        } else {
+            log("RAW rx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })
+        }
         rxDumpBudget -= shown
     }
 
@@ -318,7 +328,11 @@ class Iap2LinkChannel(
     private fun dumpOutbound(bytes: ByteArray) {
         if (txDumpBudget <= 0) return
         val shown = minOf(bytes.size, txDumpBudget)
-        log("RAW tx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })
+        if (suppressRawPayloads) {
+            log("RAW tx: redacted bytes=$shown")
+        } else {
+            log("RAW tx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })
+        }
         txDumpBudget -= shown
     }
 
