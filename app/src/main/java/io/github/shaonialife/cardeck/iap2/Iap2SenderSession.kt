@@ -140,7 +140,6 @@ class Iap2SenderSession(
         const val START_SESSION_WAIT_NEW_PROTOCOL_NANOS = 8_000_000_000L
 
         /** 0x4301 原始体日志上限（Audi 实测 261B，完整记录；异常大的只截前段）。 */
-        const val START_SESSION_RAW_LOG_BYTES = 1_024
 
         /**
          * 已知「静默过」的档位重试窗口。首次试探保留原窗口（可能是慢车机），
@@ -191,7 +190,11 @@ class Iap2SenderSession(
             identityText.contains("b233") &&
             identityText.contains("saic general motors"))
         if (forceBuickE5) log("iap2 Buick-Test: 用户强制 E5/B233 流程；忽略车型身份及消息清单的路径选择")
-        if (buickB233) log("iap2 B233: exact 32B MFi; 75B two-group 0x4300")
+        if (buickB233) {
+            // B233 0x4301 contains a Wi-Fi passphrase: do not dump raw iAP2 payloads.
+            channel.suppressSensitiveRawFrames()
+            log("iap2 B233: exact 32B MFi; 75B two-group 0x4300")
+        }
         if (legacyCar) {
             log("iap2 识别为真车系（$identityText）——MFi 首选 20B（真 iPhone 实录长度；32B 对真车处置不稳定）")
         }
@@ -647,7 +650,7 @@ class Iap2SenderSession(
                     channel = endpoint.channel,
                     securityType = endpoint.securityType,
                 )
-            log("iap2 0x4301 自带 AP 信息：ssid=${endpoint.ssid}——已缓存，供后续 0x5703/0x4301 复用")
+            log("iap2 0x4301 自带 AP 信息：ssidPresent=true——已缓存，供后续 0x5703/0x4301 复用")
         }
         if (endpoint.ssid.isEmpty()) {
             log("iap2 rx=0x4301（晚到）——无线组里没解析出 SSID，本条忽略")
@@ -670,10 +673,10 @@ class Iap2SenderSession(
     private fun logStartSessionRaw(frame: Iap2Csm.Frame) {
         if (startSessionRawLogged) return
         startSessionRawLogged = true
-        val body = frame.body
-        val shown = if (body.size <= START_SESSION_RAW_LOG_BYTES) body else body.copyOf(START_SESSION_RAW_LOG_BYTES)
-        val truncated = if (body.size > shown.size) "（前 ${shown.size}/${body.size} 字节）" else ""
-        log("iap2 0x4301 原始体$truncated=" + shown.joinToString("") { "%02x".format(it) })
+        // 0x4301 contains Wi-Fi credentials. Preserve only parameter IDs and lengths.
+        val params = Iap2Csm.parseParams(frame.body)
+        log("iap2 0x4301 bodyBytes=${frame.body.size} params=" +
+            params.joinToString(" ") { "#${it.id}(${it.value.size}B redacted)" })
     }
 
     // ---- 帧收发 ----
@@ -998,16 +1001,14 @@ class Iap2SenderSession(
         if (wireless != null) {
             log(
                 "iap2 0x4301 无线组参数: " +
-                    wireless.joinToString(" ") { param ->
-                        "#${param.id}=" + param.value.joinToString("") { "%02x".format(it) }
-                    },
+                    wireless.joinToString(" ") { param -> "#${param.id}(${param.value.size}B redacted)" },
             )
         }
         val fromSession = wireless?.let { parseWirelessAp(it) }
         val ap = wifi ?: fromSession
         if (wifi == null && fromSession != null) {
             log(
-                "iap2 0x4301 自带 AP：ssid=${fromSession.ssid} channel=${fromSession.channel} " +
+                "iap2 0x4301 自带 AP：ssidPresent=${fromSession.ssid.isNotEmpty()} channel=${fromSession.channel} " +
                     "security=${fromSession.securityType} psk=${if (fromSession.passphrase.isEmpty()) "(空)" else "***"}",
             )
         }
