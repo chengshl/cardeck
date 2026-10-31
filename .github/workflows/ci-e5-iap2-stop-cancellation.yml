@@ -92,7 +92,7 @@ jobs:
           assert 'activeChannel.compareAndSet(channel, null)' in client
           assert client.count('activeChannel.getAndSet(null)') == 2
           assert 'currentSocket.compareAndSet(connected, null)' in client
-          assert client.count('currentSocket.compareAndSet(socket, null)') == 5
+          assert client.count('currentSocket.compareAndSet(socket, null)') == 6
           assert client.count('currentSocket.getAndSet(null)') == 2  # only explicit detach/stop
           assert 'currentSocket.set(socket)' not in client
           assert 'runCatching { connected.close() }' in client
@@ -105,6 +105,12 @@ jobs:
           assert 'if (!activeChannel.compareAndSet(null, channel))' in client
           assert 'activeChannel.compareAndSet(channel, null)' in client
           assert 'channel.runSenderSession(' in client
+          # Stream/channel acquisition occurs before runSession's normal finally;
+          # fail closed unless an initialization exception retires only its socket.
+          assert 'val channel =\n            try {' in client
+          assert 'Iap2LinkChannel(stream, name = "iap2-bt-car")' in client
+          assert 'catch (error: Exception) {' in client
+          assert '控制通道初始化失败' in client
           assert 'activeChannel = null' not in client
           print('Stop-cancellation only; no protocol timing, Bluetooth profile or reconnect behavior expanded')
           PY
