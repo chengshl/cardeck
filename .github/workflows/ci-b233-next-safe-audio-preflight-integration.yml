@@ -38,7 +38,7 @@ jobs:
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41224653639 --jq .head_sha)" = '5da782a9caebdf517cc1e4a93f0d3e48390812b8'
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41224653639 --jq .conclusion)" = success
           git diff --name-only "$BASE" HEAD | sort > /tmp/safe-integration-scope
-          printf '%s\\n' \
+          printf '%s\n' \
             '.github/workflows/ci-b233-next-safe-audio-preflight-integration.yml' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummary.kt' \
