@@ -148,7 +148,8 @@ class Iap2SenderSessionTest {
     @Test
     fun buickB233UsesCarPlayStartSessionWithout5703() {
         val pair = InMemoryStreamPair()
-        val phoneChannel = Iap2LinkChannel(pair.sideA, name = "phone-b233")
+        val capturedLogs = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val phoneChannel = Iap2LinkChannel(pair.sideA, name = "phone-b233", log = { capturedLogs.add(it) })
         val accessoryChannel = Iap2LinkChannel(pair.sideB, name = "accessory-b233")
         val accessory = MockAccessory(accessoryChannel, buickB233 = true)
         val accessoryThread = Thread({ accessory.run() }, "mock-b233")
@@ -157,7 +158,7 @@ class Iap2SenderSessionTest {
         try {
             val endpoint = Iap2SenderSession(
                 phoneChannel,
-                log = { line -> println("B233 PHONE $line") },
+                log = { line -> capturedLogs.add(line) },
                 bluetoothMac = "3C:38:F4:5B:09:EA",
                 deviceName = "test-phone",
             ).run(timeoutMillis = 15_000L)
@@ -170,6 +171,13 @@ class Iap2SenderSessionTest {
             assertEquals("mock-device-id", endpoint.deviceIdentifier)
             assertEquals(listOf("192.0.2.1", "fd00::1"), endpoint.ipAddresses)
             assertNotNull(endpoint.publicKey)
+            val diagnosticText = capturedLogs.joinToString("\n")
+            val secretHex = "secret-passphrase".toByteArray().joinToString("") { "%02x".format(it) }
+            assertTrue("B233 logs leaked the Wi-Fi password", !diagnosticText.contains("secret-passphrase"))
+            assertTrue("B233 logs leaked hex-encoded Wi-Fi password", !diagnosticText.contains(secretHex))
+            assertTrue("B233 raw transport logging was not redacted", diagnosticText.contains("RAW rx: redacted bytes="))
+            assertTrue("B233 raw outgoing logging was not redacted", diagnosticText.contains("RAW tx: redacted bytes="))
+            assertTrue("B233 0x4301 parameter sizes missing", diagnosticText.contains("redacted"))
         } finally {
             phoneChannel.close()
             accessoryChannel.close()
