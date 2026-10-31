@@ -1,0 +1,75 @@
+name: B233 reverse RTCP pre-SETUP failure evidence (offline)
+on:
+  pull_request:
+    branches: [experiment/buick-b233-pcm-partial-read-continuity]
+    paths:
+      - '.github/workflows/ci-b233-reverse-rtcp-bind-evidence.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-reverse-rtcp-bind-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact signed T94 ancestor, four-file scope, fail closed and private evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/t96-scope
+          printf '%s\n' \
+            '.github/workflows/ci-b233-reverse-rtcp-bind-evidence.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt' > /tmp/t96-expected
+          diff -u /tmp/t96-expected /tmp/t96-scope
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          air = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          rev = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt').read_text()
+          run = air.split('fun runAudioStream(', 1)[1].split('fun teardownAudioStream(',1)[0]
+          assert 'if (port == 0)' in run and 'audio_setup_skipped reason=reverse_rtcp_unavailable' in run
+          assert 'return null' in run.split('if (port == 0)',1)[1].split('reverseAudioControlPort = reverse',1)[0]
+          assert 'reverse.start()' in run
+          assert 'bindNetwork(datagram)' in rev
+          assert 'datagram.close()' in rev
+          assert 'failureTrace?.event("reverse_rtcp_bind_unavailable", "category=$category")' in rev
+          assert 'bindFailureCategory(error)' in rev
+          assert 'return 0' in rev.split('bindNetwork(datagram)',1)[1].split('socket = datagram',1)[0]
+          for name in ('t96BindFailureReasonsAreFixedAndNeverEchoPeerData',
+                       't96EpermSkipNeverAdvertisesPortAndEmitsOnlyBoundedCategory'):
+              assert name in tests
+          assert 'DatagramSocket()' in rev and 'Network.bindSocket' in tests
+          PY
+      - name: Deterministic B233 reverse-RTCP negative and existing JVM regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.AudioReverseControlPortTest --stacktrace
+      - name: Complete Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 read-only evidence, no signing, release, install, stable merge or VPN changes.

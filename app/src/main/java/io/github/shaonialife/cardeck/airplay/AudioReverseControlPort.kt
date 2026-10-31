@@ -31,6 +31,32 @@ internal class AudioReverseControlPort(
     internal data class ControlHeader(val version: Int, val packetType: Int, val declaredBytes: Int?)
 
     companion object {
+        /**
+         * Diagnose only fixed errno categories. Neither arbitrary exception
+         * messages nor network IDs, addresses, credentials, or peer data are
+         * ever copied into logs. This does not infer why Android denied access.
+         */
+        internal fun bindFailureCategory(error: Throwable): String {
+            val seen = java.util.IdentityHashMap<Throwable, Boolean>()
+            var current: Throwable? = error
+            var depth = 0
+            while (current != null && depth++ < 6 && seen.put(current, true) == null) {
+                if (current is SecurityException) return "security_exception"
+                val message = current.message.orEmpty()
+                if (Regex("""(?<![A-Za-z0-9_])(EPERM|EACCES)(?![A-Za-z0-9_])""").containsMatchIn(message)) {
+                    return "permission_denied"
+                }
+                if (Regex("""(?<![A-Za-z0-9_])(ENETDOWN|ENETUNREACH|EHOSTUNREACH)(?![A-Za-z0-9_])""").containsMatchIn(message)) {
+                    return "network_unreachable"
+                }
+                if (Regex("""(?<![A-Za-z0-9_])(EBADF|ENOTSOCK)(?![A-Za-z0-9_])""").containsMatchIn(message)) {
+                    return "socket_invalid"
+                }
+                current = current.cause
+            }
+            return "other"
+        }
+
         internal fun inspectHeader(bytes: ByteArray, length: Int): ControlHeader? {
             if (length < 2 || length > bytes.size) return null
             val version = (bytes[0].toInt() and 0xFF) ushr 6
@@ -63,7 +89,13 @@ internal class AudioReverseControlPort(
             bindNetwork(datagram)
         } catch (error: Exception) {
             datagram.close()
+            // Explicitly report that a pre-SETUP reverse listener is unusable.
+            // Expose only a fixed category, not SocketException.message:
+            // Android errors can include Network IDs or endpoint information.
+            val category = bindFailureCategory(error)
             log("AUDIO T73: 手机反向 RTCP 网络绑定失败：${error.javaClass.simpleName}")
+            log("AUDIO T96: reverse_rtcp_bind_unavailable category=$category listener=false")
+            failureTrace?.event("reverse_rtcp_bind_unavailable", "category=$category")
             return 0
         }
         socket = datagram

@@ -1791,7 +1791,17 @@ class AirPlayClient(
                     currentSentRtpCount = { audioRtpSentCountProvider?.invoke() },
                 )
                 val port = reverse.start()
-                if (port == 0) return null
+                if (port == 0) {
+                    // T96: not a failed media stream. No SETUP was sent and
+                    // no reverse controlPort was advertised. Never conflate
+                    // this with the compatibility fallback that may play later.
+                    if (endpoint.isBuickB233) {
+                        log("AUDIO T96: audio_setup_skipped reason=reverse_rtcp_unavailable " +
+                            "streamType=${profile.streamType} audioType=${profile.audioType}")
+                        audioFailureTrace?.event("audio_setup_skipped", "reason=reverse_rtcp_unavailable")
+                    }
+                    return null
+                }
                 reverseAudioControlPort = reverse
                 log("AUDIO T73: SETUP 即将声明手机本地 controlPort=$port，区别于车机返回的控制端口")
                 port
