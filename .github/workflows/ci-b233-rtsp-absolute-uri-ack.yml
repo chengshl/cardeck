@@ -71,6 +71,13 @@ jobs:
           assert 'val authority = target.rawAuthority ?: return false' in helper
           assert 'val validRegName =' in helper
           assert 'regNamePort.toIntOrNull()' in helper
+          assert 'val rawPortSuffix =' in helper
+          assert 'if (!validPortSuffix) return false' in helper
+          for malformed_port in ('rtsp://host:/session',
+                                 'rtsp://[2001:db8::1]:/session',
+                                 'rtsp://host:000000/session',
+                                 'rtsp://[2001:db8::1]:000000/session'):
+              assert malformed_port in tests, malformed_port
           assert 'target.rawFragment == null' in helper
           assert 'target.port <= 65535' in helper
           for test in (
