@@ -5,6 +5,53 @@ import org.junit.Test
 
 /** Synthetic RTSP start lines only: no vehicle capture, target, or identifiers. */
 class RtspPeerRequestEvidenceTest {
+    @Test fun b233AbsoluteUriRequestWithPendingCseqMustBypassQueueAndBeAcked() {
+        val line = "SET_PARAMETER rtsp://receiver.invalid/session RTSP/1.0"
+        val oldPathOnly = line.split(" ")[1].startsWith("/")
+        assertEquals(false, oldPathOnly)
+        val recognized = RtspPeerRequestEvidence.isB233AbsoluteUriRequest(line, true)
+        assertEquals(true, recognized)
+        // Same branch ordering as AirPlayClient.dispatchResponse: the peer
+        // request is handled before looking up a locally pending CSeq.
+        val pendingLocalCseqMatches = true
+        assertEquals(false, pendingLocalCseqMatches && !recognized)
+        assertEquals(true, oldPathOnly || recognized)
+    }
+
+    @Test fun b233AbsoluteUriTeardownIsAcknowledgedWithoutCseqCollision() {
+        val line = "TEARDOWN rtsp://receiver.invalid/session RTSP/1.0"
+        assertEquals(
+            RtspPeerRequestEvidence.Kind.TEARDOWN,
+            RtspPeerRequestEvidence.classify(line),
+        )
+        assertEquals(true, RtspPeerRequestEvidence.isB233AbsoluteUriRequest(line, true))
+    }
+
+    @Test fun nonB233AbsoluteUriPreservesExistingPendingQueueAndNoAck() {
+        val line = "SET_PARAMETER rtsp://receiver.invalid/session RTSP/1.0"
+        val recognized = RtspPeerRequestEvidence.isB233AbsoluteUriRequest(line, false)
+        assertEquals(false, recognized)
+        assertEquals(true, !recognized) // existing CSeq lookup remains eligible
+        assertEquals(false, line.split(" ")[1].startsWith("/") || recognized)
+    }
+
+    @Test fun b233MalformedOrResponseLinesNeverTriggerAbsoluteUriAck() {
+        val lines = listOf(
+            "RTSP/1.0 200 OK",
+            "RTSP/1.0 454 Session Not Found",
+            "SET_PARAMETER rtsp:// RTSP/1.0",
+            "SET_PARAMETER rtsp://receiver.invalid/session HTTP/1.1",
+            "SET_PARAMETER rtsp://receiver.invalid/session RTSP/1.0 extra",
+            "set_parameter rtsp://receiver.invalid/session RTSP/1.0",
+            "SET_PARAMETER https://receiver.invalid/session RTSP/1.0",
+            "SET_PARAMETER /session RTSP/1.0",
+            "SET_PARAMETER rtsp://receiver.invalid/session\\r\\nInjected: yes RTSP/1.0",
+        )
+        lines.forEach { line ->
+            assertEquals(line, false, RtspPeerRequestEvidence.isB233AbsoluteUriRequest(line, true))
+        }
+    }
+
     @Test fun peerTeardownIsRecognizedBeforeAnyCseqDispatch() {
         assertEquals(
             RtspPeerRequestEvidence.Kind.TEARDOWN,
