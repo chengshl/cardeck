@@ -185,7 +185,7 @@ class VideoSender(
                 // onSurfaceReady may synchronously stop this sender; never spawn a retired drain.
                 if (!running.get()) return@synchronized false
 
-                Thread({ drainEncoder() }, "video-drain").apply {
+                Thread({ drainEncoder(startEpoch) }, "video-drain").apply {
                     isDaemon = true
                     start()
                 }
@@ -216,7 +216,7 @@ class VideoSender(
 
     // ---- 编码输出 → 协议封装发送 ----
 
-    private fun drainEncoder() {
+    private fun drainEncoder(epoch: Long) {
         // #28: acquisition can race with stop()/socket close. Keep *all* startup
         // paths inside try/finally so a failed getOutputStream() cannot crash
         // the drain thread or skip session retirement.
@@ -271,9 +271,15 @@ class VideoSender(
             // 后台线程未捕获异常会杀死整个进程（曾导致锁屏后 app 消失）
             log("VIDEO: 推流中止 - ${error.message}（等待接收端恢复后重连）")
         } finally {
-            stop()
-            // 会话真实结束信号（静默降噪解除 / 状态收尾）
-            runCatching { onEnded?.invoke() }
+            // A previous drain may finish after stop() and a newer start().
+            // Only the worker for the still-current socket epoch may retire it.
+            synchronized(startupLock) {
+                if (synchronized(dataPortLock) { dataPortEpoch == epoch }) {
+                    stop()
+                    // The callback can retire the session; serialize it with restart.
+                    runCatching { onEnded?.invoke() }
+                }
+            }
         }
     }
 
