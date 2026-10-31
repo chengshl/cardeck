@@ -152,11 +152,24 @@ jobs:
           for before_text, after_text in changes:
               assert expected_client.count(before_text) == 1, 'Permission guard baseline drift'
               expected_client = expected_client.replace(before_text, after_text)
+          # #34 follow-up: only guard three Bluetooth permission-revocation read sites.
+          reviewed_client = subprocess.check_output(
+              ['git', 'show', 'a6c4bb483dd37920f935a8e20ca3ee437a576b3c:' + client_path], text=True
+          )
+          assert expected_client == reviewed_client, 'Previous reviewed client baseline drifted'
+          permission_read_changes = [
+              ("val adapter =\n            try {\n                context.getSystemService(BluetoothManager::class.java)?.adapter\n            } catch (_: Exception) {\n                null\n            }\n        if (adapter == null || !adapter.isEnabled) {", "val adapter =\n            try {\n                context.getSystemService(BluetoothManager::class.java)?.adapter\n            } catch (_: Exception) {\n                null\n            }\n        // Permission can disappear after hasPermission() but before isEnabled.\n        val adapterEnabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }\n        if (!adapterEnabled) {"),
+              ("val name =\n                    try {\n                        device.name\n                    } catch (_: SecurityException) {\n                        null\n                    } ?: device.address", "val name =\n                    try {\n                        device.name ?: device.address\n                    } catch (_: SecurityException) {\n                        \"蓝牙设备\"\n                    }"),
+              ("val hit = bonded.filter { TargetDevicePrefs.matches(target, it.address) }", "val hit = bonded.filter { device ->\n                // A revoked permission must not kill the long-lived reconnect worker.\n                try { TargetDevicePrefs.matches(target, device.address) }\n                catch (_: SecurityException) { false }\n            }"),
+          ]
+          for before_text, after_text in permission_read_changes:
+              assert expected_client.count(before_text) == 1, 'Permission read-site drift'
+              expected_client = expected_client.replace(before_text, after_text)
           assert client == expected_client, 'Unexpected iAP2 runtime/protocol change'
           assert 'SecurityException' in client
           assert client.count('SESSION 意外异常') == 1
           assert client.count('finally {\n            // Only retire resources owned by this session') == 1
-          print('Three permission guards plus one session exception boundary replayed from #34 reviewed HEAD')
+          print('Previous #34 guards plus three Bluetooth permission read-site protections replayed exactly')
           print('Stop-cancellation only; no protocol timing, Bluetooth profile or reconnect behavior expanded')
           PY
       - uses: actions/setup-java@v4

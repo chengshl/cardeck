@@ -96,7 +96,9 @@ class Iap2BluetoothClient(
             } catch (_: Exception) {
                 null
             }
-        if (adapter == null || !adapter.isEnabled) {
+        // Permission can disappear after hasPermission() but before isEnabled.
+        val adapterEnabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }
+        if (!adapterEnabled) {
             log("BT-C: 蓝牙不可用或未开启")
             return false
         }
@@ -158,10 +160,10 @@ class Iap2BluetoothClient(
                 if (!running || generation.get() != myGeneration) return
                 val name =
                     try {
-                        device.name
+                        device.name ?: device.address
                     } catch (_: SecurityException) {
-                        null
-                    } ?: device.address
+                        "蓝牙设备"
+                    }
                 runCatching { adapter.cancelDiscovery() }
                 // 「只配对、不连接」：奥迪 MIB3 实测手机与车机处于蓝牙已连接状态
                 // （HFP/A2DP 在线）时，车机不开放无线 CarPlay 的 iAP2 服务窗口——
@@ -253,7 +255,11 @@ class Iap2BluetoothClient(
         targetProvider()?.let { target ->
             // 目标策略：地址命中即唯一候选——不再按 SDP 缓存过滤（缓存可能缺失，
             // 而用户显式指定就该尝试）；目标不在已配对列表时给一次提示并空转等待。
-            val hit = bonded.filter { TargetDevicePrefs.matches(target, it.address) }
+            val hit = bonded.filter { device ->
+                // A revoked permission must not kill the long-lived reconnect worker.
+                try { TargetDevicePrefs.matches(target, device.address) }
+                catch (_: SecurityException) { false }
+            }
             if (hit.isEmpty()) {
                 val now = android.os.SystemClock.uptimeMillis()
                 if (now - lastTargetMissingLogAt > FAILURE_LOG_THROTTLE_MILLIS) {
