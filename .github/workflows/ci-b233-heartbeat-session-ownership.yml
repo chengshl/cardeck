@@ -77,6 +77,11 @@ jobs:
           assert 'fun <T : Any> captureIfCurrent(token: Long, capture: () -> T): T?' in gate
           assert 'expectedB233SessionToken = if (b233HeartbeatWorker) heartbeatToken else null' in feedback
           assert 'if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break' in feedback
+          # The failure path must also reject a retired worker before it logs
+          # feedback_error to the replacement session's shared trace.
+          stale_guard = 'if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break'
+          failure = feedback.split('} catch (error: IOException) {', 1)[1]
+          assert stale_guard in failure and failure.index(stale_guard) < failure.index('audioFailureTrace?.event("feedback_error"')
           for name in ('oldKeepAliveCannotPingRetiredHostAfterFastReconnect',
                        'delayedOldFeedbackWorkerCannotAdoptReplacementSession',
                        'feedbackResponseAfterCloseCannotBeReportedAsNewSession',
@@ -84,6 +89,7 @@ jobs:
                        'capturedRtspSocketCannotAdoptNewSessionAfterRetirement',
                        'retirementBeforeReaderSetupCannotDisplaceNewSessionReader',
                        'retirementIsNotBlockedByPausedRtspWriteAfterSocketCapture',
+                       'retiredFeedbackFailureCannotContaminateReplacementSessionTrace',
                        'nonB233LegacyWorkerDoesNotDependOnGate'):
               assert name in test, name
           print('B233 only: final UDP send and RTSP heartbeat write are serialized with session retirement; non-B233 unchanged')
