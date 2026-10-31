@@ -17,5 +17,8 @@ internal class ProjectionLease<T : Any> {
 
     fun publish(grant: T?): T? = active.getAndSet(grant)
 
+    /** Explicit service stop revokes readiness synchronously. */
+    fun clearCurrent(): T? = active.getAndSet(null)
+
     fun clearIfCurrent(stopped: T): Boolean = active.compareAndSet(stopped, null)
 }
