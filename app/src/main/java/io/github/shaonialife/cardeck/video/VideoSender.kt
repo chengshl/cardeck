@@ -76,6 +76,9 @@ class VideoSender(
     private var bytesSinceKeepAlive = 0L
     private var keepAliveCount = 0L
 
+    /** #28: observation only; a keepAlive/RTSP 200 is not evidence of an output video frame. */
+    private var videoFrameDiagnostics: VideoFrameDiagnostics? = null
+
     @Volatile
     private var framesSent = 0L
 
@@ -122,6 +125,7 @@ class VideoSender(
         if (running.get()) return true
         return try {
             if (!openDataPort()) {
+                log("VIDEO DIAG #28: START_ABORTED phase=data-port (encoder not started)")
                 stop()
                 return false
             }
@@ -144,9 +148,11 @@ class VideoSender(
             val surface = codec.createInputSurface()
             codec.start()
             encoder = codec
+            log("VIDEO DIAG #28: ENCODER_STARTED (first video frame not yet proven)")
             inputSurface = surface
             running.set(true)
             lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
+            videoFrameDiagnostics = VideoFrameDiagnostics(lastKeepAliveAt)
 
             onSurfaceReady(surface)
 
@@ -156,6 +162,7 @@ class VideoSender(
             }
             true
         } catch (error: Exception) {
+            log("VIDEO DIAG #28: START_ABORTED phase=start-exception (see startup error)")
             log("VIDEO: 启动失败 - ${error.message}")
             stop()
             false
@@ -176,10 +183,20 @@ class VideoSender(
     // ---- 编码输出 → 协议封装发送 ----
 
     private fun drainEncoder() {
-        val codec = encoder ?: return
-        val output = socket?.getOutputStream() ?: return
-        val bufferInfo = MediaCodec.BufferInfo()
+        // #28/#83: preserve the observation markers, but ensure an early
+        // acquisition failure still reaches the terminal DRAIN_EXIT and
+        // stop/onEnded cleanup. No video protocol or recovery change.
         try {
+            val codec = encoder ?: run {
+                log("VIDEO DIAG #28: DRAIN_ABORTED phase=encoder-missing (no frame output)")
+                return
+            }
+            val output = socket?.getOutputStream() ?: run {
+                log("VIDEO DIAG #28: DRAIN_ABORTED phase=output-stream-missing (no frame output)")
+                return
+            }
+            log("VIDEO DIAG #28: DRAIN_ENTERED (no video frame proven yet)")
+            val bufferInfo = MediaCodec.BufferInfo()
             while (running.get()) {
                 val index =
                     try {
@@ -214,6 +231,16 @@ class VideoSender(
             // 后台线程未捕获异常会杀死整个进程（曾导致锁屏后 app 消失）
             log("VIDEO: 推流中止 - ${error.message}（等待接收端恢复后重连）")
         } finally {
+            // #28: a stopped drain loop can end before the 6s/15s keepAlive probes fire.
+            // Preserve one terminal summary even on encoder errors or socket EOF.
+            val evidence = videoFrameDiagnostics
+            val stoppedAtMs = android.os.SystemClock.uptimeMillis()
+            log(
+                "VIDEO DIAG #28: DRAIN_EXIT frameCount=$framesSent configFlushed=$configSent " +
+                    "keepAliveCount=$keepAliveCount encoderAgeMs=${evidence?.ageMs(stoppedAtMs) ?: -1L} " +
+                    "lastFrameGapMs=${evidence?.gapMs(stoppedAtMs) ?: -1L} " +
+                    "(application-side only; receiver display not proven)",
+            )
             stop()
             // 会话真实结束信号（静默降噪解除 / 状态收尾）
             runCatching { onEnded?.invoke() }
@@ -243,13 +270,32 @@ class VideoSender(
         lastKeepAliveAt = now
         keepAliveCount++
         val frame = buildKeepAliveFrame(keepAliveWithStats, frames, bytesPerSecond, framesPerSecond)
+        val flushStartedAtMs = android.os.SystemClock.uptimeMillis()
         output.write(frame)
         output.flush()
+        // The scheduling timestamp above is intentionally unchanged. Evidence
+        // must use the POST-flush clock: a blocked socket write/flush can take
+        // seconds, and the pre-write timestamp would understate the frame gap.
+        val flushedAtMs = android.os.SystemClock.uptimeMillis()
+        val flushDurationMs = (flushedAtMs - flushStartedAtMs).coerceAtLeast(0L)
+        // Reuse this existing 1-second tick; do not add a watchdog thread or recovery action.
+        val evidence = videoFrameDiagnostics
+        if (evidence != null) {
+            when (evidence.keepAliveFlushed(flushedAtMs)) {
+                VideoFrameDiagnostics.Signal.NO_FIRST_FRAME_6S ->
+                    log("VIDEO DIAG #28: NO_FIRST_FRAME_6S encoderAgeMs=${evidence.ageMs(flushedAtMs)} " +
+                        "keepAliveOk=true flushDurationMs=$flushDurationMs frameCount=$framesSent (observe-only; no teardown)")
+                VideoFrameDiagnostics.Signal.NO_FRAMES_15S ->
+                    log("VIDEO DIAG #28: NO_FRAMES_15S frameGapMs=${evidence.gapMs(flushedAtMs)} " +
+                        "flushDurationMs=$flushDurationMs frameCount=$framesSent (observe-only; no reconnect)")
+                else -> Unit
+            }
+        }
         if (keepAliveCount <= 3 || keepAliveCount % 30 == 0L) {
             log(
                 "VIDEO: keepAlive #$keepAliveCount " +
                     "opcode=${if (keepAliveWithStats) OP_KEEP_ALIVE_WITH_BODY else OP_KEEP_ALIVE} " +
-                    "body=${frame.size - HEADER_LEN}B fps=$framesPerSecond",
+                    "body=${frame.size - HEADER_LEN}B fps=$framesPerSecond flushDurationMs=$flushDurationMs",
             )
         }
     }
@@ -295,6 +341,8 @@ class VideoSender(
         output.write(body)
         output.flush()
         configSent = true
+        // #28: config flush is distinct from the first encrypted video-frame flush.
+        log("VIDEO DIAG #28: CONFIG_FLUSHED (first video frame not yet proven)")
         log(
             "VIDEO: ✓ VideoConfig 已发送 avcC=${body.size}B（SPS ${sps.size}B/PPS ${pps.size}B，" +
                 "profile=${sps[1].toInt() and 0xFF} level=${sps[3].toInt() and 0xFF} " +
@@ -353,6 +401,13 @@ class VideoSender(
         output.write(sealed)
         output.flush()
         framesSent++
+        // This event proves only a successful application-side flush, not car-side decoding.
+        val now = android.os.SystemClock.uptimeMillis()
+        val evidence = videoFrameDiagnostics
+        if (evidence != null && evidence.frameFlushed(now) == VideoFrameDiagnostics.Signal.FIRST_FRAME_FLUSHED) {
+            log("VIDEO DIAG #28: FIRST_FRAME_FLUSHED encoderAgeMs=${evidence.ageMs(now)} " +
+                "(receiver/display not verified)")
+        }
         framesSinceKeepAlive++
         bytesSinceKeepAlive += plain.size.toLong()
         if (keyFrame || framesSent <= 3 || framesSent % 150 == 0L) {

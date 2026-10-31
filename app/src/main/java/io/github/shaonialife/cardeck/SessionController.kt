@@ -1404,7 +1404,15 @@ object SessionController {
                                     owningSender = createdSender
                                     videoSender = createdSender
                                     // 先连端口（车机看门狗），编码器等 RECORD 后再启动
-                                    videoSender?.openDataPort()
+                                    val dataPortConnected = videoSender?.openDataPort()
+                                    appendLog(
+                                        "VIDEO DIAG #28: DATA_PORT_RESULT=" +
+                                            when (dataPortConnected) {
+                                                true -> "connected"
+                                                false -> "failed"
+                                                null -> "sender-missing"
+                                            } + " (no frame proven)",
+                                    )
                                 }
                                 // 先 RECORD 激活会话并起视频，再协商音频（2026-10-17 奥迪定谳）：
                                 // 车机在「屏幕流 SETUP 之后」有约 2s 看门狗，等不到 RECORD/数据流即
@@ -1413,12 +1421,17 @@ object SessionController {
                                 // 返回同一毫秒、且 5 次实测全部复现。故顺序改为：
                                 //   屏幕 SETUP → 连数据端口 → RECORD → 起编码器（出帧）→ 音频 SETUP
                                 // 音频 SETUP 失败只丢声音，视频会话保持。
-                                client.record()
+                                val recordAccepted = client.record()
+                                // A RECORD request returning is not proof of 200 OK or a video frame.
+                                appendLog(
+                                    "VIDEO DIAG #28: RECORD_RETURNED accepted=$recordAccepted senderPresent=${videoSender != null} " +
+                                        "hostPresent=${host != null} (no video frame proven)",
+                                )
                                 if (host != null) {
                                     val videoW = pendingVideoW
                                     val videoH = pendingVideoH
                                     val videoDensity = pendingVideoDensity
-                                    videoSender?.start { surface ->
+                                    val videoStartSucceeded = videoSender?.start { surface ->
                                         // 唯一模式：隐形屏（双屏启动器：dock + 应用屏）
                                         val source =
                                             HiddenDisplaySource(
@@ -1427,6 +1440,9 @@ object SessionController {
                                                 safeViewport = pendingSafeViewport,
                                             )
                                         currentHiddenSource = source
+                                        // #28: distinguish a blocked Shizuku/display attach from an encoder with no frames.
+                                        val attachStartedAtMs = android.os.SystemClock.uptimeMillis()
+                                        appendLog("VIDEO DIAG #28: SURFACE_ATTACH_BEGIN (no frame proven)")
                                         val ok =
                                             source.attach(
                                                 surface,
@@ -1435,9 +1451,24 @@ object SessionController {
                                                 videoDensity,
                                             )
                                         appendLog(
+                                            "VIDEO DIAG #28: SURFACE_ATTACH_RESULT=${if (ok) "attached" else "failed"} " +
+                                                "durationMs=${(android.os.SystemClock.uptimeMillis() - attachStartedAtMs).coerceAtLeast(0)} " +
+                                                "(no frame proven)",
+                                        )
+                                        appendLog(
                                             "MODE: 隐形屏 ${if (ok) "已启动（高德车机版优先）display=${source.displayId}" else "启动失败（Shizuku 就绪？）"}",
                                         )
                                     }
+                                    appendLog(
+                                        "VIDEO DIAG #28: SENDER_START_RESULT=" +
+                                            when (videoStartSucceeded) {
+                                                true -> "started"
+                                                false -> "failed"
+                                                null -> "sender-missing"
+                                            } + " (no video frame proven)",
+                                    )
+                                } else {
+                                    appendLog("VIDEO DIAG #28: SENDER_START_SKIPPED reason=host-missing (no frame proven)")
                                 }
                                 // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。
                                 // 会话已激活（RECORD 完成）后再协商；失败不影响视频主链路。

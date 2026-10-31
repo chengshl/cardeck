@@ -1,0 +1,162 @@
+name: E5 video first-frame observation only (#28)
+on:
+  push:
+    branches: [work/e5-video-firstframe-observability-28]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt'
+      - '.github/workflows/ci-e5-video-firstframe-observability.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  e5-frame-observation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Pure timestamp/tracker regression and Debug compilation
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Limit modifications to E5 video observability and ensure no automatic reconnect
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          # #28 remains an isolated L3 observation PR. Fail closed when the
+          # stable source or the reviewed L1-only delta changes.
+          original_base = '8271f2a71be7b4acc740c2748bf3281810ea9aa1'
+          previous_reviewed = '7945c16254e71c12f2824c7d90e4de960649f6f0'
+          previous_stable = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          reviewed_stable = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
+          actual_stable = subprocess.check_output(
+              ['git', 'rev-parse', 'origin/Buick-E5'], text=True
+          ).strip()
+          assert actual_stable == reviewed_stable, (
+              f'E5 stable baseline moved: {actual_stable}; re-review #28 before CI acceptance'
+          )
+          # Since 7945c162, #79 added only B233 synthetic replay tests/CI
+          # and #82 corrected official release trigger/preflight. Neither
+          # changed VideoSender or SessionController runtime. Reject other drift.
+          reviewed_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_reviewed, previous_stable], text=True
+          ).splitlines())
+          assert reviewed_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+          }, f'Unexpected #79/#82 stable delta: {sorted(reviewed_delta)}'
+          # Verify the exact PR #93 test-only transition separately from earlier changes.
+          test_only_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_stable, reviewed_stable], text=True
+          ).splitlines())
+          assert test_only_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected post-#93 stable drift: {sorted(test_only_delta)}'
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', original_base, reviewed_stable], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/ci-e5-chinese-project-labels.yml',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected stable delta across #28 observation base: {sorted(stable_delta)}'
+          files = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          allowed = {
+              'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt',
+              '.github/workflows/ci-e5-video-firstframe-observability.yml',
+          }
+          assert files == allowed, f'Unexpected E5 runtime changes: {sorted(files ^ allowed)}'
+          sender = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt').read_text()
+          tracker = Path('app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt').read_text()
+          controller = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          # Ensure this pass only adds phase outcomes to the existing #62 probe.
+          # No extra TCP/RTSP requests, no new failure branches or retries.
+          base_controller = subprocess.check_output(
+              ['git','show','bdda6a5b1b6d139ad4f31d4d3311d22dad71892b:app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'],
+              text=True,
+          )
+          phase_edits = [
+              ("                                    videoSender?.openDataPort()", "                                    val dataPortConnected = videoSender?.openDataPort()\n                                    appendLog(\n                                        \"VIDEO DIAG #28: DATA_PORT_RESULT=\" +\n                                            when (dataPortConnected) {\n                                                true -> \"connected\"\n                                                false -> \"failed\"\n                                                null -> \"sender-missing\"\n                                            } + \" (no frame proven)\",\n                                    )"),
+              ("                                client.record()\n                                // #28: RECORD success is not proof that a video sender exists or started.", "                                val recordAccepted = client.record()\n                                // A RECORD request returning is not proof of 200 OK or a video frame."),
+              ("                                    \"VIDEO DIAG #28: RECORD_RETURNED senderPresent=${videoSender != null} \" +", "                                    \"VIDEO DIAG #28: RECORD_RETURNED accepted=$recordAccepted senderPresent=${videoSender != null} \" +"),
+              ("                                    )\n                                }\n                                // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。", "                                    )\n                                } else {\n                                    appendLog(\"VIDEO DIAG #28: SENDER_START_SKIPPED reason=host-missing (no frame proven)\")\n                                }\n                                // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。"),
+          ]
+          reconstructed = base_controller
+          for before_text, after_text in phase_edits:
+              assert reconstructed.count(before_text) == 1, 'Pre-RECORD probe scope drift'
+              reconstructed = reconstructed.replace(before_text, after_text)
+          assert controller == reconstructed, 'Unexpected E5 controller behavior change'
+          assert controller.count('val dataPortConnected = videoSender?.openDataPort()') == 1
+          assert controller.count('val recordAccepted = client.record()') == 1
+          assert 'SENDER_START_SKIPPED reason=host-missing' in controller
+          assert 'DATA_PORT_RESULT=' in controller
+          assert 'RECORD_RETURNED' in controller and 'SENDER_START_RESULT' in controller
+          assert 'SURFACE_ATTACH_BEGIN' in controller and 'SURFACE_ATTACH_RESULT' in controller
+          assert 'val videoStartSucceeded = videoSender?.start' in controller
+          assert 'NO_FIRST_FRAME_6S' in sender and 'NO_FRAMES_15S' in sender
+          assert 'FIRST_FRAME_FLUSHED' in sender and 'keepAliveFlushed(flushedAtMs)' in sender
+          # A stalled socket write/flush must not be measured using the timestamp
+          # captured before the write. Keep the existing 1-second schedule intact.
+          keepalive = sender.split('private fun maybeSendKeepAlive(', 1)[1].split(
+              'private fun sendVideoConfig(', 1
+          )[0]
+          assert keepalive.index('lastKeepAliveAt = now') < keepalive.index('output.write(frame)')
+          assert keepalive.index('output.write(frame)') < keepalive.index('output.flush()')
+          assert keepalive.index('output.flush()') < keepalive.index('val flushedAtMs')
+          assert keepalive.index('val flushedAtMs') < keepalive.index('keepAliveFlushed(flushedAtMs)')
+          assert 'flushDurationMs=$flushDurationMs' in keepalive
+          assert 'keepAliveFlushed(now)' not in keepalive
+          # #28 early-exit evidence: CONFIG flush is not proof of a video frame,
+          # and DRAIN_EXIT must be emitted even before the 6s/15s timers.
+          assert 'CONFIG_FLUSHED (first video frame not yet proven)' in sender
+          assert 'DRAIN_EXIT frameCount=$framesSent configFlushed=$configSent' in sender
+          assert 'onEnded?.invoke()' in sender
+          # #83 selective safety guard: startup abort/exception must not bypass
+          # the existing terminal diagnostic, stop(), or onEnded callback.
+          drain = sender.split('private fun drainEncoder()', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
+          assert drain.index('try {') < drain.index('socket?.getOutputStream()')
+          assert drain.index('socket?.getOutputStream()') < drain.index('} catch (error: Exception)')
+          assert drain.index('} catch (error: Exception)') < drain.index('} finally {')
+          terminal = drain.split('} finally {', 1)[1]
+          assert 'DRAIN_EXIT frameCount=$framesSent' in terminal
+          assert terminal.index('DRAIN_EXIT frameCount=$framesSent') < terminal.index('stop()') < terminal.index('onEnded?.invoke()')
+          assert 'DRAIN_ABORTED phase=encoder-missing' in drain
+          assert 'DRAIN_ABORTED phase=output-stream-missing' in drain
+          assert 'output.write(header)' in sender and 'output.write(sealed)' in sender
+          assert 'output.flush()' in sender
+          for forbidden in (
+              'retireSession(', 'requestUI(', 'disconnect(', 'reconnect(',
+              'Thread(', 'Socket(', 'MediaCodec',
+              'BluetoothAdapter', 'BluetoothManager', 'BluetoothSocket', 'BluetoothDevice',
+          ):
+              assert forbidden not in tracker, f'Tracker must not mutate session: {forbidden}'
+          print('E5 probe is log-only; no session or transport control logic added')
+          PY
