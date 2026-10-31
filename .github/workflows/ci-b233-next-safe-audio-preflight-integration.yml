@@ -29,14 +29,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE=03f20aab3f6acd9d8ecb7b3038fc49883ff1f4e4
+          BASE=93a8327de98f86b0df8306f1ba8d48eb0455a280
           SIGNED_T94=1834fd9a05dfd7d19a29dba641ea38af063d0522
           git merge-base --is-ancestor "$BASE" HEAD
           git merge-base --is-ancestor "$SIGNED_T94" HEAD
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41224631662 --jq .head_sha)" = '78c887646e62a6f0f0dea3a55487368c40966ec2'
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41224631662 --jq .conclusion)" = success
-          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41224653639 --jq .head_sha)" = '5da782a9caebdf517cc1e4a93f0d3e48390812b8'
-          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41224653639 --jq .conclusion)" = success
+          # The prerequisite full Android CI may still be running.
+          for i in $(seq 1 24); do
+            state="$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41227492783 --jq .status)"
+            if [ "$state" = completed ]; then break; fi
+            sleep 10
+          done
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41227492783 --jq .head_sha)" = '93a8327de98f86b0df8306f1ba8d48eb0455a280'
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41227492783 --jq .conclusion)" = success
           git diff --name-only "$BASE" HEAD | sort > /tmp/safe-integration-scope
           printf '%s\n' \
             '.github/workflows/ci-b233-next-safe-audio-preflight-integration.yml' \
@@ -57,8 +63,10 @@ jobs:
           assert 'B233ModeReplySummary.describe(replyBody)' in p
           assert 'safeAudioFeedbackLogLines(body).forEach(log)' in p
           assert 'firstAacFrameSafeLog(out, raw, wrapAdts)' in Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt').read_text()
-          preflight = Path('app/src/main/java/io/github/shaonialife/cardeck/BuickSettingsActivity.kt').read_text()
-          assert 'b233-manual-udp-preflight' in preflight and '不发送音频' in preflight
+          preflight = Path('app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt').read_text()
+          assert 'runT89BindPreflight()' in preflight and '不发送任何 UDP 包' in preflight
+          assert 'preflightRunning.compareAndSet(false, true)' in preflight
+          assert 'onBindError = AudioReverseControlPort::bindFailureCategory' in preflight
           assert 'packageName == "io.github.buick.test.cardeck"' in preflight
           assert 'fun shouldRecordRejectedAfterAttempt(' in Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioProfileMemory.kt').read_text()
           PY

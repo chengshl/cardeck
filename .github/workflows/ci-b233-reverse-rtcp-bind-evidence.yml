@@ -10,7 +10,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioProfileMemory.kt'
       - 'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioProfileMemoryTest.kt'
-      - 'app/src/main/java/io/github/shaonialife/cardeck/BuickSettingsActivity.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt'
   workflow_dispatch:
 permissions:
   contents: read
@@ -45,7 +45,7 @@ jobs:
           git diff --name-only "$BASE" HEAD | sort > /tmp/t96-scope
           printf '%s\n' \
             '.github/workflows/ci-b233-reverse-rtcp-bind-evidence.yml' \
-            'app/src/main/java/io/github/shaonialife/cardeck/BuickSettingsActivity.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt' \
@@ -83,15 +83,16 @@ jobs:
           assert 'client.lastAudioSetupRequestAttempted' in session
           assert 'fun shouldRecordRejectedAfterAttempt(' in memory
           assert 'b233LocalReverseRtcpBindFailureCannotPersistReceiverRejection' in memtests
-          ui = Path('app/src/main/java/io/github/shaonialife/cardeck/BuickSettingsActivity.kt').read_text()
+          ui = Path('app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt').read_text()
           preflight = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflight.kt').read_text()
           assert 'packageName == "io.github.buick.test.cardeck"' in ui
+          assert 'runT89BindPreflight()' in ui
           assert ui.count('SessionController.b233NetworkForAudioFreePreflight()') >= 3
+          assert 'networkStillValid = {' in ui and '!preflightCancelled' in ui
+          assert 'preflightRunning.compareAndSet(false, true)' in ui
           assert 'onBindError = AudioReverseControlPort::bindFailureCategory' in ui
-          assert 'bindNetwork = { udp -> selected.bindSocket(udp) }' in ui
-          assert 'networkStillValid = {' in ui and '!audioPreflightCancelled' in ui
-          assert '.setPositiveButton("开始检测")' in ui and 'Thread({' in ui
-          assert '未发送任何 UDP' in ui
+          assert 'bindNetwork = { udp -> network.bindSocket(udp) }' in ui
+          assert '请确认车辆已停稳' in ui and '不发送任何 UDP 包' in ui
           assert 'fun run(holdMillis: Long = 25_000L)' in preflight
           assert 'receiver.start()' in preflight and 'receiver.close()' in preflight
           PY
