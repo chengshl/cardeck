@@ -67,14 +67,21 @@ jobs:
           assert 'activeUdp.send(datagram)' in keep
           assert 'expectedB233SessionToken: Long? = null' in src
           request = src.split('    private fun request(',1)[1].split('    /**',1)[0]
-          assert 'b233HeartbeatSessionGate.runIfCurrent(expectedB233SessionToken, writeRequest)' in request
-          assert request.index('startReader(client)') < request.index('synchronized(rtspWriteLock)')
+          assert 'b233HeartbeatSessionGate.captureIfCurrent(expectedB233SessionToken)' in request
+          assert 'val client =' in request and 'startReader(it)' in request
+          assert request.index('captureIfCurrent(expectedB233SessionToken)') < request.index('synchronized(rtspWriteLock)')
+          assert '!b233HeartbeatSessionGate.isCurrent(expectedB233SessionToken)' in request
+          assert request.index('synchronized(rtspWriteLock)') < request.index('output.write(wire)')
+          assert 'runIfCurrent(expectedB233SessionToken, writeRequest)' not in request
+          assert 'fun <T : Any> captureIfCurrent(token: Long, capture: () -> T): T?' in gate
           assert 'expectedB233SessionToken = if (b233HeartbeatWorker) heartbeatToken else null' in feedback
           assert 'if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break' in feedback
           for name in ('oldKeepAliveCannotPingRetiredHostAfterFastReconnect',
                        'delayedOldFeedbackWorkerCannotAdoptReplacementSession',
                        'feedbackResponseAfterCloseCannotBeReportedAsNewSession',
                        'runIfCurrentRejectsStaleNetworkActionsAfterRetirement',
+                       'capturedRtspSocketCannotAdoptNewSessionAfterRetirement',
+                       'retirementIsNotBlockedByPausedRtspWriteAfterSocketCapture',
                        'nonB233LegacyWorkerDoesNotDependOnGate'):
               assert name in test, name
           print('B233 only: final UDP send and RTSP heartbeat write are serialized with session retirement; non-B233 unchanged')
