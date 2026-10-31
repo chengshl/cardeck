@@ -10,6 +10,7 @@ import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
 import io.github.shaonialife.cardeck.airplay.PairVerifyClient
+import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
