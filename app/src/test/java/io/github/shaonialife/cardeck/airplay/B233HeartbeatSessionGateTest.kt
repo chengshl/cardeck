@@ -20,7 +20,10 @@ class B233HeartbeatSessionGateTest {
         gate.retire()
         val newToken = gate.snapshot()
         val socketIsOpenAgain = true
-        if (socketIsOpenAgain && gate.isCurrent(oldToken)) sentToOldHost.incrementAndGet()
+        val didSend = socketIsOpenAgain && gate.runIfCurrent(oldToken) {
+            sentToOldHost.incrementAndGet()
+        }
+        assertFalse(didSend)
         assertEquals(0, sentToOldHost.get())
         assertTrue(gate.isCurrent(newToken))
         assertFalse(gate.isCurrent(oldToken))
@@ -39,7 +42,7 @@ class B233HeartbeatSessionGateTest {
             val oldWorker = executor.submit {
                 workerReady.countDown()
                 check(permitWorker.await(5, TimeUnit.SECONDS))
-                if (gate.isCurrent(oldToken)) requests.incrementAndGet()
+                gate.runIfCurrent(oldToken) { requests.incrementAndGet() }
             }
             assertTrue(workerReady.await(5, TimeUnit.SECONDS))
             gate.retire()
@@ -47,7 +50,7 @@ class B233HeartbeatSessionGateTest {
             permitWorker.countDown()
             oldWorker.get(5, TimeUnit.SECONDS)
             assertEquals("old feedback worker must not request on new RTSP", 0, requests.get())
-            if (gate.isCurrent(newToken)) requests.incrementAndGet()
+            assertTrue(gate.runIfCurrent(newToken) { requests.incrementAndGet() })
             assertEquals(1, requests.get())
         } finally {
             permitWorker.countDown()
@@ -81,6 +84,16 @@ class B233HeartbeatSessionGateTest {
             resumeReply.countDown()
             executor.shutdownNow()
         }
+    }
+
+    @Test
+    fun runIfCurrentRejectsStaleNetworkActionsAfterRetirement() {
+        val gate = B233HeartbeatSessionGate()
+        val token = gate.snapshot()
+        val actions = AtomicInteger()
+        gate.retire()
+        assertFalse(gate.runIfCurrent(token) { actions.incrementAndGet() })
+        assertEquals(0, actions.get())
     }
 
     @Test
