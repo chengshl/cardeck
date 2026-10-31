@@ -1,0 +1,77 @@
+name: B233 RTSP reader retirement integration (offline only)
+on:
+  pull_request:
+    branches: [experiment/buick-b233-main-audio-eof-causality]
+    paths:
+      - '.github/workflows/ci-b233-rtsp-reader-retirement-t94.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-reader-retirement-t94-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact T94 privacy/evidence base and B233-only integration scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=52e24aca21349af0d3b9143a01102076b65d60ba
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41238916665 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41238916665 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-rtsp-reader-retirement-t94.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          close=src.split('    fun close() {',1)[1].split('    /**',1)[0]
+          reader=src.split('    private fun readLoop(',1)[1].split('    /** 控制通道报文',1)[0]
+          assert 'if (endpoint.isBuickB233) {' in close
+          assert close.index('val waiting = synchronized(rtspWriteLock) {') < close.index('RtspReaderGenerationCleanup.drainAll(pendingResponses)')
+          assert 'wakePending("控制通道关闭", waiting)' in close
+          assert 'failAllPending("控制通道关闭")' in close
+          assert 'if (endpoint.isBuickB233) {' in reader
+          assert reader.index('val waiting = synchronized(rtspWriteLock) {') < reader.index('RtspReaderGenerationCleanup.drainIfCurrent(')
+          assert 'wakePending("控制通道读线程结束", waiting)' in reader
+          assert 'else if (generation == readerGeneration)' in reader
+          assert 'failAllPending("控制通道读线程结束")' in reader
+          helper=Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt').read_text()
+          tests=Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt').read_text()
+          assert 'if (exitingGeneration != activeGeneration) return null' in helper
+          for name in ('staleReaderCannotDrainNewSessionPendingCseq','closeDrainCannotClearWaiterRegisteredAfterRetirementLock','oldCloseSnapshotThenClearOutsideWriteLockCouldLoseNewWaiter'):
+              assert name in tests
+          print('B233 reader retirement and non-B233 fallback are wired')
+          PY
+      - name: RTSP reader retirement negative regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.RtspReaderGenerationCleanupTest --stacktrace
+      - name: Complete Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft: no signing, release, installation, audio packet or stable-branch changes.

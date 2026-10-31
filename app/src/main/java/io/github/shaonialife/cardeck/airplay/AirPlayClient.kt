@@ -583,12 +583,24 @@ class AirPlayClient(
         // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
         // 清掉，否则重连后的读线程会把明文应答当密文帧解，后续所有请求超时。
         cipher = null
-        synchronized(rtspWriteLock) {
-            readerSocket = null
-            readerThread = null
-            readerGeneration++
+        // B233: retire pending waiters under the same lock used by new RTSP requests.
+        // Other receivers retain the established close behavior.
+        if (endpoint.isBuickB233) {
+            val waiting = synchronized(rtspWriteLock) {
+                readerSocket = null
+                readerThread = null
+                readerGeneration++
+                RtspReaderGenerationCleanup.drainAll(pendingResponses)
+            }
+            wakePending("控制通道关闭", waiting)
+        } else {
+            synchronized(rtspWriteLock) {
+                readerSocket = null
+                readerThread = null
+                readerGeneration++
+            }
+            failAllPending("控制通道关闭")
         }
-        failAllPending("控制通道关闭")
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
         iapLink = null
@@ -2841,8 +2853,21 @@ class AirPlayClient(
         } catch (error: IOException) {
             if (generation == readerGeneration) audioFailureTrace?.event("rtsp_read_error", error.javaClass.simpleName)
         } finally {
-            // 只由「当前」读线程清账：重连会换 socket 与新读线程，旧线程不得误伤新会话
-            if (generation == readerGeneration) {
+            // B233: check the generation and detach waiters atomically with
+            // startReader()/request() registration. A stale reader must never
+            // clear a newly registered RTSP response queue after reconnect.
+            if (endpoint.isBuickB233) {
+                val waiting = synchronized(rtspWriteLock) {
+                    RtspReaderGenerationCleanup.drainIfCurrent(
+                        generation, readerGeneration, pendingResponses,
+                    )
+                }
+                if (waiting != null) {
+                    audioFailureTrace?.event("rtsp_reader_exit")
+                    wakePending("控制通道读线程结束", waiting)
+                }
+            } else if (generation == readerGeneration) {
+                // Preserve legacy non-B233 retirement behavior unchanged.
                 audioFailureTrace?.event("rtsp_reader_exit")
                 failAllPending("控制通道读线程结束")
             }
@@ -2943,6 +2968,13 @@ class AirPlayClient(
     private fun failAllPending(reason: String) {
         val waiting = pendingResponses.values.toList()
         pendingResponses.clear()
+        wakePending(reason, waiting)
+    }
+
+    private fun wakePending(
+        reason: String,
+        waiting: List<java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>>,
+    ) {
         if (waiting.isEmpty()) return
         log("AIRPLAY: $reason——唤醒 ${waiting.size} 个待响应请求")
         waiting.forEach { it.offer(RTSP_CLOSED_MARK to ByteArray(0)) }
