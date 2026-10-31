@@ -1,4 +1,4 @@
-name: B233 audio projection owner and regrant guard (offline)
+name: B233 projection regrant with privacy redaction (offline)
 
 on:
   pull_request:
@@ -8,6 +8,9 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt'
       - 'app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSessionTest.kt'
   workflow_dispatch:
 
 permissions:
@@ -44,24 +47,24 @@ jobs:
           git merge-base --is-ancestor "$VALIDATED" HEAD
           test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq .head_sha)" = "$VALIDATED"
           test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq .conclusion)" = success
-          git diff --name-only "$BASE" "$VALIDATED" > /tmp/projection-scope
-          test "$(wc -l < /tmp/projection-scope)" -eq 4
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41180748400" --jq .head_sha)" = 58ae77af3daacc71360b218358add33477a4dcd7
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41180748400" --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD > /tmp/projection-scope
+          test "$(wc -l < /tmp/projection-scope)" -eq 8
           while IFS= read -r f; do
             case "$f" in
-              .github/workflows/ci-b233-projection-owner-regrant.yml|app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt|app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt|app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt) ;;
+              .github/workflows/ci-b233-projection-owner-regrant.yml|.github/workflows/publish-t91-projection-regrant.yml|app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt|app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt|app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt|app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt|app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt|app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSessionTest.kt) ;;
               *) echo "out-of-scope file: $f"; exit 1 ;;
             esac
           done < /tmp/projection-scope
-          # Exact signed source is frozen; only the independent publish workflow
-          # and this CI gate may change after its already-successful HEAD.
-          git diff --name-only "$VALIDATED" HEAD > /tmp/projection-workflow-only
-          test "$(wc -l < /tmp/projection-workflow-only)" -eq 2
-          while IFS= read -r file; do
-            case "$file" in
-              .github/workflows/ci-b233-projection-owner-regrant.yml|.github/workflows/publish-t91-projection-regrant.yml) ;;
-              *) echo "::error::Unexpected post-validation code: $file"; exit 1 ;;
-            esac
-          done < /tmp/projection-workflow-only
+          # Projection logic is frozen at its verified SHA. The three
+          # subsequently added privacy-only files must be byte-for-byte PR #90.
+          test "$(git rev-parse HEAD:app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt)" = 2b36dd1385bb1735f8117e5b9038833d7d11e672
+          test "$(git rev-parse HEAD:app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt)" = 5f55d6ce234eabe0d2c8a1fd9a7319507b1a99d7
+          test "$(git rev-parse HEAD:app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSessionTest.kt)" = 22b899a4c8ccdbbdb8910953cb6abed0b69589a4
+          test "$(git rev-parse HEAD:app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt)" = "$(git rev-parse "$VALIDATED":app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt)"
+          test "$(git rev-parse HEAD:app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt)" = "$(git rev-parse "$VALIDATED":app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt)"
+          test "$(git rev-parse HEAD:app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt)" = "$(git rev-parse "$VALIDATED":app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt)"
           git diff --check "$BASE" HEAD
           python3 - <<'PY'
           from pathlib import Path
@@ -88,12 +91,17 @@ jobs:
                        'currentOnStopRevokesReadinessAndRequiresFreshGrant',
                        'delayedOldOnStopCannotRaceWithNewPublication'):
               assert test in tests
-          print('T91: stale grant onStop cannot null replacement, failed FGS never consumes token')
+          session = Path('app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt').read_text()
+          transport = Path('app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt').read_text()
+          assert 'channel.suppressSensitiveRawFrames()' in session
+          assert 'RAW rx: redacted bytes=' in transport and 'RAW tx: redacted bytes=' in transport
+          assert 'wireless.joinToString(" ") { param -> "#${param.id}(${param.value.size}B redacted)" }' in session
+          print('T91 + validated PR90 privacy: projection owner and credentials redaction wired')
           PY
       - name: Deterministic projection lease regression
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.service.ProjectionLeaseTest --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.service.ProjectionLeaseTest --tests io.github.shaonialife.cardeck.iap2.Iap2SenderSessionTest --stacktrace
       - name: Full Android JUnit, Lint and Debug compile
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
 
