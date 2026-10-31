@@ -482,7 +482,7 @@ class AudioSender(
                             .onSuccess { log("AUDIO T24: RTCP UDP 指定车机 WiFi Network=$network") }
                             .onFailure { log("AUDIO T24: RTCP WiFi 路由绑定失败 - ${it.message}") }
                     }
-                    connect(InetAddress.getByName(host), controlPort)
+                    connectOwnedAudioDatagramSocket(this, host, controlPort)
                 }
             } catch (error: Exception) {
                 log("AUDIO: 同步包套接字创建失败 - ${error.message}")
