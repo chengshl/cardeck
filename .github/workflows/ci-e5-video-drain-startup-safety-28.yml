@@ -159,7 +159,7 @@ jobs:
           # MediaCodec gave us an output index even when getOutputBuffer is null.
           # Return that index exactly once; otherwise the encoder can stall.
           null_buffer_before = '                        val buffer = codec.getOutputBuffer(index) ?: continue'
-          null_buffer_after = '\\n'.join([
+          null_buffer_after = '\n'.join([
               '                        val buffer = codec.getOutputBuffer(index)',
               '                        if (buffer == null) {',
               '                            // dequeueOutputBuffer() still transferred ownership of this index.',
