@@ -66,8 +66,8 @@ class Iap2BluetoothClient(
         java.util.concurrent.atomic
             .AtomicLong(0)
 
-    @Volatile
-    private var activeChannel: Iap2LinkChannel? = null
+    // Keep session retirement owner-scoped: an old worker must not clear a newer channel.
+    private val activeChannel = AtomicReference<Iap2LinkChannel?>(null)
 
     @Volatile
     private var running = false
@@ -204,7 +204,9 @@ class Iap2BluetoothClient(
             }
             if (generation.get() != myGeneration) {
                 // stop() 与 connect() 成功竞争：本线程已过期，不建会话
-                currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+                // A retired worker may overlap a new start(); close only its own socket.
+                currentSocket.compareAndSet(connected, null)
+                runCatching { connected.close() }
                 return
             }
             if (t35Buick) {
@@ -282,7 +284,11 @@ class Iap2BluetoothClient(
             }
         // 连接前就登记：connect() 是阻塞调用（SDP 查询 + 建链最长可达数十秒），
         // stop() 只有能拿到 socket 引用才能 close() 打断它，否则线程会滞留。
-        currentSocket.set(socket)
+        // Never overwrite the socket published by a newer worker after stop/start.
+        if (!currentSocket.compareAndSet(null, socket)) {
+            runCatching { socket.close() }
+            return null
+        }
         return try {
             socket.connect()
             socket
@@ -299,7 +305,7 @@ class Iap2BluetoothClient(
                 runCatching { socket.close() }
             }
         val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
-        activeChannel = channel
+        activeChannel.set(channel)
         try {
             // T10: resolve the shared Bluetooth identity before session construction.
             var mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
@@ -322,8 +328,9 @@ class Iap2BluetoothClient(
                 }
             }
         } finally {
-            activeChannel = null
-            currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+            // Only retire resources owned by this session; stop/start can overlap cleanup.
+            activeChannel.compareAndSet(channel, null)
+            currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
             channel.close()
             log(if (running) "BT-C: 本轮会话结束（自动重连仍启用）" else "BT-C: 本轮会话结束（诊断模式已停止自动重连）")
@@ -332,8 +339,7 @@ class Iap2BluetoothClient(
 
     /** 主动结束当前 BT 控制会话（不影响重连循环）。供 AirPlay 配对前复现控制通道退役状态。 */
     fun detachCurrentSession() {
-        activeChannel?.let { channel ->
-            activeChannel = null
+        activeChannel.getAndSet(null)?.let { channel ->
             channel.close()
             log("BT-C: 已主动断开当前控制会话")
         }
@@ -345,7 +351,7 @@ class Iap2BluetoothClient(
         // 递增世代：即便有线程卡在 connect()，事后也会因世代不符自杀，不会在下次启动时复活
         generation.incrementAndGet()
         currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
-        activeChannel?.let { runCatching { it.close() } }
+        activeChannel.getAndSet(null)?.let { runCatching { it.close() } }
         thread?.interrupt()
         thread = null
         log("BT-C: 已停止")
