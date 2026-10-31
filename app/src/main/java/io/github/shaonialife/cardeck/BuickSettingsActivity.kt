@@ -18,8 +18,6 @@ import io.github.shaonialife.cardeck.buick.BuickConnectionModePrefs
 import io.github.shaonialife.cardeck.buick.BuickE5HandshakePrefs
 import io.github.shaonialife.cardeck.buick.BuickInsets
 import io.github.shaonialife.cardeck.buick.BuickVehiclePrefs
-import io.github.shaonialife.cardeck.airplay.AudioReverseControlPort
-import io.github.shaonialife.cardeck.airplay.B233UdpBindPreflight
 
 /** Settings are per locally identified receiver; never persist raw BT or /info device identifiers. */
 class BuickSettingsActivity : AppCompatActivity() {
@@ -28,12 +26,6 @@ class BuickSettingsActivity : AppCompatActivity() {
     private lateinit var details: TextView
     private lateinit var modes: RadioGroup
     private lateinit var marginInputs: List<EditText>
-    @Volatile private var audioPreflightCancelled = false
-
-    override fun onDestroy() {
-        audioPreflightCancelled = true
-        super.onDestroy()
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -232,96 +224,6 @@ class BuickSettingsActivity : AppCompatActivity() {
             "只对已选目标车机，或自动发现中名称包含 Buick 的设备强制生效；建议先在「连接准备」指定目标车机。更改后需重新连接。",
             12f,
         ).apply { setPadding(0, 0, 0, px(12)) })
-
-        // Audio P0 / T97 manual, audio-free network preflight.
-        // This surface exists only in the signed Buick-Test package; it cannot
-        // modify the VPN, request networks, send UDP, or start CarPlay audio.
-        if (packageName == "io.github.buick.test.cardeck") {
-            heading("B233 音频网络预检（实验）", "仅停车后手动执行；需已经连接 B233 纯视频会话")
-            val diagnosticCard = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(px(16), px(15), px(16), px(16))
-                background = rounded(surfaceHigh, getColor(R.color.m3_outline), 16)
-            }
-            val diagnosticStatus = label(
-                "未检测。此项只测试手机能否在当前车机 Wi-Fi 上绑定接收型 UDP 端口；" +
-                    "不发送音频或任何 UDP 数据，也不代表车机已接受音频资源。",
-                12f,
-            )
-            val diagnosticButton = Button(this).apply {
-                text = "手动检测 B233 Wi-Fi / 反向 RTCP（25秒）"
-                setTextColor(getColor(R.color.m3_on_primary))
-                backgroundTintList = ColorStateList.valueOf(accent)
-                setOnClickListener {
-                    val selected = SessionController.b233NetworkForAudioFreePreflight()
-                    if (selected == null) {
-                        diagnosticStatus.text =
-                            "未执行：仅允许已连接 B233 的纯视频会话（从未请求或尝试音频）。" +
-                                "不要为预检开启 CarPlay 音频，也不要修改 VPN。"
-                        return@setOnClickListener
-                    }
-                    androidx.appcompat.app.AlertDialog.Builder(this@BuickSettingsActivity)
-                        .setTitle("停车状态下运行只读网络预检？")
-                        .setMessage(
-                            "请确认车辆已停稳。测试保留接收型 UDP 监听约 25 秒，" +
-                                "不会发送网络数据、不修改 VPN 或连接设置、不启动音频。" +
-                                "检测成功仅证明当时能绑定监听端口，不保证解决 20 秒断连。",
-                        )
-                        .setNegativeButton("取消", null)
-                        .setPositiveButton("开始检测") { _, _ ->
-                            // Recheck after the dialog: an audio session may have
-                            // begun or the car Wi-Fi Network may have changed.
-                            if (SessionController.b233NetworkForAudioFreePreflight() != selected) {
-                                diagnosticStatus.text = "未执行：纯视频会话或 Wi-Fi Network 已变化。"
-                            } else {
-                                isEnabled = false
-                                diagnosticStatus.text = "检测中：最长 25 秒；期间不要切换网络或启动音频。"
-                                Thread({
-                                    val result = B233UdpBindPreflight(
-                                        bindNetwork = { udp -> selected.bindSocket(udp) },
-                                        // No raw log transport from this manual UI surface.
-                                        log = {},
-                                        networkStillValid = {
-                                            !audioPreflightCancelled &&
-                                                SessionController.b233NetworkForAudioFreePreflight() == selected
-                                        },
-                                        onBindError = AudioReverseControlPort::bindFailureCategory,
-                                    ).run(25_000L)
-                                    runOnUiThread {
-                                        if (!audioPreflightCancelled && !isFinishing && !isDestroyed) {
-                                            isEnabled = true
-                                            diagnosticStatus.text = when (result.status) {
-                                                "pass" ->
-                                                    "绑定成功：接收型 UDP 监听持续 ${result.heldMs / 1000} 秒。" +
-                                                        " 未发送任何 UDP；不代表车机收到心跳或音频资源已获授权。"
-                                                "bind_failed" ->
-                                                    "绑定失败：${result.errno}；未开放/宣告音频控制端口。" +
-                                                        " 不要将此记为车机拒绝 media SETUP。"
-                                                "network_missing", "network_changed" ->
-                                                    "未完成：纯视频会话或车机 Wi-Fi 已变化。"
-                                                "listener_exited" ->
-                                                    "未通过：UDP 接收监听提前退出。"
-                                                "interrupted" ->
-                                                    "预检中止；未判定车机音频能力。"
-                                                else -> "预检未通过：${result.status}。"
-                                            }
-                                        }
-                                    }
-                                }, "b233-manual-udp-preflight").apply {
-                                    isDaemon = true
-                                    start()
-                                }
-                            }
-                        }
-                        .show()
-                }
-            }
-            diagnosticCard.addView(diagnosticStatus)
-            diagnosticCard.addView(diagnosticButton)
-            root.addView(diagnosticCard, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { bottomMargin = px(16) })
-        }
 
         heading("曲面屏安全区域", "设置下次连接生效；桌面与触摸功能始终保持开启")
 
