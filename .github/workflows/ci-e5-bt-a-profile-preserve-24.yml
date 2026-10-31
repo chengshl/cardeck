@@ -9,6 +9,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt'
       - 'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt'
       - '.github/workflows/ci-e5-bt-a-profile-preserve-24.yml'
+      - '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -54,7 +55,25 @@ jobs:
           changed = set(subprocess.check_output(
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
           ).splitlines())
-          assert changed == {client, route, test, workflow}, f'Unexpected diff: {changed}'
+          publish = '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
+          assert changed == {client, route, test, workflow, publish}, f'Unexpected diff: {changed}'
+          release = Path(publish).read_text()
+          assert '  workflow_dispatch:' in release
+          assert '\n  push:' not in release and '\n  pull_request:' not in release
+          assert 'group: cardeck-global-signed-release-version' in release
+          assert 'cancel-in-progress: false' in release
+          assert 'python3 tools/release/allocate_version.py' in release
+          assert 'python3 -m unittest tools.release.test_allocate_version' in release
+          assert "test \"$(git rev-parse origin/Buick-E5)\" = \"6dff31cac9a4a6f1945b787ba01eea577761d0eb\"" in release
+          assert 'NEW_CERT=' in release and 'OLD_CERT=' in release
+          assert 'versionCode=\'\$CARDECK_BUILD_VERSION_CODE\'' not in release
+          assert "versionCode='$CARDECK_BUILD_VERSION_CODE'" in release
+          assert "versionName='$CARDECK_RELEASE_VERSION_NAME'" in release
+          assert 'test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"' in release
+          assert 'TAG="exp-buick-e5-bt-a-profile-preserve-24-$CARDECK_RELEASE_VERSION_NAME"' in release
+          assert 'baseBranch=Buick-E5' in release and 'artifactKind=experiment' in release
+          assert 'updaterSchema=2' in release and 'sourceBranch=%s' in release
+
           old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + client], text=True)
           new = Path(client).read_text()
           before = "                if (!t35Buick) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
@@ -73,6 +92,8 @@ jobs:
           assert 'legacyT35GuardRemainsActiveForAllCandidates' in checks
           print('Profile-only L3 isolation verified; no other runtime change')
           PY
+      - name: Verify shared global version allocator regression tests
+        run: python3 -m unittest tools.release.test_allocate_version
       - name: Run Android unit tests and Debug build
         run: |
           chmod +x gradlew
