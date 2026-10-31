@@ -1,0 +1,71 @@
+name: CarPlay AAC first-frame diagnostic privacy (offline)
+
+on:
+  pull_request:
+    branches: [experiment/buick-b233-pcm-partial-read-continuity]
+    paths:
+      - '.github/workflows/ci-aac-first-frame-log-privacy.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/audio/AacFirstFrameLogPrivacyTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: audio-aac-frame-log-privacy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Signed T94 ancestor, three-file scope and actual AAC logging wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/aac-privacy-changed
+          printf '%s\n' '.github/workflows/ci-aac-first-frame-log-privacy.yml' 'app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt' 'app/src/test/java/io/github/shaonialife/cardeck/audio/AacFirstFrameLogPrivacyTest.kt' > /tmp/aac-privacy-expected
+          diff -u /tmp/aac-privacy-expected /tmp/aac-privacy-changed
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AacFirstFrameLogPrivacyTest.kt').read_text()
+          helper = source.split('internal fun firstAacFrameSafeLog(', 1)[1].split('/**\n * PCM', 1)[0]
+          assert 'encoded.size' in helper and 'raw.size' in helper
+          assert 'joinToString' not in helper and 'take(' not in helper
+          assert 'encoded[' not in helper and 'raw[' not in helper
+          live = source.split('if (!firstFrameLogged) {', 1)[1].split('return out', 1)[0]
+          assert 'log(firstAacFrameSafeLog(out, raw, wrapAdts))' in live
+          assert 'head=' not in live and 'joinToString' not in live
+          for test in ['identicalLengthsWithDifferentMediaProduceIdenticalLog',
+                       'adtsSummaryIncludesOnlyLengthsAndFramingMode',
+                       'emptyPayloadDoesNotCreateAHexDump']:
+              assert test in tests
+          PY
+      - name: AAC payload privacy negative JVM regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.audio.AacFirstFrameLogPrivacyTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# No signing, APK publication, stable branch writes or vehicle acceptance.

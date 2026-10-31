@@ -4,6 +4,15 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 
+/** Log only derived first-frame metadata; encoded AAC is private media content. */
+internal fun firstAacFrameSafeLog(
+    encoded: ByteArray,
+    raw: ByteArray,
+    adts: Boolean,
+): String =
+    "AUDIO: 首帧 ${encoded.size}B（裸帧 ${raw.size}B）封装=" +
+        (if (adts) "ADTS" else "raw")
+
 /**
  * PCM → AAC-LC 编码器（type=102 MainHighAudio 通路用）。
  *
@@ -413,14 +422,11 @@ class AacLcEncoder(
             log("AUDIO: 已改为 ADTS 封装（每帧补 7 字节头，方案2）")
         }
         val out = if (wrapAdts) buildAdts(raw) else raw
-        // 首帧留档：出问题时能直接从日志里核对负载是不是合法 AAC（而不是等用户导文件）
+        // AAC payload is user media. Never copy encoded frame bytes into diagnostic logs.
+        // Length and framing mode are sufficient for the first-frame sanity check.
         if (!firstFrameLogged) {
             firstFrameLogged = true
-            val head = out.take(16).joinToString(" ") { "%02X".format(it) }
-            log(
-                "AUDIO: 首帧 ${out.size}B（裸帧 ${raw.size}B）head=$head" +
-                    (if (wrapAdts) "（ADTS，sync=FFF）" else ""),
-            )
+            log(firstAacFrameSafeLog(out, raw, wrapAdts))
         }
         return out
     }
