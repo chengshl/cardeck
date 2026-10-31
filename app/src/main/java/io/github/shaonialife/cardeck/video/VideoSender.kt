@@ -186,8 +186,10 @@ class VideoSender(
                 lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
 
                 onSurfaceReady(surface)
-                // onSurfaceReady may synchronously stop this sender; never spawn a retired drain.
-                if (!running.get()) return@synchronized false
+                // onSurfaceReady may stop and restart this sender; never launch the old epoch's drain.
+                if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != startEpoch }) {
+                    return@synchronized false
+                }
 
                 Thread({ drainEncoder(startEpoch) }, "video-drain").apply {
                     isDaemon = true
