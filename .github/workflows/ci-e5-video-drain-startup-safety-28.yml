@@ -186,15 +186,31 @@ jobs:
           ]:
               assert expected.count(before_text) == 1, f'{name} baseline missing or ambiguous'
               expected = expected.replace(before_text, after_text)
-          assert new == expected, 'Unexpected change outside reviewed video startup/stop ownership guards'
+          # Prevent a retired drain from closing a newer start() session.
+          # Replay only this three-part ownership change from reviewed #83 HEAD.
+          reviewed_head = '00d6aebfd67c849163d3f827bbb0634f5cb2c73c'
+          reviewed_source = subprocess.check_output(
+              ['git', 'show', reviewed_head + ':' + source_path], text=True
+          )
+          assert expected == reviewed_source, 'Previously reviewed #83 source drifted'
+          for name, before_text, after_text in [
+              ("drain worker epoch capture", "Thread({ drainEncoder() }, \"video-drain\")", "Thread({ drainEncoder(startEpoch) }, \"video-drain\")"),
+              ("drain method epoch parameter", "private fun drainEncoder() {", "private fun drainEncoder(epoch: Long) {"),
+              ("retired worker guarded teardown", "        } finally {\n            stop()\n            // 会话真实结束信号（静默降噪解除 / 状态收尾）\n            runCatching { onEnded?.invoke() }\n        }\n    }\n\n    /**", "        } finally {\n            // A previous drain may finish after stop() and a newer start().\n            // Only the worker for the still-current socket epoch may retire it.\n            synchronized(startupLock) {\n                if (synchronized(dataPortLock) { dataPortEpoch == epoch }) {\n                    stop()\n                    // The callback can retire the session; serialize it with restart.\n                    runCatching { onEnded?.invoke() }\n                }\n            }\n        }\n    }\n\n    /**"),
+          ]:
+              assert expected.count(before_text) == 1, f'{name} missing or ambiguous'
+              expected = expected.replace(before_text, after_text)
+          assert new == expected, 'Unexpected change outside reviewed drain epoch ownership guard'
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
           assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
           assert start.index('inputSurface = surface') < start.index('codec.start()')
           assert 'stop()' in start.split('} catch (error: Exception)', 1)[1]
-          tail = new.split('private fun drainEncoder()', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
+          tail = new.split('private fun drainEncoder(epoch: Long)', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
           assert tail.index('try {') < tail.index('socket?.getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
           assert 'stop()' in tail.split('} finally {', 1)[1]
           assert 'onEnded?.invoke()' in tail.split('} finally {', 1)[1]
+          assert 'dataPortEpoch == epoch' in tail.split('} finally {', 1)[1]
+          assert 'Thread({ drainEncoder(startEpoch) }' in start
           print('Exact scoped L3 video codec, drain, and TCP startup cleanup isolation verified')
           PY
       - name: Android JUnit and Debug compilation (no signing)
