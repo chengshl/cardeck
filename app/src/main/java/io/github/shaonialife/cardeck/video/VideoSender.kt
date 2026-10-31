@@ -57,7 +57,9 @@ class VideoSender(
 ) {
     private val width: Int = (width / 2) * 2
     private val height: Int = (height / 2) * 2
-    private var socket: Socket? = null
+    private val dataPortLock = Any()
+    private var dataPortEpoch = 0L
+    @Volatile private var socket: Socket? = null
     private var encoder: MediaCodec? = null
     private var inputSurface: Surface? = null
     private val running = AtomicBoolean(false)
@@ -94,8 +96,12 @@ class VideoSender(
      * finish_tx 连流，再协商音频）。
      */
     fun openDataPort(): Boolean {
-        val existing = socket
-        if (existing != null && !existing.isClosed) return true
+        // A stop during the blocking TCP connect invalidates the late result.
+        val epochAtConnect = synchronized(dataPortLock) {
+            val existing = socket
+            if (existing != null && !existing.isClosed) return true
+            dataPortEpoch
+        }
         // connectTcp() owns failed connections; after it returns, this method owns
         // the socket until publication. Do not leak it if TCP options fail.
         var pendingSocket: Socket? = null
@@ -109,7 +115,19 @@ class VideoSender(
             )
             pendingSocket = client
             client.tcpNoDelay = true
-            socket = client
+            val published = synchronized(dataPortLock) {
+                if (dataPortEpoch != epochAtConnect) {
+                    false
+                } else {
+                    socket = client
+                    true
+                }
+            }
+            if (!published) {
+                // stop() ran while connectTcp() was blocking; do not resurrect its socket.
+                runCatching { client.close() }
+                return false
+            }
             pendingSocket = null
             log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
             true
@@ -171,13 +189,16 @@ class VideoSender(
 
     fun stop() {
         running.set(false)
+        val closingSocket = synchronized(dataPortLock) {
+            dataPortEpoch++
+            socket.also { socket = null }
+        }
         runCatching { encoder?.stop() }
         runCatching { encoder?.release() }
         encoder = null
         runCatching { inputSurface?.release() }
         inputSurface = null
-        runCatching { socket?.close() }
-        socket = null
+        runCatching { closingSocket?.close() }
     }
 
     // ---- 编码输出 → 协议封装发送 ----
