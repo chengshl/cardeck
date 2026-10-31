@@ -182,7 +182,7 @@ class Iap2BluetoothClient(
                         }
                     }
                 }
-                val socket = tryConnect(device)
+                val socket = tryConnect(device, myGeneration)
                 if (socket != null) {
                     log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
                     connected = socket
@@ -215,7 +215,7 @@ class Iap2BluetoothClient(
             }
             val vehicleId = runCatching { GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address) }.getOrNull()
             try {
-                runSession(connected)
+                runSession(connected, myGeneration)
             } finally {
                 GatewayVehicleIdentity.clearIfActive(vehicleId)
             }
@@ -275,7 +275,8 @@ class Iap2BluetoothClient(
     }
 
     @SuppressLint("MissingPermission")
-    private fun tryConnect(device: BluetoothDevice): BluetoothSocket? {
+    private fun tryConnect(device: BluetoothDevice, myGeneration: Long): BluetoothSocket? {
+        if (!running || generation.get() != myGeneration) return null
         val socket =
             try {
                 device.createRfcommSocketToServiceRecord(ACCESSORY_IAP2_UUID)
@@ -285,7 +286,13 @@ class Iap2BluetoothClient(
         // 连接前就登记：connect() 是阻塞调用（SDP 查询 + 建链最长可达数十秒），
         // stop() 只有能拿到 socket 引用才能 close() 打断它，否则线程会滞留。
         // Never overwrite the socket published by a newer worker after stop/start.
-        if (!currentSocket.compareAndSet(null, socket)) {
+        if (!running || generation.get() != myGeneration || !currentSocket.compareAndSet(null, socket)) {
+            runCatching { socket.close() }
+            return null
+        }
+        // stop() may have invalidated this generation between the check and publication.
+        if (!running || generation.get() != myGeneration) {
+            currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
             return null
         }
@@ -299,14 +306,29 @@ class Iap2BluetoothClient(
         }
     }
 
-    private fun runSession(socket: BluetoothSocket) {
+    private fun runSession(socket: BluetoothSocket, myGeneration: Long) {
+        if (!running || generation.get() != myGeneration) {
+            currentSocket.compareAndSet(socket, null)
+            runCatching { socket.close() }
+            return
+        }
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
             }
         val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
-        activeChannel.set(channel)
+        // A late old worker must not overwrite the new generation's channel.
+        if (!activeChannel.compareAndSet(null, channel)) {
+            currentSocket.compareAndSet(socket, null)
+            runCatching { socket.close() }
+            channel.close()
+            return
+        }
         try {
+            if (!running || generation.get() != myGeneration) {
+                log("BT-C: 旧世代控制会话取消，未启动握手")
+                return
+            }
             // T10: resolve the shared Bluetooth identity before session construction.
             var mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
             repeat(3) {
