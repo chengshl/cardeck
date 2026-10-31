@@ -1,0 +1,77 @@
+name: CarPlay audio UDP connect socket ownership (offline)
+
+on:
+  pull_request:
+    branches: [experiment/buick-b233-pcm-partial-read-continuity]
+    paths:
+      - '.github/workflows/ci-audio-udp-socket-ownership.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioDatagramSocketOwnershipTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: audio-udp-socket-ownership-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact signed T94 ancestor, three-file scope, and real RTP wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD > /tmp/audio-udp-scope
+          test "$(wc -l < /tmp/audio-udp-scope)" -eq 3
+          while IFS= read -r f; do
+            case "$f" in
+              .github/workflows/ci-audio-udp-socket-ownership.yml|app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/AudioDatagramSocketOwnershipTest.kt) ;;
+              *) echo "::error::Unexpected changed file: $f"; exit 1 ;;
+            esac
+          done < /tmp/audio-udp-scope
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt').read_text()
+          test = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioDatagramSocketOwnershipTest.kt').read_text()
+          assert 'socket = connectOwnedAudioDatagramSocket(client, host, dataPort)' in src
+          helper = src.split('internal fun connectOwnedAudioDatagramSocket(', 1)[1].split('\n}\n', 1)[0]
+          assert 'client.connect(InetAddress.getByName(host), port)' in helper
+          assert 'client.close()' in helper and 'throw error' in helper
+          assert helper.index('client.close()') < helper.index('throw error')
+          assert 'failedConnectReleasesNewlyCreatedSocketBeforeRethrowing' in test
+          assert 'successfulConnectTransfersSameOpenSocketToAudioSender' in test
+          assert 'client.isClosed' in test and 'client.isConnected' in test
+          # Existing signed T94 PCM and credential safety features remain in scope.
+          assert 'PcmCaptureFrameWindow(frameBytes)' in src
+          assert 'private val mutePhoneOutput: Boolean = true' in src
+          assert 'channel.suppressSensitiveRawFrames()' in Path('app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt').read_text()
+          PY
+      - name: Deterministic RTP socket failure/success regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.audio.AudioDatagramSocketOwnershipTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Draft-only: no signing, release, stable merge, or real-car acceptance.
