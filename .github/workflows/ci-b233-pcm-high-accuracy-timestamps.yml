@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: b233-pcm-high-accuracy-\${{ github.event.pull_request.number || github.ref }}
+  group: b233-pcm-high-accuracy-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,20 +32,28 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Exact signed T89 base, four-file scope and SETUP-only wiring
+      - name: Exact validated T90 source, workflow-only follow-up, and SETUP wiring
         shell: bash
         run: |
           set -euo pipefail
           BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
-          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
-          git diff --name-only "$BASE" HEAD > /tmp/t90-scope
-          test "$(wc -l < /tmp/t90-scope)" -eq 4
+          VALIDATED=2480a98a33c7b4fcfb63260c7155c7b835fa32c0
+          test "$(git merge-base "$BASE" "$VALIDATED")" = "$BASE"
+          test "$(git merge-base "$VALIDATED" HEAD)" = "$VALIDATED"
+          # The exact four-file T90 protocol change already passed CI on VALIDATED.
+          git diff --name-only "$BASE" "$VALIDATED" > /tmp/t90-original-scope
+          test "$(wc -l < /tmp/t90-original-scope)" -eq 4
           while IFS= read -r file; do
             case "$file" in
               .github/workflows/ci-b233-pcm-high-accuracy-timestamps.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt) ;;
-              *) echo "Unexpected change: $file"; exit 1 ;;
+              *) echo "Unexpected T90 validated source: $file"; exit 1 ;;
             esac
-          done < /tmp/t90-scope
+          done < /tmp/t90-original-scope
+          # Subsequent commits are workflow-only: the signed APK code is unchanged.
+          git diff --name-only "$VALIDATED" HEAD | sort -u > /tmp/t90-workflow-scope
+          test "$(wc -l < /tmp/t90-workflow-scope)" -eq 2
+          grep -Fxq '.github/workflows/ci-b233-pcm-high-accuracy-timestamps.yml' /tmp/t90-workflow-scope
+          grep -Fxq '.github/workflows/publish-t90-pcm-high-accuracy-timestamps.yml' /tmp/t90-workflow-scope
           git diff --check "$BASE" HEAD
           git diff --quiet "$BASE" HEAD -- app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt
           python3 - <<'PY'
