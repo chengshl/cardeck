@@ -187,6 +187,14 @@ class CarPlayService : Service() {
         }
 
         fun stop(context: Context) {
+            // SessionController has already retired its audio/video workers.
+            // Invalidate a one-shot grant BEFORE the asynchronous Android
+            // onDestroy/onStop callbacks: the next explicit "enable audio"
+            // action must request a fresh grant instead of misreading this
+            // stopped service's old MediaProjection as still ready.
+            val retired = projectionLease.clearCurrent()
+            pendingProjectionResult = null
+            retired?.let { runCatching { it.stop() } }
             context.stopService(Intent(context, CarPlayService::class.java))
         }
     }
