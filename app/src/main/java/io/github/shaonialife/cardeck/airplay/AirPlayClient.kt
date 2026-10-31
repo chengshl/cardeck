@@ -2837,9 +2837,20 @@ class AirPlayClient(
                 log("AUDIO T88: B233 peer RTSP request observed $evidence")
             }
         }
-        message.cseq?.let { responseHeads[it] = head }
+        // Legacy receivers retain their existing response-head diagnostics.
+        // On B233, a successful /feedback arrives every second; caching all
+        // of those full headers indefinitely leaks memory. Only retain bounded
+        // error heads for requests that actually have a pending waiter.
+        if (!endpoint.isBuickB233) {
+            message.cseq?.let { responseHeads[it] = head }
+        }
         val queue = message.cseq?.let { pendingResponses[it] }
         if (queue != null) {
+            if (endpoint.isBuickB233) {
+                message.cseq?.let {
+                    b233ResponseHeadCache.recordIfError(it, message.statusLine, head, true)
+                }
+            }
             queue.offer(message.statusLine to message.body)
             return
         }
@@ -2920,6 +2931,8 @@ class AirPlayClient(
 
     /** 最近一次 RTSP 响应头（按 CSeq 存：读线程与请求线程并发，单一字段会错配到别的请求）。 */
     private val responseHeads = java.util.concurrent.ConcurrentHashMap<Int, String>()
+    // B233-only: bound diagnostic retention; do not cache successful /feedback.
+    private val b233ResponseHeadCache = B233RtspResponseHeadCache()
 
     /** 本线程最近一次 request() 的 CSeq（诊断取响应头用；ThreadLocal 避免并发错配）。 */
     private val lastRequestCSeq = ThreadLocal<Int>()
@@ -2928,7 +2941,10 @@ class AirPlayClient(
     private fun lastResponseHeadOfRequest(): String =
         lastRequestCSeq
             .get()
-            ?.let { responseHeads[it] }
+            ?.let { cseq ->
+                if (endpoint.isBuickB233) b233ResponseHeadCache.take(cseq)
+                else responseHeads[cseq]
+            }
             ?.replace("\r\n", " | ")
             .orEmpty()
 
