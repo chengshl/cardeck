@@ -1,11 +1,14 @@
 package io.github.shaonialife.cardeck.audio
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Test
 import java.net.DatagramSocket
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Regression: a failed audio RTP UDP connect must not leak its native socket. */
 class AudioDatagramSocketOwnershipTest {
@@ -123,4 +126,53 @@ class AudioDatagramSocketOwnershipTest {
             socket.close()
         }
     }
+
+    @Test
+    fun stopSerializesWithInFlightB233MuteAndRestoresFinalVolume() {
+        val gate = AudioDatagramSessionGate()
+        val volume = AtomicInteger(7)
+        val muteEntered = CountDownLatch(1)
+        val releaseMute = CountDownLatch(1)
+        val stopAttempted = CountDownLatch(1)
+        val muter = Thread {
+            gate.runIfActive({ true }) {
+                volume.set(0)
+                muteEntered.countDown()
+                releaseMute.await()
+            }
+        }
+        val stopper = Thread {
+            muteEntered.await()
+            stopAttempted.countDown()
+            gate.retire { volume.set(7) }
+        }
+        try {
+            muter.start()
+            assertTrue("mute action never entered gate", muteEntered.await(5, TimeUnit.SECONDS))
+            stopper.start()
+            assertTrue("stop did not begin", stopAttempted.await(5, TimeUnit.SECONDS))
+            releaseMute.countDown()
+            muter.join(5_000)
+            stopper.join(5_000)
+            assertFalse("mute worker stuck", muter.isAlive)
+            assertFalse("stop worker stuck", stopper.isAlive)
+            assertEquals("stop must restore after the in-flight mute", 7, volume.get())
+            assertFalse(gate.runIfActive({ true }) { volume.set(0) })
+            assertEquals("retired startup must not re-mute", 7, volume.get())
+        } finally {
+            releaseMute.countDown()
+            muter.join(5_000)
+            stopper.join(5_000)
+        }
+    }
+
+    @Test
+    fun retiredB233StartupCannotMuteAfterStopAlreadyRestored() {
+        val gate = AudioDatagramSessionGate()
+        val volume = AtomicInteger(0)
+        gate.retire { volume.set(7) }
+        assertFalse(gate.runIfActive({ true }) { volume.set(0) })
+        assertEquals("late startup muted phone after stop", 7, volume.get())
+    }
+
 }
