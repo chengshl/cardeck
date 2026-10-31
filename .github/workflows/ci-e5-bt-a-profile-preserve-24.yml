@@ -101,9 +101,9 @@ jobs:
           # selected B233 receiver to the destructive fallback.
           expected_client = old.replace(before, after)
           before_candidates = "            val candidates = candidateDevices(adapter)"
-          after_candidates = "            val selectedForCandidates = targetProvider()\\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          after_candidates = "            val selectedForCandidates = targetProvider()\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
           before_signature = "    private fun candidateDevices(adapter: android.bluetooth.BluetoothAdapter): List<BluetoothDevice> {"
-          after_signature = "    private fun candidateDevices(\\n        adapter: android.bluetooth.BluetoothAdapter,\\n        selectedTarget: TargetDevicePrefs.Target?,\\n    ): List<BluetoothDevice> {"
+          after_signature = "    private fun candidateDevices(\n        adapter: android.bluetooth.BluetoothAdapter,\n        selectedTarget: TargetDevicePrefs.Target?,\n    ): List<BluetoothDevice> {"
           before_target = "        targetProvider()?.let { target ->"
           after_target = "        selectedTarget?.let { target ->"
           for before_part, after_part in (
