@@ -14,6 +14,27 @@ import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
+ * Audio RTP UDP socket ownership: DNS resolution and connect can fail before
+ * AudioSender.socket is assigned. Close the just-created socket on either
+ * failure so repeated reconnect attempts cannot leak native descriptors.
+ *
+ * Does not alter the destination, network binding, or successful RTP path.
+ */
+internal fun connectOwnedAudioDatagramSocket(
+    client: DatagramSocket,
+    host: String,
+    port: Int,
+): DatagramSocket {
+    try {
+        client.connect(InetAddress.getByName(host), port)
+        return client
+    } catch (error: Exception) {
+        client.close()
+        throw error
+    }
+}
+
+/**
  * CarPlay 主音频发送端（手机 → 车机，RTP over UDP）。
  *
  * 线格式（对照 DiPlay `AudioStream.kt` 解密路径与 catplay `rtp_cipher_chacha.rs`）：
@@ -302,8 +323,7 @@ class AudioSender(
                     .onSuccess { log("AUDIO T24: RTP UDP 指定车机 WiFi Network=$network") }
                     .onFailure { log("AUDIO T24: RTP WiFi 路由绑定失败 - ${it.message}") }
             }
-            client.connect(InetAddress.getByName(host), dataPort)
-            socket = client
+            socket = connectOwnedAudioDatagramSocket(client, host, dataPort)
 
             // AAC 通路先把编码器立起来：编不出来就没必要采集（也避免「有包无声」的假象）
             if (codec == AudioCodec.AAC_LC) {
