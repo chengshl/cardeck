@@ -32,4 +32,22 @@ class B233PairingReplySummaryTest {
         assertEquals("other", B233PairingReplySummary.safeStatus(secret))
         assertTrue(summary.length < 64)
     }
+
+    @Test fun pairingSuccessRequiresExactRtsp200Code() {
+        assertTrue(B233PairingReplySummary.isSuccessfulPairingStatus("RTSP/1.0 200 OK"))
+        assertTrue(B233PairingReplySummary.isSuccessfulPairingStatus("RTSP/1.0 200"))
+        assertTrue(B233PairingReplySummary.isSuccessfulPairingStatus("RTSP/1.0 200\tOK"))
+        for (invalid in listOf(
+            "RTSP/1.0 500 200 OK",
+            "RTSP/1.0 1200 OK",
+            "RTSP/1.0 2000 OK",
+            "HTTP/1.1 200 OK",
+            "RTSP/1.0 403 200 OK",
+            "RTSP/1.0 200 OK\nInjected",
+            "RTSP/1.0 200 OK\r\nInjected",
+            "prefix RTSP/1.0 200 OK",
+        )) {
+            assertFalse("must reject [$invalid]", B233PairingReplySummary.isSuccessfulPairingStatus(invalid))
+        }
+    }
 }
