@@ -126,3 +126,10 @@
 - **精确 CI 与变更范围**：PR HEAD `1223f5e0` 的 [Push #41089734966](https://github.com/chengshl/cardeck/actions/runs/41089734966)、[PR #41089746663](https://github.com/chengshl/cardeck/actions/runs/41089746663)、[隐私 #41089746607](https://github.com/chengshl/cardeck/actions/runs/41089746607) 均 completed/success；CI 真实运行三态非空合成 fixture、全部 Android JUnit、Debug 编译、两文件白名单。全量 Lint **并未通过**，但在合并前精确稳定基线与 PR HEAD 分别运行并比对 13 条旧 Error 完全相同，0 新增。合并提交再次检查仅新增 `.github/workflows/ci-e5-upstream-replay-33.yml` 与 `app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt`，**没有运行时、签名、版本码、更新来源变更**。合并后新 HEAD 的独立 CI 结果须另行核实，不用旧 PR CI 代替。
 - **验收范围与明确未验**：此项仅为测试/CI 代码，**手机/实车验收不适用于本次代码变更**；合并不创建 APK、签名 Release 或 versionCode，也不意味着 #33 物理 ACK109、`0x4301` 或自动切屏已修复。#33 实验002 的 B233 实车**负向**结果及恢复003数据保留未确认继续有效；#28 零帧、#24 A2DP 与 #34 停止安全仍独立开放。
 - **回退与终态**：若测试/CI 引入维护或构建问题，在确认最新稳定 HEAD 与影响范围后 **revert `163ce5e629c4bd82e9036e1dfbe0732ca4c6a1a4`**，仅撤回上述两文件，保留 PR/CI/上游历史；不触发 APK 降级或清数据。**当前状态：已借鉴改写→实验 CI 成功→E5 稳定测试代码已选择性合入且 HEAD 复核；最终 Buick 未融合、无运行时修复/新签名/设备验收。**
+
+
+## J. 2026-10-31 旧版上游整支合并入口 PR #1 退役（未采纳）
+
+- **来源与审查基线**：本仓库纯同步上游 `main@503ed3730d5a9365272294b79306cea5fcce115b`；拟接收目标 `Buick-E5@6dff31cac9a4a6f1945b787ba01eea577761d0eb`。历史 [PR #1](https://github.com/chengshl/cardeck/pull/1) 从 `main` 指向 `Buick-E5`，标题为上游 v0.1.7 整支合并。审查时 PR 涉及 **126 个文件**，GitHub compare 显示分支 `diverged`，相对 E5 的 main 侧 81 commits ahead / 255 behind；涉及 SessionController、AirPlayClient、音频、Manifest、构建与治理等高风险共享模块。
+- **决策**：**不采纳整支合并**。现行治理 v2.2 要求上游按具体 SHA、功能和风险选择性审查；E5 的 #28/#33/#24/#34 运行时故障未完成验收，音频 #11 独立。保留历史 PR/提交作为可追溯来源，关闭过时的整支合并入口，防止误将未验证运行时差异批量并入 E5。此项是 PR 治理收敛，**不是**拒绝后续逐项采纳上游修复。
+- **目标提交、CI、验收、回退**：本次没有任何上游代码移植、目标分支融合提交、签名 APK 或设备验收；因此不存在采纳 CI/目标合入 SHA/安装回退，均记 **N/A**。若需恢复该 PR 审查入口可 reopen（不建议整支 merge）；后续具体上游优化另按 #23 登记来源 commit、隔离分支、精确 CI、验收与回退。稳定 E5、Test、main、正式 Release 均不变。
