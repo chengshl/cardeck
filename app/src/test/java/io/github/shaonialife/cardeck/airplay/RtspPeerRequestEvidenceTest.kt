@@ -73,6 +73,7 @@ class RtspPeerRequestEvidenceTest {
         val validTargets = listOf(
             "rtsp://receiver.invalid/session",
             "rtsp://receiver.invalid:7000/session?stream=1",
+            "rtsp://receiver_name.local:7000/session", // legal RFC3986 reg-name
             "rtsp://[2001:db8::1]:7000/session",
         )
         validTargets.forEach { target ->
