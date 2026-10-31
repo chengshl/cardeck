@@ -5,6 +5,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Test
 import java.net.DatagramSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Regression: a failed audio RTP UDP connect must not leak its native socket. */
 class AudioDatagramSocketOwnershipTest {
@@ -31,6 +33,77 @@ class AudioDatagramSocketOwnershipTest {
             assertTrue("RTP socket was not connected", client.isConnected)
         } finally {
             client.close()
+        }
+    }
+
+    @Test
+    fun retiredSessionRejectsLateRtpSocketAndClosesIt() {
+        val gate = AudioDatagramSessionGate()
+        gate.retire { }
+        val socket = DatagramSocket()
+        var installed = false
+        try {
+            assertFalse(gate.publish(socket, { true }) { installed = true })
+            assertFalse("retired socket was installed", installed)
+            assertTrue("late RTP socket leaked after stop", socket.isClosed)
+        } finally {
+            socket.close()
+        }
+    }
+
+    @Test
+    fun publishedRtcpSocketIsClosedAndLateCaptureCannotRestart() {
+        val gate = AudioDatagramSessionGate()
+        val socket = DatagramSocket()
+        var published: DatagramSocket? = null
+        var captureStarted = false
+        try {
+            assertTrue(gate.publish(socket, { true }) { published = socket })
+            gate.retire {
+                published?.close()
+                published = null
+            }
+            assertTrue("published RTCP socket survived stop", socket.isClosed)
+            assertFalse(gate.runIfActive({ true }) { captureStarted = true })
+            assertFalse("retired session restarted AudioRecord", captureStarted)
+        } finally {
+            socket.close()
+        }
+    }
+
+    @Test
+    fun concurrentPublicationAndRetirementNeverLeaveAnOpenSocket() {
+        repeat(32) {
+            val gate = AudioDatagramSessionGate()
+            val socket = DatagramSocket()
+            val start = CountDownLatch(1)
+            var installed: DatagramSocket? = null
+            val publisher = Thread {
+                start.await()
+                gate.publish(socket, { true }) { installed = socket }
+            }
+            val stopper = Thread {
+                start.await()
+                gate.retire {
+                    installed?.close()
+                    installed = null
+                }
+            }
+            try {
+                publisher.start()
+                stopper.start()
+                start.countDown()
+                publisher.join(5_000)
+                stopper.join(5_000)
+                assertFalse("publisher remained blocked", publisher.isAlive)
+                assertFalse("stopper remained blocked", stopper.isAlive)
+                assertTrue("concurrent stop/start leaked UDP socket", socket.isClosed)
+            } finally {
+                start.countDown()
+                publisher.join(5_000)
+                stopper.join(5_000)
+                socket.close()
+            }
         }
     }
 }
