@@ -52,6 +52,36 @@ class RtspPeerRequestEvidenceTest {
         }
     }
 
+    @Test fun b233MalformedAbsoluteUriAuthorityMustNotBeAcknowledged() {
+        val invalidTargets = listOf(
+            "rtsp:///session",             // no authority
+            "rtsp://?token=secret",        // query without authority
+            "rtsp://#fragment",           // fragment without authority
+            "rtsp://:7000/session",       // missing host
+            "rtsp://host:bad/session",    // invalid port
+            "rtsp://host:65536/session",  // out-of-range port
+            "rtsp://host/session#frag",   // fragments are not RTSP request targets
+            "rtsp://host/%GG",            // malformed percent encoding
+        )
+        invalidTargets.forEach { target ->
+            val line = "SET_PARAMETER $target RTSP/1.0"
+            assertEquals(line, false, RtspPeerRequestEvidence.isB233AbsoluteUriRequest(line, true))
+        }
+    }
+
+    @Test fun b233ValidAbsoluteUriAuthoritiesRemainAcknowledged() {
+        val validTargets = listOf(
+            "rtsp://receiver.invalid/session",
+            "rtsp://receiver.invalid:7000/session?stream=1",
+            "rtsp://[2001:db8::1]:7000/session",
+        )
+        validTargets.forEach { target ->
+            val line = "SET_PARAMETER $target RTSP/1.0"
+            assertEquals(line, true, RtspPeerRequestEvidence.isB233AbsoluteUriRequest(line, true))
+            assertEquals(line, false, RtspPeerRequestEvidence.isB233AbsoluteUriRequest(line, false))
+        }
+    }
+
     @Test fun peerTeardownIsRecognizedBeforeAnyCseqDispatch() {
         assertEquals(
             RtspPeerRequestEvidence.Kind.TEARDOWN,
