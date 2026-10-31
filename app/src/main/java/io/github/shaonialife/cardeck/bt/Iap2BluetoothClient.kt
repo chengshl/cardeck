@@ -84,6 +84,7 @@ class Iap2BluetoothClient(
         ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
             PackageManager.PERMISSION_GRANTED
 
+    @Synchronized
     fun start(): Boolean {
         if (running) return true
         if (!hasPermission()) {
@@ -121,8 +122,30 @@ class Iap2BluetoothClient(
         return true
     }
 
-    @SuppressLint("MissingPermission")
+    // Own the worker's exit even when BluetoothManager disappears or an
+    // unexpected Android API/callback exception escapes the reconnect loop.
+    // The lifecycle lock makes generation-check + retirement atomic with start/stop.
     private fun connectLoop(myGeneration: Long) {
+        try {
+            connectLoopBody(myGeneration)
+        } catch (error: Exception) {
+            log("BT-C: 连接线程异常（${error.javaClass.simpleName}；本轮已退出）")
+        } finally {
+            val retired = synchronized(this) {
+                if (generation.get() != myGeneration) null else {
+                    running = false
+                    thread = null
+                    Pair(currentSocket.getAndSet(null), activeChannel.getAndSet(null))
+                }
+            }
+            // Close outside the lifecycle lock: Android/IO teardown may block.
+            retired?.first?.let { runCatching { it.close() } }
+            retired?.second?.let { runCatching { it.close() } }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectLoopBody(myGeneration: Long) {
         val adapter =
             try {
                 context.getSystemService(BluetoothManager::class.java)?.adapter
@@ -404,13 +427,16 @@ class Iap2BluetoothClient(
     }
 
     fun stop() {
-        running = false
-        // 递增世代：即便有线程卡在 connect()，事后也会因世代不符自杀，不会在下次启动时复活
-        generation.incrementAndGet()
-        currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
-        activeChannel.getAndSet(null)?.let { runCatching { it.close() } }
-        thread?.interrupt()
-        thread = null
+        // Atomically retire the generation before another start() can publish.
+        // Close sockets/channels outside the lock to avoid blocking a new worker.
+        val retired = synchronized(this) {
+            running = false
+            generation.incrementAndGet()
+            Triple(currentSocket.getAndSet(null), activeChannel.getAndSet(null), thread.also { thread = null })
+        }
+        retired.first?.let { runCatching { it.close() } }
+        retired.second?.let { runCatching { it.close() } }
+        retired.third?.interrupt()
         log("BT-C: 已停止")
     }
 
