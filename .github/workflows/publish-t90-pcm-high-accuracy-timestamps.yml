@@ -1,0 +1,157 @@
+name: T90 B233 PCM high-accuracy timestamp signed experiment
+
+on:
+  push:
+    branches:
+      - experiment/buick-test-t90-pcm-high-accuracy-timestamps
+    paths:
+      - '.github/workflows/publish-t90-pcm-high-accuracy-timestamps.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-t90-pcm-high-accuracy
+  cancel-in-progress: false
+
+jobs:
+  signed-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Gate exact T90 offline-validated source and workflow-only follow-up
+        env:
+          GH_TOKEN: \${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          VALIDATED=2480a98a33c7b4fcfb63260c7155c7b835fa32c0
+          test "$GITHUB_REF_NAME" = "experiment/buick-test-t90-pcm-high-accuracy-timestamps"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$VALIDATED"
+          git merge-base --is-ancestor "$BASE" "$VALIDATED"
+          git diff --name-only "$BASE" "$VALIDATED" > /tmp/t90-source-scope
+          test "$(wc -l < /tmp/t90-source-scope)" -eq 4
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-pcm-high-accuracy-timestamps.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt) ;;
+              *) echo "::error::Unexpected T90 source change: $file"; exit 1 ;;
+            esac
+          done < /tmp/t90-source-scope
+          test "$(git diff --name-only "$VALIDATED" "$GITHUB_SHA")" = ".github/workflows/publish-t90-pcm-high-accuracy-timestamps.yml"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41174548516" --jq '.status')" = completed
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41174548516" --jq '.conclusion')" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41174548516" --jq '.head_sha')" = "$VALIDATED"
+          grep -Fq 'advertiseHighAccuracyTimestamps' app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt
+          grep -Fq 't90HighAccuracyTimestampIsLimitedToB233PcmMedia' app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt
+          echo "T90 exact validated code and independent signed experiment gate passed."
+      - name: Re-run Android tests lint and debug build before signing
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Load existing signed Buick-Test keystore
+        env:
+          KEYSTORE_B64: \${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: \${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: \${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-t90.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-t90.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-t90.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Assign monotonic Test versionCode above signed T89
+        env:
+          GH_TOKEN: \${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREVIOUS_CODE="$(gh release view exp-buick-test-t89-20261030132110 --repo "$GITHUB_REPOSITORY" --json body --jq '.body' | sed -n 's/^versionCode=//p' | head -n 1)"
+          test "$PREVIOUS_CODE" = "89270470"
+          BUILD_EPOCH="$(date -u +%s)"
+          BUILD_CODE=$(( BUILD_EPOCH - 1704067200 ))
+          test "$BUILD_CODE" -gt "$PREVIOUS_CODE"
+          echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)" >> "$GITHUB_ENV"
+      - name: Build signed T90 Test APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify package, version and same Test signing certificate
+        env:
+          GH_TOKEN: \${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -s "$APK"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$CARDECK_BUILD_VERSION_CODE'" | grep -F "versionName='$CARDECK_RELEASE_VERSION_NAME'"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/t90-cert.txt"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t90-cert.txt" | head -n 1)"
+          test -n "$NEW_CERT" && ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/t90-cert.txt"
+          mkdir -p "$RUNNER_TEMP/t89-reference"
+          gh release download exp-buick-test-t89-20261030132110 --repo "$GITHUB_REPOSITORY" --pattern 'CarDeck-Buick-Test-T89-SAME-UID-UDP-PREFLIGHT.apk' --dir "$RUNNER_TEMP/t89-reference"
+          OLD_APK="$RUNNER_TEMP/t89-reference/CarDeck-Buick-Test-T89-SAME-UID-UDP-PREFLIGHT.apk"
+          "$APKSIGNER" verify --verbose --print-certs "$OLD_APK" > "$RUNNER_TEMP/t89-cert.txt"
+          OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t89-cert.txt" | head -n 1)"
+          test -n "$OLD_CERT" && test "$NEW_CERT" = "$OLD_CERT"
+          cp "$APK" CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk
+          sha256sum CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk > CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Buick-Test-T90-SIGNED-\${{ github.run_id }}
+          path: |
+            CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk
+            CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk.sha256
+          if-no-files-found: error
+      - name: Publish isolated T90 prerelease (never latest)
+        env:
+          GH_TOKEN: \${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk"
+          TAG="exp-buick-test-t90-$CARDECK_RELEASE_VERSION_NAME"
+          test -s "$APK" && test -s "$APK.sha256"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Refusing to overwrite existing T90 release $TAG"
+            exit 1
+          fi
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\napplicationId=io.github.buick.test.cardeck\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## T90：仅测试 B233 PCM 时间戳能力声明，不是音频修复\n'
+            printf '在签名 T89 基础上只把 B233 PCM/type100/media 的 SETUP supportsHighAccuracyTimestamps 从 false 改为 true。保留 T89 手机反向 controlPort、RTP/RTCP、legacy 0xD4 策略、latency、spf、iAP2、事件、网络、蓝牙和其他车型行为。T90 尚未实车验收，不可视为已解决约20秒 peer EOF。'
+            printf '\n\n## 必测项（停车状态，音量正常，使用实际可听见的非静音音源）\n'
+            printf '1. 安装前确认当前是签名 T89 Test（versionName 20261030132110）。本包同 applicationId、同 T89 证书、versionCode 更高，直接覆盖升级，保留应用数据；不要卸载/清数据。'
+            printf '\n2. 新建 3 轮 CarPlay 音频会话，每轮实际可听音频连续播放至少 3 分钟；记录是否约20秒断连、车机是否持续出声、视频/触摸是否正常。'
+            printf '\n3. 每轮检查是否自动恢复/能否重新连接；如首轮失败，不反复重测旧 T85/T88/T89 包。'
+            printf '\n4. 通过门槛仍为 3 轮均 >=3分钟且重连可用；仅看到 SETUP true、RTP 或 feedback 增长不算通过。'
+            printf '\n\n## 日志与回退\n'
+            printf '通过 Test > 诊断导出本轮脱敏 App 日志，标注 T90 版本、轮次、音频是否可听、断连时间和重连结果；不得上传未脱敏密钥/设备标识。Test 与稳定 Buick-E5 是独立包名，日常回退可直接打开已安装的 Buick-E5 稳定版。Test T89 的 versionCode 较低，不能原地降级覆盖 T90；如需恢复 Test T89，先准备更高 versionCode 的同签名回退 APK，不要卸载或清除数据。'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Buick-Test T90 PCM High-Accuracy $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file release-notes.txt --prerelease --latest=false
+
+# Never update buick-test-latest, buick-e5-latest or buick-latest.
