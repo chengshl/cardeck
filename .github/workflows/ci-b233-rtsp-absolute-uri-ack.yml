@@ -65,12 +65,18 @@ jobs:
           assert 'CSeq: $it' in dispatch and 'Content-Length: 0' in dispatch
           assert 'if (!isBuickB233) return false' in helper
           assert 'fields[1].startsWith("rtsp://")' in helper
-          assert 'classify(startLine) != Kind.RESPONSE_OR_UNKNOWN' in helper
+          assert 'classify(startLine) == Kind.RESPONSE_OR_UNKNOWN' in helper
+          assert 'java.net.URI(fields[1])' in helper
+          assert '!target.host.isNullOrBlank()' in helper
+          assert 'target.rawFragment == null' in helper
+          assert 'target.port <= 65535' in helper
           for test in (
               'b233AbsoluteUriRequestWithPendingCseqMustBypassQueueAndBeAcked',
               'b233AbsoluteUriTeardownIsAcknowledgedWithoutCseqCollision',
               'nonB233AbsoluteUriPreservesExistingPendingQueueAndNoAck',
               'b233MalformedOrResponseLinesNeverTriggerAbsoluteUriAck',
+              'b233MalformedAbsoluteUriAuthorityMustNotBeAcknowledged',
+              'b233ValidAbsoluteUriAuthoritiesRemainAcknowledged',
           ):
               assert test in tests, test
           print('B233 absolute URI request ACK: CSeq collision bypass, legacy fallback and negative tests verified')
