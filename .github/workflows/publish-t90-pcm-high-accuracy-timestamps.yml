@@ -125,6 +125,11 @@ jobs:
         run: |
           set -euo pipefail
           APK="CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk"
+          EXISTING_T90="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '[.[] | select(.tagName | startswith("exp-buick-test-t90-"))][0].tagName // empty')"
+          if [ -n "$EXISTING_T90" ]; then
+            echo "::notice::T90 already published as $EXISTING_T90; skip duplicate prerelease"
+            exit 0
+          fi
           TAG="exp-buick-test-t90-$CARDECK_RELEASE_VERSION_NAME"
           test -s "$APK" && test -s "$APK.sha256"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
