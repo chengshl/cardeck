@@ -1,0 +1,214 @@
+name: E5 #28 one-shot signed video observation and data-preserving stable recovery
+on:
+  push:
+    branches: [experiment/buick-e5-video-observe-delivery-28]
+    paths: ['.github/workflows/publish-e5-video-observe-pair-28.yml']
+permissions:
+  contents: write
+concurrency:
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+jobs:
+  signed-pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Lock source to one reviewed #62 delivery commit
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-video-observe-delivery-28"
+          test "$(git rev-parse HEAD^)" = "8043e557add2d4e49e14ecb2d496e1556ec32d15"
+          test "$(git rev-parse origin/Buick-E5)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          def changed(*args):
+              return set(subprocess.check_output(['git','diff','--name-only',*args],text=True).splitlines())
+          source='8043e557add2d4e49e14ecb2d496e1556ec32d15'
+          publish='.github/workflows/publish-e5-video-observe-pair-28.yml'
+          assert changed(source,'HEAD') == {publish}, 'Only one delivery workflow may be added'
+          assert int(subprocess.check_output(['git','rev-list','--count',source+'..HEAD'],text=True)) == 1
+          expected={publish,
+              '.github/workflows/ci-e5-video-firstframe-observability.yml',
+              'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnostics.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/video/VideoFrameDiagnosticsTest.kt'}
+          delta=changed('origin/Buick-E5...HEAD')
+          assert delta == expected, 'Unexpected source scope: '+str(delta ^ expected)
+          controller=Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          assert 'DATA_PORT_RESULT=' in controller and 'RECORD_RETURNED accepted=' in controller
+          assert 'applicationId = "io.github.buick.e5.cardeck"' in Path('app/build.gradle.kts').read_text()
+          print('Reviewed #62-only candidate; unrelated #83 video fixes excluded')
+          PY
+          echo "DELIVERY_COMMIT=$GITHUB_SHA" >> "$GITHUB_ENV"
+          echo "SOURCE_BRANCH=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Android JUnit and Debug verification
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Restore protected original E5 keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/e5-key.p12"
+          chmod 600 "$RUNNER_TEMP/e5-key.p12"
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/e5-key.p12"
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Allocate globally unique experiment version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m unittest tools.release.test_allocate_version
+          python3 tools/release/allocate_version.py
+      - name: Build signed video observation APK
+        run: |
+          set -euo pipefail
+          test "$CARDECK_RELEASE_BRANCH" = "experiment/buick-e5-video-observe-delivery-28"
+          ./gradlew :app:clean :app:assembleRelease --no-daemon --stacktrace
+      - name: Verify signed test identity, official signing certificate and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/e5-pair" "$RUNNER_TEMP/e5-official"
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          SIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          "$SIGNER" verify "$APK"
+          EXPCERT="$("$SIGNER" verify --print-certs "$APK" | sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' | head -n 1)"
+          test -n "$EXPCERT"
+          test -z "$(grep -i 'CN=Android Debug' <<< "$("$SIGNER" verify --print-certs "$APK")" || true)"
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \
+            --pattern CarDeck-Buick-E5.apk --dir "$RUNNER_TEMP/e5-official"
+          OLD="$RUNNER_TEMP/e5-official/CarDeck-Buick-E5.apk"
+          test -s "$OLD"
+          OFFICIAL_CERT="$("$SIGNER" verify --print-certs "$OLD" | sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' | head -n 1)"
+          test -n "$OFFICIAL_CERT"
+          test "$EXPCERT" = "$OFFICIAL_CERT"
+          RESOURCES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$RESOURCES"
+          grep -Fq 'experiment/buick-e5-video-observe-delivery-28' <<< "$RESOURCES"
+          cp "$APK" "$RUNNER_TEMP/e5-pair/CarDeck-E5-Video-Observe-28.apk"
+          cd "$RUNNER_TEMP/e5-pair"
+          sha256sum CarDeck-E5-Video-Observe-28.apk > CarDeck-E5-Video-Observe-28.apk.sha256
+          echo "EXP_CODE=$CARDECK_BUILD_VERSION_CODE" >> "$GITHUB_ENV"
+          echo "EXP_NAME=$CARDECK_RELEASE_VERSION_NAME" >> "$GITHUB_ENV"
+          echo "EXP_CERT=$EXPCERT" >> "$GITHUB_ENV"
+      - name: Checkout exact reviewed E5 runtime for same-signed recovery
+        run: |
+          set -euo pipefail
+          git checkout --detach 5e565a08b228d157ff1d739f38b8c09fad80f8a5
+          test "$(git rev-parse HEAD)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
+          test -s keystore.properties
+          test -s "$RUNNER_TEMP/e5-pair/CarDeck-E5-Video-Observe-28.apk"
+      - name: Allocate a strictly higher global stable recovery version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          GITHUB_REF_NAME=Buick-E5 \
+            GITHUB_SHA=5e565a08b228d157ff1d739f38b8c09fad80f8a5 \
+            python3 tools/release/allocate_version.py
+          echo "SOURCE_BRANCH=Buick-E5" >> "$GITHUB_ENV"
+      - name: Compile clean stable recovery using identical E5 signing key
+        run: |
+          set -euo pipefail
+          test "$CARDECK_RELEASE_BRANCH" = "Buick-E5"
+          test "$SOURCE_BRANCH" = "Buick-E5"
+          test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"
+          ./gradlew :app:clean :app:assembleRelease --no-daemon --stacktrace
+      - name: Verify recovery signer, original app origin and version ordering
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          SIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"
+          "$SIGNER" verify "$APK"
+          RECCERT="$("$SIGNER" verify --print-certs "$APK" | sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' | head -n 1)"
+          test -n "$RECCERT" && test "$RECCERT" = "$EXP_CERT"
+          RESOURCES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$RESOURCES"
+          grep -Fq 'Buick-E5' <<< "$RESOURCES"
+          cp "$APK" "$RUNNER_TEMP/e5-pair/CarDeck-E5-Video-Observe-28-Stable-Restore.apk"
+          cd "$RUNNER_TEMP/e5-pair"
+          sha256sum CarDeck-E5-Video-Observe-28-Stable-Restore.apk > CarDeck-E5-Video-Observe-28-Stable-Restore.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: E5-video-28-signed-and-recovery-${{ github.run_id }}
+          path: ${{ runner.temp }}/e5-pair/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish recovery FIRST and experimental package SECOND
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/e5-pair"
+          EXP_TAG="exp-buick-e5-video-observe-28-$EXP_NAME"
+          REST_TAG="e5-stable-restore-video-observe-28-$CARDECK_RELEASE_VERSION_NAME"
+          EXP_APK=CarDeck-E5-Video-Observe-28.apk
+          REST_APK=CarDeck-E5-Video-Observe-28-Stable-Restore.apk
+          test -s "$EXP_APK" && test -s "$EXP_APK.sha256"
+          test -s "$REST_APK" && test -s "$REST_APK.sha256"
+          test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"
+          test "$(git rev-parse HEAD)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
+          if gh release view "$REST_TAG" >/dev/null 2>&1 || gh release view "$EXP_TAG" >/dev/null 2>&1; then
+            echo "::error::Refusing to replace an existing test or recovery release"
+            exit 1
+          fi
+          {
+            printf 'artifactKind=recovery\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=Buick-E5\n'
+            printf 'recoveryFor=%s\nstableRuntimeCommit=5e565a08b228d157ff1d739f38b8c09fad80f8a5\n' "$EXP_TAG"
+            printf 'versionName=%s\nversionCode=%s\napkName=%s\n' "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$REST_APK"
+            printf '\nSame E5 signing identity, stable application code, higher code than the experiment. Preserve data: never uninstall or clear storage.\n'
+          } > restore-notes.txt
+          gh release create "$REST_TAG" "$REST_APK" "$REST_APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target 5e565a08b228d157ff1d739f38b8c09fad80f8a5 \
+            --title "E5 #28 original-stable recovery $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file restore-notes.txt --prerelease --latest=false
+          gh release view "$REST_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\n'
+            printf 'sourceBranch=experiment/buick-e5-video-observe-delivery-28\n'
+            printf 'sourceReviewedCommit=8043e557add2d4e49e14ecb2d496e1556ec32d15\n'
+            printf 'commit=%s\nversionName=%s\nversionCode=%s\napkName=%s\n' "$DELIVERY_COMMIT" "$EXP_NAME" "$EXP_CODE" "$EXP_APK"
+            printf 'recoveryTag=%s\nrecoveryVersionCode=%s\n' "$REST_TAG" "$CARDECK_BUILD_VERSION_CODE"
+            printf '\n#28 independent RECORD / data-port / first-frame diagnostics. No #83 video resource candidate combined, no #11 audio or BT profile changes.\n'
+            printf '\nInstall test only after checking APK version/signature. If unusable, overlay the linked higher-code stable recovery without uninstalling or clearing data. Device and car acceptance NOT YET PERFORMED.\n'
+          } > experiment-notes.txt
+          gh release create "$EXP_TAG" "$EXP_APK" "$EXP_APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target "$DELIVERY_COMMIT" \
+            --title "E5 #28 controlled video diagnosis $EXP_NAME (test)" \
+            --notes-file experiment-notes.txt --prerelease --latest=false
