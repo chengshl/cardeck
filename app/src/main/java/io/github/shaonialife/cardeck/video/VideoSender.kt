@@ -267,23 +267,19 @@ class VideoSender(
                     }
 
                     index >= 0 -> {
-                        val buffer = codec.getOutputBuffer(index)
-                        if (buffer == null) {
-                            // dequeueOutputBuffer() still transferred ownership of this index.
-                            // Returning without releasing it can exhaust codec output slots.
-                            codec.releaseOutputBuffer(index, false)
-                            maybeSendKeepAlive(output)
-                            continue
-                        }
-                        val flags = bufferInfo.flags
                         try {
-                            if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                                sendVideoConfig(buffer, bufferInfo.size, output)
-                            } else if (bufferInfo.size > 0) {
-                                sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)
+                            // Even getOutputBuffer() itself can throw after dequeue handed us an index.
+                            val buffer = codec.getOutputBuffer(index)
+                            if (buffer != null) {
+                                val flags = bufferInfo.flags
+                                if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                                    sendVideoConfig(buffer, bufferInfo.size, output)
+                                } else if (bufferInfo.size > 0) {
+                                    sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)
+                                }
                             }
                         } finally {
-                            // dequeueOutputBuffer transferred this slot even if frame writing fails.
+                            // Return every dequeued index, including null or failed buffer acquisition.
                             codec.releaseOutputBuffer(index, false)
                         }
                         maybeSendKeepAlive(output)
