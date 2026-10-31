@@ -26,10 +26,19 @@ internal object RtspPeerRequestEvidence {
     fun isB233AbsoluteUriRequest(startLine: String, isBuickB233: Boolean): Boolean {
         if (!isBuickB233) return false
         val fields = startLine.trim().split(Regex("""\s+"""))
-        return fields.size == 3 &&
-            fields[1].startsWith("rtsp://") &&
-            fields[1].length > "rtsp://".length &&
-            classify(startLine) != Kind.RESPONSE_OR_UNKNOWN
+        if (fields.size != 3 ||
+            !fields[1].startsWith("rtsp://") ||
+            classify(startLine) == Kind.RESPONSE_OR_UNKNOWN
+        ) return false
+
+        // "rtsp://" alone (or rtsp:///path, rtsp://?query) has no
+        // authority and is not a valid absolute RTSP request target.
+        // Parse only; never resolve the host or retain the target.
+        val target = runCatching { java.net.URI(fields[1]) }.getOrNull() ?: return false
+        return target.scheme == "rtsp" &&
+            !target.host.isNullOrBlank() &&
+            target.rawFragment == null &&
+            target.port <= 65535
     }
 
     fun classify(startLine: String): Kind {
