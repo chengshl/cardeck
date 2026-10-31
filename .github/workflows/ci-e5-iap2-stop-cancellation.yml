@@ -143,58 +143,9 @@ jobs:
               ['git', 'show', previous_head + ':' + client_path], text=True
           )
           changes = [
-              (
-                  '''        val withService =
-            bonded.filter { device ->
-                device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true
-            }''',
-                  '''        val withService =
-            bonded.filter { device ->
-                // BLUETOOTH_CONNECT may be revoked after the start() permission check.
-                try {
-                    device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true
-                } catch (_: SecurityException) {
-                    false
-                }
-            }'''
-              ),
-              (
-                  '''            } catch (error: IOException) {
-                return null
-            }
-        // 连接前就登记''',
-                  '''            } catch (error: IOException) {
-                return null
-            } catch (_: SecurityException) {
-                log("BT-C: 建立 RFCOMM Socket 时蓝牙权限已失效（已跳过本轮）")
-                return null
-            }
-        // 连接前就登记'''
-              ),
-              (
-                  '''        } catch (error: IOException) {
-            currentSocket.compareAndSet(socket, null)
-            runCatching { socket.close() }
-            null
-        }
-    }
-
-    private fun runSession''',
-                  '''        } catch (error: IOException) {
-            currentSocket.compareAndSet(socket, null)
-            runCatching { socket.close() }
-            null
-        } catch (_: SecurityException) {
-            // Android permission can be revoked while blocking inside connect().
-            currentSocket.compareAndSet(socket, null)
-            runCatching { socket.close() }
-            log("BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）")
-            null
-        }
-    }
-
-    private fun runSession'''
-              ),
+              ("        val withService =\n            bonded.filter { device ->\n                device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true\n            }", "        val withService =\n            bonded.filter { device ->\n                // BLUETOOTH_CONNECT may be revoked after the start() permission check.\n                try {\n                    device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true\n                } catch (_: SecurityException) {\n                    false\n                }\n            }"),
+              ("            } catch (error: IOException) {\n                return null\n            }\n        // 连接前就登记", "            } catch (error: IOException) {\n                return null\n            } catch (_: SecurityException) {\n                log(\"BT-C: 建立 RFCOMM Socket 时蓝牙权限已失效（已跳过本轮）\")\n                return null\n            }\n        // 连接前就登记"),
+              ("        } catch (error: IOException) {\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            null\n        }\n    }\n\n    private fun runSession", "        } catch (error: IOException) {\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            null\n        } catch (_: SecurityException) {\n            // Android permission can be revoked while blocking inside connect().\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            log(\"BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）\")\n            null\n        }\n    }\n\n    private fun runSession"),
           ]
           expected_client = old_client
           for before_text, after_text in changes:
