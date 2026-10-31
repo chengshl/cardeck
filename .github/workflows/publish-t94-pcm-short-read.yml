@@ -1,0 +1,159 @@
+
+name: T94 B233 PCM short-read signed experiment
+
+on:
+  push:
+    branches: [experiment/buick-b233-pcm-partial-read-continuity]
+    paths: ['.github/workflows/publish-t94-pcm-short-read.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-t94-b233-pcm-short-read
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Strict signed baseline, validated source and workflow-only delta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=5565df378ad139ebbb7902068dd273bb09b25149
+          VALIDATED=2c8bd90fbd6372287162d096456fe684a510cc02
+          test "$GITHUB_REF_NAME" = experiment/buick-b233-pcm-partial-read-continuity
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$BASE" "$VALIDATED"
+          git merge-base --is-ancestor "$VALIDATED" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41189533143 --jq .head_sha)" = "$VALIDATED"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41189533143 --jq .conclusion)" = success
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41183730099 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41183730099 --jq .conclusion)" = success
+          git diff --name-only "$VALIDATED" HEAD | sort > /tmp/post-tested-files
+          printf '%s\n' .github/workflows/ci-b233-pcm-short-read-continuity.yml .github/workflows/publish-t94-pcm-short-read.yml > /tmp/post-expected
+          diff -u /tmp/post-expected /tmp/post-tested-files
+          test "$(git diff --name-only "$BASE" "$VALIDATED" | wc -l)" -eq 5
+          test "$(git diff --name-only "$BASE" HEAD | wc -l)" -eq 6
+          git diff --check "$BASE" HEAD
+          for f in app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt app/src/main/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindow.kt app/src/test/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindowTest.kt; do
+            test "$(git rev-parse "$VALIDATED:$f")" = "$(git rev-parse "HEAD:$f")"
+          done
+          grep -Fq 'completePartialPcmReads = client.currentEndpoint.isBuickB233 && profile.codec == AudioCodec.PCM' app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt
+          grep -Fq 'shortReads=$shortReadCount zeroReads=$zeroReadCount' app/src/main/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindow.kt
+      - name: Await exact HEAD full Android CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            STATE="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci-b233-pcm-short-read-continuity.yml/runs?head_sha=$GITHUB_SHA&per_page=20" --jq '.workflow_runs | map(select(.head_sha == "'"$GITHUB_SHA"'")) | .[0] | ((.status // "absent") + "/" + (.conclusion // "pending"))')"
+            if [ "$STATE" = completed/success ]; then exit 0; fi
+            if [[ "$STATE" == completed/* && "$STATE" != completed/success ]]; then echo "::error::Current HEAD CI=$STATE"; exit 1; fi
+            sleep 20
+          done
+          echo "::error::No success from exact-HEAD offline CI"; exit 1
+      - name: Verify iAP2 credential redaction and load existing Test signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'channel.suppressSensitiveRawFrames()' app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt
+          grep -Fq 'RAW rx: redacted bytes=' app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt
+          grep -Fq 'RAW tx: redacted bytes=' app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/test-t94.p12"
+          chmod 600 "$RUNNER_TEMP/test-t94.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/test-t94.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Derive Test versionName and strictly increasing versionCode
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREV="$(gh release view exp-buick-test-t91-20261031161402 --repo "$GITHUB_REPOSITORY" --json body --jq .body | sed -n 's/^versionCode=//p' | head -n 1)"
+          test "$PREV" = 89367242
+          EPOCH="$(date -u +%s)"
+          CODE=$((EPOCH-1704067200))
+          test "$CODE" -gt "$PREV"
+          echo "CARDECK_BUILD_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$(TZ=Asia/Shanghai date -d "@$EPOCH" +%Y%m%d%H%M%S)" >> "$GITHUB_ENV"
+      - name: Build signed T94
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Check same Test certificate, package ID and APK SHA256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          SIGN="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -s "$APK"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$CARDECK_BUILD_VERSION_CODE'" | grep -F "versionName='$CARDECK_RELEASE_VERSION_NAME'"
+          "$SIGN" verify --print-certs "$APK" > "$RUNNER_TEMP/current-cert"
+          NEW="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/current-cert" | head -n 1)"
+          test -n "$NEW" && ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/current-cert"
+          mkdir -p "$RUNNER_TEMP/previous"
+          gh release download exp-buick-test-t91-20261031161402 --repo "$GITHUB_REPOSITORY" --pattern 'CarDeck-Buick-Test-T91-PROJECTION-REGRANT.apk' --dir "$RUNNER_TEMP/previous"
+          "$SIGN" verify --print-certs "$RUNNER_TEMP/previous/CarDeck-Buick-Test-T91-PROJECTION-REGRANT.apk" > "$RUNNER_TEMP/previous-cert"
+          OLD="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/previous-cert" | head -n 1)"
+          test "$NEW" = "$OLD" && test -n "$OLD"
+          cp "$APK" CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk
+          sha256sum CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk > CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Buick-Test-T94-SIGNED-${{ github.run_id }}
+          path: |
+            CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk
+            CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk.sha256
+          if-no-files-found: error
+      - name: Publish unique independent T94 schema2 prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OLD="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '[.[] | select(.tagName | startswith("exp-buick-test-t94-"))][0].tagName // empty')"
+          if [ -n "$OLD" ]; then echo "::notice::T94 already published; skip duplicate $OLD"; exit 0; fi
+          APK=CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk
+          TAG="exp-buick-test-t94-$CARDECK_RELEASE_VERSION_NAME"
+          test -s "$APK" && test -s "$APK.sha256"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "::error::Cannot overwrite existing tag"; exit 1; fi
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\napplicationId=io.github.buick.test.cardeck\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$APK" "$GITHUB_SHA"
+            echo
+            echo '## T94: B233 PCM short-read data-continuity isolated experiment'
+            echo 'Signed T91 baseline (including PR #90 iAP2 credential redaction and projection regrant) plus only PR #95 B233 PCM AudioRecord short-read completion and numeric-only diagnostics; T90 failed highAccuracy change and independent PR #92/#94 are excluded. No evidence that short-read triggered the original 20-second peer RTSP EOF. NOT vehicle tested.'
+            echo '## Parked test only / preserve data'
+            echo 'Same io.github.buick.test.cardeck package and signing certificate as T91; higher versionCode, can update existing Test without clearing data. Never auto-install. First validate video, touch, Bluetooth A2DP and audio permission, then measure audible time and shortReads/zeroReads/discardedBytes under a user-approved test. Success requires three independent audible sessions >=3 minutes with recovery; all raw logs require privacy review. Test APK cannot downgrade to T91/T90 directly: any Test rollback must be signed with a higher versionCode; never uninstall or clear data. Everyday Buick-E5 stays separate. T64 automatic reconnect video-only safety retained.'
+            echo '## Status and update channel'
+            echo 'This is a Draft L3 audio experiment, not a stable build or root-cause claim. updaterSchema=2 independent prerelease; do not update buick-test-latest, buick-e5-latest, buick-latest, stable branches, or user devices.'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Buick-Test T94 PCM Short Read $CARDECK_RELEASE_VERSION_NAME" --notes-file release-notes.txt --prerelease --latest=false
+
+# Never auto-install and never update any latest channel.
