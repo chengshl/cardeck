@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicLong
  * (or keep pinging the retired host/port). Capture a token before scheduling
  * the worker; close() invalidates all tokens before retiring the socket.
  *
+ * runIfCurrent() serializes the final network action with retire(): close()
+ * cannot retire the generation midway through an old worker's socket capture/write.
  * This gate does not alter heartbeat intervals, packets or network routing.
  */
 internal class B233HeartbeatSessionGate {
@@ -18,7 +20,15 @@ internal class B233HeartbeatSessionGate {
 
     fun snapshot(): Long = generation.get()
 
+    @Synchronized
     fun retire(): Long = generation.incrementAndGet()
 
     fun isCurrent(token: Long): Boolean = token == generation.get()
+
+    @Synchronized
+    fun runIfCurrent(token: Long, action: () -> Unit): Boolean {
+        if (!isCurrent(token)) return false
+        action()
+        return true
+    }
 }
