@@ -1,0 +1,71 @@
+name: B233 projection service-destroy owner regression (offline)
+
+on:
+  push:
+    branches:
+      - experiment/buick-b233-projection-service-destroy-owner
+    paths:
+      - '.github/workflows/ci-b233-projection-service-destroy-owner.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b233-projection-service-destroy-owner
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact signed T91 source and four-file scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=5565df378ad139ebbb7902068dd273bb09b25149
+          test "$GITHUB_REF_NAME" = "experiment/buick-b233-projection-service-destroy-owner"
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --name-only "$BASE" HEAD > /tmp/t92-scope
+          test "$(wc -l < /tmp/t92-scope)" -eq 4
+          while IFS= read -r f; do
+            case "$f" in
+              .github/workflows/ci-b233-projection-service-destroy-owner.yml|app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt|app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt|app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt) ;;
+              *) echo "::error::Out-of-scope: $f"; exit 1 ;;
+            esac
+          done < /tmp/t92-scope
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          svc=Path('app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt').read_text()
+          gate=Path('app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt').read_text()
+          tests=Path('app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt').read_text()
+          assert 'ownedProjection = projection' in svc
+          destroy=svc.split('override fun onDestroy()',1)[1].split('private fun fileLog(',1)[0]
+          assert 'projectionLease.retireOwned(owned)' in destroy
+          assert 'ownedProjection = null' in destroy
+          assert 'active.compareAndSet(owned, null)' in gate
+          assert 'delayedOldServiceDestroyCannotStopReplacementProjection' in tests
+          assert 'serviceDestroyedWithoutExplicitStopRevokesOnlyItsLiveGrant' in tests
+          print('Service destruction ownership and regression wiring verified')
+          PY
+      - name: Deterministic owner lifecycle JUnit
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.service.ProjectionLeaseTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Follow-up to signed T91, offline only. No signing, release, or stable branch changes.
