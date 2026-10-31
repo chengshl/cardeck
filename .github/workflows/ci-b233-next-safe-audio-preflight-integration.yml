@@ -1,0 +1,84 @@
+name: B233 safe audio-free network preflight integration (offline only)
+on:
+  pull_request:
+    branches: [experiment/buick-b233-reverse-rtcp-bind-causality]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-safe-preflight-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent and seven-file privacy-only integration scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=93a8327de98f86b0df8306f1ba8d48eb0455a280
+          SIGNED_T94=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          git merge-base --is-ancestor "$BASE" HEAD
+          git merge-base --is-ancestor "$SIGNED_T94" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41224631662 --jq .head_sha)" = '78c887646e62a6f0f0dea3a55487368c40966ec2'
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41224631662 --jq .conclusion)" = success
+          # The prerequisite full Android CI may still be running.
+          for i in $(seq 1 24); do
+            state="$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41227492783 --jq .status)"
+            if [ "$state" = completed ]; then break; fi
+            sleep 10
+          done
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41227492783 --jq .head_sha)" = '93a8327de98f86b0df8306f1ba8d48eb0455a280'
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41227492783 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/safe-integration-scope
+          printf '%s\n' \
+            '.github/workflows/ci-b233-next-safe-audio-preflight-integration.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummary.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioFeedbackLogPrivacyTest.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummaryTest.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AacFirstFrameLogPrivacyTest.kt' > /tmp/safe-integration-expected
+          diff -u /tmp/safe-integration-expected /tmp/safe-integration-scope
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          assert 'lastAudioSetupRequestAttempted = false' in p
+          assert 'lastAudioSetupRequestAttempted = true' in p
+          assert 'audio_setup_skipped reason=reverse_rtcp_unavailable' in p
+          assert 'B233ModeReplySummary.describe(replyBody)' in p
+          assert 'safeAudioFeedbackLogLines(body).forEach(log)' in p
+          assert p.count('safeB233IapPayloadLog(') == 4  # helper + 3 live B233 call sites
+          assert 'if (endpoint.isBuickB233) safeB233IapPayloadLog(bytes)' in p
+          assert 'if (endpoint.isBuickB233) safeB233IapPayloadLog(data)' in p
+          assert 'if (endpoint.isBuickB233) " " + safeB233IapPayloadLog(reply)' in p
+          assert 'firstAacFrameSafeLog(out, raw, wrapAdts)' in Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt').read_text()
+          preflight = Path('app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt').read_text()
+          assert 'runT89BindPreflight()' in preflight and '不发送任何 UDP 包' in preflight
+          assert 'preflightRunning.compareAndSet(false, true)' in preflight
+          assert 'onBindError = AudioReverseControlPort::bindFailureCategory' in preflight
+          assert 'packageName == "io.github.buick.test.cardeck"' in preflight
+          assert 'fun shouldRecordRejectedAfterAttempt(' in Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioProfileMemory.kt').read_text()
+          PY
+      - name: Merged privacy, network preflight and profile-memory JVM regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233ModeReplySummaryTest --tests io.github.shaonialife.cardeck.airplay.AudioFeedbackLogPrivacyTest --tests io.github.shaonialife.cardeck.audio.AacFirstFrameLogPrivacyTest --tests io.github.shaonialife.cardeck.airplay.AudioReverseControlPortTest --tests io.github.shaonialife.cardeck.airplay.B233UdpBindPreflightTest --tests io.github.shaonialife.cardeck.audio.AudioProfileMemoryTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Privacy prerequisite for potential future Test trial. No signing, Release, installing or stable merges.
