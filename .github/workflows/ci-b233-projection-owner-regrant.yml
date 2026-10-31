@@ -1,0 +1,108 @@
+name: B233 projection regrant with privacy redaction (offline)
+
+on:
+  pull_request:
+    branches: [experiment/buick-test-t89-pcm-reverse-rtcp]
+    paths:
+      - '.github/workflows/ci-b233-projection-owner-regrant.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSessionTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: b233-projection-owner-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact T89 ancestry, validated code and workflow-only follow-up
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          VALIDATED=3a70cad100cd6e0e3aac7e2700c16f80738b4834
+          git merge-base --is-ancestor "$BASE" "$VALIDATED"
+          git merge-base --is-ancestor "$VALIDATED" HEAD
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq .head_sha)" = "$VALIDATED"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq .conclusion)" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41180748400" --jq .head_sha)" = 58ae77af3daacc71360b218358add33477a4dcd7
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41180748400" --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD > /tmp/projection-scope
+          test "$(wc -l < /tmp/projection-scope)" -eq 8
+          while IFS= read -r f; do
+            case "$f" in
+              .github/workflows/ci-b233-projection-owner-regrant.yml|.github/workflows/publish-t91-projection-regrant.yml|app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt|app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt|app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt|app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt|app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt|app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSessionTest.kt) ;;
+              *) echo "out-of-scope file: $f"; exit 1 ;;
+            esac
+          done < /tmp/projection-scope
+          # Projection logic is frozen at its verified SHA. The three
+          # subsequently added privacy-only files must be byte-for-byte PR #90.
+          test "$(git rev-parse HEAD:app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt)" = 2b36dd1385bb1735f8117e5b9038833d7d11e672
+          test "$(git rev-parse HEAD:app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt)" = 5f55d6ce234eabe0d2c8a1fd9a7319507b1a99d7
+          test "$(git rev-parse HEAD:app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSessionTest.kt)" = 22b899a4c8ccdbbdb8910953cb6abed0b69589a4
+          test "$(git rev-parse HEAD:app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt)" = "$(git rev-parse "$VALIDATED":app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt)"
+          test "$(git rev-parse HEAD:app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt)" = "$(git rev-parse "$VALIDATED":app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt)"
+          test "$(git rev-parse HEAD:app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt)" = "$(git rev-parse "$VALIDATED":app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt)"
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          svc = Path('app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt').read_text()
+          gate = Path('app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt').read_text()
+          start = svc.split('    override fun onStartCommand(',1)[1].split('    private fun takeProjection()',1)[0]
+          take = svc.split('    private fun takeProjection()',1)[1].split('    private fun upgradeToProjection()',1)[0]
+          callback = take.split('override fun onStop()',1)[1].split('}',1)[0]
+          assert start.index('if (upgradeToProjection())') < start.index('takeProjection()')
+          assert 'pendingProjectionResult = null' in start
+          assert 'projectionLease.clearIfCurrent(active)' in start
+          assert 'projectionLease.clearIfCurrent(granted)' in callback
+          assert 'mediaProjection = null' not in callback
+          stop = svc.split('        fun stop(context: Context) {',1)[1].split('        }',1)[0]
+          assert stop.index('projectionLease.clearCurrent()') < stop.index('context.stopService(')
+          assert 'pendingProjectionResult = null' in stop
+          assert 'retired?.let { runCatching { it.stop() } }' in stop
+          assert 'private fun upgradeToProjection(): Boolean' in svc
+          assert 'false' in svc.split('private fun upgradeToProjection(): Boolean',1)[1].split('override fun onDestroy()',1)[0]
+          assert 'AtomicReference<T?>(null)' in gate
+          for test in ('expiredCallbackCannotEraseSubsequentGrant',
+                       'explicitStopImmediatelyRevokesReadinessBeforeAsyncOnStop',
+                       'currentOnStopRevokesReadinessAndRequiresFreshGrant',
+                       'delayedOldOnStopCannotRaceWithNewPublication'):
+              assert test in tests
+          session = Path('app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt').read_text()
+          transport = Path('app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt').read_text()
+          assert 'channel.suppressSensitiveRawFrames()' in session
+          assert 'RAW rx: redacted bytes=' in transport and 'RAW tx: redacted bytes=' in transport
+          assert 'wireless.joinToString(" ") { param -> "#${param.id}(${param.value.size}B redacted)" }' in session
+          print('T91 + validated PR90 privacy: projection owner and credentials redaction wired')
+          PY
+      - name: Deterministic projection lease regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.service.ProjectionLeaseTest --tests io.github.shaonialife.cardeck.iap2.Iap2SenderSessionTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# No signing, release, stable merge, new permission, or vehicle claim.

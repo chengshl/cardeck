@@ -70,12 +70,23 @@ class CarPlayService : Service() {
             android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
         acquireLocks()
-        // 授权结果在（用户刚确认投屏）时：升级前台类型再创建投影（try/catch 兜底不崩）
+        // Android 14+ grants are single-use. A failed FGS type upgrade must
+        // never consume that token with getMediaProjection(): report the failure
+        // and wait for a fresh, explicit user authorization instead.
         if (pendingProjectionResult != null) {
-            upgradeToProjection()
-            takeProjection()
-        } else if (mediaProjection != null) {
-            upgradeToProjection()
+            if (upgradeToProjection()) {
+                takeProjection()
+            } else {
+                pendingProjectionResult = null
+                fileLog("SVC T91: 投屏前台类型未就绪，已放弃本次授权结果；需用户重新授权")
+            }
+        } else if (mediaProjection != null && !upgradeToProjection()) {
+            // A cached projection without its required service type is unsafe
+            // to advertise as audio-ready on a later connection.
+            mediaProjection?.let { active ->
+                projectionLease.clearIfCurrent(active)
+            }
+            fileLog("SVC T91: 旧投影无法恢复前台类型；下次声音连接须重新授权")
         }
         return START_STICKY
     }
@@ -88,16 +99,23 @@ class CarPlayService : Service() {
                 getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
             val projection = manager.getMediaProjection(code, data)
             // Android 14+：createVirtualDisplay 前必须注册回调（资源管理强制）
-            projection?.registerCallback(
-                object : android.media.projection.MediaProjection.Callback() {
-                    override fun onStop() {
-                        mediaProjection = null
-                        // 关键诊断：授权丢失会导致音频/镜像不可用（此前只写 logcat，HKS 加密看不到）
-                        fileLog("SVC: MediaProjection 被系统停止（onStop）——音频/镜像需重新授权")
-                    }
-                },
-                android.os.Handler(android.os.Looper.getMainLooper()),
-            )
+            projection?.let { granted ->
+                granted.registerCallback(
+                    object : android.media.projection.MediaProjection.Callback() {
+                        override fun onStop() {
+                            // Android delivers old onStop callbacks asynchronously.
+                            // Never let an expired grant erase a NEW projection
+                            // published by a subsequent explicit permission dialog.
+                            if (projectionLease.clearIfCurrent(granted)) {
+                                fileLog("SVC: MediaProjection 被系统停止（onStop）——音频/镜像需重新授权")
+                            } else {
+                                fileLog("SVC T91: 旧 MediaProjection onStop；保留后续已更新的授权")
+                            }
+                        }
+                    },
+                    android.os.Handler(android.os.Looper.getMainLooper()),
+                )
+            }
             mediaProjection = projection
             if (projection != null) {
                 fileLog("SVC: MediaProjection 就绪（投影创建成功）")
@@ -109,7 +127,7 @@ class CarPlayService : Service() {
         }
     }
 
-    private fun upgradeToProjection() {
+    private fun upgradeToProjection(): Boolean =
         try {
             androidx.core.app.ServiceCompat.startForeground(
                 this,
@@ -118,10 +136,11 @@ class CarPlayService : Service() {
                 android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
             )
+            true
         } catch (error: Exception) {
-            fileLog("SVC: 升级 mediaProjection FGS 类型失败 - ${error.message}")
+            fileLog("SVC: 升级 mediaProjection FGS 类型失败 - ${error.javaClass.simpleName}")
+            false
         }
-    }
 
     override fun onDestroy() {
         releaseLocks()
@@ -145,9 +164,19 @@ class CarPlayService : Service() {
         private const val CHANNEL_ID = "carplay_connection"
         private const val NOTIFICATION_ID = 1
 
-        /** 镜像模式：授权后由 MainActivity 写入；服务重声明 FGS 类型后方可创建虚拟屏。 */
-        @Volatile
-        var mediaProjection: android.media.projection.MediaProjection? = null
+        /**
+         * MediaProjection is an identity-scoped single-use grant: a delayed
+         * onStop from an older grant must not clear a newly published one.
+         * External callers may read readiness; only this Service publishes.
+         */
+        private val projectionLease =
+            ProjectionLease<android.media.projection.MediaProjection>()
+
+        var mediaProjection: android.media.projection.MediaProjection?
+            get() = projectionLease.current()
+            private set(value) {
+                projectionLease.publish(value)
+            }
 
         /** 授权结果暂存：由服务在前台类型升级后调用 getMediaProjection（Android 14+ 顺序要求）。 */
         @Volatile
@@ -158,6 +187,14 @@ class CarPlayService : Service() {
         }
 
         fun stop(context: Context) {
+            // SessionController has already retired its audio/video workers.
+            // Invalidate a one-shot grant BEFORE the asynchronous Android
+            // onDestroy/onStop callbacks: the next explicit "enable audio"
+            // action must request a fresh grant instead of misreading this
+            // stopped service's old MediaProjection as still ready.
+            val retired = projectionLease.clearCurrent()
+            pendingProjectionResult = null
+            retired?.let { runCatching { it.stop() } }
             context.stopService(Intent(context, CarPlayService::class.java))
         }
     }

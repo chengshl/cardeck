@@ -1,0 +1,176 @@
+name: T91 B233 projection regrant signed experiment
+
+on:
+  push:
+    branches:
+      - experiment/buick-b233-projection-owner-regrant-guard
+    paths:
+      - '.github/workflows/publish-t91-projection-regrant.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-t91-projection-privacy
+  cancel-in-progress: true
+
+jobs:
+  signed-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Gate joint T91 projection + PR90 privacy validated source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          VALIDATED=72042e091875e94cbe22705ad1c3e3efb145d676
+          test "$GITHUB_REF_NAME" = "experiment/buick-b233-projection-owner-regrant-guard"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$VALIDATED" "$GITHUB_SHA"
+          git merge-base --is-ancestor "$BASE" "$VALIDATED"
+          git diff --name-only "$BASE" "$VALIDATED" > /tmp/t91-source-scope
+          test "$(wc -l < /tmp/t91-source-scope)" -eq 8
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-projection-owner-regrant.yml|.github/workflows/publish-t91-projection-regrant.yml|app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt|app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt|app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt|app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt|app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt|app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSessionTest.kt) ;;
+              *) echo "::error::Unexpected T91 source change: $file"; exit 1 ;;
+            esac
+          done < /tmp/t91-source-scope
+          test "$(git diff --name-only "$VALIDATED" "$GITHUB_SHA" | sort -u)" = ".github/workflows/publish-t91-projection-regrant.yml"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41183433793" --jq '.status')" = completed
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41183433793" --jq '.conclusion')" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41183433793" --jq '.head_sha')" = "$VALIDATED"
+          grep -Fq 'projectionLease.clearCurrent()' app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt
+          grep -Fq 'explicitStopImmediatelyRevokesReadinessBeforeAsyncOnStop' app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt
+          echo "T91 + #90 exact joint validated code and signed experiment gate passed."
+      - name: Privacy safety gate before any new signed Test release
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The B233 T90 log stream exposed 0x4301 Wi-Fi credential bytes.
+          # Do not publish another Test APK unless the standalone PR #90
+          # source redaction is actually in this APK (CI alone is not enough).
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt').read_text()
+          transport = Path('app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt').read_text()
+          assert 'channel.suppressSensitiveRawFrames()' in src, 'B233 raw credentials not redacted'
+          assert 'RAW rx: redacted bytes=' in transport
+          assert 'RAW tx: redacted bytes=' in transport
+          assert 'wireless.joinToString(" ") { param -> "#${param.id}(${param.value.size}B redacted)" }' in src
+          PY
+      - name: Load existing signed Buick-Test keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-t91.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-t91.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-t91.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Assign monotonic Test versionCode above signed T90
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREVIOUS_CODE="$(gh release view exp-buick-test-t90-20261031141350 --repo "$GITHUB_REPOSITORY" --json body --jq '.body' | sed -n 's/^versionCode=//p' | head -n 1)"
+          test "$PREVIOUS_CODE" = "89360030"
+          BUILD_EPOCH="$(date -u +%s)"
+          BUILD_CODE=$(( BUILD_EPOCH - 1704067200 ))
+          test "$BUILD_CODE" -gt "$PREVIOUS_CODE"
+          echo "CARDECK_BUILD_VERSION_CODE=$BUILD_CODE" >> "$GITHUB_ENV"
+          echo "CARDECK_RELEASE_VERSION_NAME=$(TZ=Asia/Shanghai date -d "@$BUILD_EPOCH" +%Y%m%d%H%M%S)" >> "$GITHUB_ENV"
+      - name: Build signed T91 Test APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify package, version and same Test signing certificate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -s "$APK"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$CARDECK_BUILD_VERSION_CODE'" | grep -F "versionName='$CARDECK_RELEASE_VERSION_NAME'"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/t91-cert.txt"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t91-cert.txt" | head -n 1)"
+          test -n "$NEW_CERT" && ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/t91-cert.txt"
+          mkdir -p "$RUNNER_TEMP/t90-reference"
+          gh release download exp-buick-test-t90-20261031141350 --repo "$GITHUB_REPOSITORY" --pattern 'CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk' --dir "$RUNNER_TEMP/t90-reference"
+          OLD_APK="$RUNNER_TEMP/t90-reference/CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk"
+          "$APKSIGNER" verify --verbose --print-certs "$OLD_APK" > "$RUNNER_TEMP/t90-cert.txt"
+          OLD_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t90-cert.txt" | head -n 1)"
+          test -n "$OLD_CERT" && test "$NEW_CERT" = "$OLD_CERT"
+          cp "$APK" CarDeck-Buick-Test-T91-PROJECTION-REGRANT.apk
+          sha256sum CarDeck-Buick-Test-T91-PROJECTION-REGRANT.apk > CarDeck-Buick-Test-T91-PROJECTION-REGRANT.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Buick-Test-T91-SIGNED-${{ github.run_id }}
+          path: |
+            CarDeck-Buick-Test-T91-PROJECTION-REGRANT.apk
+            CarDeck-Buick-Test-T91-PROJECTION-REGRANT.apk.sha256
+          if-no-files-found: error
+      - name: Publish isolated T91 prerelease (never latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="CarDeck-Buick-Test-T91-PROJECTION-REGRANT.apk"
+          EXISTING_T91="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '[.[] | select(.tagName | startswith("exp-buick-test-t91-"))][0].tagName // empty')"
+          if [ -n "$EXISTING_T91" ]; then
+            echo "::notice::T91 already published as $EXISTING_T91; skip duplicate prerelease"
+            exit 0
+          fi
+          TAG="exp-buick-test-t91-$CARDECK_RELEASE_VERSION_NAME"
+          test -s "$APK" && test -s "$APK.sha256"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Refusing to overwrite existing T91 release $TAG"
+            exit 1
+          fi
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\napplicationId=io.github.buick.test.cardeck\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
+              "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
+            printf '\n## T91：MediaProjection 授权恢复 + B233 iAP2 凭据日志脱敏（联合安全候选）\n'
+            printf '基于签名 T89 源码，仅修复旧投影异步 onStop 清掉新授权、mediaProjection FGS 类型升级失败后继续消耗单次授权、显式停止服务后旧投影尚未回收却被误识别可用的生命周期问题。T90 的 highAccuracy SETUP 单变量已被实车证伪，本包不包含该改动。另包含独立 CI 已通过的 PR #90 B233 iAP2 会话与原始收发日志凭据脱敏；只改变日志，不改变实际 iAP2 协议报文/时序。音频 RTP/RTCP、RTSP、T64 自动仅视频降级、HFP/A2DP、VPN 和稳定应用维持原样。'
+            printf '\n\n## 手机/实车验收要求（停车测试，不自动安装）\n'
+            printf '1. 本包是独立 Test 音频实验，应用 ID 与 T90 相同、签名证书相同、versionCode 更高，可直接覆盖 Test T90 并保留数据；不要卸载/清数据；独立 Buick-E5 稳定应用保持不动。'
+            printf '\n2. 先验证无音频时的车机视频、触摸、正常蓝牙 A2DP；没有后续 Android 14 权限失效弹窗/崩溃。'
+            printf '\n3. 开启声音并完成系统投屏授权；手动停止 CarDeck 服务后再次选开启声音，必须重新请求系统授权，不能复用旧的已失效投影；如果拒绝授权，不应 crash 或暗中启动音频。'
+            printf '\n4. 验证几轮手动停止/重新授权/重连期间旧 onStop 不会误清除新授权；出现约20秒 peer EOF 仍属于原始 P0 未修，不以此宣称 T91 成功。'
+            printf '\n5. 另需验证正常非 B233 投屏授权与断开路径；仅所有 Android 手机权限生命周期和车机回归完成后才考虑任何集成。'
+            printf '\n\n## 日志、回退和实验状态\n'
+            printf '此包对 B233 0x4301 无线组参数和原始帧启用凭据脱敏，日志仍须先审阅再分享；不公开配对密钥、SSID、Wi-Fi 密码或设备唯一标识。旧 T90 APK/Gateway 历史日志不会因为新包而自动消除。Test T90 的 versionCode 更低，不能覆盖降级 T91；如需恢复旧 Test 版本，应另构建同签名更高 versionCode 的受控回退包，禁止卸载/清数据。日用恢复直接打开独立 Buick-E5 稳定 App。此 Release 是 schema-2 prerelease，不自动更新 buick-test-latest/任何正式 latest；#11 未关闭，PR 仍 Draft。'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Buick-Test T91 Projection Regrant $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file release-notes.txt --prerelease --latest=false
+
+# Never update buick-test-latest, buick-e5-latest or buick-latest.
