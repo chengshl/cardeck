@@ -1,0 +1,82 @@
+name: B233 pairing RTSP status validation (offline only)
+on:
+  pull_request:
+    branches: [experiment/buick-b233-pairing-reply-redaction-t94]
+    paths:
+      - '.github/workflows/ci-b233-pairing-status-validation-t94.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233PairingReplySummary.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233PairingReplySummaryTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-pairing-status-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact reviewed parent, four-file scope and B233-only status gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=649470b09a303584479851156216af3a05d27b00
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41248348716 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41248348716 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-pairing-status-validation-t94.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233PairingReplySummary.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233PairingReplySummaryTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          original = subprocess.check_output(['git','show','649470b09a303584479851156216af3a05d27b00:app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'], text=True)
+          block = src.split('private fun postPairing(',1)[1].split('private fun request(',1)[0]
+          oldblock = original.split('private fun postPairing(',1)[1].split('private fun request(',1)[0]
+          old = '        if (!statusLine.contains("200")) {'
+          new = '\n'.join([
+              '        // B233 must not accept a failure response whose reason phrase happens',
+              '        // to contain "200". Preserve legacy acceptance for other receivers.',
+              '        val pairingAccepted = if (endpoint.isBuickB233) {',
+              '            B233PairingReplySummary.isSuccessfulPairingStatus(statusLine)',
+              '        } else {',
+              '            statusLine.contains("200")',
+              '        }',
+              '        if (!pairingAccepted) {',
+          ])
+          assert old in oldblock and new in block
+          assert block == oldblock.replace(old,new)
+          assert src.replace(block,oldblock) == original
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233PairingReplySummary.kt').read_text()
+          assert 'PAIRING_SUCCESS.matches(statusLine)' in helper
+          assert 'isSuccessfulPairingStatus' in helper
+          print('B233-only pairing status acceptance changed; all other AirPlay code byte-identical')
+          PY
+      - name: Pairing malformed-status negative regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233PairingReplySummaryTest --stacktrace
+      - name: Complete Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only; no signing, release, install or stable merge.
