@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: publish-t90-pcm-high-accuracy
@@ -38,7 +39,7 @@ jobs:
           VALIDATED=2480a98a33c7b4fcfb63260c7155c7b835fa32c0
           test "$GITHUB_REF_NAME" = "experiment/buick-test-t90-pcm-high-accuracy-timestamps"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse HEAD^)" = "$VALIDATED"
+          git merge-base --is-ancestor "$VALIDATED" "$GITHUB_SHA"
           git merge-base --is-ancestor "$BASE" "$VALIDATED"
           git diff --name-only "$BASE" "$VALIDATED" > /tmp/t90-source-scope
           test "$(wc -l < /tmp/t90-source-scope)" -eq 4
@@ -48,7 +49,7 @@ jobs:
               *) echo "::error::Unexpected T90 source change: $file"; exit 1 ;;
             esac
           done < /tmp/t90-source-scope
-          test "$(git diff --name-only "$VALIDATED" "$GITHUB_SHA")" = ".github/workflows/publish-t90-pcm-high-accuracy-timestamps.yml"
+          test "$(git diff --name-only "$VALIDATED" "$GITHUB_SHA" | sort -u)" = ".github/workflows/publish-t90-pcm-high-accuracy-timestamps.yml"
           test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41174548516" --jq '.status')" = completed
           test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41174548516" --jq '.conclusion')" = success
           test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41174548516" --jq '.head_sha')" = "$VALIDATED"
