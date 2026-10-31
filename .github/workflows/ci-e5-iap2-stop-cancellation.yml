@@ -108,7 +108,7 @@ jobs:
           assert 'activeChannel.compareAndSet(channel, null)' in client
           assert client.count('activeChannel.getAndSet(null)') == 2
           assert 'currentSocket.compareAndSet(connected, null)' in client
-          assert client.count('currentSocket.compareAndSet(socket, null)') == 6
+          assert client.count('currentSocket.compareAndSet(socket, null)') == 7  # includes permission-revocation close
           assert client.count('currentSocket.getAndSet(null)') == 2  # only explicit detach/stop
           assert 'currentSocket.set(socket)' not in client
           assert 'runCatching { connected.close() }' in client
@@ -128,6 +128,81 @@ jobs:
           assert 'catch (error: Exception) {' in client
           assert '控制通道初始化失败' in client
           assert 'activeChannel = null' not in client
+          # New narrow revocation guard: compare against the exact prior reviewed HEAD.
+          # Only the SDP UUID lookup and RFCOMM create/connect SecurityException paths may change.
+          previous_head = 'f514b788ec14e297d05dad19407f3fb2bb40f777'
+          client_path = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+          ci_path = '.github/workflows/ci-e5-iap2-stop-cancellation.yml'
+          changed_since_reviewed = set(subprocess.check_output(
+              ['git','diff','--name-only',previous_head,'HEAD'], text=True
+          ).splitlines())
+          assert changed_since_reviewed == {client_path, ci_path}, (
+              'Unexpected new #34 change since reviewed HEAD: ' + str(changed_since_reviewed)
+          )
+          old_client = subprocess.check_output(
+              ['git', 'show', previous_head + ':' + client_path], text=True
+          )
+          changes = [
+              (
+                  '''        val withService =
+            bonded.filter { device ->
+                device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true
+            }''',
+                  '''        val withService =
+            bonded.filter { device ->
+                // BLUETOOTH_CONNECT may be revoked after the start() permission check.
+                try {
+                    device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true
+                } catch (_: SecurityException) {
+                    false
+                }
+            }'''
+              ),
+              (
+                  '''            } catch (error: IOException) {
+                return null
+            }
+        // 连接前就登记''',
+                  '''            } catch (error: IOException) {
+                return null
+            } catch (_: SecurityException) {
+                log("BT-C: 建立 RFCOMM Socket 时蓝牙权限已失效（已跳过本轮）")
+                return null
+            }
+        // 连接前就登记'''
+              ),
+              (
+                  '''        } catch (error: IOException) {
+            currentSocket.compareAndSet(socket, null)
+            runCatching { socket.close() }
+            null
+        }
+    }
+
+    private fun runSession''',
+                  '''        } catch (error: IOException) {
+            currentSocket.compareAndSet(socket, null)
+            runCatching { socket.close() }
+            null
+        } catch (_: SecurityException) {
+            // Android permission can be revoked while blocking inside connect().
+            currentSocket.compareAndSet(socket, null)
+            runCatching { socket.close() }
+            log("BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）")
+            null
+        }
+    }
+
+    private fun runSession'''
+              ),
+          ]
+          expected_client = old_client
+          for before_text, after_text in changes:
+              assert expected_client.count(before_text) == 1, 'Permission guard baseline drift'
+              expected_client = expected_client.replace(before_text, after_text)
+          assert client == expected_client, 'Unexpected iAP2 runtime/protocol change'
+          assert 'SecurityException' in client
+          print('Three permission-only exception guards exactly replayed from prior approved #34 HEAD')
           print('Stop-cancellation only; no protocol timing, Bluetooth profile or reconnect behavior expanded')
           PY
       - uses: actions/setup-java@v4
