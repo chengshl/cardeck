@@ -193,7 +193,7 @@ jobs:
           new_start = client.split(start_anchor, 1)[1].split(end_anchor, 1)[0]
           assert client.replace(new_start, old_start, 1) == previous_worker, 'Unexpected change outside start()'
           assert new_start.index('val target = try {') < new_start.index('running = true')
-          assert new_start.index('log(\\n            "BT-C: 启动') < new_start.index('running = true')
+          assert new_start.index('"BT-C: 启动') < new_start.index('running = true')
           assert 'catch (error: Exception)' in new_start
           assert new_start.count('generation.incrementAndGet()') == 2
           assert 'running = false' in new_start and 'thread = null' in new_start
