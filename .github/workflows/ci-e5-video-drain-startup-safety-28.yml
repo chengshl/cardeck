@@ -79,7 +79,46 @@ jobs:
           ])
           assert old.count(before) == 1, 'Original drain startup not found exactly once'
           assert old.count(init_before) == 1, 'Original codec initialization not found exactly once'
-          expected = old.replace(before, after).replace(init_before, init_after)
+          port_before = """        return try {
+            val client = CarPlayNetworkSockets.connectTcp(
+                carWifiNetwork,
+                InetAddress.getByName(host),
+                dataPort,
+                5_000,
+                log,
+            )
+            client.tcpNoDelay = true
+            socket = client
+            log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
+            true
+        } catch (error: Exception) {
+            log("VIDEO: 数据端口连接失败 - ${error.message}")
+            false
+        }"""
+          port_after = """        // connectTcp() owns failed connections; after it returns, this method owns
+        // the socket until publication. Do not leak it if TCP options fail.
+        var pendingSocket: Socket? = null
+        return try {
+            val client = CarPlayNetworkSockets.connectTcp(
+                carWifiNetwork,
+                InetAddress.getByName(host),
+                dataPort,
+                5_000,
+                log,
+            )
+            pendingSocket = client
+            client.tcpNoDelay = true
+            socket = client
+            pendingSocket = null
+            log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
+            true
+        } catch (error: Exception) {
+            runCatching { pendingSocket?.close() }
+            log("VIDEO: 数据端口连接失败 - ${error.message}")
+            false
+        }"""
+          assert old.count(port_before) == 1, 'Original TCP startup ownership block not found'
+          expected = old.replace(before, after).replace(init_before, init_after).replace(port_before, port_after)
           assert new == expected, 'Unexpected change outside reviewed drain and codec cleanup guards'
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
           assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
@@ -89,7 +128,7 @@ jobs:
           assert tail.index('try {') < tail.index('socket?.getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
           assert 'stop()' in tail.split('} finally {', 1)[1]
           assert 'onEnded?.invoke()' in tail.split('} finally {', 1)[1]
-          print('Exact one-block L3 startup exception/early-return cleanup isolation verified')
+          print('Exact scoped L3 video codec, drain, and TCP startup cleanup isolation verified')
           PY
       - name: Android JUnit and Debug compilation (no signing)
         run: |
