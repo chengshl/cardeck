@@ -242,6 +242,12 @@ jobs:
           ])
           assert expected.count(resource_before) == 1, 'Retired drain acquisition block ambiguous'
           expected = expected.replace(resource_before, resource_after)
+          # A frame/config write may fail after dequeuing a MediaCodec slot.
+          # Return the slot even when sendVideoFrame/sendVideoConfig throws.
+          release_before = "                        val flags = bufferInfo.flags\n                        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                            sendVideoConfig(buffer, bufferInfo.size, output)\n                        } else if (bufferInfo.size > 0) {\n                            sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                        }\n                        codec.releaseOutputBuffer(index, false)\n                        maybeSendKeepAlive(output)"
+          release_after = "                        val flags = bufferInfo.flags\n                        try {\n                            if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                                sendVideoConfig(buffer, bufferInfo.size, output)\n                            } else if (bufferInfo.size > 0) {\n                                sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                            }\n                        } finally {\n                            // dequeueOutputBuffer transferred this slot even if frame writing fails.\n                            codec.releaseOutputBuffer(index, false)\n                        }\n                        maybeSendKeepAlive(output)"
+          assert expected.count(release_before) == 1, 'Original output slot release block ambiguous'
+          expected = expected.replace(release_before, release_after)
           assert new == expected, 'Unexpected change outside reviewed drain resource snapshot guard'
           assert new.count('Pair(encoder, socket)') == 1
           assert new.count('dataPortEpoch != epoch })') == 1

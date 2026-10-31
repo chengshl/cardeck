@@ -269,12 +269,16 @@ class VideoSender(
                             continue
                         }
                         val flags = bufferInfo.flags
-                        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                            sendVideoConfig(buffer, bufferInfo.size, output)
-                        } else if (bufferInfo.size > 0) {
-                            sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)
+                        try {
+                            if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                                sendVideoConfig(buffer, bufferInfo.size, output)
+                            } else if (bufferInfo.size > 0) {
+                                sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)
+                            }
+                        } finally {
+                            // dequeueOutputBuffer transferred this slot even if frame writing fails.
+                            codec.releaseOutputBuffer(index, false)
                         }
-                        codec.releaseOutputBuffer(index, false)
                         maybeSendKeepAlive(output)
                     }
                 }
