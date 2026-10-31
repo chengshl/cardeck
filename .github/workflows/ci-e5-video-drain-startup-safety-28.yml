@@ -317,6 +317,34 @@ jobs:
           ])
           assert expected.count(callback_before) == 1, 'Original callback retirement guard ambiguous'
           expected = expected.replace(callback_before, callback_after)
+          # A synchronous callback may stop/restart this sender and then throw.
+          # Reproduce the exact prior reviewed source before this sole L3 catch change.
+          prior_callback_source = subprocess.check_output(
+              ['git', 'show', 'e83cfa8d36e61a464e562fcbbc7a52620abbacc3:' + source_path],
+              text=True,
+          )
+          assert expected == prior_callback_source, 'Reviewed callback HEAD drifted'
+          startup_catch_before = '\n'.join([
+              "            } catch (error: Exception) {",
+              "                log(\"VIDEO: 启动失败 - ${error.message}\")",
+              "                stop()",
+              "                false",
+              "            }",
+          ])
+          startup_catch_after = '\n'.join([
+              "            } catch (error: Exception) {",
+              "                log(\"VIDEO: 启动失败 - ${error.message}\")",
+              "                // A reentrant onSurfaceReady may have stopped this epoch and started another.",
+              "                // Do not let the retired start() tear down the replacement session.",
+              "                if (synchronized(dataPortLock) { dataPortEpoch == startEpoch }) {",
+              "                    stop()",
+              "                }",
+              "                false",
+              "            }",
+          ])
+          assert expected.count(startup_catch_before) == 1, 'Retired startup catch is ambiguous'
+          expected = expected.replace(startup_catch_before, startup_catch_after)
+          assert new.count('if (synchronized(dataPortLock) { dataPortEpoch == startEpoch }) {') == 1
           assert new == expected, 'Unexpected change outside reviewed drain epoch fence'
           assert new.count('Pair(encoder, socket)') == 1
           assert new.count('dataPortEpoch != epoch })') == 2
