@@ -17,6 +17,19 @@ internal class PcmCaptureFrameWindow(private val frameBytes: Int) {
     var pendingBytes: Int = 0
         private set
 
+    // B233 PCM only. These are local aggregate counts, never audio samples,
+    // RTP contents, device identifiers, endpoints or raw captured bytes.
+    var shortReadCount: Long = 0L
+        private set
+    var zeroReadCount: Long = 0L
+        private set
+    var completedFrameCount: Long = 0L
+        private set
+    var errorResetCount: Long = 0L
+        private set
+    var discardedByteCount: Long = 0L
+        private set
+
     val offset: Int get() = pendingBytes
     val remaining: Int get() = frameBytes - pendingBytes
 
@@ -26,14 +39,28 @@ internal class PcmCaptureFrameWindow(private val frameBytes: Int) {
      */
     fun accept(bytes: Int): Boolean {
         require(bytes >= 0 && bytes <= remaining) { "capture bytes outside remaining window" }
+        when {
+            bytes == 0 -> zeroReadCount++
+            bytes < remaining -> shortReadCount++
+        }
         pendingBytes += bytes
         if (pendingBytes != frameBytes) return false
         pendingBytes = 0
+        completedFrameCount++
         return true
     }
 
     /** Device read error / new session: never join prior partial audio. */
     fun discard() {
+        errorResetCount++
+        discardedByteCount += pendingBytes.toLong()
         pendingBytes = 0
     }
+
+    /** The bounded numeric-only trace is emitted at the existing 1 Hz B233
+     * RTP log interval and once on capture shutdown; no new logging thread. */
+    fun diagnosticSummary(): String =
+        "shortReads=$shortReadCount zeroReads=$zeroReadCount " +
+            "completeFrames=$completedFrameCount errorResets=$errorResetCount " +
+            "discardedBytes=$discardedByteCount pendingBytes=$pendingBytes"
 }
