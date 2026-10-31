@@ -56,6 +56,22 @@ jobs:
           grep -Fq 'projectionLease.clearCurrent()' app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt
           grep -Fq 'explicitStopImmediatelyRevokesReadinessBeforeAsyncOnStop' app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt
           echo "T91 exact validated code and independent signed experiment gate passed."
+      - name: Privacy safety gate before any new signed Test release
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The B233 T90 log stream exposed 0x4301 Wi-Fi credential bytes.
+          # Do not publish another Test APK unless the standalone PR #90
+          # source redaction is actually in this APK (CI alone is not enough).
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt').read_text()
+          transport = Path('app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt').read_text()
+          assert 'channel.suppressSensitiveRawFrames()' in src, 'B233 raw credentials not redacted'
+          assert 'RAW rx: redacted bytes=' in transport
+          assert 'RAW tx: redacted bytes=' in transport
+          assert 'wireless.joinToString(" ") { param -> "#${param.id}(${param.value.size}B redacted)" }' in src
+          PY
       - name: Load existing signed Buick-Test keystore
         env:
           KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
