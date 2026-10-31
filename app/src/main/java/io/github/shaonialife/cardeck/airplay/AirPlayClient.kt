@@ -2714,7 +2714,14 @@ class AirPlayClient(
                     if (responseBody.isNotEmpty()) " head=[$headHex]" else "",
             )
         }
-        if (!statusLine.contains("200")) {
+        // B233 must not accept a failure response whose reason phrase happens
+        // to contain "200". Preserve legacy acceptance for other receivers.
+        val pairingAccepted = if (endpoint.isBuickB233) {
+            B233PairingReplySummary.isSuccessfulPairingStatus(statusLine)
+        } else {
+            statusLine.contains("200")
+        }
+        if (!pairingAccepted) {
             // Pairing error messages can reach upstream diagnostics; never
             // propagate a peer-supplied status reason on B233.
             val loggedStatus = if (endpoint.isBuickB233) {
