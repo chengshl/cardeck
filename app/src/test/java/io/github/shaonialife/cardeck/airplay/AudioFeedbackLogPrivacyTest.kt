@@ -71,4 +71,29 @@ class AudioFeedbackLogPrivacyTest {
         assertFalse(lines.joinToString("\n").contains("PRIVATE"))
         assertFalse(lines.joinToString("\n").contains("stream[8]"))
     }
+
+    @Test fun b233AudioSetupDiagnosticsNeverSerializeReceiverMapsOrConnectionId() {
+        val secret = "PRIVATE-RECEIVER-STREAM-CONNECTION-ID"
+        val untrusted = listOf(mapOf("streamConnectionID" to secret, "unknown" to "PRIVATE-KEY"))
+        val rejected = B233AudioSetupLog.rejected(untrusted.size)
+        val missing = B233AudioSetupLog.missingDataPort()
+        val success = B233AudioSetupLog.safePorts(6000, 0, 0)
+        assertEquals("AIRPLAY: 音频流被拒绝（streamsCount=1）", rejected)
+        assertEquals("AIRPLAY: 音频流未返回 dataPort", missing)
+        assertEquals("dataPort=6000 controlPort=0 phoneControlPort=0", success)
+        val output = listOf(rejected, missing, success).joinToString("\\n")
+        assertFalse(output.contains(secret))
+        assertFalse(output.contains("PRIVATE"))
+        assertFalse(output.contains("connId"))
+        assertFalse(output.contains("全字段"))
+    }
+
+    @Test fun b233SetupSummaryNeverUsesUnboundedPeerCollectionToString() {
+        val large = List(1024) { mapOf("streamConnectionID" to "PRIVATE-$it") }
+        val summary = B233AudioSetupLog.rejected(large.size)
+        assertEquals("AIRPLAY: 音频流被拒绝（streamsCount=1024）", summary)
+        assertFalse(summary.contains("PRIVATE"))
+        assertTrue(summary.length < 90)
+    }
+
 }

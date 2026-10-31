@@ -67,6 +67,12 @@ jobs:
           assert 'B233ModeReplySummary.describe(replyBody)' in air
           assert 'ownership=unverified' in mode and 'MAX_PLIST_BYTES = 4096' in mode
           assert 'safeAudioFeedbackLogLines(body).forEach(log)' in air
+          setup = air.split('fun runAudioStream(', 1)[1].split('fun teardownAudioStream(', 1)[0]
+          assert 'B233AudioSetupLog.rejected(streams.size)' in setup
+          assert 'B233AudioSetupLog.missingDataPort()' in setup
+          assert 'B233AudioSetupLog.safePorts(dataPort, portOf(audio["controlPort"]), reversePort)' in setup
+          assert 'if (endpoint.isBuickB233)' in setup
+          assert 'internal object B233AudioSetupLog' in air
           assert 'feedback body 解析失败（${body.size}B）hex=' not in air
           assert 'connId=${stream["streamConnectionID"]}' not in air
           assert 'firstAacFrameSafeLog(out, raw, wrapAdts)' in aac

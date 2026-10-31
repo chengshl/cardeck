@@ -1903,13 +1903,13 @@ class AirPlayClient(
                 ((entry as? Map<*, *>)?.get("type") as? Long) == profile.streamType
             } as? Map<*, *> ?: run {
                 closeReverseAudioControlPort()
-                log("AIRPLAY: 音频流被拒绝（streams=$streams）")
+                log(if (endpoint.isBuickB233) B233AudioSetupLog.rejected(streams.size) else "AIRPLAY: 音频流被拒绝（streams=$streams）")
                 return null
             }
         val dataPort = portOf(audio["dataPort"])
         if (dataPort == 0) {
             closeReverseAudioControlPort()
-            log("AIRPLAY: 音频流未返回 dataPort（$audio）")
+            log(if (endpoint.isBuickB233) B233AudioSetupLog.missingDataPort() else "AIRPLAY: 音频流未返回 dataPort（$audio）")
             return null
         }
         val streamKey =
@@ -1922,9 +1922,13 @@ class AirPlayClient(
             "AIRPLAY: ✓ 音频流协商成功（type=${profile.streamType} ${negotiation.audioType} " +
                 "format=0x${negotiation.formatBit.toString(16)} ${negotiation.sampleRate}Hz " +
                 "latency=${negotiation.latencyMs}ms）" +
-                "dataPort=$dataPort controlPort=${portOf(audio["controlPort"])} " +
-                "phoneControlPort=$reversePort connId=$connectionId" +
-                " 全字段=$audio",
+                (if (endpoint.isBuickB233) {
+                    B233AudioSetupLog.safePorts(dataPort, portOf(audio["controlPort"]), reversePort)
+                } else {
+                    "dataPort=$dataPort controlPort=${portOf(audio["controlPort"])} " +
+                        "phoneControlPort=$reversePort connId=$connectionId" +
+                        " 全字段=$audio"
+                }),
         )
         // 音频通路已建好，但「车机在收数据、喇叭没声」还剩一种很常见的原因：
         // 接收端的 AirPlay 音量处于静音位（-144dB）——真 iPhone 会主动 SET_PARAMETER
@@ -3167,3 +3171,18 @@ class AirPlayClient(
  * 其余失败（端口未开等）保持快速轮询等邀请。
  */
 internal fun pairingRetryBackoffMs(failureMessage: String): Long = if (failureMessage.contains("403")) 5_000L else 500L
+
+/**
+ * B233 SETUP diagnostics: only fixed labels and integer ports/counts.
+ * Receiver-controlled plist fields and session identifiers are never serialized.
+ * No change to SETUP parsing, stream selection or transport behavior.
+ */
+internal object B233AudioSetupLog {
+    fun rejected(streamCount: Int): String =
+        "AIRPLAY: 音频流被拒绝（streamsCount=${streamCount.coerceAtLeast(0)}）"
+
+    fun missingDataPort(): String = "AIRPLAY: 音频流未返回 dataPort"
+
+    fun safePorts(dataPort: Int, controlPort: Int, phoneControlPort: Int): String =
+        "dataPort=$dataPort controlPort=$controlPort phoneControlPort=$phoneControlPort"
+}
