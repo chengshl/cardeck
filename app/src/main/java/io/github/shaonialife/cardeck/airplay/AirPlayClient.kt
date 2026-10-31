@@ -2816,12 +2816,24 @@ class AirPlayClient(
         // unmatched-message path below would never reveal its request.
         // Classification retains no target/header/body and does not alter
         // RTSP acknowledgements, queues, socket lifetime, or protocol output.
-        if (endpoint.isBuickB233 && audioFailureTrace != null &&
-            RtspPeerRequestEvidence.classify(statusLine) == RtspPeerRequestEvidence.Kind.TEARDOWN
-        ) {
+        if (endpoint.isBuickB233 && audioFailureTrace != null) {
+            val kind = RtspPeerRequestEvidence.classify(statusLine)
             val matchedPending = message.cseq?.let { pendingResponses.containsKey(it) } == true
-            audioFailureTrace?.event("rtsp_peer_teardown", "pendingCseqMatch=$matchedPending")
-            log("AUDIO T87: B233 peer RTSP TEARDOWN observed pendingCseqMatch=$matchedPending")
+            // The legacy request predicate only accepts path-form targets. A
+            // peer request using an absolute rtsp:// URI is classified above
+            // but would not be acknowledged by the unchanged routing below.
+            val legacyAckEligible = !matchedPending && message.isRequest
+            val evidence = RtspPeerRequestEvidence.diagnosticTag(kind, matchedPending, legacyAckEligible)
+            if (evidence != null) {
+                // T88: all peer requests, including non-TEARDOWN with a colliding
+                // pending CSeq, are now visible without exposing URI or headers.
+                // Preserve the T87-specific event for backwards comparison.
+                audioFailureTrace?.event("rtsp_peer_request", evidence)
+                if (kind == RtspPeerRequestEvidence.Kind.TEARDOWN) {
+                    audioFailureTrace?.event("rtsp_peer_teardown", "pendingCseqMatch=$matchedPending")
+                }
+                log("AUDIO T88: B233 peer RTSP request observed $evidence")
+            }
         }
         message.cseq?.let { responseHeads[it] = head }
         val queue = message.cseq?.let { pendingResponses[it] }
