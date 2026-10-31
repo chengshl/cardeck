@@ -54,6 +54,7 @@ jobs:
           assert 'B233PairingReplySummary.describe(statusLine, responseBody)' in pairing
           assert pairing.index('B233PairingReplySummary.describe') < pairing.index('val headHex =')
           assert 'if (!statusLine.contains("200"))' in pairing
+          assert 'B233PairingReplySummary.safeStatus(statusLine)' in pairing
           helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233PairingReplySummary.kt').read_text()
           assert 'responseBody.size' in helper and 'redacted' in helper
           assert 'responseBody.take(' not in helper and 'joinToString' not in helper

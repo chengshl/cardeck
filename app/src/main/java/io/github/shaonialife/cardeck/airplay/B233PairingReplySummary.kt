@@ -9,8 +9,11 @@ package io.github.shaonialife.cardeck.airplay
 internal object B233PairingReplySummary {
     private val STATUS = Regex("^RTSP/1\\.0 ([1-5][0-9]{2})(?:\\s|$)")
 
+    fun safeStatus(statusLine: String): String =
+        STATUS.find(statusLine)?.groupValues?.get(1) ?: "other"
+
     fun describe(statusLine: String, responseBody: ByteArray): String {
-        val code = STATUS.find(statusLine)?.groupValues?.get(1) ?: "other"
+        val code = safeStatus(statusLine)
         return "status=$code respBytes=" + responseBody.size + " redacted"
     }
 }

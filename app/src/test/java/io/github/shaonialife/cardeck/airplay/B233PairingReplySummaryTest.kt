@@ -15,6 +15,7 @@ class B233PairingReplySummaryTest {
         val hex = bytes.joinToString("") { "%02x".format(it) }
         assertFalse(summary.contains(hex))
         assertFalse(summary.contains("head="))
+        assertEquals("403", B233PairingReplySummary.safeStatus("RTSP/1.0 403 $secret"))
     }
 
     @Test fun successRetainsOnlyBoundedStatusAndLength() {
@@ -28,6 +29,7 @@ class B233PairingReplySummaryTest {
         val summary = B233PairingReplySummary.describe(secret + "\nRTSP/1.0 200 OK", byteArrayOf())
         assertEquals("status=other respBytes=0 redacted", summary)
         assertFalse(summary.contains(secret))
+        assertEquals("other", B233PairingReplySummary.safeStatus(secret))
         assertTrue(summary.length < 64)
     }
 }
