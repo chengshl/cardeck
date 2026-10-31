@@ -175,7 +175,29 @@ jobs:
           reviewed_worker = subprocess.check_output(
               ['git', 'show', 'a917f08b8684331a96c8ca64bc95b639f89beb02:' + client_path], text=True
           )
-          assert client == reviewed_worker, 'Unexpected runtime edits beyond reviewed #34 worker-lifecycle fix'
+          previous_worker = subprocess.check_output(
+              ['git', 'show', '1395c1e8c09c23c4ff7bd56c0ff334ea6e1dc432:' + client_path], text=True
+          )
+          assert previous_worker == reviewed_worker, 'Previous exact #34 worker lifecycle baseline drifted'
+          # A targetProvider()/log failure must not publish running=true; a failed
+          # Thread.start() must roll back generation, thread and running state.
+          # The new file is an immutable source lease; also scope its difference
+          # exclusively to the synchronized start() body.
+          reviewed_start = subprocess.check_output(
+              ['git', 'show', '8c390c78772294db91a96905b472ad2064d7eb9f:' + client_path], text=True
+          )
+          assert client == reviewed_start, 'Unexpected runtime edits beyond reviewed start rollback'
+          start_anchor = '    fun start(): Boolean {'
+          end_anchor = '    // Own the worker'
+          old_start = previous_worker.split(start_anchor, 1)[1].split(end_anchor, 1)[0]
+          new_start = client.split(start_anchor, 1)[1].split(end_anchor, 1)[0]
+          assert client.replace(new_start, old_start, 1) == previous_worker, 'Unexpected change outside start()'
+          assert new_start.index('val target = try {') < new_start.index('running = true')
+          assert new_start.index('log(\\n            "BT-C: 启动') < new_start.index('running = true')
+          assert 'catch (error: Exception)' in new_start
+          assert new_start.count('generation.incrementAndGet()') == 2
+          assert 'running = false' in new_start and 'thread = null' in new_start
+          assert '连接线程启动失败' in new_start
           assert '@Synchronized\n    fun start(): Boolean' in client
           worker = client.split('private fun connectLoop(myGeneration: Long)', 1)[1].split('private fun connectLoopBody(', 1)[0]
           assert 'connectLoopBody(myGeneration)' in worker
@@ -192,7 +214,7 @@ jobs:
           assert 'SecurityException' in client
           assert client.count('SESSION 意外异常') == 1
           assert client.count('finally {\n            // Only retire resources owned by this session') == 1
-          print('Previous #34 guards and exact generation-owned worker retirement verified') 
+          print('Exact #34 generation-owned worker and start failure rollback verified') 
           print('L3 isolated: Android worker recovery + safe stop/start; no Bluetooth or CarPlay wire change')
           PY
       - uses: actions/setup-java@v4
