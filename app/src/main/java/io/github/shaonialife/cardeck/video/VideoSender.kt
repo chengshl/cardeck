@@ -115,18 +115,20 @@ class VideoSender(
             )
             pendingSocket = client
             client.tcpNoDelay = true
-            val published = synchronized(dataPortLock) {
-                if (dataPortEpoch != epochAtConnect) {
-                    false
-                } else {
-                    socket = client
-                    true
+            val publication = synchronized(dataPortLock) {
+                when {
+                    dataPortEpoch != epochAtConnect -> "stale"
+                    socket?.isClosed == false -> "existing"
+                    else -> {
+                        socket = client
+                        "published"
+                    }
                 }
             }
-            if (!published) {
-                // stop() ran while connectTcp() was blocking; do not resurrect its socket.
+            if (publication != "published") {
+                // A concurrent openDataPort() must not replace or leak the live socket.
                 runCatching { client.close() }
-                return false
+                return publication == "existing"
             }
             pendingSocket = null
             log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
