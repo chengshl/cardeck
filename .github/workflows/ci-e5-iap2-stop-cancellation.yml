@@ -29,8 +29,18 @@ jobs:
           base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
           original_base = '8271f2a71be7b4acc740c2748bf3281810ea9aa1'
           previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
-          current_base = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          old_current_base = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          current_base = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
           assert base == current_base, f'E5 baseline changed; review and refresh before proceeding: {base}'
+          # #93 only added tests and a test CI; original #34 runtime remains stable.
+          latest_93_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', old_current_base, current_base], text=True
+          ).splitlines())
+          assert latest_93_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected post-#93 E5 drift: {sorted(latest_93_delta)}'
           # The E5 baseline advanced only through reviewed L1 changes:
           # #65/#69 Chinese experiment labels and #73 release-floor tests.
           # Keep this exact delta lease; never silently widen #34's L3 scope.
@@ -49,6 +59,9 @@ jobs:
               '.github/workflows/build-buick-e5.yml',
               '.github/workflows/ci-e5-upstream-replay-33.yml',
               'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
           }, f'Unexpected new E5 stable delta: {sorted(latest_delta)}'
           stable_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', original_base, current_base], text=True
@@ -61,6 +74,9 @@ jobs:
               'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
               'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
               'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
           }, f'Unexpected stable E5 drift: {sorted(stable_delta)}'
           files = set(subprocess.check_output(
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
