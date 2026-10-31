@@ -12,6 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
+      # Legacy T22 branch is superseded by the isolated #24 PR #74 source.
+      # Preserve history but fail before signing, version allocation or release.
+      - name: Block retired T22 signing source
+        run: |
+          echo "::error::Historical E5 T22 source is retired; do not sign broad legacy source. Use reviewed #24 PR #74 and its gated release plan."
+          exit 1
       - uses: actions/checkout@v4
       - name: Verify isolated source and E5 identity
         shell: bash
