@@ -58,7 +58,7 @@ jobs:
           ctrl = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
           gate = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindow.kt').read_text()
           tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindowTest.kt').read_text()
-          assert 'completePartialPcmReads = client.currentEndpoint.isBuickB233' in ctrl
+          assert 'completePartialPcmReads = client.currentEndpoint.isBuickB233 && profile.codec == AudioCodec.PCM' in ctrl
           assert 'private val completePartialPcmReads: Boolean = false' in sender
           start = sender.split('private fun runCaptureLoop() {',1)[1].split('// ----',1)[0]
           assert 'PcmCaptureFrameWindow(frameBytes)' in start
