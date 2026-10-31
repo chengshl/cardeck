@@ -69,6 +69,9 @@ jobs:
           assert 'b233DatagramGate.publish(connected, { !stopped.get() })' in src
           assert 'b233DatagramGate.publish(client, { !stopped.get() })' in src
           assert 'b233DatagramGate.runIfActive({ !stopped.get() })' in src
+          assert 'b233DatagramGate.runIfActive({ !stopped.get() }) { aacEncoder = encoder }' in src
+          assert 'encoder.stop()' in src
+          assert 'stoppedFlagRejectsLateSocketAndEncoderBeforeRetireCompletes' in test
           assert 'b233DatagramGate.retire {' in src
           assert 'retiredSessionRejectsLateRtpSocketAndClosesIt' in test
           assert 'publishedRtcpSocketIsClosedAndLateCaptureCannotRestart' in test
