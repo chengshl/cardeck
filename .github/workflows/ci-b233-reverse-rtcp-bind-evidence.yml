@@ -10,6 +10,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioProfileMemory.kt'
       - 'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioProfileMemoryTest.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/BuickSettingsActivity.kt'
   workflow_dispatch:
 permissions:
   contents: read
@@ -31,7 +32,7 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Exact signed T94 ancestor, seven-file scope, fail closed and private evidence
+      - name: Exact signed T94 ancestor, eight-file scope, fail closed and private evidence
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -44,6 +45,7 @@ jobs:
           git diff --name-only "$BASE" HEAD | sort > /tmp/t96-scope
           printf '%s\n' \
             '.github/workflows/ci-b233-reverse-rtcp-bind-evidence.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/BuickSettingsActivity.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt' \
@@ -81,11 +83,22 @@ jobs:
           assert 'client.lastAudioSetupRequestAttempted' in session
           assert 'fun shouldRecordRejectedAfterAttempt(' in memory
           assert 'b233LocalReverseRtcpBindFailureCannotPersistReceiverRejection' in memtests
+          ui = Path('app/src/main/java/io/github/shaonialife/cardeck/BuickSettingsActivity.kt').read_text()
+          preflight = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflight.kt').read_text()
+          assert 'packageName == "io.github.buick.test.cardeck"' in ui
+          assert ui.count('SessionController.b233NetworkForAudioFreePreflight()') >= 3
+          assert 'onBindError = AudioReverseControlPort::bindFailureCategory' in ui
+          assert 'bindNetwork = { udp -> selected.bindSocket(udp) }' in ui
+          assert 'networkStillValid = {' in ui and '!audioPreflightCancelled' in ui
+          assert '.setPositiveButton("开始检测")' in ui and 'Thread({' in ui
+          assert '不发送任何 UDP' in ui
+          assert 'fun run(holdMillis: Long = 25_000L)' in preflight
+          assert 'receiver.start()' in preflight and 'receiver.close()' in preflight
           PY
       - name: B233 reverse-RTCP and profile-memory negative JVM regressions
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.AudioReverseControlPortTest --tests io.github.shaonialife.cardeck.audio.AudioProfileMemoryTest --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.AudioReverseControlPortTest --tests io.github.shaonialife.cardeck.airplay.B233UdpBindPreflightTest --tests io.github.shaonialife.cardeck.audio.AudioProfileMemoryTest --stacktrace
       - name: Complete Android JUnit, Lint and Debug build
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
 
