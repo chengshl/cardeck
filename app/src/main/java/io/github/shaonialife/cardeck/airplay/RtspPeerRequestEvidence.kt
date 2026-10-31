@@ -35,8 +35,16 @@ internal object RtspPeerRequestEvidence {
         // authority and is not a valid absolute RTSP request target.
         // Parse only; never resolve the host or retain the target.
         val target = runCatching { java.net.URI(fields[1]) }.getOrNull() ?: return false
+        val authority = target.rawAuthority ?: return false
+        // java.net.URI.host rejects some RFC3986 reg-names containing '_'.
+        // Keep those legal receiver names without admitting an empty host,
+        // non-numeric port, or out-of-range port.
+        val regNameAuthority = authority.substringAfterLast('@')
+        val regNamePort = regNameAuthority.substringAfterLast(':', "")
+        val validRegName = regNameAuthority.matches(Regex("[A-Za-z0-9._~-]+(?::[0-9]{1,5})?")) &&
+            (':' !in regNameAuthority || (regNamePort.toIntOrNull() ?: -1) in 0..65535)
         return target.scheme == "rtsp" &&
-            !target.host.isNullOrBlank() &&
+            (!target.host.isNullOrBlank() || validRegName) &&
             target.rawFragment == null &&
             target.port <= 65535
     }
