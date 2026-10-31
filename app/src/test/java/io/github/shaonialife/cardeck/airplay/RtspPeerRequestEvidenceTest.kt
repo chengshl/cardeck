@@ -56,6 +56,61 @@ class RtspPeerRequestEvidenceTest {
         )
     }
 
+    @Test fun unmatchedB233PeerRequestNeverEchoesSensitiveUri() {
+        val secret = "synthetic-private-token-DO-NOT-LOG"
+        val lines = listOf(
+            "TEARDOWN rtsp://receiver.invalid/$secret RTSP/1.0",
+            "SET_PARAMETER /stream?authorization=$secret RTSP/1.0",
+        )
+        assertEquals("peer_request=TEARDOWN", RtspPeerRequestEvidence.safeUnmatchedStartLine(lines[0]))
+        assertEquals("peer_request=OTHER", RtspPeerRequestEvidence.safeUnmatchedStartLine(lines[1]))
+        for (line in lines) {
+            val safe = RtspPeerRequestEvidence.safeUnmatchedStartLine(line)
+            assertEquals(false, safe.contains(secret))
+            assertEquals(false, safe.contains("receiver.invalid"))
+            assertEquals(false, safe.contains("/stream"))
+        }
+    }
+
+    @Test fun unmatchedB233ResponsePreservesOnlyValidatedStatusCode() {
+        val secret = "synthetic-private-reason"
+        assertEquals(
+            "response_status=454",
+            RtspPeerRequestEvidence.safeUnmatchedStartLine("RTSP/1.0 454 $secret"),
+        )
+        assertEquals(
+            "response_status=200",
+            RtspPeerRequestEvidence.safeUnmatchedStartLine("RTSP/1.0 200 OK"),
+        )
+        assertEquals(
+            "unrecognized",
+            RtspPeerRequestEvidence.safeUnmatchedStartLine("RTSP/1.0 2000 $secret"),
+        )
+        assertEquals(
+            "unrecognized",
+            RtspPeerRequestEvidence.safeUnmatchedStartLine("RTSP/1.0 2OO $secret"),
+        )
+    }
+
+    @Test fun malformedOrInjectedStartLinesDoNotEnterDiagnostics() {
+        val secret = "synthetic-credential"
+        val malformed = listOf(
+            "RTSP/1.0",
+            "NOT_RTSP /private?token=$secret HTTP/1.1",
+            "SET_PARAMETER /private?token=$secret RTSP/1.0 extra",
+            "",
+        )
+        for (line in malformed) {
+            assertEquals("unrecognized", RtspPeerRequestEvidence.safeUnmatchedStartLine(line))
+        }
+        // The privacy summary must not alter the protocol classification used
+        // for the existing request ACK decision.
+        assertEquals(
+            RtspPeerRequestEvidence.Kind.TEARDOWN,
+            RtspPeerRequestEvidence.classify("TEARDOWN / RTSP/1.0"),
+        )
+    }
+
     @Test fun responsesAndMalformedLinesCannotInventPeerTeardown() {
         val notRequests = listOf(
             "RTSP/1.0 200 OK",
