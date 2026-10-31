@@ -544,6 +544,9 @@ class AirPlayClient(
                         logFeedbackBody(body)
                     }
                 } catch (error: IOException) {
+                    // An old feedback request may fail only after close/reconnect.
+                    // Its failure belongs to the retired session, not the new trace.
+                    if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break
                     if (endpoint.isBuickB233) {
                         log("AIRPLAY T62: B233 feedback 结束 #$sent 原因=${error.javaClass.simpleName}")
                         audioFailureTrace?.event("feedback_error", "replies=$sent type=${error.javaClass.simpleName}")
