@@ -14,6 +14,8 @@ internal class B233ResourceEofEvidence {
     private enum class ClaimReply { NONE, PENDING, RTSP_200, RTSP_NON_200, IO_ERROR }
 
     private var claims = 0
+    // Pair each RTSP response with its request; stale completions cannot overwrite newer evidence.
+    private var claimGeneration = 0L
     private var claimAtMillis: Long = -1
     private var lastReply: ClaimReply = ClaimReply.NONE
     private var replyBodyShape = "absent"
@@ -21,24 +23,26 @@ internal class B233ResourceEofEvidence {
     private var incomingMainAudio = 0
 
     @Synchronized
-    fun claimMainAudio(nowMillis: Long) {
+    fun claimMainAudio(nowMillis: Long): Long {
+        claimGeneration = if (claimGeneration == Long.MAX_VALUE) 1L else claimGeneration + 1L
         claims = (claims + 1).coerceAtMost(1000)
         claimAtMillis = nowMillis.coerceAtLeast(0)
         lastReply = ClaimReply.PENDING
         replyBodyShape = "absent"
+        return claimGeneration
     }
 
     @Synchronized
-    fun claimReply(statusLine: String, bodyHasBytes: Boolean) {
-        if (lastReply != ClaimReply.PENDING) return
+    fun claimReply(generation: Long, statusLine: String, bodyHasBytes: Boolean) {
+        if (generation != claimGeneration || lastReply != ClaimReply.PENDING) return
         lastReply = if (statusLine.startsWith("RTSP/1.0 200 ")) ClaimReply.RTSP_200
             else ClaimReply.RTSP_NON_200
         replyBodyShape = if (bodyHasBytes) "nonempty" else "empty"
     }
 
     @Synchronized
-    fun claimIoError() {
-        if (lastReply == ClaimReply.PENDING) lastReply = ClaimReply.IO_ERROR
+    fun claimIoError(generation: Long) {
+        if (generation == claimGeneration && lastReply == ClaimReply.PENDING) lastReply = ClaimReply.IO_ERROR
     }
 
     @Synchronized

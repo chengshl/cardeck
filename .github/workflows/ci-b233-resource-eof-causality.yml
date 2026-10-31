@@ -54,8 +54,11 @@ jobs:
           assert 'b233ResourceEofEvidence.receiverChangeModes(command)' in air
           assert 'if (endpoint.isBuickB233 && claimAudioResource)' in air
           assert 'b233ResourceEofEvidence.claimMainAudio(SystemClock.uptimeMillis())' in air
-          assert 'b233ResourceEofEvidence.claimReply(statusLine, replyBody.isNotEmpty())' in air
-          assert 'b233ResourceEofEvidence.claimIoError()' in air
+          assert 'b233ResourceEofEvidence.claimReply(it, statusLine, replyBody.isNotEmpty())' in air
+          assert 'b233ResourceEofEvidence.claimIoError(it)' in air
+          assert 'generation != claimGeneration' in helper
+          assert 'lateSuccessFromPreviousRequestCannotConfirmNewClaim' in tests
+          assert 'lateErrorAndDuplicateReplyCannotCorruptLatestClaim' in tests
           assert 'AUDIO T98: rtsp_eof_resource' in air
           assert 'ownership=unverified' in helper
           assert 'mainAudioClaimAttempts' in helper

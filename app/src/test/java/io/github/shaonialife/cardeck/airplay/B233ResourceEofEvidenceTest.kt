@@ -13,8 +13,8 @@ class B233ResourceEofEvidenceTest {
             "params" to mapOf("resources" to listOf(mapOf("resourceID" to 1,
                 "reasonStr" to "never-log-this-vehicle-secret")))
         ))
-        evidence.claimMainAudio(1000)
-        evidence.claimReply("RTSP/1.0 200 OK", bodyHasBytes = false)
+        val token = evidence.claimMainAudio(1000)
+        evidence.claimReply(token, "RTSP/1.0 200 OK", bodyHasBytes = false)
         val summary = evidence.summaryAtPeerEof(21123)
         assertTrue(summary.contains("mainAudioClaimAttempts=1"))
         assertTrue(summary.contains("lastClaimReply=rtsp_200"))
@@ -31,8 +31,8 @@ class B233ResourceEofEvidenceTest {
         e.receiverChangeModes(mapOf("type" to "changeModes", "params" to mapOf(
             "resources" to listOf(mapOf("resourceID" to 2L, "transferType" to 1,
                 "reasonStr" to "secret")))))
-        e.claimMainAudio(20)
-        e.claimIoError()
+        val token = e.claimMainAudio(20)
+        e.claimIoError(token)
         val result = e.summaryAtPeerEof(45)
         assertTrue(result.contains("incomingChangeModesMentionsAudio=1"))
         assertTrue(result.contains("lastClaimReply=io_error"))
@@ -44,7 +44,7 @@ class B233ResourceEofEvidenceTest {
         val e = B233ResourceEofEvidence()
         e.receiverChangeModes(mapOf("type" to "changeModes",
             "params" to mapOf("resources" to listOf(mapOf("resourceID" to 99)))))
-        e.claimReply("RTSP/1.0 200 OK", bodyHasBytes = true)
+        e.claimReply(0L, "RTSP/1.0 200 OK", bodyHasBytes = true)
         assertEquals(
             "mainAudioClaimAttempts=0 lastClaimReply=none lastReplyBody=absent " +
                 "lastClaimAgeMs=unknown incomingChangeModesScreenOnly=0 " +
@@ -55,13 +55,42 @@ class B233ResourceEofEvidenceTest {
 
     @Test fun non200PendingAndClockRollbackAreNeverTreatedAsSuccess() {
         val e = B233ResourceEofEvidence()
-        e.claimMainAudio(5000)
+        val token = e.claimMainAudio(5000)
         assertTrue(e.summaryAtPeerEof(4000).contains("lastClaimReply=pending"))
         assertTrue(e.summaryAtPeerEof(4000).contains("lastClaimAgeMs=unknown"))
-        e.claimReply("RTSP/1.0 455 Method Not Valid", bodyHasBytes = true)
+        e.claimReply(token, "RTSP/1.0 455 Method Not Valid", bodyHasBytes = true)
         assertTrue(e.summaryAtPeerEof(6500).contains("lastClaimReply=rtsp_non_200"))
         assertTrue(e.summaryAtPeerEof(6500).contains("lastReplyBody=nonempty"))
         assertTrue(e.summaryAtPeerEof(9_000_000).contains("lastClaimAgeMs=600000"))
+    }
+
+
+    @Test fun lateSuccessFromPreviousRequestCannotConfirmNewClaim() {
+        val e = B233ResourceEofEvidence()
+        val old = e.claimMainAudio(100)
+        val current = e.claimMainAudio(200)
+        e.claimReply(old, "RTSP/1.0 200 OK", bodyHasBytes = true)
+        val pending = e.summaryAtPeerEof(300)
+        assertTrue(pending.contains("mainAudioClaimAttempts=2"))
+        assertTrue(pending.contains("lastClaimReply=pending"))
+        assertTrue(pending.contains("lastReplyBody=absent"))
+        assertTrue(pending.contains("lastClaimAgeMs=100"))
+        e.claimReply(current, "RTSP/1.0 455 Error", bodyHasBytes = false)
+        assertTrue(e.summaryAtPeerEof(310).contains("lastClaimReply=rtsp_non_200"))
+    }
+
+    @Test fun lateErrorAndDuplicateReplyCannotCorruptLatestClaim() {
+        val e = B233ResourceEofEvidence()
+        val old = e.claimMainAudio(10)
+        val current = e.claimMainAudio(20)
+        e.claimIoError(old)
+        assertTrue(e.summaryAtPeerEof(25).contains("lastClaimReply=pending"))
+        e.claimReply(current, "RTSP/1.0 200 OK", bodyHasBytes = false)
+        e.claimIoError(current)
+        e.claimReply(current, "RTSP/1.0 455 Error", bodyHasBytes = true)
+        val summary = e.summaryAtPeerEof(30)
+        assertTrue(summary.contains("lastClaimReply=rtsp_200"))
+        assertTrue(summary.contains("lastReplyBody=empty"))
     }
 
     @Test fun untrustedInputIsBoundedAndCannotLeakText() {

@@ -746,9 +746,9 @@ class AirPlayClient(
                         ),
                 ),
             )
-        if (endpoint.isBuickB233 && claimAudioResource) {
+        val claimToken = if (endpoint.isBuickB233 && claimAudioResource) {
             b233ResourceEofEvidence.claimMainAudio(SystemClock.uptimeMillis())
-        }
+        } else null
         return try {
             val (statusLine, replyBody) =
                 request(
@@ -760,7 +760,7 @@ class AirPlayClient(
             // T95: transport 200 is not evidence of main-audio ownership.
             // The decoder emits only bounded allowlisted shape, no peer IDs.
             if (endpoint.isBuickB233) {
-                if (claimAudioResource) b233ResourceEofEvidence.claimReply(statusLine, replyBody.isNotEmpty())
+                claimToken?.let { b233ResourceEofEvidence.claimReply(it, statusLine, replyBody.isNotEmpty()) }
                 log("AUDIO T95: modesChanged reply " +
                     B233ModeReplySummary.describe(replyBody))
             }
@@ -771,7 +771,7 @@ class AirPlayClient(
             )
             statusLine.contains("200")
         } catch (error: IOException) {
-            if (endpoint.isBuickB233 && claimAudioResource) b233ResourceEofEvidence.claimIoError()
+            claimToken?.let { b233ResourceEofEvidence.claimIoError(it) }
             log("AIRPLAY: modesChanged 失败 - ${error.message}")
             false
         }
