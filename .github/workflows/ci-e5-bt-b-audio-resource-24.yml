@@ -1,0 +1,142 @@
+name: E5 B233 video-only AirPlay resource claim isolation (#24)
+on:
+  push:
+    branches: [work/e5-bt-b-audio-resource-claim-24-20261030]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayModeClaims.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/AirPlayModeClaimsTest.kt'
+      - '.github/workflows/ci-e5-bt-b-audio-resource-24.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-bt-b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify stable baseline and isolated resource-claim scope
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          previous_stable = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          expected = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
+          assert base == expected, f'Baseline drift; re-review required: {base}'
+          # #93 advances E5 only by two JVM tests and their workflow.
+          post_93 = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_stable, expected], text=True
+          ).splitlines())
+          assert post_93 == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected post-#93 E5 movement: {sorted(post_93)}'
+          # #79/#82 changed only tests/CI/release triggers; BT-B runtime remains unchanged.
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_reviewed, expected], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, (
+              f'Unreviewed stable drift: {sorted(stable_delta)}'
+          )
+          air = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+          session = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          policy = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayModeClaims.kt'
+          test = 'app/src/test/java/io/github/shaonialife/cardeck/airplay/AirPlayModeClaimsTest.kt'
+          workflow = '.github/workflows/ci-e5-bt-b-audio-resource-24.yml'
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          assert changed == {air, session, policy, test, workflow}, f'Unexpected scope: {changed}'
+          for runtime_path in (air, session):
+              before = subprocess.check_output(['git', 'rev-parse', previous_stable + ':' + runtime_path], text=True).strip()
+              after = subprocess.check_output(['git', 'rev-parse', expected + ':' + runtime_path], text=True).strip()
+              assert before == after, f'BT-B shared runtime changed: {runtime_path}'
+          old_air = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + air], text=True)
+          new_air = Path(air).read_text()
+          assert old_air.count('fun assertModes(): Boolean') == 1
+          assert new_air.count('fun assertModes(claimAudioResource: Boolean = true): Boolean') == 1
+          assert new_air.count('AirPlayModeClaims.resources(claimAudioResource)') == 1
+          assert 'fun assertModes(): Boolean' not in new_air
+          old_session = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + session], text=True)
+          new_session = Path(session).read_text()
+          assert old_session.count('client.assertModes()') == 2
+          assert new_session.count('client.assertModes(claimAudioResource)') == 2
+          assert 'client.assertModes()' not in new_session
+          assert 'setup.receiverModel, audioEnabledForSession' in new_session
+          assert 'AirPlayModeClaims.claimAudio(' in new_session
+          policy_text = Path(policy).read_text()
+          assert 'equals("B233", ignoreCase = true)' in policy_text
+          assert '|| audioEnabledForSession' in policy_text
+          assert 'return if (claimAudio) listOf(screen, audio) else listOf(screen)' in policy_text
+          test_text = Path(test).read_text()
+          for name in ('b233VideoOnlyKeepsScreenAndDoesNotClaimAudio',
+                       'b233AudioEnabledClaimsBothResources',
+                       'unknownAndOtherModelsRetainLegacyClaims',
+                       'resourcePayloadPreservesOriginalEntitiesAndOrder'):
+              assert name in test_text, name
+          print('E5 BT-B isolated baseline, receiver-model and resource-claim guards passed')
+          PY
+      - name: Run full Android JUnit and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Run full Lint; reject errors in modified source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug --stacktrace > e5-bt-b-lint.txt 2>&1
+          LINT_EXIT=$?
+          set -e
+          if (( LINT_EXIT != 0 )); then
+            grep -E 'Lint found|First failure:' e5-bt-b-lint.txt | head -n 8 || true
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          report = Path('app/build/reports/lint-results-debug.xml')
+          if not report.is_file():
+              raise SystemExit('Lint report missing; fail closed')
+          touched = {
+              'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayModeClaims.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/AirPlayModeClaimsTest.kt',
+          }
+          errors = []
+          for issue in ET.parse(report).getroot().findall('.//issue'):
+              if issue.get('severity', '').lower() not in ('error', 'fatal'):
+                  continue
+              loc = issue.find('location')
+              path = (loc.get('file', '') if loc is not None else '').replace('\\', '/')
+              if '/app/' in path:
+                  path = 'app/' + path.split('/app/', 1)[1]
+              errors.append((issue.get('id'), path))
+          changed_errors = [(kind, path) for kind, path in errors if path in touched]
+          print(f'Full lint error count={len(errors)}; changed-file errors={len(changed_errors)}')
+          if changed_errors:
+              raise SystemExit(f'BT-B changed-file Lint errors: {changed_errors}')
+          print('Existing unrelated baseline Lint debt is not claimed resolved')
+          PY

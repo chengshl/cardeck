@@ -629,7 +629,7 @@ class AirPlayClient(
         }
     }
 
-    fun assertModes(): Boolean {
+    fun assertModes(claimAudioResource: Boolean = true): Boolean {
         val body =
             BinaryPlist.encode(
                 linkedMapOf(
@@ -642,11 +642,7 @@ class AirPlayClient(
                                     linkedMapOf<String, Any?>("appStateID" to 3L, "entity" to 0L),
                                     linkedMapOf<String, Any?>("appStateID" to 1L, "entity" to 0L, "speechMode" to -1L),
                                 ),
-                            "resources" to
-                                listOf(
-                                    linkedMapOf<String, Any?>("resourceID" to 1L, "entity" to 1L, "permanentEntity" to 1L),
-                                    linkedMapOf<String, Any?>("resourceID" to 2L, "entity" to 1L, "permanentEntity" to 1L),
-                                ),
+                            "resources" to AirPlayModeClaims.resources(claimAudioResource),
                         ),
                 ),
             )
@@ -658,7 +654,8 @@ class AirPlayClient(
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
-            log("AIRPLAY: modesChanged（声明持有主屏/主音频资源）[$statusLine]")
+            log("AIRPLAY: modesChanged（声明主屏；主音频=" +
+                (if (claimAudioResource) "CarPlay" else "保留普通蓝牙 A2DP") + "）[$statusLine]")
             statusLine.contains("200")
         } catch (error: IOException) {
             log("AIRPLAY: modesChanged 失败 - ${error.message}")
