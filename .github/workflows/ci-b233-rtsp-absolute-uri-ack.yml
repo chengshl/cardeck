@@ -68,6 +68,9 @@ jobs:
           assert 'classify(startLine) == Kind.RESPONSE_OR_UNKNOWN' in helper
           assert 'java.net.URI(fields[1])' in helper
           assert '!target.host.isNullOrBlank()' in helper
+          assert 'val authority = target.rawAuthority ?: return false' in helper
+          assert 'val validRegName =' in helper
+          assert 'regNamePort.toIntOrNull()' in helper
           assert 'target.rawFragment == null' in helper
           assert 'target.port <= 65535' in helper
           for test in (
