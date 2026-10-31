@@ -60,6 +60,10 @@ class RtspPeerRequestEvidenceTest {
             "rtsp://:7000/session",       // missing host
             "rtsp://host:bad/session",    // invalid port
             "rtsp://host:65536/session",  // out-of-range port
+            "rtsp://host:/session",      // URI parser reports host but empty port
+            "rtsp://[2001:db8::1]:/session", // bracketed IPv6 empty port
+            "rtsp://host:000000/session", // six-digit port accepted by java.net.URI
+            "rtsp://[2001:db8::1]:000000/session", // IPv6 six-digit port
             "rtsp://host/session#frag",   // fragments are not RTSP request targets
             "rtsp://host/%GG",            // malformed percent encoding
         )
