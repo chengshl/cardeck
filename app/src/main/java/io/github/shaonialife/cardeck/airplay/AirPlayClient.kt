@@ -27,6 +27,10 @@ import java.security.SecureRandom
 import java.util.Base64
 import java.util.UUID
 
+/** B233 iAP2 handshake and control bytes must not enter uploadable logs. */
+internal fun safeB233IapPayloadLog(payload: ByteArray): String =
+    "payload=${payload.size}B redacted"
+
 /**
  * Allowlisted, bounded /feedback diagnostics. This is deliberately separate
  * from playback-clock extraction and never affects RTSP/session behavior.
@@ -1311,11 +1315,11 @@ class AirPlayClient(
             for (frame in frames) {
                 // hex 格式化有成本：只在真要打日志的分支里做（此前每条消息都先算一遍）
                 if (messageCount <= 20) {
-                    val hex = bytes.joinToString(" ") { "%02x".format(it) }
+                    val diagnostic = if (endpoint.isBuickB233) safeB233IapPayloadLog(bytes) else "hex=" + bytes.joinToString(" ") { "%02x".format(it) }.take(160)
                     log(
                         "$logPrefix: iAP2 msg #$messageCount id=0x${frame.messageId.toString(16)} " +
                             "(${Iap2MessageIds.nameOf(frame.messageId)}) body=${frame.body.size}B " +
-                            "hex=${hex.take(160)}",
+                            diagnostic,
                     )
                 } else if (messageCount % 100 == 0) {
                     log("$logPrefix: iAP2 msg #$messageCount id=0x${frame.messageId.toString(16)} body=${frame.body.size}B")
@@ -1433,8 +1437,9 @@ class AirPlayClient(
         sendIapCount++
         if (sendIapCount <= 10) {
             log(
-                "IAPLINK: tx(事件通道) ${data.size}B ok=$sent hex=" +
-                    data.joinToString(" ") { "%02x".format(it) }.take(120),
+                "IAPLINK: tx(事件通道) ${data.size}B ok=$sent " +
+                    (if (endpoint.isBuickB233) safeB233IapPayloadLog(data)
+                     else "hex=" + data.joinToString(" ") { "%02x".format(it) }.take(120)),
             )
         }
         return sent
@@ -1525,7 +1530,8 @@ class AirPlayClient(
                 controlIapCount++
                 val head =
                     "IAPLINK: tx(控制通道) #$controlIapCount ${frame.size}B [$statusLine]" +
-                        (if (reply.isEmpty()) "" else " resp=${reply.size}B hex=" + hexPrefix(reply))
+                        (if (reply.isEmpty()) "" else if (endpoint.isBuickB233) " " + safeB233IapPayloadLog(reply)
+                         else " resp=${reply.size}B hex=" + hexPrefix(reply))
                 if (controlIapCount <= 10 || controlIapCount % 50 == 0 || reply.isNotEmpty()) {
                     log(head)
                 }

@@ -62,6 +62,10 @@ jobs:
           assert 'audio_setup_skipped reason=reverse_rtcp_unavailable' in p
           assert 'B233ModeReplySummary.describe(replyBody)' in p
           assert 'safeAudioFeedbackLogLines(body).forEach(log)' in p
+          assert p.count('safeB233IapPayloadLog(') == 4  # helper + 3 live B233 call sites
+          assert 'if (endpoint.isBuickB233) safeB233IapPayloadLog(bytes)' in p
+          assert 'if (endpoint.isBuickB233) safeB233IapPayloadLog(data)' in p
+          assert 'if (endpoint.isBuickB233) " " + safeB233IapPayloadLog(reply)' in p
           assert 'firstAacFrameSafeLog(out, raw, wrapAdts)' in Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt').read_text()
           preflight = Path('app/src/main/java/io/github/shaonialife/cardeck/BuickMenuActivity.kt').read_text()
           assert 'runT89BindPreflight()' in preflight and '不发送任何 UDP 包' in preflight

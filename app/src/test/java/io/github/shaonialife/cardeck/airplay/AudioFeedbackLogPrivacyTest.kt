@@ -96,4 +96,13 @@ class AudioFeedbackLogPrivacyTest {
         assertTrue(summary.length < 90)
     }
 
+    @Test fun b233Iap2HandshakePayloadCannotLeakThroughDiagnostics() {
+        val secret = "PRIVATE-IAP2-WIFI-OR-AUTH-BYTES".toByteArray()
+        val summary = safeB233IapPayloadLog(secret)
+        assertEquals("payload=${secret.size}B redacted", summary)
+        assertFalse(summary.contains("PRIVATE"))
+        assertFalse(summary.contains("hex="))
+        assertTrue(summary.length < 64)
+    }
+
 }
