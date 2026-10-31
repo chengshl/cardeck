@@ -45,8 +45,10 @@ class BuickAudioTimingPolicyTest {
                 true, pcmMedia.copy(codec = AudioCodec.AAC_LC),
             ),
         )
-        // T89 must NOT silently enable the T71 high-accuracy timing mode.
+        // T89 kept the high-accuracy flag off; T90 opts in explicitly,
+        // while preserving the existing PCM legacy-RTCP sender policy.
         assertFalse(BuickAudioTimingPolicy.useModernSenderTiming(true, pcmMedia))
+        assertTrue(BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(true, pcmMedia))
     }
 
     @Test
@@ -59,6 +61,40 @@ class BuickAudioTimingPolicyTest {
                 true, aacMedia.copy(audioType = "compatibility"),
             ),
         )
+    }
+
+    @Test
+    fun t90HighAccuracyTimestampIsLimitedToB233PcmMedia() {
+        val pcmMedia = AudioProfile("media", 1L shl 15, 48_000, 250)
+        assertTrue(BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(true, pcmMedia))
+        assertTrue(
+            BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(
+                true, pcmMedia.copy(audioType = "MEDIA"),
+            ),
+        )
+        assertFalse(BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(false, pcmMedia))
+        assertFalse(
+            BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(
+                true, pcmMedia.copy(audioType = "compatibility"),
+            ),
+        )
+        assertFalse(
+            BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(
+                true, pcmMedia.copy(streamType = 101L),
+            ),
+        )
+        assertFalse(
+            BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(
+                true, pcmMedia.copy(codec = AudioCodec.AAC_LC),
+            ),
+        )
+        assertFalse(
+            BuickAudioTimingPolicy.advertiseHighAccuracyTimestamps(
+                true, AudioProfile("compatibility", 1L shl 15, 48_000, 250),
+            ),
+        )
+        // High-accuracy advertisement must not silently disable legacy 0xD4 sending.
+        assertFalse(BuickAudioTimingPolicy.useModernSenderTiming(true, pcmMedia))
     }
 
     @Test
