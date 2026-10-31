@@ -1,0 +1,68 @@
+name: CarPlay AAC codec startup ownership (offline)
+
+on:
+  pull_request:
+    branches: [experiment/buick-b233-pcm-partial-read-continuity]
+    paths:
+      - '.github/workflows/ci-audio-aac-codec-startup-ownership.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/audio/AacCodecStartupOwnershipTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: audio-aac-codec-startup-ownership-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Signed T94 ancestor, three-file scope and real AAC startup wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41190133408 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/aac-changed
+          printf '%s\n' '.github/workflows/ci-audio-aac-codec-startup-ownership.yml' 'app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt' 'app/src/test/java/io/github/shaonialife/cardeck/audio/AacCodecStartupOwnershipTest.kt' > /tmp/aac-expected
+          diff -u /tmp/aac-expected /tmp/aac-changed
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AacLcEncoder.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AacCodecStartupOwnershipTest.kt').read_text()
+          assert 'internal fun <T : Any> startOwnedAudioCodecResource(' in source
+          assert 'val created = startOwnedAudioCodecResource(' in source
+          start = source.split('fun start(): Boolean {', 1)[1].split('fun encode(', 1)[0]
+          for token in ['MediaCodec.createEncoderByType(MIME)', 'encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)', 'encoder.start()', 'runCatching { encoder.stop() }', 'runCatching { encoder.release() }', 'codec = created']:
+              assert token in start, token
+          assert start.index('encoder.release()') < start.index('codec = created')
+          for name in ['configureFailureCleansUpUnpublishedCodec', 'startFailureAfterConfigureStillReleasesCodec', 'successfulStartupTransfersResourceWithoutEarlyRelease', 'cleanupFailureCannotHideOriginalStartupFailure', 'acquisitionFailureHasNothingToRelease']:
+              assert name in tests
+          PY
+      - name: AAC startup exception and ownership JVM regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.audio.AacCodecStartupOwnershipTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft-only: no signing, APK, main/stable changes or vehicle acceptance.

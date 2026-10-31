@@ -5,6 +5,27 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 
 /**
+ * Transfer an acquired encoder only after configure AND start have completed.
+ * If either fails, release the still-unpublished resource before rethrowing.
+ * Generic to permit deterministic JVM failure-path tests without Android MediaCodec.
+ */
+internal fun <T : Any> startOwnedAudioCodecResource(
+    acquire: () -> T,
+    initialize: (T) -> Unit,
+    cleanup: (T) -> Unit,
+): T {
+    val resource = acquire()
+    try {
+        initialize(resource)
+        return resource
+    } catch (failure: Throwable) {
+        // Cleanup must never mask the original configure/start exception.
+        runCatching { cleanup(resource) }
+        throw failure
+    }
+}
+
+/**
  * PCM → AAC-LC 编码器（type=102 MainHighAudio 通路用）。
  *
  * 为什么需要它（2026-10-20 Honda HFT / Alpine 实测）：该车机 `/info` 里
@@ -303,9 +324,19 @@ class AacLcEncoder(
                     setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, inputFrameBytes)
                 }
-            val created = MediaCodec.createEncoderByType(MIME)
-            created.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            created.start()
+            val created = startOwnedAudioCodecResource(
+                acquire = { MediaCodec.createEncoderByType(MIME) },
+                initialize = { encoder ->
+                    encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    encoder.start()
+                },
+                cleanup = { encoder ->
+                    // MediaCodec.stop() can throw if configure/start failed;
+                    // release must still run for that partially initialized codec.
+                    runCatching { encoder.stop() }
+                    runCatching { encoder.release() }
+                },
+            )
             codec = created
             presentationUs = 0L
             started = true
