@@ -119,6 +119,8 @@ jobs:
       - name: Build existing-key signed experiment APK
         run: ./gradlew :app:assembleRelease --stacktrace
       - name: Verify E5 package, signing, and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -133,8 +135,8 @@ jobs:
             exit 1
           fi
           test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"
-          grep -Fq "versionCode=\x27$CARDECK_BUILD_VERSION_CODE\x27" <<< "$BADGING"
-          grep -Fq "versionName=\x27$CARDECK_RELEASE_VERSION_NAME\x27" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
           "$APKSIGNER" verify "$APK"
           CERT_DETAILS="$("$APKSIGNER" verify --print-certs "$APK")"
           if grep -qi 'CN=Android Debug' <<< "$CERT_DETAILS"; then
@@ -143,15 +145,15 @@ jobs:
           fi
           # Fail closed if the experimental APK cannot upgrade the existing
           # official E5 identity without changing the Android signing key.
-          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\\1/p' <<< "$CERT_DETAILS" | head -n 1)"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' <<< "$CERT_DETAILS" | head -n 1)"
           test -n "$NEW_CERT"
           mkdir -p "$RUNNER_TEMP/e5-official-reference"
-          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \\
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \
             --pattern CarDeck-Buick-E5.apk --dir "$RUNNER_TEMP/e5-official-reference"
           OLD_APK="$RUNNER_TEMP/e5-official-reference/CarDeck-Buick-E5.apk"
           test -s "$OLD_APK"
           OLD_CERT="$("$APKSIGNER" verify --print-certs "$OLD_APK" |
-            sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\\1/p' | head -n 1)"
+            sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' | head -n 1)"
           test -n "$OLD_CERT"
           if [[ "${NEW_CERT,,}" != "${OLD_CERT,,}" ]]; then
             echo "::error::实验APK与现行E5正式APK签名证书不一致"
