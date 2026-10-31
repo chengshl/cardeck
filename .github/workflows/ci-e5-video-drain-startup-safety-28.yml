@@ -275,6 +275,28 @@ jobs:
           assert expected.count(slot_before) == 1, 'Output-buffer ownership block ambiguous'
           expected = expected.replace(slot_before, slot_after)
           assert new.count('codec.releaseOutputBuffer(index, false)') == 2
+          # A start() that captured epoch N must not publish a new socket after
+          # stop() retires N, even when the TCP connect begins after stop().
+          reviewed_before = subprocess.check_output(
+              ['git', 'show', '4eba415c9c0af7e334117fe256622f8f793854b4:' + source_path],
+              text=True,
+          )
+          assert expected == reviewed_before, 'Reviewed #83 source changed before epoch handoff fix'
+          helper_before = "    fun openDataPort(): Boolean {\n        // A stop during the blocking TCP connect invalidates the late result."
+          helper_after = "    fun openDataPort(): Boolean = openDataPortForEpoch(null)\n\n    private fun openDataPortForEpoch(requiredEpoch: Long?): Boolean {\n        // A stop during the blocking TCP connect invalidates the late result."
+          epoch_before = "        val epochAtConnect = synchronized(dataPortLock) {\n            val existing = socket"
+          epoch_after = "        val epochAtConnect = synchronized(dataPortLock) {\n            // start() must not open a fresh socket after stop() retired its epoch.\n            if (requiredEpoch != null && dataPortEpoch != requiredEpoch) return false\n            val existing = socket"
+          start_before = "        if (!openDataPort()) return false"
+          start_after = "        if (!openDataPortForEpoch(startEpoch)) return false"
+          for name, old_text, new_text in [
+              ('private epoch-aware TCP helper', helper_before, helper_after),
+              ('pre-connect epoch rejection', epoch_before, epoch_after),
+              ('start passes captured epoch', start_before, start_after),
+          ]:
+              assert expected.count(old_text) == 1, f'{name} ambiguous'
+              expected = expected.replace(old_text, new_text)
+          assert new.count('openDataPortForEpoch(startEpoch)') == 1
+          assert new.count('if (requiredEpoch != null && dataPortEpoch != requiredEpoch) return false') == 1
           assert new == expected, 'Unexpected change outside reviewed drain epoch fence'
           assert new.count('Pair(encoder, socket)') == 1
           assert new.count('dataPortEpoch != epoch })') == 2
