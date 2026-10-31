@@ -1,0 +1,78 @@
+name: B233 audio projection owner and regrant guard (offline)
+
+on:
+  pull_request:
+    branches: [experiment/buick-test-t89-pcm-reverse-rtcp]
+    paths:
+      - '.github/workflows/ci-b233-projection-owner-regrant.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b233-projection-owner-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact T89 ancestry, four-file source scope and FGS fail-closed wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          git diff --name-only "$BASE" HEAD > /tmp/projection-scope
+          test "$(wc -l < /tmp/projection-scope)" -eq 4
+          while IFS= read -r f; do
+            case "$f" in
+              .github/workflows/ci-b233-projection-owner-regrant.yml|app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt|app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt|app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt) ;;
+              *) echo "out-of-scope file: $f"; exit 1 ;;
+            esac
+          done < /tmp/projection-scope
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          svc = Path('app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt').read_text()
+          gate = Path('app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt').read_text()
+          start = svc.split('    override fun onStartCommand(',1)[1].split('    private fun takeProjection()',1)[0]
+          take = svc.split('    private fun takeProjection()',1)[1].split('    private fun upgradeToProjection()',1)[0]
+          callback = take.split('override fun onStop()',1)[1].split('}',1)[0]
+          assert start.index('if (upgradeToProjection())') < start.index('takeProjection()')
+          assert 'pendingProjectionResult = null' in start
+          assert 'projectionLease.clearIfCurrent(active)' in start
+          assert 'projectionLease.clearIfCurrent(projection)' in callback
+          assert 'mediaProjection = null' not in callback
+          assert 'private fun upgradeToProjection(): Boolean' in svc
+          assert 'false' in svc.split('private fun upgradeToProjection(): Boolean',1)[1].split('override fun onDestroy()',1)[0]
+          assert 'AtomicReference<T?>(null)' in gate
+          for test in ('expiredCallbackCannotEraseSubsequentGrant',
+                       'currentOnStopRevokesReadinessAndRequiresFreshGrant',
+                       'delayedOldOnStopCannotRaceWithNewPublication'):
+              assert test in tests
+          print('T91: stale grant onStop cannot null replacement, failed FGS never consumes token')
+          PY
+      - name: Deterministic projection lease regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.service.ProjectionLeaseTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# No signing, release, stable merge, new permission, or vehicle claim.
