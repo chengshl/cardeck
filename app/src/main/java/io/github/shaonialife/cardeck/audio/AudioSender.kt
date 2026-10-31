@@ -377,7 +377,14 @@ class AudioSender(
                     socket = null
                     return false
                 }
-                aacEncoder = encoder
+                if (verboseStartupDiagnostics) {
+                    if (!b233DatagramGate.runIfActive({ !stopped.get() }) { aacEncoder = encoder }) {
+                        encoder.stop()
+                        return false // stop() won while AAC encoder was starting
+                    }
+                } else {
+                    aacEncoder = encoder
+                }
             }
 
             val captureConfig = buildCaptureConfig(projection)
@@ -410,6 +417,8 @@ class AudioSender(
                     running.set(true)
                 }) {
                     runCatching { recorder.release() }
+                    aacEncoder?.stop()
+                    aacEncoder = null
                     return false // stop() won while AudioRecord was being constructed
                 }
             } else {
