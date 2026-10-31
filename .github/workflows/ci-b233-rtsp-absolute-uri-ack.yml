@@ -1,0 +1,85 @@
+name: B233 RTSP absolute URI peer ACK isolation (test only)
+
+on:
+  pull_request:
+    branches:
+      - experiment/buick-test-t89-pcm-reverse-rtcp
+    paths:
+      - '.github/workflows/ci-b233-rtsp-absolute-uri-ack.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidence.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b233-absolute-uri-peer-ack-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Signed T89 baseline, four-file scope, B233-only peer ACK ordering
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          git diff --name-only "$BASE" HEAD > /tmp/b233-absolute-uri-scope
+          test "$(wc -l < /tmp/b233-absolute-uri-scope)" -eq 4
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-rtsp-absolute-uri-ack.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidence.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt) ;;
+              *) echo "Unexpected change: $file"; exit 1 ;;
+            esac
+          done < /tmp/b233-absolute-uri-scope
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay')
+          src = (root / 'AirPlayClient.kt').read_text()
+          helper = (root / 'RtspPeerRequestEvidence.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt').read_text()
+          dispatch = src.split('    private fun dispatchResponse(', 1)[1].split('    /** 无匹配报文计数', 1)[0]
+          pred = 'val absoluteUriPeerRequest = RtspPeerRequestEvidence.isB233AbsoluteUriRequest('
+          gate = 'if (!absoluteUriPeerRequest) {'
+          queue = 'val queue = message.cseq?.let { pendingResponses[it] }'
+          ack = 'if (message.isRequest || absoluteUriPeerRequest) {'
+          assert pred in dispatch and 'statusLine, endpoint.isBuickB233' in dispatch
+          assert dispatch.index(pred) < dispatch.index(gate) < dispatch.index(queue) < dispatch.index(ack)
+          assert 'queue.offer(message.statusLine to message.body)' in dispatch
+          assert 'message.cseq?.let { responseHeads[it] = head }' in dispatch
+          assert 'CSeq: $it' in dispatch and 'Content-Length: 0' in dispatch
+          assert 'if (!isBuickB233) return false' in helper
+          assert 'fields[1].startsWith("rtsp://")' in helper
+          assert 'classify(startLine) != Kind.RESPONSE_OR_UNKNOWN' in helper
+          for test in (
+              'b233AbsoluteUriRequestWithPendingCseqMustBypassQueueAndBeAcked',
+              'b233AbsoluteUriTeardownIsAcknowledgedWithoutCseqCollision',
+              'nonB233AbsoluteUriPreservesExistingPendingQueueAndNoAck',
+              'b233MalformedOrResponseLinesNeverTriggerAbsoluteUriAck',
+          ):
+              assert test in tests, test
+          print('B233 absolute URI request ACK: CSeq collision bypass, legacy fallback and negative tests verified')
+          PY
+      - name: B233 absolute URI peer ACK negative regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.RtspPeerRequestEvidenceTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Offline L3 experiment only. No signing, release, merge or real-car claim.
