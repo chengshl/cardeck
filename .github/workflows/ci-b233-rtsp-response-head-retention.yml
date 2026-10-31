@@ -1,0 +1,81 @@
+name: B233 RTSP response header retention isolation (test only)
+
+on:
+  pull_request:
+    branches:
+      - experiment/buick-test-t89-pcm-reverse-rtcp
+    paths:
+      - '.github/workflows/ci-b233-rtsp-response-head-retention.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233RtspResponseHeadCache.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233RtspResponseHeadCacheTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b233-response-head-retention-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact signed T89 base, four-file scope and B233-only wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          git diff --name-only "$BASE" HEAD > /tmp/b233-head-scope
+          test "$(wc -l < /tmp/b233-head-scope)" -eq 4
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/ci-b233-rtsp-response-head-retention.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/B233RtspResponseHeadCache.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/B233RtspResponseHeadCacheTest.kt) ;;
+              *) echo "Unexpected change: $file"; exit 1 ;;
+            esac
+          done < /tmp/b233-head-scope
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay')
+          src = (root / 'AirPlayClient.kt').read_text()
+          helper = (root / 'B233RtspResponseHeadCache.kt').read_text()
+          test = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233RtspResponseHeadCacheTest.kt').read_text()
+          dispatch = src.split('    private fun dispatchResponse(', 1)[1].split('    /** 无匹配报文计数', 1)[0]
+          getter = src.split('    private fun lastResponseHeadOfRequest()', 1)[1].split('    /** 解析结果', 1)[0]
+          assert 'private val b233ResponseHeadCache = B233RtspResponseHeadCache()' in src
+          assert dispatch.index('if (!endpoint.isBuickB233)') < dispatch.index('val queue = message.cseq')
+          assert 'message.cseq?.let { responseHeads[it] = head }' in dispatch
+          assert dispatch.index('if (endpoint.isBuickB233)') > dispatch.index('if (queue != null)')
+          assert 'b233ResponseHeadCache.recordIfError(it, message.statusLine, head, true)' in dispatch
+          assert 'if (endpoint.isBuickB233) b233ResponseHeadCache.take(cseq)' in getter
+          assert 'else responseHeads[cseq]' in getter
+          assert 'while (heads.size > maxEntries)' in helper
+          assert 'if (code == "200") return' in helper
+          for name in ('successfulFeedbackResponsesDoNotAccumulateHeaders',
+                       'errorHeadersStayBoundedAndNewestFailureIsAvailable',
+                       'unsolicitedPeerRequestsNeverPoisonErrorDiagnostics',
+                       'concurrentRequestErrorsRemainCseqScoped'):
+              assert name in test, name
+          print('B233 only: bounded error heads; no successful feedback retention; other receivers unchanged')
+          PY
+      - name: B233 bounded response-head regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233RtspResponseHeadCacheTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# No signing, release, stable merge or vehicle acceptance from this workflow.
