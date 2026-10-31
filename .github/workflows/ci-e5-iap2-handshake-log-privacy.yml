@@ -188,7 +188,7 @@ jobs:
           print(f'VideoSender: {len(video_replacements)} endpoint/exception log redactions verified')
           print(f'SessionController: {len(session_replacements)} diagnostic-only redactions verified')
           print('Bluetooth target names, addresses, identity and raw exception text removed from logs')
-          print('Only iAP2 diagnostic redaction; CSM payload, ACK and handshake unchanged')
+          print('iAP2 CSM payload, ACK and handshake unchanged; BT/Wi-Fi/video updates are diagnostic-log-only')
           PY
       - name: Android unit tests and Debug build
         run: |
