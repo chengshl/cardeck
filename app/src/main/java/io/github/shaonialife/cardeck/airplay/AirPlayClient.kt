@@ -2690,28 +2690,34 @@ class AirPlayClient(
         val startedAt = SystemClock.uptimeMillis()
         val queue = java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>(1)
         var cseq = -1
-        // For B233 heartbeat requests, atomically capture the old session's
-        // socket before writing. No blocking TCP operation may hold the
-        // session gate, or close() could be prevented from tearing it down.
+        // B233 feedback captures only its own socket under the session gate.
+        // Reader setup and TCP I/O stay outside that gate, so close() can
+        // retire and close the socket even if another RTSP write is blocked.
         val client =
             if (expectedB233SessionToken != null) {
-                // Capture only the session-owned socket while close() cannot
-                // retire the token. Never hold the gate across TCP write/flush:
-                // a blocked write must not prevent close() from closing it.
+                // Capture the session socket only. startReader() itself
+                // takes rtspWriteLock and must NEVER run under the gate: a
+                // concurrent blocked TCP writer could otherwise hold that
+                // lock while close() waits for the gate to retire the socket.
                 b233HeartbeatSessionGate.captureIfCurrent(expectedB233SessionToken) {
-                    (socket ?: throw IOException("未连接")).also { startReader(it) }
+                    socket ?: throw IOException("未连接")
                 } ?: throw IOException("B233 心跳所属 RTSP 会话已退役")
             } else {
                 (socket ?: throw IOException("未连接")).also { startReader(it) }
             }
         synchronized(rtspWriteLock) {
-            // If the socket was retired after capture, fail before writing.
-            // A later close can race with write, but it will only close the
-            // *captured old socket*, never route this worker to a new session.
-            if (expectedB233SessionToken != null &&
-                !b233HeartbeatSessionGate.isCurrent(expectedB233SessionToken)
-            ) {
-                throw IOException("B233 心跳所属 RTSP 会话已退役")
+            // After capture, retire may have happened. A stale B233 worker
+            // must not start a reader on a retired socket or displace the new
+            // session's reader, even when reconnect is very fast.
+            if (expectedB233SessionToken != null) {
+                if (!b233HeartbeatSessionGate.isCurrent(expectedB233SessionToken) ||
+                    socket !== client
+                ) {
+                    throw IOException("B233 心跳所属 RTSP 会话已退役")
+                }
+                // rtspWriteLock is reentrant; this cannot hold the gate
+                // while waiting for or performing any socket I/O.
+                startReader(client)
             }
             cseq = ++cSeq
             // 先登记再写：响应可能在 write 返回前就到达
