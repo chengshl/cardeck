@@ -2837,22 +2837,40 @@ class AirPlayClient(
                 log("AUDIO T88: B233 peer RTSP request observed $evidence")
             }
         }
-        message.cseq?.let { responseHeads[it] = head }
-        val queue = message.cseq?.let { pendingResponses[it] }
-        if (queue != null) {
-            queue.offer(message.statusLine to message.body)
-            return
+        // B233-only: path-form and absolute-URI peer requests must bypass
+        // locally pending response CSeq entries; receiver CSeq may overlap.
+        // Non-B233 routing, ACK bytes, encryption and timing remain unchanged.
+        val absoluteUriPeerRequest = RtspPeerRequestEvidence.isB233AbsoluteUriRequest(
+            statusLine, endpoint.isBuickB233,
+        )
+        val pathPeerRequest = RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(
+            statusLine, endpoint.isBuickB233,
+        )
+        if (!absoluteUriPeerRequest && !pathPeerRequest) {
+            message.cseq?.let { responseHeads[it] = head }
+            val queue = message.cseq?.let { pendingResponses[it] }
+            if (queue != null) {
+                queue.offer(message.statusLine to message.body)
+                return
+            }
         }
         // 无匹配：车机可能在控制通道上发自己的请求（须回 200 否则它会拆通道）。
         // 仅节流留痕，不静默丢弃——此前同步实现会把它错当成前一个请求的应答。
-        unmatchedMessages++
-        if (unmatchedMessages <= 5) {
-            log(
-                "AIRPLAY: 控制通道无匹配报文（#$unmatchedMessages）" +
-                    "[$statusLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
-            )
+        // An accepted absolute-URI peer request is not an unmatched reply.
+        // Never echo its potentially sensitive URI in the legacy raw-line log.
+        if (!absoluteUriPeerRequest) {
+            unmatchedMessages++
+            if (unmatchedMessages <= 5) {
+                val safeStartLine = if (endpoint.isBuickB233) {
+                    RtspPeerRequestEvidence.safeUnmatchedStartLine(statusLine)
+                } else statusLine
+                log(
+                    "AIRPLAY: 控制通道无匹配报文（#$unmatchedMessages）" +
+                        "[$safeStartLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
+                )
+            }
         }
-        if (message.isRequest) {
+        if (message.isRequest || absoluteUriPeerRequest) {
             // 复用请求 CSeq 回空应答（与事件通道同一约定）
             runCatching {
                 val payload =

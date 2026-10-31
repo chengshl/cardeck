@@ -17,6 +17,75 @@ internal object RtspPeerRequestEvidence {
         if (kind == Kind.RESPONSE_OR_UNKNOWN) null
         else "kind=${kind.name} pendingCseqMatch=$pendingCseqMatch legacyAckEligible=$legacyAckEligible"
 
+    /**
+     * Only B233: recognize a syntactically valid absolute-URI peer request.
+     * The existing RTSP response queue must not consume this as a response
+     * when the receiver independently reuses one of our pending CSeq values.
+     * Legacy path-form handling is intentionally unchanged.
+     */
+    fun isB233AbsoluteUriRequest(startLine: String, isBuickB233: Boolean): Boolean {
+        if (!isBuickB233) return false
+        val fields = startLine.trim().split(Regex("""\s+"""))
+        if (fields.size != 3 ||
+            !fields[1].startsWith("rtsp://") ||
+            classify(startLine) == Kind.RESPONSE_OR_UNKNOWN
+        ) return false
+
+        // "rtsp://" alone (or rtsp:///path, rtsp://?query) has no
+        // authority and is not a valid absolute RTSP request target.
+        // Parse only; never resolve the host or retain the target.
+        val target = runCatching { java.net.URI(fields[1]) }.getOrNull() ?: return false
+        val authority = target.rawAuthority ?: return false
+        // java.net.URI.host rejects some RFC3986 reg-names containing '_'.
+        // Keep those legal receiver names without admitting an empty host,
+        // non-numeric port, or out-of-range port.
+        val regNameAuthority = authority.substringAfterLast('@')
+        // java.net.URI accepts host: and [IPv6]: as host-bearing authorities
+        // with port=-1. Reject empty and overlong numeric ports before ACK.
+        val rawPortSuffix = if (regNameAuthority.startsWith("[")) {
+            val bracketEnd = regNameAuthority.indexOf(']')
+            if (bracketEnd < 0) return false
+            regNameAuthority.substring(bracketEnd + 1)
+        } else {
+            val colon = regNameAuthority.lastIndexOf(':')
+            if (colon < 0) "" else regNameAuthority.substring(colon)
+        }
+        val validPortSuffix = rawPortSuffix.isEmpty() ||
+            (rawPortSuffix.matches(Regex(":[0-9]{1,5}")) &&
+                (rawPortSuffix.drop(1).toIntOrNull() ?: -1) in 0..65535)
+        if (!validPortSuffix) return false
+        val regNamePort = regNameAuthority.substringAfterLast(':', "")
+        val validRegName = regNameAuthority.matches(Regex("[A-Za-z0-9._~-]+(?::[0-9]{1,5})?")) &&
+            (':' !in regNameAuthority || (regNamePort.toIntOrNull() ?: -1) in 0..65535)
+        return target.scheme == "rtsp" &&
+            (!target.host.isNullOrBlank() || validRegName) &&
+            target.rawFragment == null &&
+            target.port <= 65535
+    }
+
+    /** B233 path-form peer requests must not consume a local pending CSeq. */
+    fun prioritizePathRequestBeforePendingCseq(startLine: String, isBuickB233: Boolean): Boolean {
+        if (!isBuickB233) return false
+        val fields = startLine.trim().split(Regex("""\s+"""))
+        return fields.size == 3 && fields[1].startsWith("/") &&
+            classify(startLine) != Kind.RESPONSE_OR_UNKNOWN
+    }
+
+    /** B233 diagnostic: never echo a request URI, reason phrase or malformed line. */
+    fun safeUnmatchedStartLine(startLine: String): String {
+        return when (classify(startLine)) {
+            Kind.TEARDOWN -> "peer_request=TEARDOWN"
+            Kind.OTHER_REQUEST -> "peer_request=OTHER"
+            Kind.RESPONSE_OR_UNKNOWN -> {
+                val fields = startLine.trim().split(Regex("""\s+"""))
+                val code = fields.getOrNull(1)
+                if (fields.firstOrNull() == "RTSP/1.0" &&
+                    code != null && code.matches(Regex("""[1-5][0-9]{2}"""))
+                ) "response_status=$code" else "unrecognized"
+            }
+        }
+    }
+
     fun classify(startLine: String): Kind {
         val fields = startLine.trim().split(Regex("""\s+"""))
         if (fields.size != 3 || fields[2] != "RTSP/1.0") return Kind.RESPONSE_OR_UNKNOWN
