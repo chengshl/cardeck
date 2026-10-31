@@ -166,4 +166,36 @@ class B233HeartbeatSessionGateTest {
         val socketIsOpen = true
         assertTrue(socketIsOpen && (!guardB233 || gate.isCurrent(token)))
     }
+
+    @Test
+    fun retiredFeedbackFailureCannotContaminateReplacementSessionTrace() {
+        val gate = B233HeartbeatSessionGate()
+        val retiredToken = gate.snapshot()
+        val failureReady = CountDownLatch(1)
+        val resumeFailure = CountDownLatch(1)
+        val traceEvents = AtomicInteger()
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val oldWorker = executor.submit {
+                // The request throws after close() but before its catch executes.
+                failureReady.countDown()
+                check(resumeFailure.await(5, TimeUnit.SECONDS))
+                // Mirror the catch-path generation check before feedback_error.
+                if (gate.isCurrent(retiredToken)) traceEvents.incrementAndGet()
+            }
+            assertTrue(failureReady.await(5, TimeUnit.SECONDS))
+            gate.retire()
+            val replacementToken = gate.snapshot()
+            resumeFailure.countDown()
+            oldWorker.get(5, TimeUnit.SECONDS)
+            assertEquals("old feedback exception must not be logged on new trace", 0, traceEvents.get())
+            // A genuine failure of the current worker must remain observable.
+            assertTrue(gate.isCurrent(replacementToken))
+            if (gate.isCurrent(replacementToken)) traceEvents.incrementAndGet()
+            assertEquals(1, traceEvents.get())
+        } finally {
+            resumeFailure.countDown()
+            executor.shutdownNow()
+        }
+    }
 }
