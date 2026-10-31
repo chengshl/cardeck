@@ -171,7 +171,7 @@ jobs:
           ])
           assert expected.count(null_buffer_before) == 1, 'MediaCodec null slot baseline drift'
           expected = expected.replace(null_buffer_before, null_buffer_after)
-          assert new.count('codec.releaseOutputBuffer(index, false)') == 3
+          assert expected.count('codec.releaseOutputBuffer(index, false)') == 2
           assert 'socket?.isClosed == false -> "existing"' in new
           # Replay the #28 start/stop ownership race fix byte-for-byte from reviewed HEAD.
           previous_head = '9d20738193b9997365607c1e7389919d453c14f6'
@@ -263,6 +263,18 @@ jobs:
           epoch_when_after = '                // stop()/start() may race with a blocking dequeue. Never send an\n                // old-session buffer to a retired socket after the epoch changes.\n                if (synchronized(dataPortLock) { dataPortEpoch != epoch }) {\n                    if (index >= 0) runCatching { codec.releaseOutputBuffer(index, false) }\n                    break\n                }\n                when {\n                    index == MediaCodec.INFO_TRY_AGAIN_LATER -> {'
           assert expected.count(epoch_when_before) == 1, 'Original post-dequeue dispatch missing'
           expected = expected.replace(epoch_when_before, epoch_when_after)
+          # The old null-buffer and send paths must now share one finally covering
+          # getOutputBuffer itself; reject any other VideoSender change byte-for-byte.
+          previous_epoch_head = 'e0ccc6a07e712b8eebc4550340fdcd92f9ba2bcd'
+          previous_epoch_source = subprocess.check_output(
+              ['git', 'show', previous_epoch_head + ':' + source_path], text=True
+          )
+          assert expected == previous_epoch_source, 'Reviewed #83 epoch-fenced source drifted'
+          slot_before = "                        val buffer = codec.getOutputBuffer(index)\n                        if (buffer == null) {\n                            // dequeueOutputBuffer() still transferred ownership of this index.\n                            // Returning without releasing it can exhaust codec output slots.\n                            codec.releaseOutputBuffer(index, false)\n                            maybeSendKeepAlive(output)\n                            continue\n                        }\n                        val flags = bufferInfo.flags\n                        try {\n                            if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                                sendVideoConfig(buffer, bufferInfo.size, output)\n                            } else if (bufferInfo.size > 0) {\n                                sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                            }\n                        } finally {\n                            // dequeueOutputBuffer transferred this slot even if frame writing fails.\n                            codec.releaseOutputBuffer(index, false)\n                        }\n                        maybeSendKeepAlive(output)"
+          slot_after = "                        try {\n                            // Even getOutputBuffer() itself can throw after dequeue handed us an index.\n                            val buffer = codec.getOutputBuffer(index)\n                            if (buffer != null) {\n                                val flags = bufferInfo.flags\n                                if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                                    sendVideoConfig(buffer, bufferInfo.size, output)\n                                } else if (bufferInfo.size > 0) {\n                                    sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                                }\n                            }\n                        } finally {\n                            // Return every dequeued index, including null or failed buffer acquisition.\n                            codec.releaseOutputBuffer(index, false)\n                        }\n                        maybeSendKeepAlive(output)"
+          assert expected.count(slot_before) == 1, 'Output-buffer ownership block ambiguous'
+          expected = expected.replace(slot_before, slot_after)
+          assert new.count('codec.releaseOutputBuffer(index, false)') == 2
           assert new == expected, 'Unexpected change outside reviewed drain epoch fence'
           assert new.count('Pair(encoder, socket)') == 1
           assert new.count('dataPortEpoch != epoch })') == 2
