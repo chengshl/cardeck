@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: publish-t90-pcm-high-accuracy
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   signed-experiment:
@@ -56,10 +56,6 @@ jobs:
           grep -Fq 'advertiseHighAccuracyTimestamps' app/src/main/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicy.kt
           grep -Fq 't90HighAccuracyTimestampIsLimitedToB233PcmMedia' app/src/test/java/io/github/shaonialife/cardeck/audio/BuickAudioTimingPolicyTest.kt
           echo "T90 exact validated code and independent signed experiment gate passed."
-      - name: Re-run Android tests lint and debug build before signing
-        run: |
-          chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
       - name: Load existing signed Buick-Test keystore
         env:
           KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
