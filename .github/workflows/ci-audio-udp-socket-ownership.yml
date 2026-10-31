@@ -77,6 +77,15 @@ jobs:
           assert 'publishedRtcpSocketIsClosedAndLateCaptureCannotRestart' in test
           assert 'concurrentPublicationAndRetirementNeverLeaveAnOpenSocket' in test
           assert 'verboseStartupDiagnostics = client.currentEndpoint.isBuickB233' in Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          # B233 phone-volume mute must share the gate with stop() restore.
+          # This prevents a late startup from re-muting after disconnect.
+          start = src.split('fun start(projection: MediaProjection): Boolean {', 1)[1].split('fun stop() {', 1)[0]
+          stop = src.split('fun stop() {', 1)[1].split('private fun buildCaptureConfig', 1)[0]
+          assert 'b233DatagramGate.runIfActive({ !stopped.get() }) {\\n                        mutePhoneMedia()' .replace('\\n', '\n') in start
+          retire = stop.split('b233DatagramGate.retire {', 1)[1].split('} else {', 1)[0]
+          assert 'if (mutePhoneOutput) restorePhoneMedia()' in retire
+          assert 'stopSerializesWithInFlightB233MuteAndRestoresFinalVolume' in test
+          assert 'retiredB233StartupCannotMuteAfterStopAlreadyRestored' in test
           # Existing signed T94 PCM and credential safety features remain in scope.
           assert 'PcmCaptureFrameWindow(frameBytes)' in src
           assert 'private val mutePhoneOutput: Boolean = true' in src
