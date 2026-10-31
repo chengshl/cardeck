@@ -26,3 +26,31 @@ internal object B233EventSocketConnection {
         }
     }
 }
+
+/** B233 event TCP ownership after publication; reader exit cannot retire a replacement. */
+internal class B233EventSocketOwner {
+    private var active: Socket? = null
+
+    @Synchronized
+    fun publish(candidate: Socket) {
+        val previous = active
+        active = candidate
+        if (previous !== candidate) runCatching { previous?.close() }
+    }
+
+    @Synchronized
+    fun retire(): Boolean {
+        val owned = active ?: return false
+        active = null
+        runCatching { owned.close() }
+        return true
+    }
+
+    @Synchronized
+    fun retireIfCurrent(candidate: Socket): Boolean {
+        if (active !== candidate) return false
+        active = null
+        runCatching { candidate.close() }
+        return true
+    }
+}

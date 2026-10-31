@@ -62,6 +62,18 @@ jobs:
           assert 'socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)' in live
           assert 'candidate.connect(address(), timeoutMillis)' in helper
           assert 'candidate.close()' in helper and 'throw error' in helper
+          assert 'private val b233EventSocketOwner = B233EventSocketOwner()' in src
+          close = src.split('fun close()', 1)[1].split('fun sendHidSetInputMode', 1)[0]
+          register = src.split('private fun registerEventCommandChannel(', 1)[1].split('fun postEventCommand(', 1)[0]
+          reader = src.split('fun connectEventChannel(', 1)[1].split('private class RtspAccumulator', 1)[0]
+          assert 'b233EventSocketOwner.retire()' in close
+          assert 'b233EventSocketOwner.publish(socket)' in register
+          assert 'b233EventSocketOwner.retireIfCurrent(socket)' in reader
+          assert 'finally {' in reader
+          for case in ('sessionCloseRetiresPublishedEventSocket',
+                       'reconnectClosesOldSocketWithoutRetiringReplacement',
+                       'activeReaderExitReleasesItsOwnedSocket'):
+              assert case in tests
           for case in ('addressResolutionFailureClosesUnpublishedSocket',
                        'tcpConnectFailureClosesUnpublishedSocket',
                        'successfulTcpConnectTransfersLiveSocketToCaller'):

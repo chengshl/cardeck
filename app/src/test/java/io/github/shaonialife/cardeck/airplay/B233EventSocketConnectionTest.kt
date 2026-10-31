@@ -62,4 +62,36 @@ class B233EventSocketConnectionTest {
             }
         }
     }
+    @Test fun sessionCloseRetiresPublishedEventSocket() {
+        val owner = B233EventSocketOwner()
+        val socket = Socket()
+        owner.publish(socket)
+        assertFalse(socket.isClosed)
+        assertTrue(owner.retire())
+        assertTrue(socket.isClosed)
+        assertFalse(owner.retire())
+    }
+
+    @Test fun reconnectClosesOldSocketWithoutRetiringReplacement() {
+        val owner = B233EventSocketOwner()
+        val old = Socket()
+        val replacement = Socket()
+        owner.publish(old)
+        owner.publish(replacement)
+        assertTrue(old.isClosed)
+        assertFalse(replacement.isClosed)
+        assertFalse(owner.retireIfCurrent(old))
+        assertFalse(replacement.isClosed)
+        assertTrue(owner.retire())
+        assertTrue(replacement.isClosed)
+    }
+
+    @Test fun activeReaderExitReleasesItsOwnedSocket() {
+        val owner = B233EventSocketOwner()
+        val socket = Socket()
+        owner.publish(socket)
+        assertTrue(owner.retireIfCurrent(socket))
+        assertTrue(socket.isClosed)
+        assertFalse(owner.retireIfCurrent(socket))
+    }
 }
