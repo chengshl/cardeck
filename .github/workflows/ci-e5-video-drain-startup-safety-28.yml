@@ -123,7 +123,25 @@ jobs:
           ])
           assert old.count(port_before) == 1, 'Original TCP startup ownership block not found'
           expected = old.replace(before, after).replace(init_before, init_after).replace(port_before, port_after)
-          assert new == expected, 'Unexpected change outside reviewed drain and codec cleanup guards'
+          # #28: TCP connect may complete after stop() retires this sender.
+          # Reconstruct only the reviewed socket-generation cancellation edits.
+          field_before = '    private var socket: Socket? = null'
+          field_after = '\n'.join(["    private val dataPortLock = Any()","    private var dataPortEpoch = 0L","    @Volatile private var socket: Socket? = null"])
+          method_before = '\n'.join(["    fun openDataPort(): Boolean {","        val existing = socket","        if (existing != null && !existing.isClosed) return true"])
+          method_after = '\n'.join(["    fun openDataPort(): Boolean {","        // A stop during the blocking TCP connect invalidates the late result.","        val epochAtConnect = synchronized(dataPortLock) {","            val existing = socket","            if (existing != null && !existing.isClosed) return true","            dataPortEpoch","        }"])
+          publish_before = '\n'.join(["            pendingSocket = client","            client.tcpNoDelay = true","            socket = client","            pendingSocket = null"])
+          publish_after = '\n'.join(["            pendingSocket = client","            client.tcpNoDelay = true","            val published = synchronized(dataPortLock) {","                if (dataPortEpoch != epochAtConnect) {","                    false","                } else {","                    socket = client","                    true","                }","            }","            if (!published) {","                // stop() ran while connectTcp() was blocking; do not resurrect its socket.","                runCatching { client.close() }","                return false","            }","            pendingSocket = null"])
+          stop_before = '\n'.join(["    fun stop() {","        running.set(false)","        runCatching { encoder?.stop() }","        runCatching { encoder?.release() }","        encoder = null","        runCatching { inputSurface?.release() }","        inputSurface = null","        runCatching { socket?.close() }","        socket = null","    }"])
+          stop_after = '\n'.join(["    fun stop() {","        running.set(false)","        val closingSocket = synchronized(dataPortLock) {","            dataPortEpoch++","            socket.also { socket = null }","        }","        runCatching { encoder?.stop() }","        runCatching { encoder?.release() }","        encoder = null","        runCatching { inputSurface?.release() }","        inputSurface = null","        runCatching { closingSocket?.close() }","    }"])
+          for name, before_text, after_text in [
+              ('socket field', field_before, field_after),
+              ('port epoch capture', method_before, method_after),
+              ('port publication', publish_before, publish_after),
+              ('stop epoch invalidation', stop_before, stop_after),
+          ]:
+              assert expected.count(before_text) == 1, f'{name} original block missing or ambiguous'
+              expected = expected.replace(before_text, after_text)
+          assert new == expected, 'Unexpected change outside reviewed video startup/stop ownership guards'
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
           assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
           assert start.index('inputSurface = surface') < start.index('codec.start()')
