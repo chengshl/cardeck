@@ -184,6 +184,9 @@ class Iap2BluetoothClient(
                         log("BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped")
                     }
                 } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {
+                    // Stop can retire this worker while candidate selection or policy checks run.
+                    // Do not start a destructive profile disconnect for an already retired worker.
+                    if (!running || generation.get() != myGeneration) return
                     val dropped = BtProfiles.disconnect(context, device)
                     if (dropped.isNotEmpty()) {
                         val now = android.os.SystemClock.uptimeMillis()
