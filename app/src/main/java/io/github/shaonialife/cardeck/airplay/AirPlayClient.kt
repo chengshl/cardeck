@@ -456,7 +456,18 @@ class AirPlayClient(
                     val gap = if (lastSentAt == 0L) 0L else now - lastSentAt
                     lastSentAt = now
                     val payload = ByteArray(4).also(java.security.SecureRandom()::nextBytes)
-                    udp.send(java.net.DatagramPacket(payload, payload.size, address, port))
+                    val activeUdp = udp ?: break
+                    val datagram = java.net.DatagramPacket(payload, payload.size, address, port)
+                    val sentOnCurrentSession =
+                        if (b233HeartbeatWorker) {
+                            b233HeartbeatSessionGate.runIfCurrent(heartbeatToken) {
+                                activeUdp.send(datagram)
+                            }
+                        } else {
+                            activeUdp.send(datagram)
+                            true
+                        }
+                    if (!sentOnCurrentSession) break
                     sent++
                     // Capture each B233 heartbeat in the critical 45s window.
                     if ((endpoint.isBuickB233 && sent <= 10) || sent <= 3 || sent % 60 == 0) {
@@ -490,7 +501,12 @@ class AirPlayClient(
                 (!b233HeartbeatWorker || b233HeartbeatSessionGate.isCurrent(heartbeatToken))
             ) {
                 try {
-                    val (status, body) = request("POST", "/feedback", ByteArray(0))
+                    val (status, body) = request(
+                        "POST",
+                        "/feedback",
+                        ByteArray(0),
+                        expectedB233SessionToken = if (b233HeartbeatWorker) heartbeatToken else null,
+                    )
                     // A reply may arrive after close()/reconnect. Do not let
                     // the retired worker report it as new-session feedback.
                     if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break
@@ -2669,41 +2685,55 @@ class AirPlayClient(
         timeoutMillis: Int = 10_000,
         contentType: String = "application/octet-stream",
         extraHeaders: List<Pair<String, String>> = emptyList(),
+        expectedB233SessionToken: Long? = null,
     ): Pair<String, ByteArray> {
-        val client = socket ?: throw IOException("未连接")
         val startedAt = SystemClock.uptimeMillis()
-        startReader(client)
         val queue = java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>(1)
-        val cseq: Int
-        synchronized(rtspWriteLock) {
-            cseq = ++cSeq
-            // 先登记再写：响应可能在 write 返回前就到达
-            pendingResponses[cseq] = queue
-            try {
-                val head =
-                    "$method $path RTSP/1.0\r\n" +
-                        "CSeq: $cseq\r\n" +
-                        "User-Agent: AirPlay/$SENDER_SOURCE_VERSION\r\n" +
-                        "Content-Type: $contentType\r\n" +
-                        extraHeaders.joinToString("") { "${it.first}: ${it.second}\r\n" } +
-                        "Content-Length: ${body.size}\r\n" +
-                        "\r\n"
-                val plaintext = head.toByteArray(Charsets.US_ASCII) + body
-                val encryption = cipher
-                val wire =
-                    if (encryption != null) {
-                        synchronized(encryption) { encryption.encrypt(plaintext) }
-                    } else {
-                        plaintext
-                    }
-                val output = client.getOutputStream()
-                output.write(wire)
-                output.flush()
-            } catch (error: Throwable) {
-                audioFailureTrace?.event("rtsp_write_error", "method=$method path=$path type=${error.javaClass.simpleName}")
-                pendingResponses.remove(cseq)
-                throw error
+        var cseq = -1
+        // For B233 heartbeat requests, bind reader + CSeq + write to the
+        // captured RTSP session under the same gate that close() retires.
+        // This closes the check-then-use race where an old worker could pass
+        // its loop guard, pause, then capture a replacement socket after reconnect.
+        val writeRequest = {
+            val client = socket ?: throw IOException("未连接")
+            startReader(client)
+            synchronized(rtspWriteLock) {
+                cseq = ++cSeq
+                // 先登记再写：响应可能在 write 返回前就到达
+                pendingResponses[cseq] = queue
+                try {
+                    val head =
+                        "$method $path RTSP/1.0\r\n" +
+                            "CSeq: $cseq\r\n" +
+                            "User-Agent: AirPlay/$SENDER_SOURCE_VERSION\r\n" +
+                            "Content-Type: $contentType\r\n" +
+                            extraHeaders.joinToString("") { "${it.first}: ${it.second}\r\n" } +
+                            "Content-Length: ${body.size}\r\n" +
+                            "\r\n"
+                    val plaintext = head.toByteArray(Charsets.US_ASCII) + body
+                    val encryption = cipher
+                    val wire =
+                        if (encryption != null) {
+                            synchronized(encryption) { encryption.encrypt(plaintext) }
+                        } else {
+                            plaintext
+                        }
+                    val output = client.getOutputStream()
+                    output.write(wire)
+                    output.flush()
+                } catch (error: Throwable) {
+                    audioFailureTrace?.event("rtsp_write_error", "method=$method path=$path type=${error.javaClass.simpleName}")
+                    pendingResponses.remove(cseq)
+                    throw error
+                }
             }
+        }
+        if (expectedB233SessionToken != null) {
+            if (!b233HeartbeatSessionGate.runIfCurrent(expectedB233SessionToken, writeRequest)) {
+                throw IOException("B233 心跳所属 RTSP 会话已退役")
+            }
+        } else {
+            writeRequest()
         }
         val response =
             try {
