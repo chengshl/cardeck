@@ -57,7 +57,7 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         for ((i, t) in preservedTimes.withIndex()) {
             safe = safe.replace("~CARDECK_TIME_" + i + "~", t)
         }
-        safe = Regex("""\b(ssid|serial|device.?id|vin|latitude|longitude)(?:"|\')?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""", RegexOption.IGNORE_CASE)
+        safe = Regex("""\b(ssid|serial|device.?id|vin|latitude|longitude)(?:"|')?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""", RegexOption.IGNORE_CASE)
             .replace(safe) { it.groupValues[1] + "=[已隐藏]" }
         safe = safe.map { if (it.code < 32 || it.code == 127) ' ' else it }.joinToString("")
         return safe.chunked(200).take(42).mapIndexed { i, chunk ->
@@ -78,7 +78,7 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         }
         for ((pattern, replacement) in replacements) text = pattern.replace(text, replacement)
         for ((index, value) in times.withIndex()) text = text.replace("~CARDECK_TIME_" + index + "~", value)
-        text = Regex("""\b(ssid|serial|device.?id|vin|latitude|longitude)(?:"|\')?\s*[:=].*""", RegexOption.IGNORE_CASE)
+        text = Regex("""\b(ssid|serial|device.?id|vin|latitude|longitude)(?:"|')?\s*[:=].*""", RegexOption.IGNORE_CASE)
             .replace(text) { "${it.groupValues[1]}=[已隐藏]" }
         return text.map { if (it.code < 32 || it.code == 127) ' ' else it }.joinToString("").take(256)
     }
