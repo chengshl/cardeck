@@ -9,6 +9,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindow.kt'
       - 'app/src/test/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindowTest.kt'
+      - '.github/workflows/publish-t94-pcm-short-read.yml'
   workflow_dispatch:
 
 permissions:
@@ -33,7 +34,7 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Exact signed T91 ancestor, five-file scope and runtime wiring
+      - name: Exact signed T91 ancestor, six-file scope and runtime wiring
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -44,10 +45,10 @@ jobs:
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41183730099 --jq .head_sha)" = "$BASE"
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41183730099 --jq .conclusion)" = success
           git diff --name-only "$BASE" HEAD > /tmp/b233-short-read-scope
-          test "$(wc -l < /tmp/b233-short-read-scope)" -eq 5
+          test "$(wc -l < /tmp/b233-short-read-scope)" -eq 6
           while IFS= read -r f; do
             case "$f" in
-              .github/workflows/ci-b233-pcm-short-read-continuity.yml|app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt|app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt|app/src/main/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindow.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindowTest.kt) ;;
+              .github/workflows/ci-b233-pcm-short-read-continuity.yml|.github/workflows/publish-t94-pcm-short-read.yml|app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt|app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt|app/src/main/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindow.kt|app/src/test/java/io/github/shaonialife/cardeck/audio/PcmCaptureFrameWindowTest.kt) ;;
               *) echo "::error::Unexpected changed file: $f"; exit 1 ;;
             esac
           done < /tmp/b233-short-read-scope
