@@ -61,14 +61,23 @@ jobs:
               assert section.index('b233HeartbeatSessionGate.snapshot()') < section.index('Thread({'), name
               assert 'val b233HeartbeatWorker = endpoint.isBuickB233' in section, name
               assert '(!b233HeartbeatWorker || b233HeartbeatSessionGate.isCurrent(heartbeatToken))' in section, name
+          assert '@Synchronized' in gate and 'fun runIfCurrent(token: Long, action: () -> Unit): Boolean' in gate
+          assert 'fun retire(): Long = generation.incrementAndGet()' in gate
+          assert 'b233HeartbeatSessionGate.runIfCurrent(heartbeatToken)' in keep
+          assert 'activeUdp.send(datagram)' in keep
+          assert 'expectedB233SessionToken: Long? = null' in src
+          request = src.split('    private fun request(',1)[1].split('    /**',1)[0]
+          assert 'b233HeartbeatSessionGate.runIfCurrent(expectedB233SessionToken, writeRequest)' in request
+          assert request.index('startReader(client)') < request.index('synchronized(rtspWriteLock)')
+          assert 'expectedB233SessionToken = if (b233HeartbeatWorker) heartbeatToken else null' in feedback
           assert 'if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break' in feedback
-          assert feedback.index('request("POST", "/feedback", ByteArray(0))') < feedback.index('if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break')
           for name in ('oldKeepAliveCannotPingRetiredHostAfterFastReconnect',
                        'delayedOldFeedbackWorkerCannotAdoptReplacementSession',
                        'feedbackResponseAfterCloseCannotBeReportedAsNewSession',
+                       'runIfCurrentRejectsStaleNetworkActionsAfterRetirement',
                        'nonB233LegacyWorkerDoesNotDependOnGate'):
               assert name in test, name
-          print('B233 only: close invalidates pre-scheduled old feedback/UDP workers; no protocol or routing change')
+          print('B233 only: final UDP send and RTSP heartbeat write are serialized with session retirement; non-B233 unchanged')
           PY
       - name: Deterministic B233 stale-heartbeat regression
         run: |
