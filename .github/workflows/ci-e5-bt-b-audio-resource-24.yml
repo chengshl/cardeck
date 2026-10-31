@@ -33,10 +33,19 @@ jobs:
           import subprocess
           base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
           previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
-          expected = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          previous_stable = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          expected = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
           assert base == expected, f'Baseline drift; re-review required: {base}'
-          # Stable advanced through #79 test-only replay and #82 release-trigger gate.
-          # No AirPlay/SessionController/Bluetooth production file changed.
+          # #93 advances E5 only by two JVM tests and their workflow.
+          post_93 = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_stable, expected], text=True
+          ).splitlines())
+          assert post_93 == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected post-#93 E5 movement: {sorted(post_93)}'
+          # #79/#82 changed only tests/CI/release triggers; BT-B runtime remains unchanged.
           stable_delta = set(subprocess.check_output(
               ['git', 'diff', '--name-only', previous_reviewed, expected], text=True
           ).splitlines())
@@ -45,6 +54,9 @@ jobs:
               '.github/workflows/build-buick-e5.yml',
               '.github/workflows/ci-e5-upstream-replay-33.yml',
               'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
           }, (
               f'Unreviewed stable drift: {sorted(stable_delta)}'
           )
@@ -57,6 +69,10 @@ jobs:
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
           ).splitlines())
           assert changed == {air, session, policy, test, workflow}, f'Unexpected scope: {changed}'
+          for runtime_path in (air, session):
+              before = subprocess.check_output(['git', 'rev-parse', previous_stable + ':' + runtime_path], text=True).strip()
+              after = subprocess.check_output(['git', 'rev-parse', expected + ':' + runtime_path], text=True).strip()
+              assert before == after, f'BT-B shared runtime changed: {runtime_path}'
           old_air = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + air], text=True)
           new_air = Path(air).read_text()
           assert old_air.count('fun assertModes(): Boolean') == 1
