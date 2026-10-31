@@ -87,14 +87,24 @@ jobs:
           # stop/start can overlap old worker cleanup. A stale worker must never
           # remove or close the socket/channel published by the new generation.
           assert 'private val activeChannel = AtomicReference<Iap2LinkChannel?>(null)' in client
-          assert 'activeChannel.set(channel)' in client
+          assert 'activeChannel.set(channel)' not in client
+          assert 'activeChannel.compareAndSet(null, channel)' in client
           assert 'activeChannel.compareAndSet(channel, null)' in client
           assert client.count('activeChannel.getAndSet(null)') == 2
           assert 'currentSocket.compareAndSet(connected, null)' in client
-          assert client.count('currentSocket.compareAndSet(socket, null)') == 2
+          assert client.count('currentSocket.compareAndSet(socket, null)') == 5
           assert client.count('currentSocket.getAndSet(null)') == 2  # only explicit detach/stop
           assert 'currentSocket.set(socket)' not in client
           assert 'runCatching { connected.close() }' in client
+          assert 'val socket = tryConnect(device, myGeneration)' in client
+          assert 'runSession(connected, myGeneration)' in client
+          assert 'private fun tryConnect(device: BluetoothDevice, myGeneration: Long)' in client
+          assert 'private fun runSession(socket: BluetoothSocket, myGeneration: Long)' in client
+          assert client.count('if (!running || generation.get() != myGeneration)') >= 4
+          assert 'if (!running || generation.get() != myGeneration || !currentSocket.compareAndSet(null, socket))' in client
+          assert 'if (!activeChannel.compareAndSet(null, channel))' in client
+          assert 'activeChannel.compareAndSet(channel, null)' in client
+          assert 'channel.runSenderSession(' in client
           assert 'activeChannel = null' not in client
           print('Stop-cancellation only; no protocol timing, Bluetooth profile or reconnect behavior expanded')
           PY
