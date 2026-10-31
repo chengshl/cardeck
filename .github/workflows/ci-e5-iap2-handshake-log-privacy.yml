@@ -31,6 +31,19 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
+          # Lease this read-only redaction to the exact reviewed E5 stable branch.
+          old_base = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          reviewed_base = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          assert base == reviewed_base, f'E5 stable moved; review new runtime before continuing: {base}'
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', old_base, reviewed_base], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected stable E5 change: {sorted(stable_delta)}'
           path = 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
           files = set(subprocess.check_output(
               ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
