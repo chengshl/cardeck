@@ -106,10 +106,10 @@ class VideoSender(
             )
             client.tcpNoDelay = true
             socket = client
-            log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
+            log("VIDEO: 数据端口已连通（远端地址已脱敏，port=$dataPort；等 RECORD 后启动编码器）")
             true
         } catch (error: Exception) {
-            log("VIDEO: 数据端口连接失败 - ${error.message}")
+            log("VIDEO: 数据端口连接失败 - ${error.javaClass.simpleName}（详细异常已脱敏，port=$dataPort）")
             false
         }
     }
@@ -156,7 +156,7 @@ class VideoSender(
             }
             true
         } catch (error: Exception) {
-            log("VIDEO: 启动失败 - ${error.message}")
+            log("VIDEO: 启动失败 - ${error.javaClass.simpleName}（详细异常已脱敏）")
             stop()
             false
         }
@@ -187,7 +187,7 @@ class VideoSender(
                     } catch (error: Exception) {
                         // 编码器进错误态（如非法尺寸首帧）：必须留痕——静默 break 曾让
                         // 「零帧推流 4 秒后断开」无从排查（接收端只见 peer EOF）
-                        log("VIDEO: 编码器取帧异常，停止推流 - ${error.message}")
+                        log("VIDEO: 编码器取帧异常，停止推流 - ${error.javaClass.simpleName}（详细异常已脱敏）")
                         break
                     }
                 when {
@@ -212,7 +212,7 @@ class VideoSender(
         } catch (error: Exception) {
             // 视频数据口断开（如接收端屏幕关闭收摊会话）：只终止推流，绝不冒泡——
             // 后台线程未捕获异常会杀死整个进程（曾导致锁屏后 app 消失）
-            log("VIDEO: 推流中止 - ${error.message}（等待接收端恢复后重连）")
+            log("VIDEO: 推流中止 - ${error.javaClass.simpleName}（详细异常已脱敏；等待接收端恢复后重连）")
         } finally {
             stop()
             // 会话真实结束信号（静默降噪解除 / 状态收尾）
