@@ -2310,7 +2310,15 @@ class AirPlayClient(
         val host = receiverHost() ?: return
         try {
             val socket = newVehicleSocket()
-            socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)
+            if (endpoint.isBuickB233) {
+                // B233: DNS resolution can fail before connect; the unpublished
+                // candidate must not leak across repeated audio reconnects.
+                B233EventSocketConnection.connect(socket, 5_000) {
+                    InetSocketAddress(resolveAddress(host), setup.eventPort)
+                }
+            } else {
+                socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)
+            }
             socket.tcpNoDelay = true
             socket.soTimeout = 30_000
             log("EVENT: ✓ 已连接事件通道 $host:${setup.eventPort}（${if (sessionKey != null) "加密" else "明文"}）")
