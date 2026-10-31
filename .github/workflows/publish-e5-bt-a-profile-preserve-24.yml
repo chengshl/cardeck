@@ -28,7 +28,12 @@ jobs:
           grep -Fq 'BuickB233Route.shouldProtectProfiles(' app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt
           grep -Fq 'BUICK_[0-9]{4}' app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt
           python3 -m unittest tools.release.test_allocate_version
-          test "$(git rev-parse origin/Buick-E5)" = "6dff31cac9a4a6f1945b787ba01eea577761d0eb"
+          test "$(git rev-parse origin/Buick-E5)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
+          # #93 added only review fixtures and a CI workflow; never accept runtime drift.
+          test "$(git diff --name-only 6dff31cac9a4a6f1945b787ba01eea577761d0eb 5e565a08b228d157ff1d739f38b8c09fad80f8a5 | sort)" = "$(printf '%s\n' \
+            .github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt | sort)"
           python3 - <<'PY'
           import subprocess
           files = set(subprocess.check_output(
