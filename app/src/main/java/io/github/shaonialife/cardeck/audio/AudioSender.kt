@@ -14,6 +14,63 @@ import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
+ * Audio RTP UDP socket ownership: DNS resolution and connect can fail before
+ * AudioSender.socket is assigned. Close the just-created socket on either
+ * failure so repeated reconnect attempts cannot leak native descriptors.
+ *
+ * Does not alter the destination, network binding, or successful RTP path.
+ */
+internal fun connectOwnedAudioDatagramSocket(
+    client: DatagramSocket,
+    host: String,
+    port: Int,
+): DatagramSocket {
+    try {
+        client.connect(InetAddress.getByName(host), port)
+        return client
+    } catch (error: Exception) {
+        client.close()
+        throw error
+    }
+}
+
+/**
+ * B233-only: stop can race a blocking UDP connect or AudioRecord construction.
+ * Serialize ownership publication with retirement so a late startup cannot
+ * leave an RTP/RTCP socket open or resurrect capture after stop().
+ */
+internal class AudioDatagramSessionGate {
+    private val lock = Any()
+    private var retired = false
+
+    fun publish(socket: DatagramSocket, isActive: () -> Boolean, install: () -> Unit): Boolean =
+        synchronized(lock) {
+            if (retired || !isActive()) {
+                socket.close()
+                false
+            } else {
+                install()
+                true
+            }
+        }
+
+    fun runIfActive(isActive: () -> Boolean, action: () -> Unit): Boolean =
+        synchronized(lock) {
+            if (retired || !isActive()) false else {
+                action()
+                true
+            }
+        }
+
+    fun retire(closeOwned: () -> Unit) {
+        synchronized(lock) {
+            retired = true
+            closeOwned()
+        }
+    }
+}
+
+/**
  * CarPlay 主音频发送端（手机 → 车机，RTP over UDP）。
  *
  * 线格式（对照 DiPlay `AudioStream.kt` 解密路径与 catplay `rtp_cipher_chacha.rs`）：
@@ -154,6 +211,7 @@ class AudioSender(
 
     /** stop() 幂等闸门（多条收尾路径都会调 stop）。 */
     private val stopped = AtomicBoolean(false)
+    private val b233DatagramGate = AudioDatagramSessionGate()
     private var socket: DatagramSocket? = null
     private var syncSocket: DatagramSocket? = null
     private var record: AudioRecord? = null
@@ -302,8 +360,14 @@ class AudioSender(
                     .onSuccess { log("AUDIO T24: RTP UDP 指定车机 WiFi Network=$network") }
                     .onFailure { log("AUDIO T24: RTP WiFi 路由绑定失败 - ${it.message}") }
             }
-            client.connect(InetAddress.getByName(host), dataPort)
-            socket = client
+            val connected = connectOwnedAudioDatagramSocket(client, host, dataPort)
+            if (verboseStartupDiagnostics) {
+                if (!b233DatagramGate.publish(connected, { !stopped.get() }) { socket = connected }) {
+                    return false // stop() retired this B233 sender during UDP connect
+                }
+            } else {
+                socket = connected
+            }
 
             // AAC 通路先把编码器立起来：编不出来就没必要采集（也避免「有包无声」的假象）
             if (codec == AudioCodec.AAC_LC) {
@@ -313,7 +377,14 @@ class AudioSender(
                     socket = null
                     return false
                 }
-                aacEncoder = encoder
+                if (verboseStartupDiagnostics) {
+                    if (!b233DatagramGate.runIfActive({ !stopped.get() }) { aacEncoder = encoder }) {
+                        encoder.stop()
+                        return false // stop() won while AAC encoder was starting
+                    }
+                } else {
+                    aacEncoder = encoder
+                }
             }
 
             val captureConfig = buildCaptureConfig(projection)
@@ -340,8 +411,20 @@ class AudioSender(
                 socket = null
                 return false
             }
-            record = recorder
-            running.set(true)
+            if (verboseStartupDiagnostics) {
+                if (!b233DatagramGate.runIfActive({ !stopped.get() }) {
+                    record = recorder
+                    running.set(true)
+                }) {
+                    runCatching { recorder.release() }
+                    aacEncoder?.stop()
+                    aacEncoder = null
+                    return false // stop() won while AudioRecord was being constructed
+                }
+            } else {
+                record = recorder
+                running.set(true)
+            }
             if (verboseStartupDiagnostics) {
                 diagnosticStartedAt = android.os.SystemClock.uptimeMillis()
                 lastLogAt = diagnosticStartedAt - 1_000L
@@ -349,7 +432,16 @@ class AudioSender(
                 log("AUDIO T13: B233 前45秒开启每秒 RTP/采集诊断（静音数据也会持续发送）")
             }
             if (mutePhoneOutput) {
-                mutePhoneMedia()
+                if (verboseStartupDiagnostics) {
+                    // stop() must restore volume *after* any in-flight mute.
+                    // Both operations share the B233 session gate; a retired
+                    // startup cannot mute the phone after stop() returns.
+                    if (!b233DatagramGate.runIfActive({ !stopped.get() }) {
+                        mutePhoneMedia()
+                    }) return false
+                } else {
+                    mutePhoneMedia()
+                }
             } else {
                 // T12 isolates B233's all-zero capture from Sony's STREAM_MUSIC mute.
                 // This is diagnostic: phone speaker may be audible as well as the car.
@@ -413,13 +505,25 @@ class AudioSender(
         record = null
         aacEncoder?.stop()
         aacEncoder = null
-        runCatching { socket?.close() }
-        socket = null
-        runCatching { syncSocket?.close() }
-        syncSocket = null
+        if (verboseStartupDiagnostics) {
+            b233DatagramGate.retire {
+                runCatching { socket?.close() }
+                socket = null
+                runCatching { syncSocket?.close() }
+                syncSocket = null
+                // Serialize restore with startup mute. In particular, stop()
+                // cannot finish restoring while an old startup still mutes.
+                if (mutePhoneOutput) restorePhoneMedia()
+            }
+        } else {
+            runCatching { socket?.close() }
+            socket = null
+            runCatching { syncSocket?.close() }
+            syncSocket = null
+            if (mutePhoneOutput) restorePhoneMedia()
+        }
         syncThread = null
         thread = null
-        if (mutePhoneOutput) restorePhoneMedia()
         runCatching { onStopped?.invoke() }
             .onFailure { log("AUDIO T73: 反向音频控制端口释放失败：${it.javaClass.simpleName}") }
         log("AUDIO: 已停止（共发 $packetsSent 包 / ${bytesSent / 1024}KB）")
@@ -462,13 +566,19 @@ class AudioSender(
                             .onSuccess { log("AUDIO T24: RTCP UDP 指定车机 WiFi Network=$network") }
                             .onFailure { log("AUDIO T24: RTCP WiFi 路由绑定失败 - ${it.message}") }
                     }
-                    connect(InetAddress.getByName(host), controlPort)
+                    connectOwnedAudioDatagramSocket(this, host, controlPort)
                 }
             } catch (error: Exception) {
                 log("AUDIO: 同步包套接字创建失败 - ${error.message}")
                 return
             }
-        syncSocket = client
+        if (verboseStartupDiagnostics) {
+            if (!b233DatagramGate.publish(client, { !stopped.get() }) { syncSocket = client }) {
+                return // stop() retired this B233 sender during RTCP connect
+            }
+        } else {
+            syncSocket = client
+        }
         log("AUDIO: 同步包已启用 → $host:$controlPort（每 ${SYNC_INTERVAL_MILLIS}ms 一个，建立 RTP↔NTP 锚点）")
         val worker =
             Thread(
