@@ -96,9 +96,13 @@ class VideoSender(
      * 端口连接必然迟到——所以协商音频前先调本方法。catplay 亦然（视频 SETUP 后立即
      * finish_tx 连流，再协商音频）。
      */
-    fun openDataPort(): Boolean {
+    fun openDataPort(): Boolean = openDataPortForEpoch(null)
+
+    private fun openDataPortForEpoch(requiredEpoch: Long?): Boolean {
         // A stop during the blocking TCP connect invalidates the late result.
         val epochAtConnect = synchronized(dataPortLock) {
+            // start() must not open a fresh socket after stop() retired its epoch.
+            if (requiredEpoch != null && dataPortEpoch != requiredEpoch) return false
             val existing = socket
             if (existing != null && !existing.isClosed) return true
             dataPortEpoch
@@ -149,7 +153,7 @@ class VideoSender(
         if (running.get()) return true
         // TCP connection stays interruptible by stop(); codec publication is serialized.
         val startEpoch = synchronized(dataPortLock) { dataPortEpoch }
-        if (!openDataPort()) return false
+        if (!openDataPortForEpoch(startEpoch)) return false
         return synchronized(startupLock) {
             // stop() may have retired the socket between connect and codec startup.
             if (synchronized(dataPortLock) { dataPortEpoch != startEpoch || socket?.isClosed != false }) {
