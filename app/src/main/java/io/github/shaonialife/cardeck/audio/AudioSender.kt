@@ -575,6 +575,7 @@ class AudioSender(
                         // READ_BLOCKING normally fills the frame but the Android
                         // API permits short reads when recording is interrupted.
                         if (bytesRead == 0) {
+                            readWindow.accept(0) // aggregate count only; preserve partial PCM
                             Thread.sleep(READ_TIMEOUT_QUIET_MILLIS)
                             continue
                         }
@@ -674,11 +675,14 @@ class AudioSender(
                     val elapsedMs = if (diagnosticStartedAt > 0L) now - diagnosticStartedAt else -1L
                     val label = if (inTrialWindow) "AUDIO T13: B233 RTP" else "AUDIO: 推流中"
                     val recordState = if (inTrialWindow) " RECORD确认=$syncRecordAccepted" else ""
+                    // T94: reuse the existing throttled B233 RTP diagnostic.
+                    // No new timer, no payload/audio content or identifiers.
+                    val captureState = readWindow?.let { " " + it.diagnosticSummary() } ?: ""
                     lastLogAt = now
                     log(
                         "$label（elapsed=${elapsedMs}ms，codec=${codec.name} type=$streamType，" +
                             "累计 $packetsSent 包，${bytesSent / 1024}KB，" +
-                            "seq=$sequence ts=$timestamp$recordState）",
+                            "seq=$sequence ts=$timestamp$recordState$captureState）",
                     )
                 }
             }
@@ -686,6 +690,9 @@ class AudioSender(
             // 后台线程未捕获异常会杀死整个进程——音频异常绝不允许冒泡
             log("AUDIO: 采集线程异常退出 - ${error.message}")
         } finally {
+            if (readWindow != null) {
+                log("AUDIO T94: B233 PCM capture shutdown " + readWindow.diagnosticSummary())
+            }
             failureTrace?.event("audio_capture_loop_exit")
             stop()
         }
