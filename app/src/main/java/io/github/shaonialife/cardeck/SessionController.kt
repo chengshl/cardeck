@@ -1404,7 +1404,15 @@ object SessionController {
                                     owningSender = createdSender
                                     videoSender = createdSender
                                     // 先连端口（车机看门狗），编码器等 RECORD 后再启动
-                                    videoSender?.openDataPort()
+                                    val dataPortConnected = videoSender?.openDataPort()
+                                    appendLog(
+                                        "VIDEO DIAG #28: DATA_PORT_RESULT=" +
+                                            when (dataPortConnected) {
+                                                true -> "connected"
+                                                false -> "failed"
+                                                null -> "sender-missing"
+                                            } + " (no frame proven)",
+                                    )
                                 }
                                 // 先 RECORD 激活会话并起视频，再协商音频（2026-10-17 奥迪定谳）：
                                 // 车机在「屏幕流 SETUP 之后」有约 2s 看门狗，等不到 RECORD/数据流即
@@ -1413,10 +1421,10 @@ object SessionController {
                                 // 返回同一毫秒、且 5 次实测全部复现。故顺序改为：
                                 //   屏幕 SETUP → 连数据端口 → RECORD → 起编码器（出帧）→ 音频 SETUP
                                 // 音频 SETUP 失败只丢声音，视频会话保持。
-                                client.record()
-                                // #28: RECORD success is not proof that a video sender exists or started.
+                                val recordAccepted = client.record()
+                                // A RECORD request returning is not proof of 200 OK or a video frame.
                                 appendLog(
-                                    "VIDEO DIAG #28: RECORD_RETURNED senderPresent=${videoSender != null} " +
+                                    "VIDEO DIAG #28: RECORD_RETURNED accepted=$recordAccepted senderPresent=${videoSender != null} " +
                                         "hostPresent=${host != null} (no video frame proven)",
                                 )
                                 if (host != null) {
@@ -1459,6 +1467,8 @@ object SessionController {
                                                 null -> "sender-missing"
                                             } + " (no video frame proven)",
                                     )
+                                } else {
+                                    appendLog("VIDEO DIAG #28: SENDER_START_SKIPPED reason=host-missing (no frame proven)")
                                 }
                                 // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。
                                 // 会话已激活（RECORD 完成）后再协商；失败不影响视频主链路。
