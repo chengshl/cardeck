@@ -10,15 +10,26 @@ internal object RescueTracePolicy {
         RegexOption.IGNORE_CASE,
     )
 
+    // A benign "Starting to observe" is emitted for every DeviceConfig namespace and
+    // can generate hundreds of context copies if the tag alone is considered fatal.
+    // Keep those messages in the normal lane; reserve fsync storage for actual rescue actions.
+    private val rescueAction = Regex(
+        """RescueParty\s*:\s*(?:(?:Attempting|Finished|Failed)\s+rescue\s+level\b|""" +
+            """(?:Rebooting|Restarting)\b)""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private val criticalEvent = Regex(
+        """WARM_REBOOT|PackageWatchdog.*(failed|rescue|reset)|""" +
+            """denied\s*\{\s*add\s*\}|SettingsProvider.*(Exception|FATAL)|""" +
+            """FATAL EXCEPTION|Fatal signal|system_server.*(ANR|watchdog|crash)|""" +
+            """failed to complete startup""",
+        RegexOption.IGNORE_CASE,
+    )
+
     /** Critical startup/reset evidence gets a separate fsync-preserved storage lane. */
     fun critical(line: String): Boolean =
-        Regex(
-            """RescueParty|WARM_REBOOT|PackageWatchdog.*(failed|rescue|reset)|""" +
-                """denied\s*\{\s*add\s*\}|SettingsProvider.*(Exception|FATAL)|""" +
-                """FATAL EXCEPTION|Fatal signal|system_server.*(ANR|watchdog|crash)|""" +
-                """failed to complete startup""",
-            RegexOption.IGNORE_CASE,
-        ).containsMatchIn(line)
+        criticalEvent.containsMatchIn(line) || rescueAction.containsMatchIn(line)
 
     fun keep(line: String): Boolean =
         line.isNotBlank() && line.length <= 8192 &&
