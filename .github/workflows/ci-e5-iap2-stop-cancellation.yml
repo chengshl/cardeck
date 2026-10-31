@@ -1,0 +1,229 @@
+name: E5 iAP2 stop cancellation isolation (#34)
+on:
+  # Open PR is the single CI authority; each commit must not consume two
+  # identical Android build runners via simultaneous push and PR events.
+  # workflow_dispatch stays available for an explicit isolated rerun.
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWait.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWaitTest.kt'
+      - '.github/workflows/ci-e5-iap2-stop-cancellation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cancellation-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Enforce fresh E5 base and narrow #34 change scope
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          original_base = '8271f2a71be7b4acc740c2748bf3281810ea9aa1'
+          previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          old_current_base = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          current_base = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
+          assert base == current_base, f'E5 baseline changed; review and refresh before proceeding: {base}'
+          # #93 only added tests and a test CI; original #34 runtime remains stable.
+          latest_93_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', old_current_base, current_base], text=True
+          ).splitlines())
+          assert latest_93_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected post-#93 E5 drift: {sorted(latest_93_delta)}'
+          # The E5 baseline advanced only through reviewed L1 changes:
+          # #65/#69 Chinese experiment labels and #73 release-floor tests.
+          # Keep this exact delta lease; never silently widen #34's L3 scope.
+          # #77 only added release-preflight regression coverage; no iAP2,
+          # Bluetooth, session teardown, or other runtime file changed.
+          # #79 added only two test/CI files at 163ce5e; it did NOT change
+          # #34 cancellation, iAP2, Bluetooth or any production runtime code.
+          # Unknown future E5 stable movement must fail the baseline lease.
+          # #82 only changed official APK auto-publish workflow and its regression tests.
+          # The merged stable base is exact, #33/#34 runtime sources are untouched.
+          latest_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_reviewed, current_base], text=True
+          ).splitlines())
+          assert latest_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected new E5 stable delta: {sorted(latest_delta)}'
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', original_base, current_base], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-chinese-project-labels.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected stable E5 drift: {sorted(stable_delta)}'
+          files = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          allowed = {
+              'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWait.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2InterruptibleWaitTest.kt',
+              '.github/workflows/ci-e5-iap2-stop-cancellation.yml',
+          }
+          assert files == allowed, f'Unexpected changes: {sorted(files ^ allowed)}'
+          root = Path('app/src/main/java/io/github/shaonialife/cardeck')
+          helper = (root / 'iap2/Iap2InterruptibleWait.kt').read_text()
+          sender = (root / 'iap2/Iap2SenderSession.kt').read_text()
+          client = (root / 'bt/Iap2BluetoothClient.kt').read_text()
+          assert 'Thread.currentThread().interrupt()' in helper
+          assert 'throw IOException(' in helper
+          assert 'Iap2InterruptibleWait.sleep(1500L)' in sender
+          assert 'Iap2InterruptibleWait.sleep(600)' in client
+          assert 'Thread.sleep(1500L)' not in sender
+          assert 'Thread.sleep(600)' not in client
+          assert 'channel.runSenderSession(' in client
+          # stop/start can overlap old worker cleanup. A stale worker must never
+          # remove or close the socket/channel published by the new generation.
+          assert 'private val activeChannel = AtomicReference<Iap2LinkChannel?>(null)' in client
+          assert 'activeChannel.set(channel)' not in client
+          assert 'activeChannel.compareAndSet(null, channel)' in client
+          assert 'activeChannel.compareAndSet(channel, null)' in client
+          assert client.count('activeChannel.getAndSet(null)') == 3
+          assert 'currentSocket.compareAndSet(connected, null)' in client
+          assert client.count('currentSocket.compareAndSet(socket, null)') == 7  # includes permission-revocation close
+          assert client.count('currentSocket.getAndSet(null)') == 3  # detach/stop + generation-owned worker exit
+          assert 'currentSocket.set(socket)' not in client
+          assert 'runCatching { connected.close() }' in client
+          assert 'val socket = tryConnect(device, myGeneration)' in client
+          assert 'runSession(connected, myGeneration)' in client
+          assert 'private fun tryConnect(device: BluetoothDevice, myGeneration: Long)' in client
+          assert 'private fun runSession(socket: BluetoothSocket, myGeneration: Long)' in client
+          assert client.count('if (!running || generation.get() != myGeneration)') >= 4
+          assert 'if (!running || generation.get() != myGeneration || !currentSocket.compareAndSet(null, socket))' in client
+          assert 'if (!activeChannel.compareAndSet(null, channel))' in client
+          assert 'activeChannel.compareAndSet(channel, null)' in client
+          assert 'channel.runSenderSession(' in client
+          # Stream/channel acquisition occurs before runSession's normal finally;
+          # fail closed unless an initialization exception retires only its socket.
+          assert 'val channel =\n            try {' in client
+          assert 'Iap2LinkChannel(stream, name = "iap2-bt-car")' in client
+          assert 'catch (error: Exception) {' in client
+          assert '控制通道初始化失败' in client
+          assert 'activeChannel = null' not in client
+          # New narrow revocation guard: compare against the exact prior reviewed HEAD.
+          # Only the SDP UUID lookup and RFCOMM create/connect SecurityException paths may change.
+          previous_head = 'f514b788ec14e297d05dad19407f3fb2bb40f777'
+          client_path = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+          ci_path = '.github/workflows/ci-e5-iap2-stop-cancellation.yml'
+          changed_since_reviewed = set(subprocess.check_output(
+              ['git','diff','--name-only',previous_head,'HEAD'], text=True
+          ).splitlines())
+          assert changed_since_reviewed == ({client_path, ci_path} | stable_delta), (
+              'Unexpected new #34 change since reviewed HEAD: ' + str(changed_since_reviewed)
+          )
+          old_client = subprocess.check_output(
+              ['git', 'show', previous_head + ':' + client_path], text=True
+          )
+          changes = [
+              ("        val withService =\n            bonded.filter { device ->\n                device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true\n            }", "        val withService =\n            bonded.filter { device ->\n                // BLUETOOTH_CONNECT may be revoked after the start() permission check.\n                try {\n                    device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true\n                } catch (_: SecurityException) {\n                    false\n                }\n            }"),
+              ("            } catch (error: IOException) {\n                return null\n            }\n        // 连接前就登记", "            } catch (error: IOException) {\n                return null\n            } catch (_: SecurityException) {\n                log(\"BT-C: 建立 RFCOMM Socket 时蓝牙权限已失效（已跳过本轮）\")\n                return null\n            }\n        // 连接前就登记"),
+              ("        } catch (error: IOException) {\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            null\n        }\n    }\n\n    private fun runSession", "        } catch (error: IOException) {\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            null\n        } catch (_: SecurityException) {\n            // Android permission can be revoked while blocking inside connect().\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            log(\"BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）\")\n            null\n        }\n    }\n\n    private fun runSession"),
+              ("        } catch (error: IOException) {\n            if (!running || Thread.currentThread().isInterrupted) {\n                log(\"BT-C: 会话已取消，正常释放控制链路；不是异常崩溃\")\n            } else {\n                log(\"BT-C: SESSION 失败 - ${error.message}\")\n                // Preserve the existing T39 backoff for actual diagnostic timeouts.\n                if (error.message?.contains(\"Buick T\") == true) {\n                    log(\"BT-C T39: Buick 诊断结束；保留受控的主动重连（不重启车机）\")\n                }\n            }\n        } finally {", "        } catch (error: IOException) {\n            if (!running || Thread.currentThread().isInterrupted) {\n                log(\"BT-C: 会话已取消，正常释放控制链路；不是异常崩溃\")\n            } else {\n                log(\"BT-C: SESSION 失败 - ${error.message}\")\n                // Preserve the existing T39 backoff for actual diagnostic timeouts.\n                if (error.message?.contains(\"Buick T\") == true) {\n                    log(\"BT-C T39: Buick 诊断结束；保留受控的主动重连（不重启车机）\")\n                }\n            }\n        } catch (error: Exception) {\n            // Android permission or callback/runtime failures must not escape the\n            // RFCOMM worker: finally still retires only this session's resources.\n            log(\"BT-C: SESSION 意外异常（${error.javaClass.simpleName}；本轮连接已释放）\")\n        } finally {"),
+          ]
+          expected_client = old_client
+          for before_text, after_text in changes:
+              assert expected_client.count(before_text) == 1, 'Permission guard baseline drift'
+              expected_client = expected_client.replace(before_text, after_text)
+          # #34 follow-up: only guard three Bluetooth permission-revocation read sites.
+          reviewed_client = subprocess.check_output(
+              ['git', 'show', 'a6c4bb483dd37920f935a8e20ca3ee437a576b3c:' + client_path], text=True
+          )
+          assert expected_client == reviewed_client, 'Previous reviewed client baseline drifted'
+          permission_read_changes = [
+              ("val adapter =\n            try {\n                context.getSystemService(BluetoothManager::class.java)?.adapter\n            } catch (_: Exception) {\n                null\n            }\n        if (adapter == null || !adapter.isEnabled) {", "val adapter =\n            try {\n                context.getSystemService(BluetoothManager::class.java)?.adapter\n            } catch (_: Exception) {\n                null\n            }\n        // Permission can disappear after hasPermission() but before isEnabled.\n        val adapterEnabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }\n        if (!adapterEnabled) {"),
+              ("val name =\n                    try {\n                        device.name\n                    } catch (_: SecurityException) {\n                        null\n                    } ?: device.address", "val name =\n                    try {\n                        device.name ?: device.address\n                    } catch (_: SecurityException) {\n                        \"蓝牙设备\"\n                    }"),
+              ("val hit = bonded.filter { TargetDevicePrefs.matches(target, it.address) }", "val hit = bonded.filter { device ->\n                // A revoked permission must not kill the long-lived reconnect worker.\n                try { TargetDevicePrefs.matches(target, device.address) }\n                catch (_: SecurityException) { false }\n            }"),
+          ]
+          for before_text, after_text in permission_read_changes:
+              assert expected_client.count(before_text) == 1, 'Permission read-site drift'
+              expected_client = expected_client.replace(before_text, after_text)
+          reviewed_591 = subprocess.check_output(
+              ['git', 'show', '591cfeec245bf335326b8b9f6abc0bb6dcc8846c:' + client_path], text=True
+          )
+          assert expected_client == reviewed_591, 'Previous exact #34 Bluetooth revocation changes drifted'
+          # A worker may return when the adapter disappears or a callback fails.
+          # Lock its lifecycle retirement against a concurrent stop/new start.
+          # The reviewed runtime lease is one immutable source-only commit.
+          reviewed_worker = subprocess.check_output(
+              ['git', 'show', 'a917f08b8684331a96c8ca64bc95b639f89beb02:' + client_path], text=True
+          )
+          previous_worker = subprocess.check_output(
+              ['git', 'show', '1395c1e8c09c23c4ff7bd56c0ff334ea6e1dc432:' + client_path], text=True
+          )
+          assert previous_worker == reviewed_worker, 'Previous exact #34 worker lifecycle baseline drifted'
+          # A targetProvider()/log failure must not publish running=true; a failed
+          # Thread.start() must roll back generation, thread and running state.
+          # The new file is an immutable source lease; also scope its difference
+          # exclusively to the synchronized start() body.
+          reviewed_start = subprocess.check_output(
+              ['git', 'show', '8c390c78772294db91a96905b472ad2064d7eb9f:' + client_path], text=True
+          )
+          assert client == reviewed_start, 'Unexpected runtime edits beyond reviewed start rollback'
+          start_anchor = '    fun start(): Boolean {'
+          end_anchor = '    // Own the worker'
+          old_start = previous_worker.split(start_anchor, 1)[1].split(end_anchor, 1)[0]
+          new_start = client.split(start_anchor, 1)[1].split(end_anchor, 1)[0]
+          assert client.replace(new_start, old_start, 1) == previous_worker, 'Unexpected change outside start()'
+          assert new_start.index('val target = try {') < new_start.index('running = true')
+          assert new_start.index('"BT-C: 启动') < new_start.index('running = true')
+          assert 'catch (error: Exception)' in new_start
+          assert new_start.count('generation.incrementAndGet()') == 2
+          assert 'running = false' in new_start and 'thread = null' in new_start
+          assert '连接线程启动失败' in new_start
+          assert '@Synchronized\n    fun start(): Boolean' in client
+          worker = client.split('private fun connectLoop(myGeneration: Long)', 1)[1].split('private fun connectLoopBody(', 1)[0]
+          assert 'connectLoopBody(myGeneration)' in worker
+          assert 'catch (error: Exception)' in worker and 'finally {' in worker
+          assert 'val retired = synchronized(this)' in worker
+          assert 'if (generation.get() != myGeneration) null else {' in worker
+          assert 'running = false' in worker and 'thread = null' in worker
+          assert 'currentSocket.getAndSet(null)' in worker and 'activeChannel.getAndSet(null)' in worker
+          assert worker.index('synchronized(this)') < worker.index('retired?.first?.let')
+          stop_method = client.split('fun stop() {', 1)[1].split('private fun sleepQuietly', 1)[0]
+          assert 'val retired = synchronized(this)' in stop_method
+          assert stop_method.index('generation.incrementAndGet()') < stop_method.index('retired.first?.let')
+          assert 'retired.third?.interrupt()' in stop_method
+          assert 'SecurityException' in client
+          assert client.count('SESSION 意外异常') == 1
+          assert client.count('finally {\n            // Only retire resources owned by this session') == 1
+          print('Exact #34 generation-owned worker and start failure rollback verified') 
+          print('L3 isolated: Android worker recovery + safe stop/start; no Bluetooth or CarPlay wire change')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests and Android Debug compilation (no APK publication)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
