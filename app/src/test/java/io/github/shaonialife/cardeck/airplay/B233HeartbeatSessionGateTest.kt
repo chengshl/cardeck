@@ -97,6 +97,51 @@ class B233HeartbeatSessionGateTest {
     }
 
     @Test
+    fun capturedRtspSocketCannotAdoptNewSessionAfterRetirement() {
+        val gate = B233HeartbeatSessionGate()
+        val token = gate.snapshot()
+        val oldSocket = Any()
+        val captured = gate.captureIfCurrent(token) { oldSocket }
+        assertTrue("capture must belong to old session", captured === oldSocket)
+        gate.retire()
+        val newSocket = Any()
+        assertTrue(gate.captureIfCurrent(gate.snapshot()) { newSocket } === newSocket)
+        // Old request must never recapture the new socket, even if its write runs late.
+        assertTrue(captured === oldSocket)
+        assertFalse(gate.isCurrent(token))
+        assertTrue(gate.captureIfCurrent(token) { newSocket } == null)
+    }
+
+    @Test
+    fun retirementIsNotBlockedByPausedRtspWriteAfterSocketCapture() {
+        val gate = B233HeartbeatSessionGate()
+        val token = gate.snapshot()
+        val oldSocket = Any()
+        val captured = gate.captureIfCurrent(token) { oldSocket }
+        val writeStarted = CountDownLatch(1)
+        val allowWriteToFinish = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val writer = executor.submit {
+                // Simulate a blocked network write to the already captured socket.
+                writeStarted.countDown()
+                check(allowWriteToFinish.await(5, TimeUnit.SECONDS))
+                check(captured === oldSocket)
+            }
+            assertTrue(writeStarted.await(5, TimeUnit.SECONDS))
+            // close() must be able to retire BEFORE the simulated write unblocks.
+            val retiring = executor.submit<Long> { gate.retire() }
+            retiring.get(2, TimeUnit.SECONDS)
+            assertFalse(gate.isCurrent(token))
+            allowWriteToFinish.countDown()
+            writer.get(5, TimeUnit.SECONDS)
+        } finally {
+            allowWriteToFinish.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun nonB233LegacyWorkerDoesNotDependOnGate() {
         val gate = B233HeartbeatSessionGate()
         val guardB233 = false
