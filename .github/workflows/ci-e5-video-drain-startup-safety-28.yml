@@ -200,13 +200,57 @@ jobs:
           ]:
               assert expected.count(before_text) == 1, f'{name} missing or ambiguous'
               expected = expected.replace(before_text, after_text)
-          assert new == expected, 'Unexpected change outside reviewed drain epoch ownership guard'
+          # A drain scheduled before stop() may begin only after a new start().
+          # Guard resource acquisition itself, not just the finally cleanup.
+          previous_guard_head = '58598ace527e4f0c6d12c5def3a4bd7e8c6db974'
+          previous_guard_source = subprocess.check_output(
+              ['git', 'show', previous_guard_head + ':' + source_path], text=True
+          )
+          assert expected == previous_guard_source, 'Prior reviewed drain epoch guard drifted'
+          resource_before = '\n'.join([
+              "            val codec = encoder ?: run {",
+              "                log(\"VIDEO: 推流启动中止 - 编码器已释放\")",
+              "                return",
+              "            }",
+              "            val output = socket?.getOutputStream() ?: run {",
+              "                log(\"VIDEO: 推流启动中止 - 数据端口已关闭\")",
+              "                return",
+              "            }",
+          ])
+          resource_after = '\n'.join([
+              "            // A retired drain must not pick up a newer session's codec/socket.",
+              "            // Snapshot both resources under the same lock used by start()/stop().",
+              "            val resources = synchronized(startupLock) {",
+              "                if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != epoch }) {",
+              "                    null",
+              "                } else {",
+              "                    Pair(encoder, socket)",
+              "                }",
+              "            }",
+              "            if (resources == null) {",
+              "                log(\"VIDEO: 推流启动中止 - 会话已过期\")",
+              "                return",
+              "            }",
+              "            val codec = resources.first ?: run {",
+              "                log(\"VIDEO: 推流启动中止 - 编码器已释放\")",
+              "                return",
+              "            }",
+              "            val output = resources.second?.getOutputStream() ?: run {",
+              "                log(\"VIDEO: 推流启动中止 - 数据端口已关闭\")",
+              "                return",
+              "            }",
+          ])
+          assert expected.count(resource_before) == 1, 'Retired drain acquisition block ambiguous'
+          expected = expected.replace(resource_before, resource_after)
+          assert new == expected, 'Unexpected change outside reviewed drain resource snapshot guard'
+          assert new.count('Pair(encoder, socket)') == 1
+          assert new.count('dataPortEpoch != epoch') == 1
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
           assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
           assert start.index('inputSurface = surface') < start.index('codec.start()')
           assert 'stop()' in start.split('} catch (error: Exception)', 1)[1]
           tail = new.split('private fun drainEncoder(epoch: Long)', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
-          assert tail.index('try {') < tail.index('socket?.getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
+          assert tail.index('try {') < tail.index('resources.second?.getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
           assert 'stop()' in tail.split('} finally {', 1)[1]
           assert 'onEnded?.invoke()' in tail.split('} finally {', 1)[1]
           assert 'dataPortEpoch == epoch' in tail.split('} finally {', 1)[1]
