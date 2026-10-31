@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.service
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -76,4 +77,32 @@ class ProjectionLeaseTest {
             pool.shutdownNow()
         }
     }
+    @Test
+    fun serviceDestroyedWithoutExplicitStopRevokesOnlyItsLiveGrant() {
+        val lease = ProjectionLease<Any>()
+        val owned = Any()
+        val retired = mutableListOf<Any>()
+        lease.publish(owned)
+        assertTrue(lease.retireOwned(owned) { retired.add(it) })
+        assertNull(lease.current())
+        assertFalse(lease.retireOwned(owned) { retired.add(it) })
+        assertEquals(listOf(owned), retired)
+    }
+
+    @Test
+    fun delayedOldServiceDestroyCannotStopReplacementProjection() {
+        val lease = ProjectionLease<Any>()
+        val oldServiceGrant = Any()
+        val newServiceGrant = Any()
+        val retired = mutableListOf<Any>()
+        lease.publish(oldServiceGrant)
+        lease.publish(newServiceGrant)
+        assertFalse(lease.retireOwned(oldServiceGrant) { retired.add(it) })
+        assertSame(newServiceGrant, lease.current())
+        assertTrue(retired.isEmpty())
+        assertTrue(lease.retireOwned(newServiceGrant) { retired.add(it) })
+        assertEquals(listOf(newServiceGrant), retired)
+        assertNull(lease.current())
+    }
+
 }
