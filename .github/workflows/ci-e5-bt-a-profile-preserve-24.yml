@@ -115,8 +115,8 @@ jobs:
               expected_client = expected_client.replace(before_part, after_part)
           # One additional BT-A cancellation fence: a worker retired by stop()
           # must not begin the destructive profile-disconnect call.
-          before_guard = "                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\\n                    val dropped = BtProfiles.disconnect(context, device)"
-          after_guard = "                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\\n                    // Stop can retire this worker while candidate selection or policy checks run.\\n                    // Do not start a destructive profile disconnect for an already retired worker.\\n                    if (!running || generation.get() != myGeneration) return\\n                    val dropped = BtProfiles.disconnect(context, device)"
+          before_guard = "                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          after_guard = "                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    // Stop can retire this worker while candidate selection or policy checks run.\n                    // Do not start a destructive profile disconnect for an already retired worker.\n                    if (!running || generation.get() != myGeneration) return\n                    val dropped = BtProfiles.disconnect(context, device)"
           assert expected_client.count(before_guard) == 1, 'Unreviewed BT-A disconnect block'
           expected_client = expected_client.replace(before_guard, after_guard)
           assert new == expected_client, 'Unrelated runtime behavior changed'
