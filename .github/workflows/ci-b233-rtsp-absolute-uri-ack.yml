@@ -54,7 +54,7 @@ jobs:
           tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt').read_text()
           dispatch = src.split('    private fun dispatchResponse(', 1)[1].split('    /** 无匹配报文计数', 1)[0]
           pred = 'val absoluteUriPeerRequest = RtspPeerRequestEvidence.isB233AbsoluteUriRequest('
-          gate = 'if (!absoluteUriPeerRequest) {'
+          gate = 'if (!absoluteUriPeerRequest && !pathPeerRequest) {'
           queue = 'val queue = message.cseq?.let { pendingResponses[it] }'
           ack = 'if (message.isRequest || absoluteUriPeerRequest) {'
           assert pred in dispatch and 'statusLine, endpoint.isBuickB233' in dispatch

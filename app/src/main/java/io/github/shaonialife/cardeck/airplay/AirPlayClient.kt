@@ -2837,9 +2837,9 @@ class AirPlayClient(
                 log("AUDIO T88: B233 peer RTSP request observed $evidence")
             }
         }
-        // B233-only: absolute rtsp:// URI requests are genuine peer requests,
-        // not responses to our pending CSeq. A peer can reuse our CSeq number.
-        // Preserve legacy path-form and all non-B233 routing unchanged.
+        // B233-only: path-form and absolute-URI peer requests must bypass
+        // locally pending response CSeq entries; receiver CSeq may overlap.
+        // Non-B233 routing, ACK bytes, encryption and timing remain unchanged.
         val absoluteUriPeerRequest = RtspPeerRequestEvidence.isB233AbsoluteUriRequest(
             statusLine, endpoint.isBuickB233,
         )
