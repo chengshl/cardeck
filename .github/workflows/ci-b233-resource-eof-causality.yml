@@ -57,6 +57,10 @@ jobs:
           assert 'b233ResourceEofEvidence.claimReply(it, statusLine, replyBody.isNotEmpty())' in air
           assert 'b233ResourceEofEvidence.claimIoError(it)' in air
           assert 'generation != claimGeneration' in helper
+          assert 'fun resetForNewConnection()' in helper
+          assert 'b233ResourceEofEvidence.resetForNewConnection()' in air
+          assert air.count('b233ResourceEofEvidence.resetForNewConnection()') == 2
+          assert 'reconnectStartsWithEmptyEvidenceAndRejectsOldCompletion' in tests
           assert 'lateSuccessFromPreviousRequestCannotConfirmNewClaim' in tests
           assert 'lateErrorAndDuplicateReplyCannotCorruptLatestClaim' in tests
           assert 'AUDIO T98: rtsp_eof_resource' in air
