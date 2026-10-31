@@ -156,6 +156,22 @@ jobs:
           concurrent_after = '\n'.join(["            val publication = synchronized(dataPortLock) {","                when {","                    dataPortEpoch != epochAtConnect -> \"stale\"","                    socket?.isClosed == false -> \"existing\"","                    else -> {","                        socket = client","                        \"published\"","                    }","                }","            }","            if (publication != \"published\") {","                // A concurrent openDataPort() must not replace or leak the live socket.","                runCatching { client.close() }","                return publication == \"existing\"","            }","            pendingSocket = null"])
           assert expected.count(concurrent_before) == 1, 'Expected single old socket publication block'
           expected = expected.replace(concurrent_before, concurrent_after)
+          # MediaCodec gave us an output index even when getOutputBuffer is null.
+          # Return that index exactly once; otherwise the encoder can stall.
+          null_buffer_before = '                        val buffer = codec.getOutputBuffer(index) ?: continue'
+          null_buffer_after = '\\n'.join([
+              '                        val buffer = codec.getOutputBuffer(index)',
+              '                        if (buffer == null) {',
+              '                            // dequeueOutputBuffer() still transferred ownership of this index.',
+              '                            // Returning without releasing it can exhaust codec output slots.',
+              '                            codec.releaseOutputBuffer(index, false)',
+              '                            maybeSendKeepAlive(output)',
+              '                            continue',
+              '                        }',
+          ])
+          assert expected.count(null_buffer_before) == 1, 'MediaCodec null slot baseline drift'
+          expected = expected.replace(null_buffer_before, null_buffer_after)
+          assert new.count('codec.releaseOutputBuffer(index, false)') == 2
           assert 'socket?.isClosed == false -> "existing"' in new
           assert new == expected, 'Unexpected change outside reviewed video startup/stop ownership guards'
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
