@@ -156,6 +156,9 @@ class AirPlayClient(
     /** T82 read-only: counts B233 event replies and progressing receiver audio clock. */
     private val audioControlLiveness = AudioControlLiveness()
 
+    /** T98: resource-claim/RTSP EOF correlation, never claims ownership. */
+    private val b233ResourceEofEvidence = B233ResourceEofEvidence()
+
     // T84: only the first 12 B233 resource requests per connection, numeric protocol
     // fields only; no raw plist, reason text or identifiers. Read-only diagnostics.
     private var b233ModeRequestAuditCount: Int = 0
@@ -168,6 +171,7 @@ class AirPlayClient(
 
     fun auditB233ModeRequest(command: Map<*, *>) {
         if (!endpoint.isBuickB233) return
+        b233ResourceEofEvidence.receiverChangeModes(command)
         val ordinal = synchronized(this) {
             if (b233ModeRequestAuditCount >= 12) null
             else (++b233ModeRequestAuditCount)
@@ -742,6 +746,9 @@ class AirPlayClient(
                         ),
                 ),
             )
+        val claimToken = if (endpoint.isBuickB233 && claimAudioResource) {
+            b233ResourceEofEvidence.claimMainAudio(SystemClock.uptimeMillis())
+        } else null
         return try {
             val (statusLine, replyBody) =
                 request(
@@ -753,6 +760,7 @@ class AirPlayClient(
             // T95: transport 200 is not evidence of main-audio ownership.
             // The decoder emits only bounded allowlisted shape, no peer IDs.
             if (endpoint.isBuickB233) {
+                claimToken?.let { b233ResourceEofEvidence.claimReply(it, statusLine, replyBody.isNotEmpty()) }
                 log("AUDIO T95: modesChanged reply " +
                     B233ModeReplySummary.describe(replyBody))
             }
@@ -763,6 +771,7 @@ class AirPlayClient(
             )
             statusLine.contains("200")
         } catch (error: IOException) {
+            claimToken?.let { b233ResourceEofEvidence.claimIoError(it) }
             log("AIRPLAY: modesChanged 失败 - ${error.message}")
             false
         }
@@ -2789,6 +2798,10 @@ class AirPlayClient(
                         audioFailureTrace?.event("rtsp_peer_eof")
                         log("AUDIO T82: rtsp_eof ${audioControlLiveness.summary()} " +
                             "localSocketClosed=${client.isClosed}")
+                        if (endpoint.isBuickB233) {
+                            log("AUDIO T98: rtsp_eof_resource " +
+                                b233ResourceEofEvidence.summaryAtPeerEof(SystemClock.uptimeMillis()))
+                        }
                     }
                     break
                 }
