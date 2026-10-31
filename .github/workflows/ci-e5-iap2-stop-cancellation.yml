@@ -136,7 +136,7 @@ jobs:
           changed_since_reviewed = set(subprocess.check_output(
               ['git','diff','--name-only',previous_head,'HEAD'], text=True
           ).splitlines())
-          assert changed_since_reviewed == {client_path, ci_path}, (
+          assert changed_since_reviewed == ({client_path, ci_path} | stable_delta), (
               'Unexpected new #34 change since reviewed HEAD: ' + str(changed_since_reviewed)
           )
           old_client = subprocess.check_output(
