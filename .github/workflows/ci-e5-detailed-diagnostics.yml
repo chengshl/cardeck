@@ -31,29 +31,33 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Fail closed on accidental signed-release triggers
+      - name: Fail closed on signing, versioning and experiment provenance
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('.github/workflows/publish-e5-detailed-diagnostics.yml')
-          content = path.read_text()
-          push = content.split('on:\n  push:\n', 1)[1].split('  workflow_dispatch:', 1)[0]
-          expected = {
-              'app/src/main/**', 'app/src/release/**',
-              'app/build.gradle.kts', 'app/proguard-rules.pro',
-              'build.gradle.kts', 'settings.gradle.kts',
-              'gradle.properties', 'gradle/**', 'gradlew', 'gradlew.bat',
-          }
-          assert 'paths-ignore:' not in push
-          assert '    paths:\n' in push
-          actual = {line.strip()[3:-1] for line in push.splitlines()
-                    if line.strip().startswith("- '") and line.strip().endswith("'")}
-          assert actual == expected, (actual, expected)
+          import subprocess
+          content = Path('.github/workflows/publish-e5-detailed-diagnostics.yml').read_text()
+          # This L3 Draft may never auto-publish on a source or test push.
+          assert 'on:\\n  workflow_dispatch:\\n' in content
+          assert '\\n  push:\\n' not in content
           assert 'group: cardeck-global-signed-release-version' in content
           assert 'cancel-in-progress: false' in content
-          assert '  workflow_dispatch:' in content
-          print('Workflow/test/docs-only pushes cannot auto-sign; manual dispatch preserved')
+          assert 'python3 tools/release/allocate_version.py' in content
+          assert 'BUILD_EPOCH' not in content
+          assert 'gh release download buick-e5-latest' in content
+          assert 'NEW_CERT' in content and 'OLD_CERT' in content
+          assert 'versionCode=' in content and 'versionName=' in content
+          assert 'TAG="exp-buick-e5-detailed-diagnostics-$CARDECK_RELEASE_VERSION_NAME"' in content
+          assert 'sourceBranch=%s' in content and 'baseBranch=Buick-E5' in content
+          assert 'artifactKind=experiment' in content and 'updaterSchema=2' in content
+          assert 'test "$SOURCE_BRANCH" = "$GITHUB_REF_NAME"' in content
+          blob = subprocess.check_output(
+              ['git', 'hash-object', 'tools/release/allocate_version.py'], text=True).strip()
+          assert blob == 'eec664befa9a2efd5a030d7ae49fc69096c4a452', blob
+          print('Manual-only, global allocator, official E5 certificate, provenance and release tag gates passed')
           PY
+      - name: Global version allocator regression tests
+        run: python3 -m unittest discover -s tools/release -p 'test_allocate_version.py' -v
       - name: Unit tests and debug compilation
         run: |
           chmod +x gradlew
