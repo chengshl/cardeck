@@ -93,9 +93,29 @@ jobs:
           old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + client], text=True)
           new = Path(client).read_text()
           before = "                if (!t35Buick) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
-          after = "                // #24 BT-A: keep ordinary HFP/A2DP connected for a narrowly\n                // identified B233 candidate. This does not change RFCOMM,\n                // iAP2 handshakes, retry pacing or other receivers.\n                val selected = targetProvider()\n                val protectB233Profiles = BuickB233Route.shouldProtectProfiles(\n                    advertisedName = name,\n                    selectedName = selected?.name,\n                    selectedMatchesDevice = selected != null &&\n                        TargetDevicePrefs.matches(selected, device.address),\n                )\n                if (protectB233Profiles) {\n                    val now = android.os.SystemClock.uptimeMillis()\n                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {\n                        lastProfileLogAt = now\n                        log(\"BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped\")\n                    }\n                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          after = "                // #24 BT-A: keep ordinary HFP/A2DP connected for a narrowly\n                // identified B233 candidate. This does not change RFCOMM,\n                // iAP2 handshakes, retry pacing or other receivers.\n                val selected = selectedForCandidates\n                val protectB233Profiles = BuickB233Route.shouldProtectProfiles(\n                    advertisedName = name,\n                    selectedName = selected?.name,\n                    selectedMatchesDevice = selected != null &&\n                        TargetDevicePrefs.matches(selected, device.address),\n                )\n                if (protectB233Profiles) {\n                    val now = android.os.SystemClock.uptimeMillis()\n                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {\n                        lastProfileLogAt = now\n                        log(\"BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped\")\n                    }\n                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
           assert old.count(before) == 1
-          assert new == old.replace(before, after), 'Unrelated runtime behavior changed'
+          # Keep the selection used to enumerate candidate devices identical to
+          # the selection used to decide whether HFP/A2DP may be disconnected.
+          # Otherwise a mid-scan UI target change can expose a previously
+          # selected B233 receiver to the destructive fallback.
+          expected_client = old.replace(before, after)
+          before_candidates = "            val candidates = candidateDevices(adapter)"
+          after_candidates = "            val selectedForCandidates = targetProvider()\\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          before_signature = "    private fun candidateDevices(adapter: android.bluetooth.BluetoothAdapter): List<BluetoothDevice> {"
+          after_signature = "    private fun candidateDevices(\\n        adapter: android.bluetooth.BluetoothAdapter,\\n        selectedTarget: TargetDevicePrefs.Target?,\\n    ): List<BluetoothDevice> {"
+          before_target = "        targetProvider()?.let { target ->"
+          after_target = "        selectedTarget?.let { target ->"
+          for before_part, after_part in (
+              (before_candidates, after_candidates),
+              (before_signature, after_signature),
+              (before_target, after_target),
+          ):
+              assert expected_client.count(before_part) == 1, f'Unexpected baseline selection block: {before_part}'
+              expected_client = expected_client.replace(before_part, after_part)
+          assert new == expected_client, 'Unrelated runtime behavior changed'
+          assert new.count('val selectedForCandidates = targetProvider()') == 1
+          assert 'val selected = selectedForCandidates' in new
           policy = Path(route).read_text()
           assert 'BUICK_[0-9]{4}' in policy
           assert 'selectedMatchesDevice && isKnownReceiver(selectedName)' in policy
