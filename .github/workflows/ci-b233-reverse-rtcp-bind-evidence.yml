@@ -7,6 +7,9 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt'
       - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioProfileMemory.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioProfileMemoryTest.kt'
   workflow_dispatch:
 permissions:
   contents: read
