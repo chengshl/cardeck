@@ -236,7 +236,14 @@ class VideoSender(
                     }
 
                     index >= 0 -> {
-                        val buffer = codec.getOutputBuffer(index) ?: continue
+                        val buffer = codec.getOutputBuffer(index)
+                        if (buffer == null) {
+                            // dequeueOutputBuffer() still transferred ownership of this index.
+                            // Returning without releasing it can exhaust codec output slots.
+                            codec.releaseOutputBuffer(index, false)
+                            maybeSendKeepAlive(output)
+                            continue
+                        }
                         val flags = bufferInfo.flags
                         if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                             sendVideoConfig(buffer, bufferInfo.size, output)
