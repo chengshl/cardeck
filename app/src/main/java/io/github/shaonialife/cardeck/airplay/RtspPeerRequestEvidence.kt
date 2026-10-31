@@ -30,7 +30,7 @@ internal object RtspPeerRequestEvidence {
         if (kind == Kind.TEARDOWN) return "peer_request=TEARDOWN"
         if (kind == Kind.OTHER_REQUEST) return "peer_request=OTHER"
 
-        val fields = startLine.trim().split(Regex("""\\s+"""))
+        val fields = startLine.trim().split(Regex("""\s+"""))
         val code = fields.getOrNull(1)
         return if (fields.firstOrNull() == "RTSP/1.0" &&
             code != null && code.matches(Regex("""[1-5][0-9]{2}"""))
