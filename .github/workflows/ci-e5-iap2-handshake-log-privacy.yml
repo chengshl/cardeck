@@ -8,6 +8,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -36,7 +37,8 @@ jobs:
           ).splitlines())
           bt_path = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
           session_path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
-          assert files == {path, bt_path, session_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          video_path = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+          assert files == {path, bt_path, session_path, video_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
           old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + path], text=True)
           new = Path(path).read_text()
           assert old.count('编码=${availabilityFrame.joinToString') == 1
@@ -161,6 +163,29 @@ jobs:
           assert Path(session_path).read_text() == session_expected, (
               'Unexpected SessionController behavior/UI/networking change'
           )
+          video_old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + video_path], text=True)
+          video_expected = video_old
+          video_replacements = [
+              [r'''            log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")''',
+               r'''            log("VIDEO: 数据端口已连通（远端地址已脱敏，port=$dataPort；等 RECORD 后启动编码器）")'''],
+              [r'''            log("VIDEO: 数据端口连接失败 - ${error.message}")''',
+               r'''            log("VIDEO: 数据端口连接失败 - ${error.javaClass.simpleName}（详细异常已脱敏，port=$dataPort）")'''],
+              [r'''            log("VIDEO: 启动失败 - ${error.message}")''',
+               r'''            log("VIDEO: 启动失败 - ${error.javaClass.simpleName}（详细异常已脱敏）")'''],
+              [r'''                        log("VIDEO: 编码器取帧异常，停止推流 - ${error.message}")''',
+               r'''                        log("VIDEO: 编码器取帧异常，停止推流 - ${error.javaClass.simpleName}（详细异常已脱敏）")'''],
+              [r'''            log("VIDEO: 推流中止 - ${error.message}（等待接收端恢复后重连）")''',
+               r'''            log("VIDEO: 推流中止 - ${error.javaClass.simpleName}（详细异常已脱敏；等待接收端恢复后重连）")'''],
+          ]
+          for before, after in video_replacements:
+              assert video_expected.count(before) == 1, 'VideoSender diagnostic baseline drift'
+              video_expected = video_expected.replace(before, after)
+          assert Path(video_path).read_text() == video_expected, (
+              'Unexpected VideoSender runtime or protocol change'
+          )
+          assert '$host:$dataPort' not in Path(video_path).read_text()
+          assert '${error.message}' not in Path(video_path).read_text()
+          print(f'VideoSender: {len(video_replacements)} endpoint/exception log redactions verified')
           print(f'SessionController: {len(session_replacements)} diagnostic-only redactions verified')
           print('Bluetooth target names, addresses, identity and raw exception text removed from logs')
           print('Only iAP2 diagnostic redaction; CSM payload, ACK and handshake unchanged')
