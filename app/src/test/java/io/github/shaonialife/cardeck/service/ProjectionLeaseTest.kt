@@ -36,6 +36,22 @@ class ProjectionLeaseTest {
     }
 
     @Test
+    fun explicitStopImmediatelyRevokesReadinessBeforeAsyncOnStop() {
+        val lease = ProjectionLease<Any>()
+        val stopped = Any()
+        lease.publish(stopped)
+        assertSame(stopped, lease.clearCurrent())
+        assertNull(lease.current())
+        // The platform callback for the revoked permission may arrive late.
+        val newGrant = Any()
+        lease.publish(newGrant)
+        assertFalse(lease.clearIfCurrent(stopped))
+        assertSame(newGrant, lease.current())
+        assertSame(newGrant, lease.clearCurrent())
+        assertNull(lease.current())
+    }
+
+    @Test
     fun delayedOldOnStopCannotRaceWithNewPublication() {
         val lease = ProjectionLease<Any>()
         val first = Any()
