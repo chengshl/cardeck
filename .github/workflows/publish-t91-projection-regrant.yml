@@ -12,7 +12,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: publish-t91-pcm-high-accuracy
+  group: publish-t91-projection-privacy
   cancel-in-progress: true
 
 jobs:
@@ -29,33 +29,33 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Gate exact T91 offline-validated source and workflow-only follow-up
+      - name: Gate joint T91 projection + PR90 privacy validated source
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           BASE=06255735f4ca7a2106fd69b5d4953ecb56cf325c
-          VALIDATED=3a70cad100cd6e0e3aac7e2700c16f80738b4834
+          VALIDATED=72042e091875e94cbe22705ad1c3e3efb145d676
           test "$GITHUB_REF_NAME" = "experiment/buick-b233-projection-owner-regrant-guard"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$VALIDATED" "$GITHUB_SHA"
           git merge-base --is-ancestor "$BASE" "$VALIDATED"
           git diff --name-only "$BASE" "$VALIDATED" > /tmp/t91-source-scope
-          test "$(wc -l < /tmp/t91-source-scope)" -eq 4
+          test "$(wc -l < /tmp/t91-source-scope)" -eq 8
           while IFS= read -r file; do
             case "$file" in
-              .github/workflows/ci-b233-projection-owner-regrant.yml|app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt|app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt|app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt) ;;
+              .github/workflows/ci-b233-projection-owner-regrant.yml|.github/workflows/publish-t91-projection-regrant.yml|app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt|app/src/main/java/io/github/shaonialife/cardeck/service/ProjectionLease.kt|app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt|app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt|app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt|app/src/test/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSessionTest.kt) ;;
               *) echo "::error::Unexpected T91 source change: $file"; exit 1 ;;
             esac
           done < /tmp/t91-source-scope
           test "$(git diff --name-only "$VALIDATED" "$GITHUB_SHA" | sort -u)" = ".github/workflows/publish-t91-projection-regrant.yml"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq '.status')" = completed
-          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq '.conclusion')" = success
-          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41181285957" --jq '.head_sha')" = "$VALIDATED"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41183433793" --jq '.status')" = completed
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41183433793" --jq '.conclusion')" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41183433793" --jq '.head_sha')" = "$VALIDATED"
           grep -Fq 'projectionLease.clearCurrent()' app/src/main/java/io/github/shaonialife/cardeck/service/CarPlayService.kt
           grep -Fq 'explicitStopImmediatelyRevokesReadinessBeforeAsyncOnStop' app/src/test/java/io/github/shaonialife/cardeck/service/ProjectionLeaseTest.kt
-          echo "T91 exact validated code and independent signed experiment gate passed."
+          echo "T91 + #90 exact joint validated code and signed experiment gate passed."
       - name: Privacy safety gate before any new signed Test release
         shell: bash
         run: |
@@ -156,8 +156,8 @@ jobs:
           {
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\napplicationId=io.github.buick.test.cardeck\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
-            printf '\n## T91：仅修复 Android MediaProjection 授权恢复，不是音频20秒断连修复版\n'
-            printf '基于签名 T89 源码，仅修复旧投影异步 onStop 清掉新授权、mediaProjection FGS 类型升级失败后继续消耗单次授权、显式停止服务后旧投影尚未回收却被误识别可用的生命周期问题。T90 的 highAccuracy SETUP 单变量已被实车证伪，本包不包含该改动；不修改音频 RTP/RTCP、RTSP、iAP2、T64 自动仅视频降级、HFP/A2DP、VPN 或稳定应用。'
+            printf '\n## T91：MediaProjection 授权恢复 + B233 iAP2 凭据日志脱敏（联合安全候选）\n'
+            printf '基于签名 T89 源码，仅修复旧投影异步 onStop 清掉新授权、mediaProjection FGS 类型升级失败后继续消耗单次授权、显式停止服务后旧投影尚未回收却被误识别可用的生命周期问题。T90 的 highAccuracy SETUP 单变量已被实车证伪，本包不包含该改动。另包含独立 CI 已通过的 PR #90 B233 iAP2 会话与原始收发日志凭据脱敏；只改变日志，不改变实际 iAP2 协议报文/时序。音频 RTP/RTCP、RTSP、T64 自动仅视频降级、HFP/A2DP、VPN 和稳定应用维持原样。'
             printf '\n\n## 手机/实车验收要求（停车测试，不自动安装）\n'
             printf '1. 本包是独立 Test 音频实验，应用 ID 与 T90 相同、签名证书相同、versionCode 更高，可直接覆盖 Test T90 并保留数据；不要卸载/清数据；独立 Buick-E5 稳定应用保持不动。'
             printf '\n2. 先验证无音频时的车机视频、触摸、正常蓝牙 A2DP；没有后续 Android 14 权限失效弹窗/崩溃。'
@@ -165,7 +165,7 @@ jobs:
             printf '\n4. 验证几轮手动停止/重新授权/重连期间旧 onStop 不会误清除新授权；出现约20秒 peer EOF 仍属于原始 P0 未修，不以此宣称 T91 成功。'
             printf '\n5. 另需验证正常非 B233 投屏授权与断开路径；仅所有 Android 手机权限生命周期和车机回归完成后才考虑任何集成。'
             printf '\n\n## 日志、回退和实验状态\n'
-            printf '只可上传脱敏 App 日志；不公开配对密钥、SSID、Wi-Fi 密码或设备唯一标识。Test T90 的 versionCode 更低，不能覆盖降级 T91；如需恢复旧 Test 版本，应另构建同签名更高 versionCode 的受控回退包，禁止卸载/清数据。日用恢复直接打开独立 Buick-E5 稳定 App。此 Release 是 schema-2 prerelease，不自动更新 buick-test-latest/任何正式 latest；#11 未关闭，PR 仍 Draft。'
+            printf '此包对 B233 0x4301 无线组参数和原始帧启用凭据脱敏，日志仍须先审阅再分享；不公开配对密钥、SSID、Wi-Fi 密码或设备唯一标识。旧 T90 APK/Gateway 历史日志不会因为新包而自动消除。Test T90 的 versionCode 更低，不能覆盖降级 T91；如需恢复旧 Test 版本，应另构建同签名更高 versionCode 的受控回退包，禁止卸载/清数据。日用恢复直接打开独立 Buick-E5 稳定 App。此 Release 是 schema-2 prerelease，不自动更新 buick-test-latest/任何正式 latest；#11 未关闭，PR 仍 Draft。'
           } > release-notes.txt
           gh release create "$TAG" "$APK" "$APK.sha256" \
             --repo "$GITHUB_REPOSITORY" \
