@@ -39,11 +39,11 @@ class ForensicRedactionTest {
 
     @Test fun quotedJsonIdentityFieldsAreRedactedInBothModes() {
         // Short quoted values are not caught by generic IP/long-token masking.
-        val raw = """10-26 21:02:24.098 E System: {"ssid":"Private Network","deviceId":"DEVICE-SECRET-7","serial":"SN-PRIVATE-123","vin":"W0PRIVATEVIN","latitude":"22.12","longitude":"114.12"} stage=RECORD"""
+        val raw = """10-26 21:02:24.098 E System: {"ssid":"Private Network","deviceId":"DEVICE-MYSTERY-7","serial":"SN-PRIVATE-123","vin":"W0PRIVATEVIN","latitude":"22.12","longitude":"114.12"} stage=RECORD"""
         val detailed = redactor.forensicChunks(raw).joinToString(" ")
         val quick = redactor.line(raw)
         for (secret in listOf(
-            "Private Network", "DEVICE-SECRET-7", "SN-PRIVATE-123",
+            "Private Network", "DEVICE-MYSTERY-7", "SN-PRIVATE-123",
             "W0PRIVATEVIN", "22.12", "114.12",
         )) {
             assertFalse("detailed mode leaked: $secret", detailed.contains(secret))
