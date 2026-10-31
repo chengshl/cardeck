@@ -6,7 +6,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 import java.net.DatagramSocket
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 /** Regression: a failed audio RTP UDP connect must not leak its native socket. */
 class AudioDatagramSocketOwnershipTest {
