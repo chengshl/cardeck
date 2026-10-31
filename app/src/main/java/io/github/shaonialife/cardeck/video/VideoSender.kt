@@ -58,6 +58,7 @@ class VideoSender(
     private val width: Int = (width / 2) * 2
     private val height: Int = (height / 2) * 2
     private val dataPortLock = Any()
+    private val startupLock = Any()
     private var dataPortEpoch = 0L
     @Volatile private var socket: Socket? = null
     private var encoder: MediaCodec? = null
@@ -146,61 +147,71 @@ class VideoSender(
      */
     fun start(onSurfaceReady: (Surface) -> Unit): Boolean {
         if (running.get()) return true
-        return try {
-            if (!openDataPort()) {
-                stop()
-                return false
+        // TCP connection stays interruptible by stop(); codec publication is serialized.
+        val startEpoch = synchronized(dataPortLock) { dataPortEpoch }
+        if (!openDataPort()) return false
+        return synchronized(startupLock) {
+            // stop() may have retired the socket between connect and codec startup.
+            if (synchronized(dataPortLock) { dataPortEpoch != startEpoch || socket?.isClosed != false }) {
+                return@synchronized false
             }
-            val bitrate =
-                (
-                    ((width * height * 6L).toInt()).coerceIn(2_000_000, 10_000_000) *
-                        if (targetFps >= 60) 1.5f else 1f
-                ).toInt().coerceAtMost(15_000_000)
-            log("VIDEO: 启动编码器 ${width}x$height@$targetFps ${bitrate / 1_000_000}Mbps（端口已连通）")
+            if (running.get()) return@synchronized true
+            try {
+                val bitrate =
+                    (
+                        ((width * height * 6L).toInt()).coerceIn(2_000_000, 10_000_000) *
+                            if (targetFps >= 60) 1.5f else 1f
+                    ).toInt().coerceAtMost(15_000_000)
+                log("VIDEO: 启动编码器 ${width}x$height@$targetFps ${bitrate / 1_000_000}Mbps（端口已连通）")
 
-            val format =
-                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                    setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                    setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
-                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                val format =
+                    MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                        setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                        setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                        setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
+                        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    }
+                val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                // Publish resources before fallible initialization so stop() can release them.
+                encoder = codec
+                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                val surface = codec.createInputSurface()
+                inputSurface = surface
+                codec.start()
+                running.set(true)
+                lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
+
+                onSurfaceReady(surface)
+                // onSurfaceReady may synchronously stop this sender; never spawn a retired drain.
+                if (!running.get()) return@synchronized false
+
+                Thread({ drainEncoder() }, "video-drain").apply {
+                    isDaemon = true
+                    start()
                 }
-            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            // Publish resources before fallible initialization so stop() can release them.
-            encoder = codec
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            val surface = codec.createInputSurface()
-            inputSurface = surface
-            codec.start()
-            running.set(true)
-            lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
-
-            onSurfaceReady(surface)
-
-            Thread({ drainEncoder() }, "video-drain").apply {
-                isDaemon = true
-                start()
+                true
+            } catch (error: Exception) {
+                log("VIDEO: 启动失败 - ${error.message}")
+                stop()
+                false
             }
-            true
-        } catch (error: Exception) {
-            log("VIDEO: 启动失败 - ${error.message}")
-            stop()
-            false
         }
     }
 
     fun stop() {
-        running.set(false)
-        val closingSocket = synchronized(dataPortLock) {
-            dataPortEpoch++
-            socket.also { socket = null }
+        synchronized(startupLock) {
+            running.set(false)
+            val closingSocket = synchronized(dataPortLock) {
+                dataPortEpoch++
+                socket.also { socket = null }
+            }
+            runCatching { encoder?.stop() }
+            runCatching { encoder?.release() }
+            encoder = null
+            runCatching { inputSurface?.release() }
+            inputSurface = null
+            runCatching { closingSocket?.close() }
         }
-        runCatching { encoder?.stop() }
-        runCatching { encoder?.release() }
-        encoder = null
-        runCatching { inputSurface?.release() }
-        inputSurface = null
-        runCatching { closingSocket?.close() }
     }
 
     // ---- 编码输出 → 协议封装发送 ----
