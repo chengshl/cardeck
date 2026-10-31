@@ -33,8 +33,18 @@ jobs:
           import subprocess
           base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
           previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
-          expected = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          prior_expected = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          expected = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
           assert base == expected, f'E5 baseline moved; re-review required: {base}'
+          # The sole new stable commit #93 introduced two JUnit fixtures and test CI.
+          stable_93_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', prior_expected, expected], text=True
+          ).splitlines())
+          assert stable_93_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unreviewed E5 production drift: {sorted(stable_93_delta)}'
           # Reviewed stable delta since the original #24 BT-A baseline:
           # #77 release preflight test, #79 synthetic ACK replay test/CI,
           # #82 official release trigger guard. No BT/iAP2/AirPlay runtime changed.
@@ -47,6 +57,9 @@ jobs:
               '.github/workflows/build-buick-e5.yml',
               '.github/workflows/ci-e5-upstream-replay-33.yml',
               'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
           }, f'Unreviewed E5 stable drift: {sorted(stable_delta)}'
           client = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
           route = 'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt'
@@ -64,7 +77,10 @@ jobs:
           assert 'cancel-in-progress: false' in release
           assert 'python3 tools/release/allocate_version.py' in release
           assert 'python3 -m unittest tools.release.test_allocate_version' in release
-          assert "test \"$(git rev-parse origin/Buick-E5)\" = \"6dff31cac9a4a6f1945b787ba01eea577761d0eb\"" in release
+          assert "test \"$(git rev-parse origin/Buick-E5)\" = \"5e565a08b228d157ff1d739f38b8c09fad80f8a5\"" in release
+          assert 'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt' in release
+          assert 'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt' in release
+          assert '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml' in release
           assert 'NEW_CERT=' in release and 'OLD_CERT=' in release
           assert 'versionCode=\'\$CARDECK_BUILD_VERSION_CODE\'' not in release
           assert "versionCode='$CARDECK_BUILD_VERSION_CODE'" in release
