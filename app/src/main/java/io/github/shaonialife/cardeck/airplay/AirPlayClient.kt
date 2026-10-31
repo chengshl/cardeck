@@ -2837,11 +2837,19 @@ class AirPlayClient(
                 log("AUDIO T88: B233 peer RTSP request observed $evidence")
             }
         }
-        message.cseq?.let { responseHeads[it] = head }
-        val queue = message.cseq?.let { pendingResponses[it] }
-        if (queue != null) {
-            queue.offer(message.statusLine to message.body)
-            return
+        // B233-only: absolute rtsp:// URI requests are genuine peer requests,
+        // not responses to our pending CSeq. A peer can reuse our CSeq number.
+        // Preserve legacy path-form and all non-B233 routing unchanged.
+        val absoluteUriPeerRequest = RtspPeerRequestEvidence.isB233AbsoluteUriRequest(
+            statusLine, endpoint.isBuickB233,
+        )
+        if (!absoluteUriPeerRequest) {
+            message.cseq?.let { responseHeads[it] = head }
+            val queue = message.cseq?.let { pendingResponses[it] }
+            if (queue != null) {
+                queue.offer(message.statusLine to message.body)
+                return
+            }
         }
         // 无匹配：车机可能在控制通道上发自己的请求（须回 200 否则它会拆通道）。
         // 仅节流留痕，不静默丢弃——此前同步实现会把它错当成前一个请求的应答。
@@ -2852,7 +2860,7 @@ class AirPlayClient(
                     "[$statusLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
             )
         }
-        if (message.isRequest) {
+        if (message.isRequest || absoluteUriPeerRequest) {
             // 复用请求 CSeq 回空应答（与事件通道同一约定）
             runCatching {
                 val payload =
