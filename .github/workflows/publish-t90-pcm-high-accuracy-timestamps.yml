@@ -31,7 +31,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Gate exact T90 offline-validated source and workflow-only follow-up
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -62,9 +62,9 @@ jobs:
           ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
       - name: Load existing signed Buick-Test keystore
         env:
-          KEYSTORE_B64: \${{ secrets.CARDECK_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: \${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: \${{ secrets.CARDECK_KEY_ALIAS }}
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
         shell: bash
         run: |
           set -euo pipefail
@@ -80,7 +80,7 @@ jobs:
           chmod 600 keystore.properties
       - name: Assign monotonic Test versionCode above signed T89
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -95,7 +95,7 @@ jobs:
         run: ./gradlew :app:assembleRelease --stacktrace
       - name: Verify package, version and same Test signing certificate
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -117,14 +117,14 @@ jobs:
           sha256sum CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk > CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk.sha256
       - uses: actions/upload-artifact@v4
         with:
-          name: Buick-Test-T90-SIGNED-\${{ github.run_id }}
+          name: Buick-Test-T90-SIGNED-${{ github.run_id }}
           path: |
             CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk
             CarDeck-Buick-Test-T90-PCM-HIGH-ACCURACY.apk.sha256
           if-no-files-found: error
       - name: Publish isolated T90 prerelease (never latest)
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
