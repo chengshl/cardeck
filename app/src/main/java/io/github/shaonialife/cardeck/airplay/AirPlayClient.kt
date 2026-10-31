@@ -2702,11 +2702,18 @@ class AirPlayClient(
                 extraHeaders = extra,
             )
         // 诊断（真车 403 排查）：请求长度 + 应答状态行/长度/头部字节
-        val headHex = responseBody.take(16).joinToString(" ") { "%02x".format(it) }
-        log(
-            "AIRPLAY: $path req=${body.size}B -> [$statusLine] resp=${responseBody.size}B" +
-                if (responseBody.isNotEmpty()) " head=[$headHex]" else "",
-        )
+        // B233 pairing replies contain handshake material: keep only a fixed
+        // status code and length in uploadable diagnostics. No TLV/hex/free text.
+        if (endpoint.isBuickB233) {
+            log("AIRPLAY: $path req=${body.size}B -> " +
+                B233PairingReplySummary.describe(statusLine, responseBody))
+        } else {
+            val headHex = responseBody.take(16).joinToString(" ") { "%02x".format(it) }
+            log(
+                "AIRPLAY: $path req=${body.size}B -> [$statusLine] resp=${responseBody.size}B" +
+                    if (responseBody.isNotEmpty()) " head=[$headHex]" else "",
+            )
+        }
         if (!statusLine.contains("200")) {
             throw IOException("POST $path 应答 [$statusLine]")
         }
