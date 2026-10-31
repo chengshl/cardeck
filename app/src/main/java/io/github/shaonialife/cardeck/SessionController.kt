@@ -1532,7 +1532,7 @@ object SessionController {
                     failureTrace = client.audioFailureTrace,
                     diagnosticToneEnabled =
                         client.currentEndpoint.isBuickB233 && audioDiagnosticToneForSession,
-                    completePartialPcmReads = client.currentEndpoint.isBuickB233,
+                    completePartialPcmReads = client.currentEndpoint.isBuickB233 && profile.codec == AudioCodec.PCM,
                     vehicleNetwork =
                         if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
                     // T71/B233 type=102 media: catplay modern TX does not actively
