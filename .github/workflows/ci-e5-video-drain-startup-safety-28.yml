@@ -1,0 +1,318 @@
+name: E5 video drain startup teardown isolation (#28)
+on:
+  push:
+    branches: [experiment/buick-e5-video-drain-startup-safety-28]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - '.github/workflows/ci-e5-video-drain-startup-safety-28.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  video-drain-startup-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Fail closed on stable drift and unrelated runtime edits
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          previous_baseline = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          baseline = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
+          stable = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          assert stable == baseline, f'E5 moved to {stable}; re-review before accepting CI'
+          # #93 is pure JUnit+CI. Reject any unreviewed stable runtime delta.
+          reviewed_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_baseline, baseline], text=True
+          ).splitlines())
+          assert reviewed_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected E5 stable changes: {sorted(reviewed_delta)}'
+          assert not any(path.startswith('app/src/main/') for path in reviewed_delta)
+          source_path = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+          workflow_path = '.github/workflows/ci-e5-video-drain-startup-safety-28.yml'
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          assert changed == {source_path, workflow_path}, f'Unexpected files: {sorted(changed)}'
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + source_path], text=True)
+          new = Path(source_path).read_text()
+          before = """    private fun drainEncoder() {
+                  val codec = encoder ?: return
+                  val output = socket?.getOutputStream() ?: return
+                  val bufferInfo = MediaCodec.BufferInfo()
+                  try {
+                      while (running.get()) {""".replace('                  ', '        ')
+          after = """    private fun drainEncoder() {
+                  // #28: acquisition can race with stop()/socket close. Keep *all* startup
+                  // paths inside try/finally so a failed getOutputStream() cannot crash
+                  // the drain thread or skip session retirement.
+                  try {
+                      val codec = encoder ?: run {
+                          log("VIDEO: 推流启动中止 - 编码器已释放")
+                          return
+                      }
+                      val output = socket?.getOutputStream() ?: run {
+                          log("VIDEO: 推流启动中止 - 数据端口已关闭")
+                          return
+                      }
+                      val bufferInfo = MediaCodec.BufferInfo()
+                      while (running.get()) {""".replace('                  ', '        ')
+          init_before = '\n'.join([
+              '            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)',
+              '            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)',
+              '            val surface = codec.createInputSurface()',
+              '            codec.start()',
+              '            encoder = codec',
+              '            inputSurface = surface',
+          ])
+          init_after = '\n'.join([
+              '            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)',
+              '            // Publish resources before fallible initialization so stop() can release them.',
+              '            encoder = codec',
+              '            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)',
+              '            val surface = codec.createInputSurface()',
+              '            inputSurface = surface',
+              '            codec.start()',
+          ])
+          assert old.count(before) == 1, 'Original drain startup not found exactly once'
+          assert old.count(init_before) == 1, 'Original codec initialization not found exactly once'
+          port_before = '\n'.join([
+              "        return try {",
+              "            val client = CarPlayNetworkSockets.connectTcp(",
+              "                carWifiNetwork,",
+              "                InetAddress.getByName(host),",
+              "                dataPort,",
+              "                5_000,",
+              "                log,",
+              "            )",
+              "            client.tcpNoDelay = true",
+              "            socket = client",
+              "            log(\"VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）\")",
+              "            true",
+              "        } catch (error: Exception) {",
+              "            log(\"VIDEO: 数据端口连接失败 - ${error.message}\")",
+              "            false",
+              "        }",
+          ])
+          port_after = '\n'.join([
+              "        // connectTcp() owns failed connections; after it returns, this method owns",
+              "        // the socket until publication. Do not leak it if TCP options fail.",
+              "        var pendingSocket: Socket? = null",
+              "        return try {",
+              "            val client = CarPlayNetworkSockets.connectTcp(",
+              "                carWifiNetwork,",
+              "                InetAddress.getByName(host),",
+              "                dataPort,",
+              "                5_000,",
+              "                log,",
+              "            )",
+              "            pendingSocket = client",
+              "            client.tcpNoDelay = true",
+              "            socket = client",
+              "            pendingSocket = null",
+              "            log(\"VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）\")",
+              "            true",
+              "        } catch (error: Exception) {",
+              "            runCatching { pendingSocket?.close() }",
+              "            log(\"VIDEO: 数据端口连接失败 - ${error.message}\")",
+              "            false",
+              "        }",
+          ])
+          assert old.count(port_before) == 1, 'Original TCP startup ownership block not found'
+          expected = old.replace(before, after).replace(init_before, init_after).replace(port_before, port_after)
+          # #28: TCP connect may complete after stop() retires this sender.
+          # Reconstruct only the reviewed socket-generation cancellation edits.
+          field_before = '    private var socket: Socket? = null'
+          field_after = '\n'.join(["    private val dataPortLock = Any()","    private var dataPortEpoch = 0L","    @Volatile private var socket: Socket? = null"])
+          method_before = '\n'.join(["    fun openDataPort(): Boolean {","        val existing = socket","        if (existing != null && !existing.isClosed) return true"])
+          method_after = '\n'.join(["    fun openDataPort(): Boolean {","        // A stop during the blocking TCP connect invalidates the late result.","        val epochAtConnect = synchronized(dataPortLock) {","            val existing = socket","            if (existing != null && !existing.isClosed) return true","            dataPortEpoch","        }"])
+          publish_before = '\n'.join(["            pendingSocket = client","            client.tcpNoDelay = true","            socket = client","            pendingSocket = null"])
+          publish_after = '\n'.join(["            pendingSocket = client","            client.tcpNoDelay = true","            val published = synchronized(dataPortLock) {","                if (dataPortEpoch != epochAtConnect) {","                    false","                } else {","                    socket = client","                    true","                }","            }","            if (!published) {","                // stop() ran while connectTcp() was blocking; do not resurrect its socket.","                runCatching { client.close() }","                return false","            }","            pendingSocket = null"])
+          stop_before = '\n'.join(["    fun stop() {","        running.set(false)","        runCatching { encoder?.stop() }","        runCatching { encoder?.release() }","        encoder = null","        runCatching { inputSurface?.release() }","        inputSurface = null","        runCatching { socket?.close() }","        socket = null","    }"])
+          stop_after = '\n'.join(["    fun stop() {","        running.set(false)","        val closingSocket = synchronized(dataPortLock) {","            dataPortEpoch++","            socket.also { socket = null }","        }","        runCatching { encoder?.stop() }","        runCatching { encoder?.release() }","        encoder = null","        runCatching { inputSurface?.release() }","        inputSurface = null","        runCatching { closingSocket?.close() }","    }"])
+          for name, before_text, after_text in [
+              ('socket field', field_before, field_after),
+              ('port epoch capture', method_before, method_after),
+              ('port publication', publish_before, publish_after),
+              ('stop epoch invalidation', stop_before, stop_after),
+          ]:
+              assert expected.count(before_text) == 1, f'{name} original block missing or ambiguous'
+              expected = expected.replace(before_text, after_text)
+          concurrent_before = '\n'.join(["            val published = synchronized(dataPortLock) {","                if (dataPortEpoch != epochAtConnect) {","                    false","                } else {","                    socket = client","                    true","                }","            }","            if (!published) {","                // stop() ran while connectTcp() was blocking; do not resurrect its socket.","                runCatching { client.close() }","                return false","            }","            pendingSocket = null"])
+          concurrent_after = '\n'.join(["            val publication = synchronized(dataPortLock) {","                when {","                    dataPortEpoch != epochAtConnect -> \"stale\"","                    socket?.isClosed == false -> \"existing\"","                    else -> {","                        socket = client","                        \"published\"","                    }","                }","            }","            if (publication != \"published\") {","                // A concurrent openDataPort() must not replace or leak the live socket.","                runCatching { client.close() }","                return publication == \"existing\"","            }","            pendingSocket = null"])
+          assert expected.count(concurrent_before) == 1, 'Expected single old socket publication block'
+          expected = expected.replace(concurrent_before, concurrent_after)
+          # MediaCodec gave us an output index even when getOutputBuffer is null.
+          # Return that index exactly once; otherwise the encoder can stall.
+          null_buffer_before = '                        val buffer = codec.getOutputBuffer(index) ?: continue'
+          null_buffer_after = '\n'.join([
+              '                        val buffer = codec.getOutputBuffer(index)',
+              '                        if (buffer == null) {',
+              '                            // dequeueOutputBuffer() still transferred ownership of this index.',
+              '                            // Returning without releasing it can exhaust codec output slots.',
+              '                            codec.releaseOutputBuffer(index, false)',
+              '                            maybeSendKeepAlive(output)',
+              '                            continue',
+              '                        }',
+          ])
+          assert expected.count(null_buffer_before) == 1, 'MediaCodec null slot baseline drift'
+          expected = expected.replace(null_buffer_before, null_buffer_after)
+          assert expected.count('codec.releaseOutputBuffer(index, false)') == 2
+          assert 'socket?.isClosed == false -> "existing"' in new
+          # Replay the #28 start/stop ownership race fix byte-for-byte from reviewed HEAD.
+          previous_head = '9d20738193b9997365607c1e7389919d453c14f6'
+          previous_source = subprocess.check_output(
+              ['git', 'show', previous_head + ':' + source_path], text=True
+          )
+          assert expected == previous_source, 'Reviewed #83 baseline drifted'
+          for name, before_text, after_text in [
+              ('startup lock field', "    private val dataPortLock = Any()", "    private val dataPortLock = Any()\n    private val startupLock = Any()"),
+              ('start/stop epoch and codec startup guard', "    fun start(onSurfaceReady: (Surface) -> Unit): Boolean {\n        if (running.get()) return true\n        return try {\n            if (!openDataPort()) {\n                stop()\n                return false\n            }\n            val bitrate =\n                (\n                    ((width * height * 6L).toInt()).coerceIn(2_000_000, 10_000_000) *\n                        if (targetFps >= 60) 1.5f else 1f\n                ).toInt().coerceAtMost(15_000_000)\n            log(\"VIDEO: 启动编码器 ${width}x$height@$targetFps ${bitrate / 1_000_000}Mbps（端口已连通）\")\n\n            val format =\n                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {\n                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)\n                    setInteger(MediaFormat.KEY_BIT_RATE, bitrate)\n                    setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)\n                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)\n                }\n            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)\n            // Publish resources before fallible initialization so stop() can release them.\n            encoder = codec\n            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)\n            val surface = codec.createInputSurface()\n            inputSurface = surface\n            codec.start()\n            running.set(true)\n            lastKeepAliveAt = android.os.SystemClock.uptimeMillis()\n\n            onSurfaceReady(surface)\n\n            Thread({ drainEncoder() }, \"video-drain\").apply {\n                isDaemon = true\n                start()\n            }\n            true\n        } catch (error: Exception) {\n            log(\"VIDEO: 启动失败 - ${error.message}\")\n            stop()\n            false\n        }\n    }\n\n", "    fun start(onSurfaceReady: (Surface) -> Unit): Boolean {\n        if (running.get()) return true\n        // TCP connection stays interruptible by stop(); codec publication is serialized.\n        val startEpoch = synchronized(dataPortLock) { dataPortEpoch }\n        if (!openDataPort()) return false\n        return synchronized(startupLock) {\n            // stop() may have retired the socket between connect and codec startup.\n            if (synchronized(dataPortLock) { dataPortEpoch != startEpoch || socket?.isClosed != false }) {\n                return@synchronized false\n            }\n            if (running.get()) return@synchronized true\n            try {\n                val bitrate =\n                    (\n                        ((width * height * 6L).toInt()).coerceIn(2_000_000, 10_000_000) *\n                            if (targetFps >= 60) 1.5f else 1f\n                    ).toInt().coerceAtMost(15_000_000)\n                log(\"VIDEO: 启动编码器 ${width}x$height@$targetFps ${bitrate / 1_000_000}Mbps（端口已连通）\")\n\n                val format =\n                    MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {\n                        setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)\n                        setInteger(MediaFormat.KEY_BIT_RATE, bitrate)\n                        setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)\n                        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)\n                    }\n                val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)\n                // Publish resources before fallible initialization so stop() can release them.\n                encoder = codec\n                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)\n                val surface = codec.createInputSurface()\n                inputSurface = surface\n                codec.start()\n                running.set(true)\n                lastKeepAliveAt = android.os.SystemClock.uptimeMillis()\n\n                onSurfaceReady(surface)\n                // onSurfaceReady may synchronously stop this sender; never spawn a retired drain.\n                if (!running.get()) return@synchronized false\n\n                Thread({ drainEncoder() }, \"video-drain\").apply {\n                    isDaemon = true\n                    start()\n                }\n                true\n            } catch (error: Exception) {\n                log(\"VIDEO: 启动失败 - ${error.message}\")\n                stop()\n                false\n            }\n        }\n    }\n\n"),
+              ('serialized stop resource teardown', "    fun stop() {\n        running.set(false)\n        val closingSocket = synchronized(dataPortLock) {\n            dataPortEpoch++\n            socket.also { socket = null }\n        }\n        runCatching { encoder?.stop() }\n        runCatching { encoder?.release() }\n        encoder = null\n        runCatching { inputSurface?.release() }\n        inputSurface = null\n        runCatching { closingSocket?.close() }\n    }\n\n", "    fun stop() {\n        synchronized(startupLock) {\n            running.set(false)\n            val closingSocket = synchronized(dataPortLock) {\n                dataPortEpoch++\n                socket.also { socket = null }\n            }\n            runCatching { encoder?.stop() }\n            runCatching { encoder?.release() }\n            encoder = null\n            runCatching { inputSurface?.release() }\n            inputSurface = null\n            runCatching { closingSocket?.close() }\n        }\n    }\n\n"),
+          ]:
+              assert expected.count(before_text) == 1, f'{name} baseline missing or ambiguous'
+              expected = expected.replace(before_text, after_text)
+          # Prevent a retired drain from closing a newer start() session.
+          # Replay only this three-part ownership change from reviewed #83 HEAD.
+          reviewed_head = '00d6aebfd67c849163d3f827bbb0634f5cb2c73c'
+          reviewed_source = subprocess.check_output(
+              ['git', 'show', reviewed_head + ':' + source_path], text=True
+          )
+          assert expected == reviewed_source, 'Previously reviewed #83 source drifted'
+          for name, before_text, after_text in [
+              ("drain worker epoch capture", "Thread({ drainEncoder() }, \"video-drain\")", "Thread({ drainEncoder(startEpoch) }, \"video-drain\")"),
+              ("drain method epoch parameter", "private fun drainEncoder() {", "private fun drainEncoder(epoch: Long) {"),
+              ("retired worker guarded teardown", "        } finally {\n            stop()\n            // 会话真实结束信号（静默降噪解除 / 状态收尾）\n            runCatching { onEnded?.invoke() }\n        }\n    }\n\n    /**", "        } finally {\n            // A previous drain may finish after stop() and a newer start().\n            // Only the worker for the still-current socket epoch may retire it.\n            synchronized(startupLock) {\n                if (synchronized(dataPortLock) { dataPortEpoch == epoch }) {\n                    stop()\n                    // The callback can retire the session; serialize it with restart.\n                    runCatching { onEnded?.invoke() }\n                }\n            }\n        }\n    }\n\n    /**"),
+          ]:
+              assert expected.count(before_text) == 1, f'{name} missing or ambiguous'
+              expected = expected.replace(before_text, after_text)
+          # A drain scheduled before stop() may begin only after a new start().
+          # Guard resource acquisition itself, not just the finally cleanup.
+          previous_guard_head = '58598ace527e4f0c6d12c5def3a4bd7e8c6db974'
+          previous_guard_source = subprocess.check_output(
+              ['git', 'show', previous_guard_head + ':' + source_path], text=True
+          )
+          assert expected == previous_guard_source, 'Prior reviewed drain epoch guard drifted'
+          resource_before = '\n'.join([
+              "            val codec = encoder ?: run {",
+              "                log(\"VIDEO: 推流启动中止 - 编码器已释放\")",
+              "                return",
+              "            }",
+              "            val output = socket?.getOutputStream() ?: run {",
+              "                log(\"VIDEO: 推流启动中止 - 数据端口已关闭\")",
+              "                return",
+              "            }",
+          ])
+          resource_after = '\n'.join([
+              "            // A retired drain must not pick up a newer session's codec/socket.",
+              "            // Snapshot both resources under the same lock used by start()/stop().",
+              "            val resources = synchronized(startupLock) {",
+              "                if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != epoch }) {",
+              "                    null",
+              "                } else {",
+              "                    Pair(encoder, socket)",
+              "                }",
+              "            }",
+              "            if (resources == null) {",
+              "                log(\"VIDEO: 推流启动中止 - 会话已过期\")",
+              "                return",
+              "            }",
+              "            val codec = resources.first ?: run {",
+              "                log(\"VIDEO: 推流启动中止 - 编码器已释放\")",
+              "                return",
+              "            }",
+              "            val output = resources.second?.getOutputStream() ?: run {",
+              "                log(\"VIDEO: 推流启动中止 - 数据端口已关闭\")",
+              "                return",
+              "            }",
+          ])
+          assert expected.count(resource_before) == 1, 'Retired drain acquisition block ambiguous'
+          expected = expected.replace(resource_before, resource_after)
+          # A frame/config write may fail after dequeuing a MediaCodec slot.
+          # Return the slot even when sendVideoFrame/sendVideoConfig throws.
+          release_before = "                        val flags = bufferInfo.flags\n                        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                            sendVideoConfig(buffer, bufferInfo.size, output)\n                        } else if (bufferInfo.size > 0) {\n                            sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                        }\n                        codec.releaseOutputBuffer(index, false)\n                        maybeSendKeepAlive(output)"
+          release_after = "                        val flags = bufferInfo.flags\n                        try {\n                            if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                                sendVideoConfig(buffer, bufferInfo.size, output)\n                            } else if (bufferInfo.size > 0) {\n                                sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                            }\n                        } finally {\n                            // dequeueOutputBuffer transferred this slot even if frame writing fails.\n                            codec.releaseOutputBuffer(index, false)\n                        }\n                        maybeSendKeepAlive(output)"
+          assert expected.count(release_before) == 1, 'Original output slot release block ambiguous'
+          expected = expected.replace(release_before, release_after)
+          # An old worker can wake after stop() and a newer start() sets running=true.
+          # Replay only the epoch fence around dequeue and the post-dequeue slot return.
+          prior_epoch_head = '8d1948ee65d278c57870cd131b939ead907b9172'
+          prior_epoch_source = subprocess.check_output(
+              ['git', 'show', prior_epoch_head + ':' + source_path], text=True
+          )
+          assert expected == prior_epoch_source, 'Reviewed #83 output-slot baseline drifted'
+          epoch_loop_before = '            while (running.get()) {'
+          epoch_loop_after = '            // A prior drain must not resume when stop() is followed by a new start().\n            while (running.get() && synchronized(dataPortLock) { dataPortEpoch == epoch }) {'
+          assert expected.count(epoch_loop_before) == 1, 'Original drain loop missing'
+          expected = expected.replace(epoch_loop_before, epoch_loop_after)
+          epoch_when_before = '                when {\n                    index == MediaCodec.INFO_TRY_AGAIN_LATER -> {'
+          epoch_when_after = '                // stop()/start() may race with a blocking dequeue. Never send an\n                // old-session buffer to a retired socket after the epoch changes.\n                if (synchronized(dataPortLock) { dataPortEpoch != epoch }) {\n                    if (index >= 0) runCatching { codec.releaseOutputBuffer(index, false) }\n                    break\n                }\n                when {\n                    index == MediaCodec.INFO_TRY_AGAIN_LATER -> {'
+          assert expected.count(epoch_when_before) == 1, 'Original post-dequeue dispatch missing'
+          expected = expected.replace(epoch_when_before, epoch_when_after)
+          # The old null-buffer and send paths must now share one finally covering
+          # getOutputBuffer itself; reject any other VideoSender change byte-for-byte.
+          previous_epoch_head = 'e0ccc6a07e712b8eebc4550340fdcd92f9ba2bcd'
+          previous_epoch_source = subprocess.check_output(
+              ['git', 'show', previous_epoch_head + ':' + source_path], text=True
+          )
+          assert expected == previous_epoch_source, 'Reviewed #83 epoch-fenced source drifted'
+          slot_before = "                        val buffer = codec.getOutputBuffer(index)\n                        if (buffer == null) {\n                            // dequeueOutputBuffer() still transferred ownership of this index.\n                            // Returning without releasing it can exhaust codec output slots.\n                            codec.releaseOutputBuffer(index, false)\n                            maybeSendKeepAlive(output)\n                            continue\n                        }\n                        val flags = bufferInfo.flags\n                        try {\n                            if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                                sendVideoConfig(buffer, bufferInfo.size, output)\n                            } else if (bufferInfo.size > 0) {\n                                sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                            }\n                        } finally {\n                            // dequeueOutputBuffer transferred this slot even if frame writing fails.\n                            codec.releaseOutputBuffer(index, false)\n                        }\n                        maybeSendKeepAlive(output)"
+          slot_after = "                        try {\n                            // Even getOutputBuffer() itself can throw after dequeue handed us an index.\n                            val buffer = codec.getOutputBuffer(index)\n                            if (buffer != null) {\n                                val flags = bufferInfo.flags\n                                if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {\n                                    sendVideoConfig(buffer, bufferInfo.size, output)\n                                } else if (bufferInfo.size > 0) {\n                                    sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)\n                                }\n                            }\n                        } finally {\n                            // Return every dequeued index, including null or failed buffer acquisition.\n                            codec.releaseOutputBuffer(index, false)\n                        }\n                        maybeSendKeepAlive(output)"
+          assert expected.count(slot_before) == 1, 'Output-buffer ownership block ambiguous'
+          expected = expected.replace(slot_before, slot_after)
+          assert new.count('codec.releaseOutputBuffer(index, false)') == 2
+          # A start() that captured epoch N must not publish a new socket after
+          # stop() retires N, even when the TCP connect begins after stop().
+          reviewed_before = subprocess.check_output(
+              ['git', 'show', '4eba415c9c0af7e334117fe256622f8f793854b4:' + source_path],
+              text=True,
+          )
+          assert expected == reviewed_before, 'Reviewed #83 source changed before epoch handoff fix'
+          helper_before = "    fun openDataPort(): Boolean {\n        // A stop during the blocking TCP connect invalidates the late result."
+          helper_after = "    fun openDataPort(): Boolean = openDataPortForEpoch(null)\n\n    private fun openDataPortForEpoch(requiredEpoch: Long?): Boolean {\n        // A stop during the blocking TCP connect invalidates the late result."
+          epoch_before = "        val epochAtConnect = synchronized(dataPortLock) {\n            val existing = socket"
+          epoch_after = "        val epochAtConnect = synchronized(dataPortLock) {\n            // start() must not open a fresh socket after stop() retired its epoch.\n            if (requiredEpoch != null && dataPortEpoch != requiredEpoch) return false\n            val existing = socket"
+          start_before = "        if (!openDataPort()) return false"
+          start_after = "        if (!openDataPortForEpoch(startEpoch)) return false"
+          for name, old_text, new_text in [
+              ('private epoch-aware TCP helper', helper_before, helper_after),
+              ('pre-connect epoch rejection', epoch_before, epoch_after),
+              ('start passes captured epoch', start_before, start_after),
+          ]:
+              assert expected.count(old_text) == 1, f'{name} ambiguous'
+              expected = expected.replace(old_text, new_text)
+          assert new.count('openDataPortForEpoch(startEpoch)') == 1
+          assert new.count('if (requiredEpoch != null && dataPortEpoch != requiredEpoch) return false') == 1
+          assert new == expected, 'Unexpected change outside reviewed drain epoch fence'
+          assert new.count('Pair(encoder, socket)') == 1
+          assert new.count('dataPortEpoch != epoch })') == 2
+          start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
+          assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
+          assert start.index('inputSurface = surface') < start.index('codec.start()')
+          assert 'stop()' in start.split('} catch (error: Exception)', 1)[1]
+          tail = new.split('private fun drainEncoder(epoch: Long)', 1)[1].split('private fun maybeSendKeepAlive', 1)[0]
+          assert tail.index('try {') < tail.index('resources.second?.getOutputStream()') < tail.index('} catch (error: Exception)') < tail.index('} finally {')
+          assert 'stop()' in tail.split('} finally {', 1)[1]
+          assert 'onEnded?.invoke()' in tail.split('} finally {', 1)[1]
+          assert 'dataPortEpoch == epoch' in tail.split('} finally {', 1)[1]
+          assert 'Thread({ drainEncoder(startEpoch) }' in start
+          print('Exact scoped L3 video codec, drain, and TCP startup cleanup isolation verified')
+          PY
+      - name: Android JUnit and Debug compilation (no signing)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace

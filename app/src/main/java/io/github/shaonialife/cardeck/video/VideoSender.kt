@@ -57,7 +57,10 @@ class VideoSender(
 ) {
     private val width: Int = (width / 2) * 2
     private val height: Int = (height / 2) * 2
-    private var socket: Socket? = null
+    private val dataPortLock = Any()
+    private val startupLock = Any()
+    private var dataPortEpoch = 0L
+    @Volatile private var socket: Socket? = null
     private var encoder: MediaCodec? = null
     private var inputSurface: Surface? = null
     private val running = AtomicBoolean(false)
@@ -93,9 +96,20 @@ class VideoSender(
      * 端口连接必然迟到——所以协商音频前先调本方法。catplay 亦然（视频 SETUP 后立即
      * finish_tx 连流，再协商音频）。
      */
-    fun openDataPort(): Boolean {
-        val existing = socket
-        if (existing != null && !existing.isClosed) return true
+    fun openDataPort(): Boolean = openDataPortForEpoch(null)
+
+    private fun openDataPortForEpoch(requiredEpoch: Long?): Boolean {
+        // A stop during the blocking TCP connect invalidates the late result.
+        val epochAtConnect = synchronized(dataPortLock) {
+            // start() must not open a fresh socket after stop() retired its epoch.
+            if (requiredEpoch != null && dataPortEpoch != requiredEpoch) return false
+            val existing = socket
+            if (existing != null && !existing.isClosed) return true
+            dataPortEpoch
+        }
+        // connectTcp() owns failed connections; after it returns, this method owns
+        // the socket until publication. Do not leak it if TCP options fail.
+        var pendingSocket: Socket? = null
         return try {
             val client = CarPlayNetworkSockets.connectTcp(
                 carWifiNetwork,
@@ -104,11 +118,28 @@ class VideoSender(
                 5_000,
                 log,
             )
+            pendingSocket = client
             client.tcpNoDelay = true
-            socket = client
+            val publication = synchronized(dataPortLock) {
+                when {
+                    dataPortEpoch != epochAtConnect -> "stale"
+                    socket?.isClosed == false -> "existing"
+                    else -> {
+                        socket = client
+                        "published"
+                    }
+                }
+            }
+            if (publication != "published") {
+                // A concurrent openDataPort() must not replace or leak the live socket.
+                runCatching { client.close() }
+                return publication == "existing"
+            }
+            pendingSocket = null
             log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
             true
         } catch (error: Exception) {
+            runCatching { pendingSocket?.close() }
             log("VIDEO: 数据端口连接失败 - ${error.message}")
             false
         }
@@ -120,67 +151,104 @@ class VideoSender(
      */
     fun start(onSurfaceReady: (Surface) -> Unit): Boolean {
         if (running.get()) return true
-        return try {
-            if (!openDataPort()) {
-                stop()
-                return false
+        // TCP connection stays interruptible by stop(); codec publication is serialized.
+        val startEpoch = synchronized(dataPortLock) { dataPortEpoch }
+        if (!openDataPortForEpoch(startEpoch)) return false
+        return synchronized(startupLock) {
+            // stop() may have retired the socket between connect and codec startup.
+            if (synchronized(dataPortLock) { dataPortEpoch != startEpoch || socket?.isClosed != false }) {
+                return@synchronized false
             }
-            val bitrate =
-                (
-                    ((width * height * 6L).toInt()).coerceIn(2_000_000, 10_000_000) *
-                        if (targetFps >= 60) 1.5f else 1f
-                ).toInt().coerceAtMost(15_000_000)
-            log("VIDEO: 启动编码器 ${width}x$height@$targetFps ${bitrate / 1_000_000}Mbps（端口已连通）")
+            if (running.get()) return@synchronized true
+            try {
+                val bitrate =
+                    (
+                        ((width * height * 6L).toInt()).coerceIn(2_000_000, 10_000_000) *
+                            if (targetFps >= 60) 1.5f else 1f
+                    ).toInt().coerceAtMost(15_000_000)
+                log("VIDEO: 启动编码器 ${width}x$height@$targetFps ${bitrate / 1_000_000}Mbps（端口已连通）")
 
-            val format =
-                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                    setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                    setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
-                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                val format =
+                    MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                        setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                        setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                        setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
+                        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    }
+                val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                // Publish resources before fallible initialization so stop() can release them.
+                encoder = codec
+                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                val surface = codec.createInputSurface()
+                inputSurface = surface
+                codec.start()
+                running.set(true)
+                lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
+
+                onSurfaceReady(surface)
+                // onSurfaceReady may synchronously stop this sender; never spawn a retired drain.
+                if (!running.get()) return@synchronized false
+
+                Thread({ drainEncoder(startEpoch) }, "video-drain").apply {
+                    isDaemon = true
+                    start()
                 }
-            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            val surface = codec.createInputSurface()
-            codec.start()
-            encoder = codec
-            inputSurface = surface
-            running.set(true)
-            lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
-
-            onSurfaceReady(surface)
-
-            Thread({ drainEncoder() }, "video-drain").apply {
-                isDaemon = true
-                start()
+                true
+            } catch (error: Exception) {
+                log("VIDEO: 启动失败 - ${error.message}")
+                stop()
+                false
             }
-            true
-        } catch (error: Exception) {
-            log("VIDEO: 启动失败 - ${error.message}")
-            stop()
-            false
         }
     }
 
     fun stop() {
-        running.set(false)
-        runCatching { encoder?.stop() }
-        runCatching { encoder?.release() }
-        encoder = null
-        runCatching { inputSurface?.release() }
-        inputSurface = null
-        runCatching { socket?.close() }
-        socket = null
+        synchronized(startupLock) {
+            running.set(false)
+            val closingSocket = synchronized(dataPortLock) {
+                dataPortEpoch++
+                socket.also { socket = null }
+            }
+            runCatching { encoder?.stop() }
+            runCatching { encoder?.release() }
+            encoder = null
+            runCatching { inputSurface?.release() }
+            inputSurface = null
+            runCatching { closingSocket?.close() }
+        }
     }
 
     // ---- 编码输出 → 协议封装发送 ----
 
-    private fun drainEncoder() {
-        val codec = encoder ?: return
-        val output = socket?.getOutputStream() ?: return
-        val bufferInfo = MediaCodec.BufferInfo()
+    private fun drainEncoder(epoch: Long) {
+        // #28: acquisition can race with stop()/socket close. Keep *all* startup
+        // paths inside try/finally so a failed getOutputStream() cannot crash
+        // the drain thread or skip session retirement.
         try {
-            while (running.get()) {
+            // A retired drain must not pick up a newer session's codec/socket.
+            // Snapshot both resources under the same lock used by start()/stop().
+            val resources = synchronized(startupLock) {
+                if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != epoch }) {
+                    null
+                } else {
+                    Pair(encoder, socket)
+                }
+            }
+            if (resources == null) {
+                log("VIDEO: 推流启动中止 - 会话已过期")
+                return
+            }
+            val codec = resources.first ?: run {
+                log("VIDEO: 推流启动中止 - 编码器已释放")
+                return
+            }
+            val output = resources.second?.getOutputStream() ?: run {
+                log("VIDEO: 推流启动中止 - 数据端口已关闭")
+                return
+            }
+            val bufferInfo = MediaCodec.BufferInfo()
+            // A prior drain must not resume when stop() is followed by a new start().
+            while (running.get() && synchronized(dataPortLock) { dataPortEpoch == epoch }) {
                 val index =
                     try {
                         codec.dequeueOutputBuffer(bufferInfo, 10_000)
@@ -190,6 +258,12 @@ class VideoSender(
                         log("VIDEO: 编码器取帧异常，停止推流 - ${error.message}")
                         break
                     }
+                // stop()/start() may race with a blocking dequeue. Never send an
+                // old-session buffer to a retired socket after the epoch changes.
+                if (synchronized(dataPortLock) { dataPortEpoch != epoch }) {
+                    if (index >= 0) runCatching { codec.releaseOutputBuffer(index, false) }
+                    break
+                }
                 when {
                     index == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                         maybeSendKeepAlive(output)
@@ -197,14 +271,21 @@ class VideoSender(
                     }
 
                     index >= 0 -> {
-                        val buffer = codec.getOutputBuffer(index) ?: continue
-                        val flags = bufferInfo.flags
-                        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                            sendVideoConfig(buffer, bufferInfo.size, output)
-                        } else if (bufferInfo.size > 0) {
-                            sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)
+                        try {
+                            // Even getOutputBuffer() itself can throw after dequeue handed us an index.
+                            val buffer = codec.getOutputBuffer(index)
+                            if (buffer != null) {
+                                val flags = bufferInfo.flags
+                                if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                                    sendVideoConfig(buffer, bufferInfo.size, output)
+                                } else if (bufferInfo.size > 0) {
+                                    sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)
+                                }
+                            }
+                        } finally {
+                            // Return every dequeued index, including null or failed buffer acquisition.
+                            codec.releaseOutputBuffer(index, false)
                         }
-                        codec.releaseOutputBuffer(index, false)
                         maybeSendKeepAlive(output)
                     }
                 }
@@ -214,9 +295,15 @@ class VideoSender(
             // 后台线程未捕获异常会杀死整个进程（曾导致锁屏后 app 消失）
             log("VIDEO: 推流中止 - ${error.message}（等待接收端恢复后重连）")
         } finally {
-            stop()
-            // 会话真实结束信号（静默降噪解除 / 状态收尾）
-            runCatching { onEnded?.invoke() }
+            // A previous drain may finish after stop() and a newer start().
+            // Only the worker for the still-current socket epoch may retire it.
+            synchronized(startupLock) {
+                if (synchronized(dataPortLock) { dataPortEpoch == epoch }) {
+                    stop()
+                    // The callback can retire the session; serialize it with restart.
+                    runCatching { onEnded?.invoke() }
+                }
+            }
         }
     }
 
