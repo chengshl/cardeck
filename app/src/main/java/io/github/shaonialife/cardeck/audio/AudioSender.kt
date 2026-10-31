@@ -432,7 +432,16 @@ class AudioSender(
                 log("AUDIO T13: B233 前45秒开启每秒 RTP/采集诊断（静音数据也会持续发送）")
             }
             if (mutePhoneOutput) {
-                mutePhoneMedia()
+                if (verboseStartupDiagnostics) {
+                    // stop() must restore volume *after* any in-flight mute.
+                    // Both operations share the B233 session gate; a retired
+                    // startup cannot mute the phone after stop() returns.
+                    if (!b233DatagramGate.runIfActive({ !stopped.get() }) {
+                        mutePhoneMedia()
+                    }) return false
+                } else {
+                    mutePhoneMedia()
+                }
             } else {
                 // T12 isolates B233's all-zero capture from Sony's STREAM_MUSIC mute.
                 // This is diagnostic: phone speaker may be audible as well as the car.
@@ -502,16 +511,19 @@ class AudioSender(
                 socket = null
                 runCatching { syncSocket?.close() }
                 syncSocket = null
+                // Serialize restore with startup mute. In particular, stop()
+                // cannot finish restoring while an old startup still mutes.
+                if (mutePhoneOutput) restorePhoneMedia()
             }
         } else {
             runCatching { socket?.close() }
             socket = null
             runCatching { syncSocket?.close() }
             syncSocket = null
+            if (mutePhoneOutput) restorePhoneMedia()
         }
         syncThread = null
         thread = null
-        if (mutePhoneOutput) restorePhoneMedia()
         runCatching { onStopped?.invoke() }
             .onFailure { log("AUDIO T73: 反向音频控制端口释放失败：${it.javaClass.simpleName}") }
         log("AUDIO: 已停止（共发 $packetsSent 包 / ${bytesSent / 1024}KB）")
