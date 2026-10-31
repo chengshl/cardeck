@@ -40,6 +40,20 @@ internal object RtspPeerRequestEvidence {
         // Keep those legal receiver names without admitting an empty host,
         // non-numeric port, or out-of-range port.
         val regNameAuthority = authority.substringAfterLast('@')
+        // java.net.URI accepts host: and [IPv6]: as host-bearing authorities
+        // with port=-1. Reject empty and overlong numeric ports before ACK.
+        val rawPortSuffix = if (regNameAuthority.startsWith("[")) {
+            val bracketEnd = regNameAuthority.indexOf(']')
+            if (bracketEnd < 0) return false
+            regNameAuthority.substring(bracketEnd + 1)
+        } else {
+            val colon = regNameAuthority.lastIndexOf(':')
+            if (colon < 0) "" else regNameAuthority.substring(colon)
+        }
+        val validPortSuffix = rawPortSuffix.isEmpty() ||
+            (rawPortSuffix.matches(Regex(":[0-9]{1,5}")) &&
+                (rawPortSuffix.drop(1).toIntOrNull() ?: -1) in 0..65535)
+        if (!validPortSuffix) return false
         val regNamePort = regNameAuthority.substringAfterLast(':', "")
         val validRegName = regNameAuthority.matches(Regex("[A-Za-z0-9._~-]+(?::[0-9]{1,5})?")) &&
             (':' !in regNameAuthority || (regNamePort.toIntOrNull() ?: -1) in 0..65535)
