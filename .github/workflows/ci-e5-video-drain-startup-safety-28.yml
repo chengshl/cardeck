@@ -28,9 +28,20 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
-          baseline = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          previous_baseline = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          baseline = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
           stable = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
           assert stable == baseline, f'E5 moved to {stable}; re-review before accepting CI'
+          # #93 is pure JUnit+CI. Reject any unreviewed stable runtime delta.
+          reviewed_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_baseline, baseline], text=True
+          ).splitlines())
+          assert reviewed_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected E5 stable changes: {sorted(reviewed_delta)}'
+          assert not any(path.startswith('app/src/main/') for path in reviewed_delta)
           source_path = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
           workflow_path = '.github/workflows/ci-e5-video-drain-startup-safety-28.yml'
           changed = set(subprocess.check_output(
