@@ -93,6 +93,25 @@ class B233ResourceEofEvidenceTest {
         assertTrue(summary.contains("lastReplyBody=empty"))
     }
 
+    @Test fun reconnectStartsWithEmptyEvidenceAndRejectsOldCompletion() {
+        val e = B233ResourceEofEvidence()
+        val stale = e.claimMainAudio(100)
+        e.receiverChangeModes(mapOf("type" to "changeModes",
+            "params" to mapOf("resources" to listOf(mapOf("resourceID" to 2)))))
+        e.resetForNewConnection()
+        e.claimReply(stale, "RTSP/1.0 200 OK", bodyHasBytes = true)
+        e.claimIoError(stale)
+        val empty = e.summaryAtPeerEof(200)
+        assertTrue(empty.contains("mainAudioClaimAttempts=0 lastClaimReply=none lastReplyBody=absent"))
+        assertTrue(empty.contains("lastClaimAgeMs=unknown"))
+        assertTrue(empty.contains("incomingChangeModesMentionsAudio=0"))
+        val fresh = e.claimMainAudio(300)
+        e.claimReply(stale, "RTSP/1.0 455 Error", bodyHasBytes = true)
+        assertTrue(e.summaryAtPeerEof(301).contains("lastClaimReply=pending"))
+        e.claimReply(fresh, "RTSP/1.0 200 OK", bodyHasBytes = false)
+        assertTrue(e.summaryAtPeerEof(302).contains("mainAudioClaimAttempts=1 lastClaimReply=rtsp_200"))
+    }
+
     @Test fun untrustedInputIsBoundedAndCannotLeakText() {
         val e = B233ResourceEofEvidence()
         repeat(1100) { e.claimMainAudio(it.toLong()) }
