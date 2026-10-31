@@ -11,8 +11,10 @@ import java.util.concurrent.atomic.AtomicLong
  * (or keep pinging the retired host/port). Capture a token before scheduling
  * the worker; close() invalidates all tokens before retiring the socket.
  *
- * runIfCurrent() serializes the final network action with retire(): close()
- * cannot retire the generation midway through an old worker's socket capture/write.
+ * runIfCurrent() serializes the short UDP send with retirement.
+ * captureIfCurrent() allows an RTSP worker to capture its ORIGINAL socket
+ * atomically without holding this monitor across a possibly blocking TCP write.
+ * A retired old socket is never replaced with a new socket inside that request.
  * This gate does not alter heartbeat intervals, packets or network routing.
  */
 internal class B233HeartbeatSessionGate {
@@ -31,4 +33,8 @@ internal class B233HeartbeatSessionGate {
         action()
         return true
     }
+
+    @Synchronized
+    fun <T : Any> captureIfCurrent(token: Long, capture: () -> T): T? =
+        if (isCurrent(token)) capture() else null
 }
