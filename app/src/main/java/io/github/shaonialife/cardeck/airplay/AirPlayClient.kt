@@ -1748,11 +1748,21 @@ class AirPlayClient(
     var audioSetupMayHaveCreatedStream: Boolean = false
         private set
 
+    /** Last candidate only: true once a receiver-facing audio SETUP is attempted.
+     * Local reverse-RTCP / route failures before request() must not poison
+     * persistent car-specific audio-profile rejection memory.
+     * A request IOException is conservatively still an attempted SETUP.
+     */
+    @Volatile
+    var lastAudioSetupRequestAttempted: Boolean = false
+        private set
+
     fun runAudioStream(
         sharedSecret: ByteArray,
         profile: AudioProfile,
         tuning: AudioTuning = AudioTuning.RAW_SPF,
     ): AudioStreamInfo? {
+        lastAudioSetupRequestAttempted = false
         // 档位由调用方按「车机 /info 声明的候选 + 本车机历史记忆」选定后传进来：
         // 同一台车机上不同 audioType 档位的可用性完全不同（见 AudioProfile 注释），
         // 单档失败就换下一档，而不是每次连接都盲试同一档。
@@ -1852,6 +1862,9 @@ class AirPlayClient(
         val startedAt = SystemClock.uptimeMillis()
         val (statusLine, responseBody) =
             try {
+                // Only after all phone-local preconditions have passed.
+                // "attempted" deliberately does NOT assert the peer received it.
+                lastAudioSetupRequestAttempted = true
                 request(
                     "SETUP",
                     "rtsp://$host:${endpoint.airPlayPort}/",

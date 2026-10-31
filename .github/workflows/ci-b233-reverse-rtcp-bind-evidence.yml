@@ -28,7 +28,7 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Exact signed T94 ancestor, four-file scope, fail closed and private evidence
+      - name: Exact signed T94 ancestor, seven-file scope, fail closed and private evidence
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -41,9 +41,12 @@ jobs:
           git diff --name-only "$BASE" HEAD | sort > /tmp/t96-scope
           printf '%s\n' \
             '.github/workflows/ci-b233-reverse-rtcp-bind-evidence.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPort.kt' \
-            'app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt' > /tmp/t96-expected
+            'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioProfileMemory.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/AudioReverseControlPortTest.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioProfileMemoryTest.kt' > /tmp/t96-expected
           diff -u /tmp/t96-expected /tmp/t96-scope
           git diff --check "$BASE" HEAD
           python3 - <<'PY'
@@ -64,12 +67,23 @@ jobs:
                        't96EpermSkipNeverAdvertisesPortAndEmitsOnlyBoundedCategory'):
               assert name in tests
           assert 'DatagramSocket()' in rev and 'Network.bindSocket' in tests
+          session = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          memory = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioProfileMemory.kt').read_text()
+          memtests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioProfileMemoryTest.kt').read_text()
+          stream = air.split('fun runAudioStream(', 1)[1].split('fun teardownAudioStream(',1)[0]
+          assert 'lastAudioSetupRequestAttempted = false' in stream
+          assert 'lastAudioSetupRequestAttempted = true' in stream
+          assert stream.index('lastAudioSetupRequestAttempted = true') > stream.index('if (port == 0)')
+          assert 'shouldRecordRejectedAfterAttempt(' in session
+          assert 'client.lastAudioSetupRequestAttempted' in session
+          assert 'fun shouldRecordRejectedAfterAttempt(' in memory
+          assert 'b233LocalReverseRtcpBindFailureCannotPersistReceiverRejection' in memtests
           PY
-      - name: Deterministic B233 reverse-RTCP negative and existing JVM regression
+      - name: B233 reverse-RTCP and profile-memory negative JVM regressions
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.AudioReverseControlPortTest --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.AudioReverseControlPortTest --tests io.github.shaonialife.cardeck.audio.AudioProfileMemoryTest --stacktrace
       - name: Complete Android JUnit, Lint and Debug build
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
 
-# L3 read-only evidence, no signing, release, install, stable merge or VPN changes.
+# L3 B233 profile-memory integrity + private evidence; no signing, release, install, stable merge or VPN changes.

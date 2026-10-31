@@ -79,6 +79,18 @@ object AudioProfileMemory {
     }
 
     /**
+     * B233's phone-local reverse RTCP Network.bindSocket EPERM happens BEFORE
+     * any audio SETUP is attempted. It is NOT receiver rejection and must
+     * never enter the persistent rejection ranking. Legacy receivers retain
+     * exactly their prior behavior; an attempted B233 SETUP still records its
+     * unsuccessful result conservatively (including uncertain I/O outcomes).
+     */
+    fun shouldRecordRejectedAfterAttempt(
+        isBuickB233: Boolean,
+        setupRequestAttempted: Boolean,
+    ): Boolean = !isBuickB233 || setupRequestAttempted
+
+    /**
      * 该档位不可用：排到最后。
      *
      * @param markExhausted 全部档位都被否掉时是否直接置 [Entry.disabled]。**只有「拆链」

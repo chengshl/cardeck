@@ -1484,15 +1484,26 @@ object SessionController {
                     streamInfo = result
                     break
                 }
-                // SETUP 被拒不等于「车机不兼容」：可能只是资源仲裁/网络抖动，
-                // 不能据此把整台车机的音频判死（置 disabled 只认「拆链」证据）。
-                AudioProfileMemory.recordRejected(
-                    context.applicationContext,
-                    identity,
-                    candidate.key,
-                    ordered.map { it.key }.toSet(),
-                    markExhausted = false,
-                )
+                // T97: phone-local reverse RTCP bind EPERM returns before
+                // receiver SETUP. Never turn that into persistent B233
+                // "receiver rejected this profile" evidence.
+                val setupAttempted = client.lastAudioSetupRequestAttempted
+                if (AudioProfileMemory.shouldRecordRejectedAfterAttempt(
+                        client.currentEndpoint.isBuickB233, setupAttempted,
+                    )) {
+                    // An attempted SETUP can be rejected or have an uncertain
+                    // I/O outcome; preserve the original conservative ranking.
+                    AudioProfileMemory.recordRejected(
+                        context.applicationContext,
+                        identity,
+                        candidate.key,
+                        ordered.map { it.key }.toSet(),
+                        markExhausted = false,
+                    )
+                } else {
+                    appendLog("AUDIO T97: 本地前置条件失败，未尝试音频 SETUP；" +
+                        "不写入该档位的车机拒绝记忆")
+                }
                 appendLog("AUDIO: 档位 ${candidate.label} 协商失败——本会话继续试下一档")
             }
             val profile = chosen
