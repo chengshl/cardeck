@@ -243,7 +243,8 @@ class VideoSender(
                 return
             }
             val bufferInfo = MediaCodec.BufferInfo()
-            while (running.get()) {
+            // A prior drain must not resume when stop() is followed by a new start().
+            while (running.get() && synchronized(dataPortLock) { dataPortEpoch == epoch }) {
                 val index =
                     try {
                         codec.dequeueOutputBuffer(bufferInfo, 10_000)
@@ -253,6 +254,12 @@ class VideoSender(
                         log("VIDEO: 编码器取帧异常，停止推流 - ${error.message}")
                         break
                     }
+                // stop()/start() may race with a blocking dequeue. Never send an
+                // old-session buffer to a retired socket after the epoch changes.
+                if (synchronized(dataPortLock) { dataPortEpoch != epoch }) {
+                    if (index >= 0) runCatching { codec.releaseOutputBuffer(index, false) }
+                    break
+                }
                 when {
                     index == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                         maybeSendKeepAlive(output)
