@@ -105,4 +105,22 @@ class AudioDatagramSocketOwnershipTest {
             }
         }
     }
+
+    @Test
+    fun stoppedFlagRejectsLateSocketAndEncoderBeforeRetireCompletes() {
+        val gate = AudioDatagramSessionGate()
+        val socket = DatagramSocket()
+        var encoderPublished = false
+        var socketPublished = false
+        try {
+            // stop() flips its atomic flag before it reaches the socket cleanup.
+            assertFalse(gate.publish(socket, { false }) { socketPublished = true })
+            assertTrue("late socket must close before retire() runs", socket.isClosed)
+            assertFalse(gate.runIfActive({ false }) { encoderPublished = true })
+            assertFalse(socketPublished)
+            assertFalse("late AAC encoder/capture was published after stop", encoderPublished)
+        } finally {
+            socket.close()
+        }
+    }
 }
