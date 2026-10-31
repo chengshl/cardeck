@@ -269,7 +269,12 @@ class Iap2BluetoothClient(
         }
         val withService =
             bonded.filter { device ->
-                device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true
+                // BLUETOOTH_CONNECT may be revoked after the start() permission check.
+                try {
+                    device.uuids?.any { it.uuid == ACCESSORY_IAP2_UUID } == true
+                } catch (_: SecurityException) {
+                    false
+                }
             }
         return if (withService.isNotEmpty()) withService else bonded
     }
@@ -281,6 +286,9 @@ class Iap2BluetoothClient(
             try {
                 device.createRfcommSocketToServiceRecord(ACCESSORY_IAP2_UUID)
             } catch (error: IOException) {
+                return null
+            } catch (_: SecurityException) {
+                log("BT-C: 建立 RFCOMM Socket 时蓝牙权限已失效（已跳过本轮）")
                 return null
             }
         // 连接前就登记：connect() 是阻塞调用（SDP 查询 + 建链最长可达数十秒），
@@ -302,6 +310,12 @@ class Iap2BluetoothClient(
         } catch (error: IOException) {
             currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
+            null
+        } catch (_: SecurityException) {
+            // Android permission can be revoked while blocking inside connect().
+            currentSocket.compareAndSet(socket, null)
+            runCatching { socket.close() }
+            log("BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）")
             null
         }
     }
