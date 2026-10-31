@@ -374,6 +374,10 @@ class Iap2BluetoothClient(
                     log("BT-C T39: Buick 诊断结束；保留受控的主动重连（不重启车机）")
                 }
             }
+        } catch (error: Exception) {
+            // Android permission or callback/runtime failures must not escape the
+            // RFCOMM worker: finally still retires only this session's resources.
+            log("BT-C: SESSION 意外异常（${error.javaClass.simpleName}；本轮连接已释放）")
         } finally {
             // Only retire resources owned by this session; stop/start can overlap cleanup.
             activeChannel.compareAndSet(channel, null)
