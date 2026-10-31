@@ -1,0 +1,173 @@
+name: E5 B233 Bluetooth profile protection isolated regression (#24)
+on:
+  push:
+    branches: [work/e5-bt-a-profile-preserve-24-20261030]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt'
+      - '.github/workflows/ci-e5-bt-a-profile-preserve-24.yml'
+      - '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-bt-a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify exact E5 baseline and profile-only diff
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          prior_expected = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          expected = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
+          assert base == expected, f'E5 baseline moved; re-review required: {base}'
+          # The sole new stable commit #93 introduced two JUnit fixtures and test CI.
+          stable_93_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', prior_expected, expected], text=True
+          ).splitlines())
+          assert stable_93_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unreviewed E5 production drift: {sorted(stable_93_delta)}'
+          # Reviewed stable delta since the original #24 BT-A baseline:
+          # #77 release preflight test, #79 synthetic ACK replay test/CI,
+          # #82 official release trigger guard. No BT/iAP2/AirPlay runtime changed.
+          # Fail closed if future stable changes any file outside this exact set.
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_reviewed, expected], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unreviewed E5 stable drift: {sorted(stable_delta)}'
+          client = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+          route = 'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt'
+          test = 'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt'
+          workflow = '.github/workflows/ci-e5-bt-a-profile-preserve-24.yml'
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          publish = '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
+          assert changed == {client, route, test, workflow, publish}, f'Unexpected diff: {changed}'
+          release = Path(publish).read_text()
+          assert '  workflow_dispatch:' in release
+          assert '\n  push:' not in release and '\n  pull_request:' not in release
+          assert 'group: cardeck-global-signed-release-version' in release
+          assert 'cancel-in-progress: false' in release
+          assert 'python3 tools/release/allocate_version.py' in release
+          assert 'python3 -m unittest tools.release.test_allocate_version' in release
+          assert "test \"$(git rev-parse origin/Buick-E5)\" = \"5e565a08b228d157ff1d739f38b8c09fad80f8a5\"" in release
+          assert 'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt' in release
+          assert 'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt' in release
+          assert '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml' in release
+          assert 'NEW_CERT=' in release and 'OLD_CERT=' in release
+          assert 'versionCode=\'\$CARDECK_BUILD_VERSION_CODE\'' not in release
+          assert "versionCode='$CARDECK_BUILD_VERSION_CODE'" in release
+          assert "versionName='$CARDECK_RELEASE_VERSION_NAME'" in release
+          assert 'test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"' in release
+          assert 'TAG="exp-buick-e5-bt-a-profile-preserve-24-$CARDECK_RELEASE_VERSION_NAME"' in release
+          assert 'baseBranch=Buick-E5' in release and 'artifactKind=experiment' in release
+          assert 'updaterSchema=2' in release and 'sourceBranch=%s' in release
+
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + client], text=True)
+          new = Path(client).read_text()
+          before = "                if (!t35Buick) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          after = "                // #24 BT-A: keep ordinary HFP/A2DP connected for a narrowly\n                // identified B233 candidate. This does not change RFCOMM,\n                // iAP2 handshakes, retry pacing or other receivers.\n                val selected = selectedForCandidates\n                val protectB233Profiles = BuickB233Route.shouldProtectProfiles(\n                    advertisedName = name,\n                    selectedName = selected?.name,\n                    selectedMatchesDevice = selected != null &&\n                        TargetDevicePrefs.matches(selected, device.address),\n                )\n                if (protectB233Profiles) {\n                    val now = android.os.SystemClock.uptimeMillis()\n                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {\n                        lastProfileLogAt = now\n                        log(\"BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped\")\n                    }\n                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          assert old.count(before) == 1
+          # Keep the selection used to enumerate candidate devices identical to
+          # the selection used to decide whether HFP/A2DP may be disconnected.
+          # Otherwise a mid-scan UI target change can expose a previously
+          # selected B233 receiver to the destructive fallback.
+          expected_client = old.replace(before, after)
+          before_candidates = "            val candidates = candidateDevices(adapter)"
+          after_candidates = "            val selectedForCandidates = targetProvider()\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          before_signature = "    private fun candidateDevices(adapter: android.bluetooth.BluetoothAdapter): List<BluetoothDevice> {"
+          after_signature = "    private fun candidateDevices(\n        adapter: android.bluetooth.BluetoothAdapter,\n        selectedTarget: TargetDevicePrefs.Target?,\n    ): List<BluetoothDevice> {"
+          before_target = "        targetProvider()?.let { target ->"
+          after_target = "        selectedTarget?.let { target ->"
+          for before_part, after_part in (
+              (before_candidates, after_candidates),
+              (before_signature, after_signature),
+              (before_target, after_target),
+          ):
+              assert expected_client.count(before_part) == 1, f'Unexpected baseline selection block: {before_part}'
+              expected_client = expected_client.replace(before_part, after_part)
+          assert new == expected_client, 'Unrelated runtime behavior changed'
+          assert new.count('val selectedForCandidates = targetProvider()') == 1
+          assert 'val selected = selectedForCandidates' in new
+          policy = Path(route).read_text()
+          assert 'BUICK_[0-9]{4}' in policy
+          assert 'selectedMatchesDevice && isKnownReceiver(selectedName)' in policy
+          assert '!legacyT35Buick && !protectB233Profiles' in policy, 'T35 no-disconnect guard missing'
+          assert 'shouldDisconnectProfiles(t35Buick, protectB233Profiles)' in new, 'T35 guard bypassed'
+          assert 'BluetoothDevice.disconnect' not in new.replace(old.replace(before, ''), '')
+          checks = Path(test).read_text()
+          assert 'protectsOnlyB233CandidateOrExplicitlyMatchedSelection' in checks
+          assert 'narrowlyMatchesFourDigitBuickHint' in checks
+          assert 'legacyT35GuardRemainsActiveForAllCandidates' in checks
+          print('Profile-only L3 isolation verified; no other runtime change')
+          PY
+      - name: Verify shared global version allocator regression tests
+        run: python3 -m unittest tools.release.test_allocate_version
+      - name: Run Android unit tests and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Run full Lint and reject errors on touched files (existing E5 baseline debt)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug --stacktrace > e5-lint-output.txt 2>&1
+          LINT_EXIT=$?
+          set -e
+          if (( LINT_EXIT != 0 )); then
+            grep -E 'Lint found|First failure:' e5-lint-output.txt | head -n 8 || true
+          fi
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          touched_paths = {
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt',
+          }
+          report = Path('app/build/reports/lint-results-debug.xml')
+          if not report.is_file():
+              raise SystemExit('Lint XML missing: refusing to waive an unreviewed failure')
+          issues = []
+          for issue in ET.parse(report).getroot().findall('.//issue'):
+              if issue.get('severity', '').lower() not in ('error', 'fatal'):
+                  continue
+              loc = issue.find('location')
+              path = (loc.get('file', '') if loc is not None else '').replace('\\', '/')
+              if '/app/' in path:
+                  path = 'app/' + path.split('/app/', 1)[1]
+              issues.append((issue.get('id'), path))
+          touched = [(i, p) for i, p in issues if p in touched_paths]
+          print(f'Full E5 Lint errors: {len(issues)}; touched-file errors: {len(touched)}')
+          if touched:
+              raise SystemExit(f'Lint errors on BT-A changed files: {touched}')
+          print('Existing unrelated E5 Lint debt remains; no touched-file error introduced')
+          PY

@@ -146,7 +146,8 @@ class Iap2BluetoothClient(
                 sleepQuietly(2_000)
                 continue
             }
-            val candidates = candidateDevices(adapter)
+            val selectedForCandidates = targetProvider()
+            val candidates = candidateDevices(adapter, selectedForCandidates)
             if (candidates.isEmpty()) {
                 log("BT-C: 没有已配对的蓝牙设备——请先在系统设置里与车机完成蓝牙配对")
                 sleepQuietly(RETRY_DELAY_MILLIS * 3)
@@ -166,7 +167,23 @@ class Iap2BluetoothClient(
                 // （HFP/A2DP 在线）时，车机不开放无线 CarPlay 的 iAP2 服务窗口——
                 // 表现为每 3s 连接失败。iAP2 是独立的 SDP 直连服务，与这些配置文件
                 // 无关，断开后不影响 CarPlay 本身（声音走 WiFi 的 AirPlay）。
-                if (!t35Buick) run {
+                // #24 BT-A: keep ordinary HFP/A2DP connected for a narrowly
+                // identified B233 candidate. This does not change RFCOMM,
+                // iAP2 handshakes, retry pacing or other receivers.
+                val selected = selectedForCandidates
+                val protectB233Profiles = BuickB233Route.shouldProtectProfiles(
+                    advertisedName = name,
+                    selectedName = selected?.name,
+                    selectedMatchesDevice = selected != null &&
+                        TargetDevicePrefs.matches(selected, device.address),
+                )
+                if (protectB233Profiles) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
+                        lastProfileLogAt = now
+                        log("BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped")
+                    }
+                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {
                     val dropped = BtProfiles.disconnect(context, device)
                     if (dropped.isNotEmpty()) {
                         val now = android.os.SystemClock.uptimeMillis()
@@ -240,14 +257,17 @@ class Iap2BluetoothClient(
      * 指定了目标车机时**只返回该设备**（用户配对了多台车机时避免误连）。
      */
     @SuppressLint("MissingPermission")
-    private fun candidateDevices(adapter: android.bluetooth.BluetoothAdapter): List<BluetoothDevice> {
+    private fun candidateDevices(
+        adapter: android.bluetooth.BluetoothAdapter,
+        selectedTarget: TargetDevicePrefs.Target?,
+    ): List<BluetoothDevice> {
         val bonded =
             try {
                 adapter.bondedDevices?.toList().orEmpty()
             } catch (_: SecurityException) {
                 emptyList()
             }
-        targetProvider()?.let { target ->
+        selectedTarget?.let { target ->
             // 目标策略：地址命中即唯一候选——不再按 SDP 缓存过滤（缓存可能缺失，
             // 而用户显式指定就该尝试）；目标不在已配对列表时给一次提示并空转等待。
             val hit = bonded.filter { TargetDevicePrefs.matches(target, it.address) }
