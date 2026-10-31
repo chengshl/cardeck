@@ -99,21 +99,23 @@ class CarPlayService : Service() {
                 getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
             val projection = manager.getMediaProjection(code, data)
             // Android 14+：createVirtualDisplay 前必须注册回调（资源管理强制）
-            projection?.registerCallback(
-                object : android.media.projection.MediaProjection.Callback() {
-                    override fun onStop() {
-                        // Android delivers old onStop callbacks asynchronously.
-                        // Never let an expired grant erase a NEW projection
-                        // published by a subsequent explicit permission dialog.
-                        if (projectionLease.clearIfCurrent(projection)) {
-                            fileLog("SVC: MediaProjection 被系统停止（onStop）——音频/镜像需重新授权")
-                        } else {
-                            fileLog("SVC T91: 旧 MediaProjection onStop；保留后续已更新的授权")
+            projection?.let { granted ->
+                granted.registerCallback(
+                    object : android.media.projection.MediaProjection.Callback() {
+                        override fun onStop() {
+                            // Android delivers old onStop callbacks asynchronously.
+                            // Never let an expired grant erase a NEW projection
+                            // published by a subsequent explicit permission dialog.
+                            if (projectionLease.clearIfCurrent(granted)) {
+                                fileLog("SVC: MediaProjection 被系统停止（onStop）——音频/镜像需重新授权")
+                            } else {
+                                fileLog("SVC T91: 旧 MediaProjection onStop；保留后续已更新的授权")
+                            }
                         }
-                    }
-                },
-                android.os.Handler(android.os.Looper.getMainLooper()),
-            )
+                    },
+                    android.os.Handler(android.os.Looper.getMainLooper()),
+                )
+            }
             mediaProjection = projection
             if (projection != null) {
                 fileLog("SVC: MediaProjection 就绪（投影创建成功）")
