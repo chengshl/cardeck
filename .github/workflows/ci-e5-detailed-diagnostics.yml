@@ -38,8 +38,8 @@ jobs:
           import subprocess
           content = Path('.github/workflows/publish-e5-detailed-diagnostics.yml').read_text()
           # This L3 Draft may never auto-publish on a source or test push.
-          assert 'on:\\n  workflow_dispatch:\\n' in content
-          assert '\\n  push:\\n' not in content
+          assert 'on:\n  workflow_dispatch:\n' in content
+          assert '\n  push:\n' not in content
           assert 'group: cardeck-global-signed-release-version' in content
           assert 'cancel-in-progress: false' in content
           assert 'python3 tools/release/allocate_version.py' in content
