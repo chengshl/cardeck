@@ -2714,33 +2714,32 @@ class AirPlayClient(
                 throw IOException("B233 心跳所属 RTSP 会话已退役")
             }
             cseq = ++cSeq
-                // 先登记再写：响应可能在 write 返回前就到达
-                pendingResponses[cseq] = queue
-                try {
-                    val head =
-                        "$method $path RTSP/1.0\r\n" +
-                            "CSeq: $cseq\r\n" +
-                            "User-Agent: AirPlay/$SENDER_SOURCE_VERSION\r\n" +
-                            "Content-Type: $contentType\r\n" +
-                            extraHeaders.joinToString("") { "${it.first}: ${it.second}\r\n" } +
-                            "Content-Length: ${body.size}\r\n" +
-                            "\r\n"
-                    val plaintext = head.toByteArray(Charsets.US_ASCII) + body
-                    val encryption = cipher
-                    val wire =
-                        if (encryption != null) {
-                            synchronized(encryption) { encryption.encrypt(plaintext) }
-                        } else {
-                            plaintext
-                        }
-                    val output = client.getOutputStream()
-                    output.write(wire)
-                    output.flush()
-                } catch (error: Throwable) {
-                    audioFailureTrace?.event("rtsp_write_error", "method=$method path=$path type=${error.javaClass.simpleName}")
-                    pendingResponses.remove(cseq)
-                    throw error
-                }
+            // 先登记再写：响应可能在 write 返回前就到达
+            pendingResponses[cseq] = queue
+            try {
+                val head =
+                    "$method $path RTSP/1.0\r\n" +
+                        "CSeq: $cseq\r\n" +
+                        "User-Agent: AirPlay/$SENDER_SOURCE_VERSION\r\n" +
+                        "Content-Type: $contentType\r\n" +
+                        extraHeaders.joinToString("") { "${it.first}: ${it.second}\r\n" } +
+                        "Content-Length: ${body.size}\r\n" +
+                        "\r\n"
+                val plaintext = head.toByteArray(Charsets.US_ASCII) + body
+                val encryption = cipher
+                val wire =
+                    if (encryption != null) {
+                        synchronized(encryption) { encryption.encrypt(plaintext) }
+                    } else {
+                        plaintext
+                    }
+                val output = client.getOutputStream()
+                output.write(wire)
+                output.flush()
+            } catch (error: Throwable) {
+                audioFailureTrace?.event("rtsp_write_error", "method=$method path=$path type=${error.javaClass.simpleName}")
+                pendingResponses.remove(cseq)
+                throw error
             }
         }
         val response =
