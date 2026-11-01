@@ -1,0 +1,79 @@
+name: B233 reverse RTCP port ownership (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-reverse-rtcp-port-owner-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-callback-ownership-t94
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, PCM negative control, identity guard and scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=2ffe439238d19e6d385d19160813cb57ecf3435e
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41352137482 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41352137482 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-reverse-rtcp-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/ReverseAudioPortOwnershipTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt > /tmp/parent-session.kt
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt > /tmp/parent-airplay.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          def exactly(old, before, after):
+              assert old.count(before) == 1, f'parent negative control missing: {before[:70]}'
+              return old.replace(before, after, 1)
+          old = Path('/tmp/parent-session.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          old = exactly(old, '            val callbackOwner = AudioSenderCallbackOwner()\n            val sender =',
+              '            val callbackOwner = AudioSenderCallbackOwner()\n            val reversePortOwner =\n                if (client.currentEndpoint.isBuickB233) client.reverseAudioControlPortOwner() else null\n            val sender =')
+          old = exactly(old, '                    onStopped =\n                        if (modernB233Timing) {\n                            { client.closeReverseAudioControlPort() }\n                        } else {\n                            null\n                        },',
+              '                    onStopped =\n                        if (reversePortOwner != null) {\n                            { client.closeReverseAudioControlPortIfOwner(reversePortOwner) }\n                        } else {\n                            null\n                        },')
+          assert old == new, 'SessionController changed outside B233 port ownership'
+          old = Path('/tmp/parent-airplay.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          old = exactly(old, '/** B233 iAP2 handshake and control bytes must not enter uploadable logs. */',
+              '/** Compare the exact listener instance, never only the shared AirPlay session. */\ninternal fun ownsReverseAudioPort(current: Any?, expected: Any?): Boolean =\n    expected != null && current === expected\n\n/** B233 iAP2 handshake and control bytes must not enter uploadable logs. */')
+          old = exactly(old, '    @Synchronized\n    fun closeReverseAudioControlPort() {\n        reverseAudioControlPort?.close()\n        reverseAudioControlPort = null\n        audioRtpSentCountProvider = null\n    }',
+              '    @Synchronized\n    fun closeReverseAudioControlPort() {\n        reverseAudioControlPort?.close()\n        reverseAudioControlPort = null\n        audioRtpSentCountProvider = null\n    }\n\n    /** Snapshot the listener created for this B233 audio SETUP. */\n    @Synchronized\n    fun reverseAudioControlPortOwner(): Any? = reverseAudioControlPort\n\n    /** A stopped sender must not close a replacement sender\'s reverse RTCP listener. */\n    @Synchronized\n    fun closeReverseAudioControlPortIfOwner(owner: Any?) {\n        if (ownsReverseAudioPort(reverseAudioControlPort, owner)) {\n            closeReverseAudioControlPort()\n        }\n    }')
+          old = exactly(old, '                reverseAudioControlPort = reverse',
+              '                synchronized(this) { reverseAudioControlPort = reverse }')
+          assert old == new, 'AirPlayClient changed outside reverse listener lifecycle'
+          test = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/ReverseAudioPortOwnershipTest.kt').read_text()
+          assert 'stoppedSenderCannotRetireReplacementListener' in test
+          assert 'absentOrUnownedListenerNeverCloses' in test
+          print('parent PCM callback omission and stale port retirement verified; four-file scope')
+          PY
+      - name: Android JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline only: no signing, Release, install or stable merge.
