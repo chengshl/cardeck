@@ -198,6 +198,16 @@ jobs:
               ["                                        val hex = frame.body.joinToString(\" \") { \"%02x\".format(it) }\n", ""],
               ["if (frame.body.isNotEmpty()) \" hex=${hex.take(120)}\" else \"\"", "\"（原始体已脱敏）\""],
           ]
+          session_replacements.append([
+              '''                        appendLog(
+                            "AIRPLAY: ✓ 配对完成 writeKey=" +
+                                keys.phoneWriteKey.joinToString("") { "%02x".format(it) }.take(16) + "… " +
+                                "readKey=" + keys.phoneReadKey.joinToString("") { "%02x".format(it) }.take(16) + "…",
+                        )''',
+              '''                        appendLog("AIRPLAY: ✓ 配对完成（会话密钥已脱敏）")''',
+          ])
+          assert 'keys.phoneWriteKey.joinToString' not in Path(session_path).read_text()
+          assert 'keys.phoneReadKey.joinToString' not in Path(session_path).read_text()
           for before, after in session_replacements:
               assert session_expected.count(before) == 1, 'SessionController log baseline drift'
               session_expected = session_expected.replace(before, after)
