@@ -83,7 +83,7 @@ jobs:
           assert "assert modified == {workflow}" in release
           assert "assert not event.get('head_commit', {}).get('added', [])" in release
           assert "assert not event.get('head_commit', {}).get('removed', [])" in release
-          assert "reviewed_source = 'bba74fb74835b217f9049942b608fce7e3f17d34'" in release
+          assert "reviewed_source = '4f2ec9d7d8e855832169b7c186059e89294ceafb'" in release
           assert "assert actual == expected" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
@@ -232,6 +232,115 @@ jobs:
           for before_part, after_part in lifecycle_edits:
               assert expected_client.count(before_part) == 1, 'Unexpected lifecycle block drift'
               expected_client = expected_client.replace(before_part, after_part)
+          # Reconstruct only the audited #24 startup ownership correction on top
+          # of the previous exact runtime replay; reject unrelated source changes.
+          startup_before = (
+              "    fun start(): Boolean {\n"
+              "        if (running) return true\n"
+              "        if (!hasPermission()) {\n"
+              "            log(\"BT-C: 缺少 BLUETOOTH_CONNECT 权限\")\n"
+              "            return false\n"
+              "        }\n"
+              "        val adapter =\n"
+              "            try {\n"
+              "                context.getSystemService(BluetoothManager::class.java)?.adapter\n"
+              "            } catch (_: Exception) {\n"
+              "                null\n"
+              "            }\n"
+              "        if (adapter == null || !adapter.isEnabled) {\n"
+              "            log(\"BT-C: 蓝牙不可用或未开启\")\n"
+              "            return false\n"
+              "        }\n"
+              "        val worker = synchronized(lifecycleLock) {\n"
+              "            if (running) return true\n"
+              "            running = true\n"
+              "            val myGeneration = generation.incrementAndGet()\n"
+              "            Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {\n"
+              "                isDaemon = true\n"
+              "                thread = this\n"
+              "            }\n"
+              "        }\n"
+              "        val target = targetProvider()\n"
+              "        log(\n"
+              "            \"BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）\" +\n"
+              "                if (target != null) {\n"
+              "                    \"，目标：「${target.name}」${target.address}（只连该设备）\"\n"
+              "                } else {\n"
+              "                    \"（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）\"\n"
+              "                },\n"
+              "        )\n"
+              "        worker.start()\n"
+              "        return true\n"
+              "    }"
+          )
+          startup_after = (
+              "    fun start(): Boolean {\n"
+              "        // A slow permission/target preflight must not resurrect a client after stop().\n"
+              "        val startLease = synchronized(lifecycleLock) {\n"
+              "            if (running) return true\n"
+              "            generation.get()\n"
+              "        }\n"
+              "        if (!hasPermission()) {\n"
+              "            log(\"BT-C: 缺少 BLUETOOTH_CONNECT 权限\")\n"
+              "            return false\n"
+              "        }\n"
+              "        val adapter =\n"
+              "            try {\n"
+              "                context.getSystemService(BluetoothManager::class.java)?.adapter\n"
+              "            } catch (_: Exception) {\n"
+              "                null\n"
+              "            }\n"
+              "        val enabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }\n"
+              "        if (!enabled) {\n"
+              "            log(\"BT-C: 蓝牙不可用或未开启\")\n"
+              "            return false\n"
+              "        }\n"
+              "        // Resolve the potentially throwing provider and logger before publishing running.\n"
+              "        val target = try {\n"
+              "            targetProvider()\n"
+              "        } catch (error: Exception) {\n"
+              "            runCatching { log(\"BT-C: 读取目标失败（${error.javaClass.simpleName}）\") }\n"
+              "            return false\n"
+              "        }\n"
+              "        log(\n"
+              "            \"BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）\" +\n"
+              "                if (target != null) {\n"
+              "                    \"，目标：「${target.name}」${target.address}（只连该设备）\"\n"
+              "                } else {\n"
+              "                    \"（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）\"\n"
+              "                },\n"
+              "        )\n"
+              "        return synchronized(lifecycleLock) {\n"
+              "            if (running) return@synchronized true\n"
+              "            // stop() invalidated this preflight while it was outside the lock.\n"
+              "            if (generation.get() != startLease) return@synchronized false\n"
+              "            running = true\n"
+              "            val myGeneration = generation.incrementAndGet()\n"
+              "            try {\n"
+              "                // Start while holding the lifecycle lock: stop() cannot retire a\n"
+              "                // not-yet-started worker and allow it to start after its successor.\n"
+              "                Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {\n"
+              "                    isDaemon = true\n"
+              "                    thread = this\n"
+              "                    start()\n"
+              "                }\n"
+              "                true\n"
+              "            } catch (error: Exception) {\n"
+              "                running = false\n"
+              "                generation.incrementAndGet()\n"
+              "                thread = null\n"
+              "                runCatching { log(\"BT-C: 连接线程启动失败（${error.javaClass.simpleName}）\") }\n"
+              "                false\n"
+              "            }\n"
+              "        }\n"
+              "    }"
+          )
+          assert expected_client.count(startup_before) == 1, 'BT-A preflight/startup baseline drifted'
+          expected_client = expected_client.replace(startup_before, startup_after)
+          assert 'generation.get() != startLease' in new
+          assert 'runCatching { log("BT-C: 读取目标失败' in new
+          assert 'val enabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }' in new
+          assert 'reviewed_source = \'4f2ec9d7d8e855832169b7c186059e89294ceafb\'' in release
           assert 'synchronized(lifecycleLock)' in new
           assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
           assert new.count('activeChannel.compareAndSet(channel, null)') == 1
