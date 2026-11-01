@@ -7,14 +7,14 @@ import org.junit.Test
 
 class B233ModeReplySummaryTest {
     @Test fun b233ModeClaimRequiresExactRtsp200NotReasonPhrase() {
-        for (valid in listOf("RTSP/1.0 200", "RTSP/1.0 200 OK", "RTSP/1.0 200\\tOK")) {
+        for (valid in listOf("RTSP/1.0 200", "RTSP/1.0 200 OK", "RTSP/1.0 200\tOK")) {
             assertTrue(valid, B233ModeReplySummary.isTransportAccepted(valid, true))
         }
         for (invalid in listOf(
             "RTSP/1.0 500 200 OK", "RTSP/1.0 403 200 private",
             "RTSP/1.0 1200 OK", "RTSP/1.0 2000 OK",
             "HTTP/1.1 200 OK", "prefix RTSP/1.0 200 OK",
-            "RTSP/1.0 200 OK\\r\\nInjected: secret",
+            "RTSP/1.0 200 OK\r\nInjected: secret",
         )) {
             assertFalse(invalid, B233ModeReplySummary.isTransportAccepted(invalid, true))
         }
