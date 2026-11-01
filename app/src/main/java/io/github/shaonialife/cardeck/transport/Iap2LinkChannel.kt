@@ -293,7 +293,7 @@ class Iap2LinkChannel(
         lock.notifyAll()
         runCatching { stream.close() }
         if (failure != null) {
-            log("LINK closed: ${failure.message}")
+            log("LINK closed: ${failure.javaClass.simpleName} (detail redacted)")
         } else {
             log("LINK closed")
         }
