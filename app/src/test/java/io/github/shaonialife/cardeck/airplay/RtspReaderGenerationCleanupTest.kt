@@ -12,6 +12,55 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** Synthetic scheduling only; no vehicle, gateway or personal data. */
 class RtspReaderGenerationCleanupTest {
+    @Test fun firstB233DialMayPublishOnlyWhenEndpointStillMatches() {
+        val decide = RtspReaderGenerationCleanup::decideCandidatePublication
+        assertEquals(RtspReaderGenerationCleanup.CandidatePublication.PUBLISH, decide(true, false))
+        assertEquals(RtspReaderGenerationCleanup.CandidatePublication.STALE_ENDPOINT, decide(false, false))
+        assertEquals(RtspReaderGenerationCleanup.CandidatePublication.STALE_ENDPOINT, decide(false, true))
+        assertEquals(RtspReaderGenerationCleanup.CandidatePublication.KEEP_EXISTING, decide(true, true))
+    }
+
+    @Test fun concurrentB233DialCannotOverwriteAlreadyPublishedConnection() {
+        val lock = Any()
+        val first = Any()
+        val second = Any()
+        var published: Any? = null
+        val firstPublished = CountDownLatch(1)
+        val allowSecond = CountDownLatch(1)
+        val loserDecision = AtomicReference<RtspReaderGenerationCleanup.CandidatePublication?>()
+        val failure = AtomicReference<Throwable?>()
+        val lateDial = Thread {
+            try {
+                firstPublished.countDown()
+                check(allowSecond.await(3, TimeUnit.SECONDS))
+                synchronized(lock) {
+                    val decision = RtspReaderGenerationCleanup.decideCandidatePublication(true, published != null)
+                    loserDecision.set(decision)
+                    if (decision == RtspReaderGenerationCleanup.CandidatePublication.PUBLISH) published = second
+                }
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        lateDial.start()
+        try {
+            assertTrue(firstPublished.await(3, TimeUnit.SECONDS))
+            synchronized(lock) {
+                val decision = RtspReaderGenerationCleanup.decideCandidatePublication(true, published != null)
+                assertEquals(RtspReaderGenerationCleanup.CandidatePublication.PUBLISH, decision)
+                published = first
+            }
+        } finally {
+            allowSecond.countDown()
+        }
+        lateDial.join(3000)
+        assertFalse(lateDial.isAlive)
+        assertNull(failure.get())
+        assertEquals(RtspReaderGenerationCleanup.CandidatePublication.KEEP_EXISTING, loserDecision.get())
+        assertTrue("late TCP dial must not replace first RTSP session", published === first)
+    }
+
+
     @Test fun staleReaderCannotDrainNewSessionPendingCseq() {
         val writeLock = Any()
         val pending = ConcurrentHashMap<Int, String>()

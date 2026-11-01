@@ -2680,8 +2680,10 @@ class AirPlayClient(
                     failures += "$host（解析失败：${error.message}）"
                     continue
                 }
+            var candidate: Socket? = null
             try {
                 val newSocket = newVehicleSocket()
+                candidate = newSocket
                 newSocket.connect(InetSocketAddress(address, target.airPlayPort), timeoutMillis)
                 if (generation != endpointGeneration) {
                     // 连接途中端点已更新：丢弃这条旧连接，下一轮按新地址重连
@@ -2694,18 +2696,25 @@ class AirPlayClient(
                 // A reused client must start each RTSP connection with empty
                 // resource/EOF evidence, even after an unexpected peer EOF.
                 if (target.isBuickB233) {
-                    // A late request holding the old socket must never re-arm
-                    // its reader after this socket is published.
-                    val published = synchronized(rtspWriteLock) {
-                        if (generation != endpointGeneration) false else {
-                            b233ResourceEofEvidence.resetForNewConnection()
-                            socket = newSocket
-                            true
+                    // Two callers may finish dialing while the published socket
+                    // is still null. Only the first usable connection may win;
+                    // the losing candidate must never replace an active reader.
+                    val decision = synchronized(rtspWriteLock) {
+                        val active = socket
+                        RtspReaderGenerationCleanup.decideCandidatePublication(
+                            generation == endpointGeneration,
+                            active?.isConnected == true && !active.isClosed,
+                        ).also {
+                            if (it == RtspReaderGenerationCleanup.CandidatePublication.PUBLISH) {
+                                b233ResourceEofEvidence.resetForNewConnection()
+                                socket = newSocket
+                            }
                         }
                     }
-                    if (!published) {
+                    if (decision != RtspReaderGenerationCleanup.CandidatePublication.PUBLISH) {
                         runCatching { newSocket.close() }
-                        return false
+                        // Another concurrent caller already connected successfully.
+                        return decision == RtspReaderGenerationCleanup.CandidatePublication.KEEP_EXISTING
                     }
                 } else {
                     socket = newSocket
@@ -2715,6 +2724,9 @@ class AirPlayClient(
                 log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")
                 return true
             } catch (error: IOException) {
+                // connect() can throw before the candidate is published.
+                // A failed B233 dial must not leak a TCP Socket descriptor.
+                if (target.isBuickB233) runCatching { candidate?.close() }
                 failures += "$host（${error.message}）"
             }
         }

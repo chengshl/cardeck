@@ -11,6 +11,18 @@ package io.github.shaonialife.cardeck.airplay
  * empty list = current reader exited without any pending request.
  */
 internal object RtspReaderGenerationCleanup {
+    enum class CandidatePublication { STALE_ENDPOINT, KEEP_EXISTING, PUBLISH }
+
+    /** Called under rtspWriteLock after TCP connect, before publishing a B233 socket. */
+    fun decideCandidatePublication(
+        endpointUnchanged: Boolean,
+        existingSocketAlive: Boolean,
+    ): CandidatePublication = when {
+        !endpointUnchanged -> CandidatePublication.STALE_ENDPOINT
+        existingSocketAlive -> CandidatePublication.KEEP_EXISTING
+        else -> CandidatePublication.PUBLISH
+    }
+
     /** Caller holds rtspWriteLock; drain must be atomic with reader-generation changes. */
     fun <T> drainAll(pending: MutableMap<Int, T>): List<T> {
         val waiting = pending.values.toList()
