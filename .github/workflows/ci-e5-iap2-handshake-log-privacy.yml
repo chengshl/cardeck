@@ -166,6 +166,7 @@ jobs:
           )
           session_expected = session_old
           session_replacements = [
+              ["BT-PROFILE: 连接前「${target.name}」的蓝牙配置文件状态=", "BT-PROFILE: 连接前指定目标的蓝牙配置文件状态="],
               ["appendLog(\"CTRL: 广播已在启动连接时发布，此处对齐到热点 ${wifi.ssid}\")","appendLog(\"CTRL: 广播已在启动连接时发布，此处对齐到车机热点（SSID 已脱敏）\")"],
               ["appendLog(\"WIFI: 用户选择手动连接——等待 WLAN 连上 \\\"${wifi.ssid}\\\"（最长 120 秒）\")","appendLog(\"WIFI: 用户选择手动连接——等待 WLAN 连上车机热点（SSID 已脱敏，最长 120 秒）\")"],
               ["appendLog(\"WIFI: 已切到车机热点 ${wifi.ssid}\")","appendLog(\"WIFI: 已切到车机热点（SSID 已脱敏）\")"],
@@ -204,6 +205,8 @@ jobs:
           ])
           assert 'keys.phoneWriteKey.joinToString' not in Path(session_path).read_text()
           assert 'keys.phoneReadKey.joinToString' not in Path(session_path).read_text()
+          assert 'BT-PROFILE: 连接前「${target.name}」' not in Path(session_path).read_text()
+          assert 'BT-PROFILE: 连接前指定目标的蓝牙配置文件状态=' in Path(session_path).read_text()
           for before, after in session_replacements:
               assert session_expected.count(before) == 1, 'SessionController log baseline drift'
               session_expected = session_expected.replace(before, after)
