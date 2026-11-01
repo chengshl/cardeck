@@ -396,6 +396,19 @@ jobs:
           for old_text, new_text in config_changes:
               assert expected.count(old_text) == 1, 'Video config epoch edit ambiguous'
               expected = expected.replace(old_text, new_text)
+          # Replay the sole session keepAlive-stat reset from the immutable reviewed #83 HEAD.
+          prior_stats_head = '32278a10f2939867d352e298b5a4747954fa354a'
+          assert expected == subprocess.check_output(
+              ['git', 'show', prior_stats_head + ':' + source_path], text=True
+          ), 'Reviewed #83 session-stat baseline drifted'
+          stats_before = "                synchronized(dataPortLock) {\n                    // A new TCP video session must receive its own codec config.\n                    configSent = false\n                }\n                running.set(true)\n                lastKeepAliveAt = android.os.SystemClock.uptimeMillis()"
+          stats_after = "                synchronized(dataPortLock) {\n                    // A new TCP video session must receive its own codec config\n                    // and must not inherit the previous session's keepAlive stats.\n                    configSent = false\n                    framesSinceKeepAlive = 0\n                    bytesSinceKeepAlive = 0L\n                    keepAliveCount = 0L\n                    lastKeepAliveAt = android.os.SystemClock.uptimeMillis()\n                }\n                running.set(true)"
+          assert expected.count(stats_before) == 1, 'Session-stat reset location ambiguous'
+          expected = expected.replace(stats_before, stats_after)
+          assert expected.count('framesSinceKeepAlive = 0') == 2
+          assert expected.count('bytesSinceKeepAlive = 0L') == 1
+          assert expected.count('keepAliveCount = 0L') == 1
+          assert expected.count('lastKeepAliveAt = android.os.SystemClock.uptimeMillis()') == 1
           assert new == expected, 'Unexpected changes outside video config epoch ownership fix'
           assert new.count('sendVideoConfig(buffer, bufferInfo.size, output, epoch)') == 1
           assert new.count('if (running.get() && dataPortEpoch == epoch) configSent = true') == 1
