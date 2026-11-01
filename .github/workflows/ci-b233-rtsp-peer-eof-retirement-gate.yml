@@ -1,0 +1,76 @@
+name: B233 RTSP peer EOF socket retirement (offline)
+on:
+  pull_request:
+    branches:
+      - experiment/buick-b233-rtsp-request-socket-ownership-t94
+    paths:
+      - '.github/workflows/ci-b233-rtsp-peer-eof-retirement-gate.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-rtsp-eof-retire-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact verified parent, four-file scope and real B233 EOF ownership wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=adfbfe40ade51941ab0ec59749cad8fed3b17a7a
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41288882062 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41288882062 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/b233-actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-rtsp-peer-eof-retirement-gate.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt' | sort > /tmp/b233-expected
+          diff -u /tmp/b233-expected /tmp/b233-actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt').read_text()
+          reader = src.split('    private fun readLoop(', 1)[1].split('    /** 控制通道报文', 1)[0]
+          assert 'RtspReaderGenerationCleanup.retireIfCurrent(' in reader
+          assert 'socket = null' in reader and 'readerSocket = null' in reader
+          assert 'readerGeneration++' in reader and 'cipher = null' in reader
+          assert 'runCatching { client.close() }' in reader
+          assert 'if (endpoint.isBuickB233)' in reader
+          assert 'fun <T> retireIfCurrent(' in helper
+          assert 'isCurrentReader(' in helper and 'isCurrentSocket(' in helper
+          for test in ('deadCurrentReaderMayRetireItsPublishedSocketAndWakeWaiters',
+                       'oldReaderCannotRetireReplacementSocketBeforeNewReaderStarts',
+                       'eofRetirementRacingNewSocketPublicationDoesNotDrainNewWaiter'):
+              assert test in tests
+          print('B233 reader termination atomically retires only its own published socket')
+          PY
+      - name: B233 EOF and reconnect negative concurrency regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.RtspReaderGenerationCleanupTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, release, installation or stable merge.
