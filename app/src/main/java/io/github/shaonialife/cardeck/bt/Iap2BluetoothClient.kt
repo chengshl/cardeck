@@ -242,8 +242,11 @@ class Iap2BluetoothClient(
                 continue
             }
             if (generation.get() != myGeneration) {
-                // stop() 与 connect() 成功竞争：本线程已过期，不建会话
-                currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+                // stop()/start() can overlap this worker after RFCOMM connect.
+                // Retire only the socket owned by this generation; never drain
+                // a successor worker's currentSocket while it is connecting.
+                currentSocket.compareAndSet(connected, null)
+                runCatching { connected.close() }
                 return
             }
             if (t35Buick) {
