@@ -337,10 +337,30 @@ jobs:
           )
           assert expected_client.count(startup_before) == 1, 'BT-A preflight/startup baseline drifted'
           expected_client = expected_client.replace(startup_before, startup_after)
+          # A worker can exit before/after Bluetooth adapter or target provider
+          # access fails. It must retire only its own generation/thread and not
+          # leave running=true with a dead Thread or clear successor resources.
+          launch_before = "                Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {"
+          launch_after = "                Thread({ runConnectWorker(myGeneration) }, \"iap2-bt-client\").apply {"
+          assert expected_client.count(launch_before) == 1, 'BT worker launch anchor drifted'
+          expected_client = expected_client.replace(launch_before, launch_after)
+          connect_before = "    @SuppressLint(\"MissingPermission\")\n    private fun connectLoop(myGeneration: Long) {"
+          connect_after = "    private fun runConnectWorker(myGeneration: Long) {\n        try {\n            connectLoop(myGeneration)\n        } catch (error: Exception) {\n            // Do not leave a dead worker advertised as running. Keep exception\n            // details out of diagnostics; the type is enough to classify failure.\n            runCatching { log(\"BT-C: 连接工作线程异常退出（${error.javaClass.simpleName}）\") }\n        } finally {\n            // A failed worker may finish after stop()/start(). Retire resources\n            // only if this exact generation and Thread still own the lifecycle.\n            val retired = synchronized(lifecycleLock) {\n                if (generation.get() == myGeneration && thread === Thread.currentThread()) {\n                    running = false\n                    thread = null\n                    currentSocket.getAndSet(null) to activeChannel.getAndSet(null)\n                } else {\n                    null\n                }\n            }\n            retired?.first?.let { runCatching { it.close() } }\n            retired?.second?.let { runCatching { it.close() } }\n        }\n    }\n\n    @SuppressLint(\"MissingPermission\")\n    private fun connectLoop(myGeneration: Long) {"
+          assert expected_client.count(connect_before) == 1, 'BT worker body insertion anchor drifted'
+          expected_client = expected_client.replace(connect_before, connect_after)
+          assert 'generation.get() == myGeneration && thread === Thread.currentThread()' in new
+          worker_guard = new.index('private fun runConnectWorker')
+          worker_cleanup = new.index('currentSocket.getAndSet(null) to activeChannel.getAndSet(null)', worker_guard)
+          worker_retire = new.index('generation.get() == myGeneration && thread === Thread.currentThread()', worker_guard)
+          worker_lock_end = new.index('retired?.first?.let', worker_guard)
+          assert worker_guard < worker_retire < worker_cleanup < worker_lock_end
+          assert 'retired?.second?.let { runCatching { it.close() } }' in new
+          assert 'runCatching { log("BT-C: 连接工作线程异常退出（${error.javaClass.simpleName}）") }' in new
+          assert 'Thread({ connectLoop(myGeneration) }' not in new
           assert 'generation.get() != startLease' in new
           assert 'runCatching { log("BT-C: 读取目标失败' in new
           assert 'val enabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }' in new
-          assert 'reviewed_source = \'4f2ec9d7d8e855832169b7c186059e89294ceafb\'' in release
+          assert 'reviewed_source = \'1cca4ada9996bfa58311d2dd9fb34198479b1261\'' in release
           assert 'synchronized(lifecycleLock)' in new
           assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
           assert new.count('activeChannel.compareAndSet(channel, null)') == 1
