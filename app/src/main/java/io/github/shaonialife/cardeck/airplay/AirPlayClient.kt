@@ -655,7 +655,7 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             log("AIRPLAY: modesChanged（声明主屏；主音频=" +
-                (if (claimAudioResource) "CarPlay" else "保留普通蓝牙 A2DP") + "）[$statusLine]")
+                (if (claimAudioResource) "CarPlay" else "未声明；普通蓝牙状态需独立验证") + "）[$statusLine]")
             statusLine.contains("200")
         } catch (error: IOException) {
             log("AIRPLAY: modesChanged 失败 - ${error.message}")
