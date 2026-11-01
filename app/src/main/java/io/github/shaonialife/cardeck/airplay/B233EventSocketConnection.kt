@@ -46,6 +46,10 @@ internal class B233EventSocketOwner {
         return true
     }
 
+    /** Read-only ownership check; callers serialize publication and writes on eventCommandLock. */
+    @Synchronized
+    fun isCurrent(candidate: Socket): Boolean = active === candidate
+
     @Synchronized
     fun retireIfCurrent(candidate: Socket): Boolean {
         if (active !== candidate) return false

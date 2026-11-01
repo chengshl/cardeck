@@ -86,6 +86,23 @@ class B233EventSocketConnectionTest {
         assertTrue(replacement.isClosed)
     }
 
+    @Test fun staleReaderAndWriterCannotClaimReplacementEventSocket() {
+        val owner = B233EventSocketOwner()
+        val retired = Socket()
+        val replacement = Socket()
+        assertFalse(owner.isCurrent(retired))
+        owner.publish(retired)
+        assertTrue(owner.isCurrent(retired))
+        owner.publish(replacement)
+        assertTrue(retired.isClosed)
+        assertFalse(owner.isCurrent(retired))
+        assertTrue(owner.isCurrent(replacement))
+        assertFalse(owner.retireIfCurrent(retired))
+        assertTrue(owner.isCurrent(replacement))
+        assertTrue(owner.retire())
+        assertFalse(owner.isCurrent(replacement))
+    }
+
     @Test fun activeReaderExitReleasesItsOwnedSocket() {
         val owner = B233EventSocketOwner()
         val socket = Socket()
