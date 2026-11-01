@@ -2390,11 +2390,15 @@ class AirPlayClient(
                 timeoutMillis = 3_000,
                 contentType = "application/x-apple-binary-plist",
             )
-            val ok = statusLine.contains("200")
-            log("AIRPLAY T63: B233 audio-only TEARDOWN type=$streamType -> [$statusLine] accepted=$ok")
-            ok
+            // A peer error reason containing "200" must not be treated as
+            // successful audio-stream removal: callers stop RTP and release
+            // the main-audio claim only after this acknowledgement.
+            val accepted = B233ModeReplySummary.isTransportAccepted(statusLine, true)
+            val safeStatus = B233ModeReplySummary.safeTransportStatus(statusLine, true)
+            log("AIRPLAY T63: B233 audio-only TEARDOWN type=$streamType -> [$safeStatus] accepted=$accepted")
+            accepted
         } catch (error: IOException) {
-            log("AIRPLAY T63: B233 audio-only TEARDOWN unavailable - ${error.message}")
+            log("AIRPLAY T63: B233 audio-only TEARDOWN unavailable - ${B233ModeReplySummary.safeTransportError(error, true)}")
             false
         }
     }
