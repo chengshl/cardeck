@@ -36,7 +36,13 @@ jobs:
           if os.environ['GITHUB_EVENT_NAME'] == 'push':
               assert event.get('head_commit', {}).get('message') == 'BT-A-24-signed-release-request'
               assert not event.get('forced') and not event.get('deleted')
-              assert '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml' in event.get('head_commit', {}).get('modified', [])
+              # A release request may modify only this workflow, not Android
+              # runtime, tests or other CI files in the same triggering commit.
+              workflow = '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
+              modified = set(event.get('head_commit', {}).get('modified', []))
+              assert modified == {workflow}, 'Release-request commit changed unrelated files'
+              assert not event.get('head_commit', {}).get('added', [])
+              assert not event.get('head_commit', {}).get('removed', [])
           else:
               assert os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
           PY
@@ -71,6 +77,22 @@ jobs:
               'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
               'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt',
           }, 'Unreviewed BT-A signing source scope: ' + str(files)
+          # File-name allowlisting alone is insufficient: a later release-request
+          # commit must not silently sign new, unreviewed Bluetooth runtime bytes.
+          reviewed_source = '8457c395aabe1b4cfaecfde43e06d82a829155b4'
+          reviewed_files = (
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt',
+          )
+          for path in reviewed_files:
+              expected = subprocess.check_output(
+                  ['git', 'rev-parse', f'{reviewed_source}:{path}'], text=True
+              ).strip()
+              actual = subprocess.check_output(
+                  ['git', 'rev-parse', f'HEAD:{path}'], text=True
+              ).strip()
+              assert actual == expected, f'Unreviewed BT-A source/test blob: {path}'
           PY
       - uses: actions/setup-java@v4
         with:
