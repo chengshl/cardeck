@@ -1,0 +1,89 @@
+name: B233 heartbeat session ownership integration on current T94 lineage
+
+on:
+  pull_request:
+    branches: [experiment/buick-b233-audio-udp-ownership-integration-t94]
+    paths:
+      - '.github/workflows/ci-b233-heartbeat-session-integration-t94.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGate.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGateTest.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: b233-heartbeat-integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent and reviewed source, four-file scope, B233-only runtime wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=d9e8a7b0f881bd115a629aecd9fd096911d372e8
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41260922626 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41260922626 --jq .conclusion)" = success
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41176112171 --jq .head_sha)" = "6fbc4dae3fc2720c57f304ecf5a35a584880d95f"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41176112171 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD > /tmp/heartbeat-integration-scope
+          test "$(wc -l < /tmp/heartbeat-integration-scope)" -eq 4
+          while IFS= read -r f; do
+            case "$f" in
+              .github/workflows/ci-b233-heartbeat-session-integration-t94.yml|app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt|app/src/main/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGate.kt|app/src/test/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGateTest.kt) ;;
+              *) echo "::error::Unexpected changed file: $f"; exit 1 ;;
+            esac
+          done < /tmp/heartbeat-integration-scope
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          air = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          gate = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGate.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233HeartbeatSessionGateTest.kt').read_text()
+          assert 'private val b233HeartbeatSessionGate = B233HeartbeatSessionGate()' in air
+          assert 'b233HeartbeatSessionGate.retire()' in air.split('    fun close() {',1)[1].split('    /**',1)[0]
+          keep = air.split('    fun startKeepAlive(',1)[1].split('    fun startFeedbackLoop()',1)[0]
+          feedback = air.split('    fun startFeedbackLoop()',1)[1].split('    private fun logFeedbackBody(',1)[0]
+          request = air.split('    private fun request(',1)[1].split('    /**',1)[0]
+          assert 'b233HeartbeatSessionGate.runIfCurrent(heartbeatToken)' in keep
+          assert 'expectedB233SessionToken = if (b233HeartbeatWorker) heartbeatToken else null' in feedback
+          assert 'b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break' in feedback
+          assert 'b233HeartbeatSessionGate.captureIfCurrent(expectedB233SessionToken)' in request
+          assert 'socket !== client' in request and 'startReader(client)' in request
+          assert 'AtomicLong(0L)' in gate and '@Synchronized' in gate
+          for name in ('oldKeepAliveCannotPingRetiredHostAfterFastReconnect',
+                       'delayedOldFeedbackWorkerCannotAdoptReplacementSession',
+                       'feedbackResponseAfterCloseCannotBeReportedAsNewSession',
+                       'retirementIsNotBlockedByPausedRtspWriteAfterSocketCapture',
+                       'nonB233LegacyWorkerDoesNotDependOnGate'):
+              assert name in tests
+          assert 'B233ResourceEofEvidence()' in air
+          assert 'RtspReaderGenerationCleanup.drainIfCurrent' in air
+          assert 'B233EventSocketOwner()' in air
+          PY
+      - name: Deterministic B233 stale-worker and blocked-write regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233HeartbeatSessionGateTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug compile
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Draft only: no signing, release, stable merge, or real-car acceptance.
