@@ -1,0 +1,73 @@
+name: B233 audio-only TEARDOWN acknowledgement safety (offline)
+on:
+  pull_request:
+    branches:
+      - experiment/buick-b233-feedback-status-strict-t94
+    paths:
+      - '.github/workflows/ci-b233-audio-teardown-strict.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-audio-teardown-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, two-file scope, and real audio-only TEARDOWN wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=e780bac39ee7e00e3ef13d398dc911bd2ab20b26
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41276865690 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41276865690 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/b233-teardown-actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-teardown-strict.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' | sort > /tmp/b233-teardown-expected
+          diff -u /tmp/b233-teardown-expected /tmp/b233-teardown-actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          teardown = s.split('    fun teardownAudioStream(streamType: Long): Boolean {', 1)[1].split('    /** RECORD:', 1)[0]
+          assert 'if (!endpoint.isBuickB233 || !isSessionAlive()) return false' in teardown
+          assert 'B233ModeReplySummary.isTransportAccepted(statusLine, true)' in teardown
+          assert 'B233ModeReplySummary.safeTransportStatus(statusLine, true)' in teardown
+          assert 'B233ModeReplySummary.safeTransportError(error, true)' in teardown
+          assert 'statusLine.contains("200")' not in teardown
+          assert '[$statusLine]' not in teardown
+          assert '${error.message}' not in teardown
+          assert 'accepted=$accepted' in teardown
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummaryTest.kt').read_text()
+          for case in ('RTSP/1.0 500 200 OK', 'RTSP/1.0 403 200 private',
+                       'HTTP/1.1 200 OK', 'RTSP/1.0 200 OK', 'b233ModeStatusAndFailureLogsDoNotEchoPeerText'):
+              assert case in tests
+          controller = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          assert 'client.teardownAudioStream(profile.streamType)' in controller
+          assert 'if (audioRemoved && currentClient === client' in controller
+          PY
+      - name: Existing strict RTSP status positive, negative and privacy JVM regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233ModeReplySummaryTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft/offline only. No signing, Release, installation or stable merge.
