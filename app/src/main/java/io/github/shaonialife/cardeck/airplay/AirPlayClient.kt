@@ -757,6 +757,12 @@ class AirPlayClient(
         val cipher = eventCommandCipher
         return try {
             synchronized(eventCommandLock) {
+                // The socket/cipher snapshot may predate a B233 event reconnect.
+                // Never write an old command into a retired channel.
+                if (endpoint.isBuickB233 &&
+                    (eventCommandSocket !== socket || eventCommandCipher !== cipher ||
+                        !b233EventSocketOwner.isCurrent(socket))
+                ) return false
                 eventCseq++
                 val body = BinaryPlist.encode(command)
                 val head =
@@ -786,11 +792,17 @@ class AirPlayClient(
      * 回出畸形行 "OK 200 OK"；我们再回 → 无限回声，日志雪崩且空耗加密通道。
      * 通道写与 postEventCommand 共用一把锁，避免两线程加密帧交叉。
      */
-    private fun respondEventRequest(cseq: String?): Boolean {
+    private fun respondEventRequest(cseq: String?, sourceSocket: Socket? = null): Boolean {
         val socket = eventCommandSocket ?: return false
         val cipher = eventCommandCipher
         try {
             synchronized(eventCommandLock) {
+                // A delayed request from an old event reader must never be ACKed
+                // on a newly published socket or with a replacement cipher.
+                if (endpoint.isBuickB233 &&
+                    (sourceSocket !== socket || eventCommandSocket !== socket ||
+                        eventCommandCipher !== cipher || !b233EventSocketOwner.isCurrent(socket))
+                ) return false
                 val head =
                     "RTSP/1.0 200 OK\r\nContent-Length: 0\r\n" +
                         (cseq?.let { "CSeq: $it\r\n" } ?: "") + "\r\n"
@@ -2546,8 +2558,12 @@ class AirPlayClient(
                             if (!isRequest) continue
                             // 车机请求：立即回 200（echo 请求 CSeq）；/command 走分发，其余节流留痕
                             val cseq = CSEQ_REGEX.find(message.head)?.groupValues?.get(1)
+                            // Ignore frames decoded by a reader retired during reconnect.
+                            if (endpoint.isBuickB233 &&
+                                !synchronized(eventCommandLock) { b233EventSocketOwner.isCurrent(socket) }
+                            ) break
                             if (endpoint.isBuickB233) audioControlLiveness.onEventRequest()
-                            val acked = respondEventRequest(cseq)
+                            val acked = respondEventRequest(cseq, socket)
                             if (endpoint.isBuickB233) audioControlLiveness.onEventAck(acked)
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
@@ -2593,6 +2609,11 @@ class AirPlayClient(
                                 }
                                 continue
                             }
+                            // Do not dispatch an old session's command after an ACK
+                            // raced with publication of a replacement event socket.
+                            if (endpoint.isBuickB233 &&
+                                !synchronized(eventCommandLock) { b233EventSocketOwner.isCurrent(socket) }
+                            ) break
                             try {
                                 onCommand(command)
                             } catch (error: Exception) {
