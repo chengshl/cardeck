@@ -430,7 +430,11 @@ class AirPlayClient(
         if (!ensureConnected()) return null
         return try {
             val (statusLine, body) = requestInfo(timeoutMillis)
-            log("AIRPLAY: ✓ /info [${B233ModeReplySummary.safeTransportStatus(statusLine, endpoint.isBuickB233)}] body=${body.size} 字节")
+            log(if (endpoint.isBuickB233) {
+                "AIRPLAY: B233 /info reply status=${B233ModeReplySummary.safeTransportStatus(statusLine, true)} body=${body.size}B"
+            } else {
+                "AIRPLAY: ✓ /info [$statusLine] body=${body.size} 字节"
+            })
             // A peer error mentioning "200" must not become negotiated capabilities.
             if (endpoint.isBuickB233 &&
                 !B233ModeReplySummary.isTransportAccepted(statusLine, true)
