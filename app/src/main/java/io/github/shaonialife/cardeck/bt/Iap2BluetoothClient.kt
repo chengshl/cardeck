@@ -129,7 +129,7 @@ class Iap2BluetoothClient(
             try {
                 // Start while holding the lifecycle lock: stop() cannot retire a
                 // not-yet-started worker and allow it to start after its successor.
-                Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
+                Thread({ runConnectWorker(myGeneration) }, "iap2-bt-client").apply {
                     isDaemon = true
                     thread = this
                     start()
@@ -142,6 +142,30 @@ class Iap2BluetoothClient(
                 runCatching { log("BT-C: 连接线程启动失败（${error.javaClass.simpleName}）") }
                 false
             }
+        }
+    }
+
+    private fun runConnectWorker(myGeneration: Long) {
+        try {
+            connectLoop(myGeneration)
+        } catch (error: Exception) {
+            // Do not leave a dead worker advertised as running. Keep exception
+            // details out of diagnostics; the type is enough to classify failure.
+            runCatching { log("BT-C: 连接工作线程异常退出（${error.javaClass.simpleName}）") }
+        } finally {
+            // A failed worker may finish after stop()/start(). Retire resources
+            // only if this exact generation and Thread still own the lifecycle.
+            val retired = synchronized(lifecycleLock) {
+                if (generation.get() == myGeneration && thread === Thread.currentThread()) {
+                    running = false
+                    thread = null
+                    currentSocket.getAndSet(null) to activeChannel.getAndSet(null)
+                } else {
+                    null
+                }
+            }
+            retired?.first?.let { runCatching { it.close() } }
+            retired?.second?.let { runCatching { it.close() } }
         }
     }
 
