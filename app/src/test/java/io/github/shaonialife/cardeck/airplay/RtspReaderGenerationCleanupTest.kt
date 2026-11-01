@@ -256,4 +256,75 @@ class RtspReaderGenerationCleanupTest {
         assertFalse(RtspReaderGenerationCleanup.isCurrentSocket(oldSocket, null))
     }
 
+    @Test fun deadCurrentReaderMayRetireItsPublishedSocketAndWakeWaiters() {
+        val socket = Any()
+        val pending = ConcurrentHashMap<Int, String>()
+        pending[7] = "waiting-request"
+        val retired = RtspReaderGenerationCleanup.retireIfCurrent(
+            4, 4, socket, socket, socket, pending,
+        )
+        assertEquals(listOf("waiting-request"), retired)
+        assertTrue(pending.isEmpty())
+    }
+
+    @Test fun oldReaderCannotRetireReplacementSocketBeforeNewReaderStarts() {
+        val oldSocket = Any()
+        val newSocket = Any()
+        val pending = ConcurrentHashMap<Int, String>()
+        pending[42] = "new-connection-waiter"
+        // The replacement is published, but readerGeneration has not advanced.
+        assertNull(RtspReaderGenerationCleanup.retireIfCurrent(
+            4, 4, oldSocket, oldSocket, newSocket, pending,
+        ))
+        assertEquals("new-connection-waiter", pending[42])
+        assertNull(RtspReaderGenerationCleanup.retireIfCurrent(
+            4, 5, oldSocket, newSocket, newSocket, pending,
+        ))
+        assertEquals("new-connection-waiter", pending[42])
+    }
+
+    @Test fun eofRetirementRacingNewSocketPublicationDoesNotDrainNewWaiter() {
+        val lock = Any()
+        val oldSocket = Any()
+        val newSocket = Any()
+        var published: Any? = oldSocket
+        var activeReader: Any? = oldSocket
+        var generation = 3
+        val pending = ConcurrentHashMap<Int, String>()
+        val eofObserved = CountDownLatch(1)
+        val resumeOldEof = CountDownLatch(1)
+        val retired = AtomicReference<List<String>?>()
+        val failure = AtomicReference<Throwable?>()
+        val worker = Thread {
+            try {
+                eofObserved.countDown()
+                check(resumeOldEof.await(3, TimeUnit.SECONDS))
+                synchronized(lock) {
+                    retired.set(RtspReaderGenerationCleanup.retireIfCurrent(
+                        3, generation, oldSocket, activeReader, published, pending,
+                    ))
+                }
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        worker.start()
+        try {
+            assertTrue(eofObserved.await(3, TimeUnit.SECONDS))
+            synchronized(lock) {
+                published = newSocket
+                activeReader = newSocket
+                generation = 4
+                pending[42] = "new-connection-waiter"
+            }
+        } finally {
+            resumeOldEof.countDown()
+        }
+        worker.join(3000)
+        assertFalse(worker.isAlive)
+        assertNull(failure.get())
+        assertNull("old EOF must not retire the replacement connection", retired.get())
+        assertEquals("new-connection-waiter", pending[42])
+    }
+
 }
