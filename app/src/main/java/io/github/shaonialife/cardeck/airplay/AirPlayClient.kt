@@ -117,7 +117,8 @@ class AirPlayClient(
         }
     }
 
-    private var socket: Socket? = null
+    // The RTSP reader retires this on peer EOF; heartbeat/reconnect threads must see it.
+    @Volatile private var socket: Socket? = null
     private var cSeq = 0
 
     /**
