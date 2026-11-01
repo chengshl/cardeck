@@ -388,8 +388,13 @@ class Iap2BluetoothClient(
                 log("BT-C: 控制通道初始化失败（${error.javaClass.simpleName}；仅释放本轮连接）")
                 return
             }
-        // A late old worker must not overwrite the new generation's channel.
-        if (!activeChannel.compareAndSet(null, channel)) {
+        // Serialize channel publication with stop()/start() generation changes.
+        // A retired worker must not occupy the successor's channel slot.
+        val published = synchronized(this) {
+            running && generation.get() == myGeneration &&
+                activeChannel.compareAndSet(null, channel)
+        }
+        if (!published) {
             currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
             channel.close()
