@@ -79,7 +79,7 @@ jobs:
           }, 'Unreviewed BT-A signing source scope: ' + str(files)
           # File-name allowlisting alone is insufficient: a later release-request
           # commit must not silently sign new, unreviewed Bluetooth runtime bytes.
-          reviewed_source = '61a72cd7600c74dd4a8766299ac49d96210b5750'
+          reviewed_source = 'bba74fb74835b217f9049942b608fce7e3f17d34'
           reviewed_files = (
               'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
               'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt',
