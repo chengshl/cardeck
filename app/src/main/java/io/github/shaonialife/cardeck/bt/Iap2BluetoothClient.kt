@@ -65,8 +65,7 @@ class Iap2BluetoothClient(
         java.util.concurrent.atomic
             .AtomicLong(0)
 
-    @Volatile
-    private var activeChannel: Iap2LinkChannel? = null
+    private val activeChannel = AtomicReference<Iap2LinkChannel?>(null)
 
     @Volatile
     private var running = false
@@ -344,7 +343,7 @@ class Iap2BluetoothClient(
                 runCatching { socket.close() }
             }
         val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
-        activeChannel = channel
+        activeChannel.set(channel)
         try {
             // T10: resolve the shared Bluetooth identity before session construction.
             var mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
@@ -365,8 +364,10 @@ class Iap2BluetoothClient(
                 log("BT-C T39: Buick 诊断结束；保留受控的主动重连（不重启车机）")
             }
         } finally {
-            activeChannel = null
-            currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
+            // An old RFCOMM session can finish after stop() and a new start().
+            // Retire only this session's channel/socket, never the successor's.
+            activeChannel.compareAndSet(channel, null)
+            currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
             channel.close()
             log(if (running) "BT-C: 本轮会话结束（自动重连仍启用）" else "BT-C: 本轮会话结束（诊断模式已停止自动重连）")
@@ -375,8 +376,7 @@ class Iap2BluetoothClient(
 
     /** 主动结束当前 BT 控制会话（不影响重连循环）。供 AirPlay 配对前复现控制通道退役状态。 */
     fun detachCurrentSession() {
-        activeChannel?.let { channel ->
-            activeChannel = null
+        activeChannel.getAndSet(null)?.let { channel ->
             channel.close()
             log("BT-C: 已主动断开当前控制会话")
         }
@@ -388,7 +388,7 @@ class Iap2BluetoothClient(
         // 递增世代：即便有线程卡在 connect()，事后也会因世代不符自杀，不会在下次启动时复活
         generation.incrementAndGet()
         currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
-        activeChannel?.let { runCatching { it.close() } }
+        activeChannel.getAndSet(null)?.let { runCatching { it.close() } }
         thread?.interrupt()
         thread = null
         log("BT-C: 已停止")
