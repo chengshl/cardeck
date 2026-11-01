@@ -1532,6 +1532,8 @@ object SessionController {
             activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
             b233AudioStartedInSession = client.currentEndpoint.isBuickB233
             val callbackOwner = AudioSenderCallbackOwner()
+            val reversePortOwner =
+                if (client.currentEndpoint.isBuickB233) client.reverseAudioControlPortOwner() else null
             val sender =
                 AudioSender(
                     host = host,
@@ -1562,8 +1564,8 @@ object SessionController {
                     mutePhoneOutput = !client.currentEndpoint.isBuickB233,
                     verboseStartupDiagnostics = client.currentEndpoint.isBuickB233,
                     onStopped =
-                        if (modernB233Timing) {
-                            { client.closeReverseAudioControlPort() }
+                        if (reversePortOwner != null) {
+                            { client.closeReverseAudioControlPortIfOwner(reversePortOwner) }
                         } else {
                             null
                         },
