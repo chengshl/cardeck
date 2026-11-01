@@ -6,6 +6,38 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class B233ModeReplySummaryTest {
+    @Test fun b233ModeClaimRequiresExactRtsp200NotReasonPhrase() {
+        for (valid in listOf("RTSP/1.0 200", "RTSP/1.0 200 OK", "RTSP/1.0 200\tOK")) {
+            assertTrue(valid, B233ModeReplySummary.isTransportAccepted(valid, true))
+        }
+        for (invalid in listOf(
+            "RTSP/1.0 500 200 OK", "RTSP/1.0 403 200 private",
+            "RTSP/1.0 1200 OK", "RTSP/1.0 2000 OK",
+            "HTTP/1.1 200 OK", "prefix RTSP/1.0 200 OK",
+            "RTSP/1.0 200 OK\r\nInjected: secret",
+        )) {
+            assertFalse(invalid, B233ModeReplySummary.isTransportAccepted(invalid, true))
+        }
+    }
+
+    @Test fun legacyNonB233ModeClaimDecisionRemainsUnchanged() {
+        assertTrue(B233ModeReplySummary.isTransportAccepted("RTSP/1.0 500 200 OK", false))
+        assertTrue(B233ModeReplySummary.isTransportAccepted("HTTP/1.1 200 OK", false))
+        assertFalse(B233ModeReplySummary.isTransportAccepted("RTSP/1.0 403 Forbidden", false))
+    }
+
+    @Test fun b233ModeStatusAndFailureLogsDoNotEchoPeerText() {
+        val secret = "synthetic-credential"
+        assertEquals("403", B233ModeReplySummary.safeTransportStatus("RTSP/1.0 403 $secret", true))
+        assertEquals("other", B233ModeReplySummary.safeTransportStatus("bad $secret", true))
+        assertEquals("IOException", B233ModeReplySummary.safeTransportError(
+            java.io.IOException("remote reason=$secret"), true))
+        assertEquals("RTSP/1.0 403 $secret",
+            B233ModeReplySummary.safeTransportStatus("RTSP/1.0 403 $secret", false))
+        assertEquals("remote reason=$secret",
+            B233ModeReplySummary.safeTransportError(java.io.IOException("remote reason=$secret"), false))
+    }
+
     @Test fun emptyReplyDoesNotClaimResourceAcceptance() {
         assertEquals("body=empty ownership=unverified", B233ModeReplySummary.describe(byteArrayOf()))
     }

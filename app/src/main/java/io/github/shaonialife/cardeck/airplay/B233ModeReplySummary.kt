@@ -8,6 +8,22 @@ package io.github.shaonialife.cardeck.airplay
  * Never include payload bytes, free-form strings, keys, UUIDs, IPs or names.
  */
 internal object B233ModeReplySummary {
+    /**
+     * Transport-level RTSP success only, never evidence of resource ownership.
+     * Keep legacy non-B233 acceptance exactly as before.
+     */
+    fun isTransportAccepted(statusLine: String, isBuickB233: Boolean): Boolean =
+        if (isBuickB233) B233PairingReplySummary.isSuccessfulPairingStatus(statusLine)
+        else statusLine.contains("200")
+
+    /** B233 peer-supplied reason phrases must not enter uploadable diagnostics. */
+    fun safeTransportStatus(statusLine: String, isBuickB233: Boolean): String =
+        if (isBuickB233) B233PairingReplySummary.safeStatus(statusLine) else statusLine
+
+    /** A B233 IOException may carry arbitrary remote text; retain only its type. */
+    fun safeTransportError(error: Throwable, isBuickB233: Boolean): String =
+        if (isBuickB233) error.javaClass.simpleName else error.message.orEmpty()
+
     private const val MAX_PLIST_BYTES = 4096
     private const val MAX_ITEMS = 4
 

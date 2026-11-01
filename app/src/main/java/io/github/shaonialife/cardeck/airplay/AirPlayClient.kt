@@ -826,12 +826,14 @@ class AirPlayClient(
             log(
                 "AIRPLAY T26: modesChanged（主屏=CarPlay，主音频=" +
                     (if (claimAudioResource) "CarPlay" else "未声明/保留普通蓝牙 A2DP") +
-                    "）[$statusLine]"
+                    "）[${B233ModeReplySummary.safeTransportStatus(statusLine, endpoint.isBuickB233)}]"
             )
-            statusLine.contains("200")
+            // RTSP transport success does not establish main-audio ownership.
+            // B233 must not accept an error whose reason happens to contain "200".
+            B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233)
         } catch (error: IOException) {
             claimToken?.let { b233ResourceEofEvidence.claimIoError(it) }
-            log("AIRPLAY: modesChanged 失败 - ${error.message}")
+            log("AIRPLAY: modesChanged 失败 - ${B233ModeReplySummary.safeTransportError(error, endpoint.isBuickB233)}")
             false
         }
     }
