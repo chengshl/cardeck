@@ -80,7 +80,11 @@ jobs:
           assert "github.event_name == 'push'" in release
           assert "github.event.head_commit.message == 'BT-A-24-signed-release-request'" in release
           assert "assert not event.get('forced') and not event.get('deleted')" in release
-          assert "event.get('head_commit', {}).get('modified', [])" in release
+          assert "assert modified == {workflow}" in release
+          assert "assert not event.get('head_commit', {}).get('added', [])" in release
+          assert "assert not event.get('head_commit', {}).get('removed', [])" in release
+          assert "reviewed_source = '8457c395aabe1b4cfaecfde43e06d82a829155b4'" in release
+          assert "assert actual == expected" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
           assert 'python3 tools/release/allocate_version.py' in release
