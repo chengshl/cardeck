@@ -3006,11 +3006,24 @@ class AirPlayClient(
             // clear a newly registered RTSP response queue after reconnect.
             if (endpoint.isBuickB233) {
                 val waiting = synchronized(rtspWriteLock) {
-                    RtspReaderGenerationCleanup.drainIfCurrent(
-                        generation, readerGeneration, pendingResponses,
+                    // A peer EOF or read failure ends this RTSP connection.
+                    // Do not leave a half-open socket published as healthy, and
+                    // never retire a socket already replaced by a reconnect.
+                    val owned = RtspReaderGenerationCleanup.retireIfCurrent(
+                        generation, readerGeneration, client, readerSocket, socket, pendingResponses,
                     )
+                    if (owned != null) {
+                        socket = null
+                        readerSocket = null
+                        readerThread = null
+                        readerGeneration++
+                        // A later connection starts in plaintext until pair-verify.
+                        cipher = null
+                    }
+                    owned
                 }
                 if (waiting != null) {
+                    runCatching { client.close() }
                     audioFailureTrace?.event("rtsp_reader_exit")
                     wakePending("控制通道读线程结束", waiting)
                 }
