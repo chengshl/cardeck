@@ -323,26 +323,40 @@ class VideoSender(
      * （f32 LE），与 catplay 逐字节一致。
      */
     private fun maybeSendKeepAlive(output: java.io.OutputStream, epoch: Long) {
-        // An old drain can wake after stop() and a new start() sets running=true.
-        // Do not send its keepAlive or reset the new session's counters.
-        if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != epoch }) return
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastKeepAliveAt < KEEPALIVE_INTERVAL_MS) return
-        val elapsedNanos = (now - lastKeepAliveAt).coerceAtLeast(1L) * 1_000_000.0
-        val frames = framesSinceKeepAlive
-        val bytes = bytesSinceKeepAlive
-        val framesPerSecond = (frames * 1_000_000_000.0 / elapsedNanos).toInt()
-        val bytesPerSecond = bytes * 1_000_000_000.0 / elapsedNanos
-        framesSinceKeepAlive = 0
-        bytesSinceKeepAlive = 0
-        lastKeepAliveAt = now
-        keepAliveCount++
-        val frame = buildKeepAliveFrame(keepAliveWithStats, frames, bytesPerSecond, framesPerSecond)
+        // Serialize the epoch check and counter retirement with stop(). A retired
+        // worker must not reset the successor's counters after a stop/start race.
+        // Keep network writes outside the lock: a blocked TCP write must not block stop().
+        val pending = synchronized(dataPortLock) {
+            if (!running.get() || dataPortEpoch != epoch) {
+                null
+            } else {
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastKeepAliveAt < KEEPALIVE_INTERVAL_MS) {
+                    null
+                } else {
+                    val elapsedNanos = (now - lastKeepAliveAt).coerceAtLeast(1L) * 1_000_000.0
+                    val frames = framesSinceKeepAlive
+                    val bytes = bytesSinceKeepAlive
+                    val framesPerSecond = (frames * 1_000_000_000.0 / elapsedNanos).toInt()
+                    val bytesPerSecond = bytes * 1_000_000_000.0 / elapsedNanos
+                    framesSinceKeepAlive = 0
+                    bytesSinceKeepAlive = 0
+                    lastKeepAliveAt = now
+                    keepAliveCount++
+                    Triple(
+                        buildKeepAliveFrame(keepAliveWithStats, frames, bytesPerSecond, framesPerSecond),
+                        keepAliveCount,
+                        framesPerSecond,
+                    )
+                }
+            }
+        } ?: return
+        val (frame, count, framesPerSecond) = pending
         output.write(frame)
         output.flush()
-        if (keepAliveCount <= 3 || keepAliveCount % 30 == 0L) {
+        if (count <= 3 || count % 30 == 0L) {
             log(
-                "VIDEO: keepAlive #$keepAliveCount " +
+                "VIDEO: keepAlive #$count " +
                     "opcode=${if (keepAliveWithStats) OP_KEEP_ALIVE_WITH_BODY else OP_KEEP_ALIVE} " +
                     "body=${frame.size - HEADER_LEN}B fps=$framesPerSecond",
             )
