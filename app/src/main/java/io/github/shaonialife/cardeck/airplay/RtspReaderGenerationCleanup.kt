@@ -23,12 +23,15 @@ internal object RtspReaderGenerationCleanup {
      * A generation match alone is insufficient when a new socket replaces the
      * reader; reference identity prevents old frames reaching the new session.
      */
+    /** The caller holds rtspWriteLock for B233 request/reader ownership. */
+    fun isCurrentSocket(captured: Any, published: Any?): Boolean = captured === published
+
     fun isCurrentReader(
         sourceGeneration: Int,
         activeGeneration: Int,
         sourceReader: Any,
         activeReader: Any?,
-    ): Boolean = sourceGeneration == activeGeneration && sourceReader === activeReader
+    ): Boolean = sourceGeneration == activeGeneration && isCurrentSocket(sourceReader, activeReader)
 
     fun <T> drainIfCurrent(
         exitingGeneration: Int,
