@@ -36,7 +36,7 @@ class B233AudioSetupReplyTest {
     }
 
     @Test fun nonB233AcceptanceAndDiagnosticsRemainLegacy() {
-        val old = "RTSP/1.0 500 200 $reason"
+        val old = "RTSP/1.0 500 200 reason"
         assertTrue(B233AudioSetupReply.isTransportAccepted(old, false))
         assertTrue(B233AudioSetupReply.isTransportAccepted("HTTP/1.1 200 OK", false))
         assertFalse(B233AudioSetupReply.isTransportAccepted("RTSP/1.0 403 Forbidden", false))
