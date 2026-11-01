@@ -2961,7 +2961,7 @@ class AirPlayClient(
                 while (true) {
                     val parsed = parseRtspMessage(buffer) ?: break
                     buffer = parsed.rest
-                    dispatchResponse(parsed.statusLine, parsed.body, parsed.head)
+                    dispatchResponse(parsed.statusLine, parsed.body, parsed.head, generation, client)
                 }
             }
         } catch (error: IOException) {
@@ -3013,7 +3013,20 @@ class AirPlayClient(
         statusLine: String,
         body: ByteArray,
         head: String,
+        sourceGeneration: Int,
+        sourceSocket: Socket,
     ) {
+        // An old reader can finish parsing after close/reconnect. It must not
+        // deliver a stale response or acknowledge a peer request on the NEW
+        // RTSP socket. Keep the existing non-B233 dispatch unchanged.
+        if (endpoint.isBuickB233) {
+            val current = synchronized(rtspWriteLock) {
+                RtspReaderGenerationCleanup.isCurrentReader(
+                    sourceGeneration, readerGeneration, sourceSocket, readerSocket,
+                )
+            }
+            if (!current) return
+        }
         val message = RtspMessage(statusLine, body, head)
         // T87: observe a peer-initiated TEARDOWN *before* matching CSeq.
         // The receiver can reuse a locally pending CSeq, in which case the
@@ -3049,12 +3062,25 @@ class AirPlayClient(
             statusLine, endpoint.isBuickB233,
         )
         if (!absoluteUriPeerRequest && !pathPeerRequest) {
-            message.cseq?.let { responseHeads[it] = head }
-            val queue = message.cseq?.let { pendingResponses[it] }
-            if (queue != null) {
-                queue.offer(message.statusLine to message.body)
-                return
+            val queue = if (endpoint.isBuickB233) {
+                // Retirement, registration and delivery share the same lock.
+                // A generation check before this lock alone would still race.
+                synchronized(rtspWriteLock) {
+                    if (!RtspReaderGenerationCleanup.isCurrentReader(
+                            sourceGeneration, readerGeneration, sourceSocket, readerSocket,
+                        )) return
+                    message.cseq?.let { responseHeads[it] = head }
+                    message.cseq?.let { pendingResponses[it] }?.also {
+                        it.offer(message.statusLine to message.body)
+                    }
+                }
+            } else {
+                message.cseq?.let { responseHeads[it] = head }
+                message.cseq?.let { pendingResponses[it] }?.also {
+                    it.offer(message.statusLine to message.body)
+                }
             }
+            if (queue != null) return
         }
         // 无匹配：车机可能在控制通道上发自己的请求（须回 200 否则它会拆通道）。
         // 仅节流留痕，不静默丢弃——此前同步实现会把它错当成前一个请求的应答。
@@ -3080,6 +3106,11 @@ class AirPlayClient(
                         (message.cseq?.let { "CSeq: $it\r\n" } ?: "") + "\r\n"
                 val encryption = cipher
                 synchronized(rtspWriteLock) {
+                    if (endpoint.isBuickB233 &&
+                        !RtspReaderGenerationCleanup.isCurrentReader(
+                            sourceGeneration, readerGeneration, sourceSocket, readerSocket,
+                        )
+                    ) return@runCatching
                     val out = socket?.getOutputStream() ?: return@runCatching
                     out.write(
                         if (encryption != null) {

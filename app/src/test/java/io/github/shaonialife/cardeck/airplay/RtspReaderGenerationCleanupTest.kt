@@ -131,4 +131,80 @@ class RtspReaderGenerationCleanupTest {
         assertEquals(listOf("retiring-session-waiter"), oldSnapshot)
         assertFalse(pending.containsKey(42))
     }
+
+    @Test fun onlyOwningReaderMayDispatchOrAcknowledge() {
+        val oldSocket = Any()
+        val newSocket = Any()
+        assertTrue(RtspReaderGenerationCleanup.isCurrentReader(7, 7, oldSocket, oldSocket))
+        assertFalse(RtspReaderGenerationCleanup.isCurrentReader(7, 8, oldSocket, oldSocket))
+        assertFalse(RtspReaderGenerationCleanup.isCurrentReader(7, 7, oldSocket, newSocket))
+        assertFalse(RtspReaderGenerationCleanup.isCurrentReader(7, 7, oldSocket, null))
+    }
+
+    @Test fun staleReaderCannotDeliverIntoReconnectedSessionPendingQueue() {
+        val writeLock = Any()
+        val oldSocket = Any()
+        val newSocket = Any()
+        var generation = 1
+        var activeSocket: Any? = oldSocket
+        val pending = ConcurrentHashMap<Int, String>()
+        val parsedOldReply = CountDownLatch(1)
+        val allowOldDispatch = CountDownLatch(1)
+        val delivered = AtomicReference<String?>()
+        val failure = AtomicReference<Throwable?>()
+
+        val oldReader = Thread {
+            try {
+                // The old socket has already parsed CSeq=42, but has not yet
+                // delivered it. A reconnect may register a new pending CSeq.
+                parsedOldReply.countDown()
+                check(allowOldDispatch.await(3, TimeUnit.SECONDS))
+                synchronized(writeLock) {
+                    if (RtspReaderGenerationCleanup.isCurrentReader(
+                            1, generation, oldSocket, activeSocket,
+                        )) delivered.set(pending[42])
+                }
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        oldReader.start()
+        try {
+            assertTrue(parsedOldReply.await(3, TimeUnit.SECONDS))
+            synchronized(writeLock) {
+                generation = 2
+                activeSocket = newSocket
+                pending[42] = "new-session-waiter"
+            }
+        } finally {
+            allowOldDispatch.countDown()
+        }
+        oldReader.join(3000)
+        assertFalse(oldReader.isAlive)
+        assertNull(failure.get())
+        assertNull("stale reader must not deliver into the new CSeq queue", delivered.get())
+        assertEquals("new-session-waiter", pending[42])
+    }
+
+    @Test fun ackGateRechecksReaderIdentityAfterReconnect() {
+        val writeLock = Any()
+        val oldSocket = Any()
+        val newSocket = Any()
+        var generation = 5
+        var activeSocket: Any? = oldSocket
+        val initialCheck = synchronized(writeLock) {
+            RtspReaderGenerationCleanup.isCurrentReader(5, generation, oldSocket, activeSocket)
+        }
+        assertTrue(initialCheck)
+        synchronized(writeLock) {
+            generation = 6
+            activeSocket = newSocket
+        }
+        // The early dispatch check passed, but ACK must be fenced again
+        // while holding the same lock as RTSP socket replacement.
+        val mayAck = synchronized(writeLock) {
+            RtspReaderGenerationCleanup.isCurrentReader(5, generation, oldSocket, activeSocket)
+        }
+        assertFalse("old peer request must not be ACKed on new RTSP socket", mayAck)
+    }
 }
