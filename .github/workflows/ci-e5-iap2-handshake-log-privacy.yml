@@ -220,6 +220,15 @@ jobs:
           for before, after in video_replacements:
               assert video_expected.count(before) == 1, 'VideoSender diagnostic baseline drift'
               video_expected = video_expected.replace(before, after)
+          # The shared TCP helper may log Network handles or raw exception
+          # messages. The video-only callsite must forward route class, never
+          # raw helper text, while keeping socket behavior byte-identical.
+          network_before = "                log,\n            )"
+          network_after = "                { networkEvent ->\n                    // CarPlayNetworkSockets may include Network handles or exception\n                    // messages with private endpoint data. Retain only route class.\n                    val route = when {\n                        networkEvent.contains(\"via physical Wi-Fi\") -> \"physical-wifi\"\n                        networkEvent.contains(\"via system LAN route\") -> \"system-route\"\n                        else -> \"fallback-attempt\"\n                    }\n                    log(\"VIDEO: TCP route=$route port=$dataPort (network detail redacted)\")\n                },\n            )"
+          assert video_expected.count(network_before) == 1, 'Video TCP callback baseline drift'
+          video_expected = video_expected.replace(network_before, network_after)
+          assert 'log(networkEvent)' not in Path(video_path).read_text()
+          assert 'log("VIDEO: TCP route=$route port=$dataPort (network detail redacted)")' in Path(video_path).read_text()
           assert Path(video_path).read_text() == video_expected, (
               'Unexpected VideoSender runtime or protocol change'
           )

@@ -102,7 +102,16 @@ class VideoSender(
                 InetAddress.getByName(host),
                 dataPort,
                 5_000,
-                log,
+                { networkEvent ->
+                    // CarPlayNetworkSockets may include Network handles or exception
+                    // messages with private endpoint data. Retain only route class.
+                    val route = when {
+                        networkEvent.contains("via physical Wi-Fi") -> "physical-wifi"
+                        networkEvent.contains("via system LAN route") -> "system-route"
+                        else -> "fallback-attempt"
+                    }
+                    log("VIDEO: TCP route=$route port=$dataPort (network detail redacted)")
+                },
             )
             client.tcpNoDelay = true
             socket = client
