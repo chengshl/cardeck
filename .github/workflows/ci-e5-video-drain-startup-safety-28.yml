@@ -355,11 +355,11 @@ jobs:
           old_keepalive_call = 'maybeSendKeepAlive(output)'
           assert expected.count(old_keepalive_call) == 2, 'Old keepAlive call sites drifted'
           expected = expected.replace(old_keepalive_call, 'maybeSendKeepAlive(output, epoch)')
-          old_keepalive_method = 'private fun maybeSendKeepAlive(output: java.io.OutputStream) {\\n        if (!running.get()) return'
+          old_keepalive_method = 'private fun maybeSendKeepAlive(output: java.io.OutputStream) {\n        if (!running.get()) return'
           new_keepalive_method = (
-              'private fun maybeSendKeepAlive(output: java.io.OutputStream, epoch: Long) {\\n'
-              '        // An old drain can wake after stop() and a new start() sets running=true.\\n'
-              '        // Do not send its keepAlive or reset the new session\\'s counters.\\n'
+              'private fun maybeSendKeepAlive(output: java.io.OutputStream, epoch: Long) {\n'
+              '        // An old drain can wake after stop() and a new start() sets running=true.\n'
+              '        // Do not send its keepAlive or reset the new session\'s counters.\n'
               '        if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != epoch }) return'
           )
           assert expected.count(old_keepalive_method) == 1, 'Old keepAlive method drifted'
