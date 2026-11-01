@@ -898,10 +898,12 @@ class AirPlayClient(
         }
         val deviceId = setupDeviceId()
         val body = buildSessionSetupBody(deviceId, timingServer.port, encrypted = cipher != null)
-        log(
+        log(if (endpoint.isBuickB233) {
+            B233SetupDiagnostics.attempt(body.size, timingServer.port, cipher != null)
+        } else {
             "AIRPLAY: 初始 SETUP body=${body.size}B timingPort=${timingServer.port} " +
-                "deviceID=$deviceId 加密=${if (cipher != null) "是" else "否（et=NONE）"}",
-        )
+                "deviceID=$deviceId 加密=${if (cipher != null) "是" else "否（et=NONE）"}"
+        })
         val (statusLine, responseBody) =
             try {
                 // 请求 URI 用相对路径 `/setup`（catplay AirPlayRtspClient::initial_setup 同款）：
@@ -913,15 +915,14 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
-                log("AIRPLAY: SETUP 失败 - ${error.message}")
+                if (endpoint.isBuickB233) {
+                log(B233SetupDiagnostics.rejection(
+                    statusLine, responseBody.size, EndpointHosts.candidates(endpoint.ipAddresses).size,
+                ))
+                B233SetupDiagnostics.forbiddenHint(statusLine)?.let(log)
                 return null
             }
-        if (!B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233)) {
-            log(if (endpoint.isBuickB233) {
-                "AIRPLAY: B233 initial SETUP rejected status=${B233ModeReplySummary.safeTransportStatus(statusLine, true)} redacted"
-            } else {
-                "AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）"
-            })
+            log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")
             // Safe non-200 diagnostics: no raw plist/password/pairing keys.
             val errorKeys = runCatching {
                 (BinaryPlist.parse(responseBody) as? Map<*, *>)?.keys
