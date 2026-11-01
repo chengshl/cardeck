@@ -150,7 +150,7 @@ class CarPlayCtrlAdvertiser(
             return true
         }
         if (registered) {
-            log("$TAG: 重新注册 mDNS 广播（${registeredSsid ?: "?"}${if (force) "，绑定后时机修正" else " → $ssid"}）")
+            log("$TAG: 重新注册 mDNS 广播（SSID 已脱敏；force=$force）")
             stop()
         }
         registeredSsid = ssid
@@ -241,8 +241,8 @@ class CarPlayCtrlAdvertiser(
             registered = true
             registeredAtMillis = SystemClock.uptimeMillis()
             registeredWithMac = mac
-            log("$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id=$mac")
-            log("$TAG T11: TXT id=$mac srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}")
+            log("$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id 已脱敏")
+            log("$TAG T11: TXT id 已脱敏 srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}")
             val nsdInterface = serviceWifi?.let {
                 (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
                     .getLinkProperties(it)?.interfaceName
@@ -424,7 +424,7 @@ class CarPlayCtrlAdvertiser(
             if (!registered || !macPlaceholder) return
             val mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) return@repeat
-            log("$TAG: 蓝牙 MAC 已解析为 $mac——重新注册 ctrl 广播（修复占位 id）")
+            log("$TAG: 蓝牙 MAC 已解析（值已脱敏）——重新注册 ctrl 广播（修复占位 id）")
             ensureForNetwork(registeredSsid ?: "", force = true)
             return
         }
@@ -442,7 +442,7 @@ class CarPlayCtrlAdvertiser(
                 }
             val isLocalProbe = client.inetAddress?.hostAddress == client.localAddress?.hostAddress
             if (!isLocalProbe) tcpAcceptCount++
-            log("$TAG T11: TCP accepted from ${client.inetAddress?.hostAddress ?: "?"}:${client.port} to localPort=${client.localPort}")
+            log("$TAG T11: TCP accepted (peer redacted) to localPort=${client.localPort}")
             Bg.run("ctrl-client") { handleClient(client) }
         }
     }
@@ -454,31 +454,18 @@ class CarPlayCtrlAdvertiser(
             val input = BufferedInputStream(client.getInputStream())
             val head = readUntilHeaderEnd(input)
             if (head.isEmpty()) {
-                log("$TAG: $peer 连入但无请求（EOF）")
+                log("$TAG: 对端连入但无请求（EOF；地址已脱敏）")
                 return
             }
             if (peer != client.localAddress?.hostAddress) httpRequestCount++
             val requestLine = head.lineSequence().firstOrNull() ?: ""
-            val headers =
-                head
-                    .substringAfter("\r\n", "")
-                    .lineSequence()
-                    .filter { it.contains(':') }
-                    .joinToString("; ") { it.trim() }
-            log("$TAG: $peer -> [$requestLine] $headers")
+            log("$TAG: 收到 ctrl 请求（路径/头部/对端已脱敏；ctrlInt=${requestLine.startsWith("GET /ctrl-int/")}）")
 
             // 车机 ctrl 邀请：这是「车机已发现手机、AirPlay 窗口已开」的权威信号
             // （catplay CarPlayCtrlSession：收到即把邀请交给连接流程）。
             if (requestLine.startsWith("GET /ctrl-int/1/connect")) {
-                val receiverId =
-                    head
-                        .lineSequence()
-                        .firstOrNull {
-                            it.substringBefore(':').trim().equals("AirPlay-Receiver-Device-ID", ignoreCase = true)
-                        }?.substringAfter(':')
-                        ?.trim()
                 inviteCount++
-                log("$TAG: ✓ 车机 ctrl 邀请（第 $inviteCount 次，receiver=${receiverId ?: "?"}）——AirPlay 窗口已开启")
+                log("$TAG: ✓ 车机 ctrl 邀请（第 $inviteCount 次，receiver 已脱敏）——AirPlay 窗口已开启")
             }
 
             val output = client.getOutputStream()
@@ -512,16 +499,11 @@ class CarPlayCtrlAdvertiser(
                 // 读超时即停止转储
             }
             if (rest.size() > 0) {
-                log(
-                    "$TAG: 应答后收到 ${rest.size()} 字节：" +
-                        rest.toByteArray().take(64).joinToString(" ") {
-                            "%02x".format(it.toInt() and 0xFF)
-                        },
-                )
+                log("$TAG: 应答后收到 ${rest.size()} 字节（内容已脱敏）")
             }
-            log("$TAG: $peer 连接结束")
+            log("$TAG: 对端连接结束（地址已脱敏）")
         } catch (error: IOException) {
-            log("$TAG: $peer 连接异常 - ${error.message}")
+            log("$TAG: 对端连接异常 - ${error.javaClass.simpleName}（地址/详情已脱敏）")
         } finally {
             runCatching { client.close() }
         }

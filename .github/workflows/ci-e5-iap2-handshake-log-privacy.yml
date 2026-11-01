@@ -10,6 +10,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -53,7 +54,8 @@ jobs:
           session_path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
           video_path = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
           channel_path = 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
-          assert files == {path, bt_path, session_path, video_path, channel_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          ctrl_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
+          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
 
           # Raw iAP2 transport payloads may contain identifiers or credentials.
           # The only allowed new runtime delta is bounded byte-count logging.
@@ -244,6 +246,35 @@ jobs:
           )
           assert '$host:$dataPort' not in Path(video_path).read_text()
           assert '${error.message}' not in Path(video_path).read_text()
+          # CarPlay ctrl diagnostics must not emit peer addresses, raw HTTP
+          # headers, receiver IDs, BT MAC, or post-response payload bytes.
+          ctrl_old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + ctrl_path], text=True)
+          ctrl_expected = ctrl_old
+          ctrl_changes = [
+            ["log(\"$TAG: 重新注册 mDNS 广播（${registeredSsid ?: \"?\"}${if (force) \"，绑定后时机修正\" else \" → $ssid\"}）\")", "log(\"$TAG: 重新注册 mDNS 广播（SSID 已脱敏；force=$force）\")"],
+            ["log(\"$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id=$mac\")", "log(\"$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id 已脱敏\")"],
+            ["log(\"$TAG T11: TXT id=$mac srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}\")", "log(\"$TAG T11: TXT id 已脱敏 srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}\")"],
+            ["log(\"$TAG: 蓝牙 MAC 已解析为 $mac——重新注册 ctrl 广播（修复占位 id）\")", "log(\"$TAG: 蓝牙 MAC 已解析（值已脱敏）——重新注册 ctrl 广播（修复占位 id）\")"],
+            ["log(\"$TAG T11: TCP accepted from ${client.inetAddress?.hostAddress ?: \"?\"}:${client.port} to localPort=${client.localPort}\")", "log(\"$TAG T11: TCP accepted (peer redacted) to localPort=${client.localPort}\")"],
+            ["log(\"$TAG: $peer 连入但无请求（EOF）\")", "log(\"$TAG: 对端连入但无请求（EOF；地址已脱敏）\")"],
+            ["            val headers =\n                head\n                    .substringAfter(\"\\r\\n\", \"\")\n                    .lineSequence()\n                    .filter { it.contains(':') }\n                    .joinToString(\"; \") { it.trim() }\n", ""],
+            ["log(\"$TAG: $peer -> [$requestLine] $headers\")", "log(\"$TAG: 收到 ctrl 请求（路径/头部/对端已脱敏；ctrlInt=${requestLine.startsWith(\"GET /ctrl-int/\")}）\")"],
+            ["                val receiverId =\n                    head\n                        .lineSequence()\n                        .firstOrNull {\n                            it.substringBefore(':').trim().equals(\"AirPlay-Receiver-Device-ID\", ignoreCase = true)\n                        }?.substringAfter(':')\n                        ?.trim()\n", ""],
+            ["log(\"$TAG: ✓ 车机 ctrl 邀请（第 $inviteCount 次，receiver=${receiverId ?: \"?\"}）——AirPlay 窗口已开启\")", "log(\"$TAG: ✓ 车机 ctrl 邀请（第 $inviteCount 次，receiver 已脱敏）——AirPlay 窗口已开启\")"],
+            ["                log(\n                    \"$TAG: 应答后收到 ${rest.size()} 字节：\" +\n                        rest.toByteArray().take(64).joinToString(\" \") {\n                            \"%02x\".format(it.toInt() and 0xFF)\n                        },\n                )", "                log(\"$TAG: 应答后收到 ${rest.size()} 字节（内容已脱敏）\")"],
+            ["log(\"$TAG: $peer 连接结束\")", "log(\"$TAG: 对端连接结束（地址已脱敏）\")"],
+            ["log(\"$TAG: $peer 连接异常 - ${error.message}\")", "log(\"$TAG: 对端连接异常 - ${error.javaClass.simpleName}（地址/详情已脱敏）\")"],
+          ]
+          for before, after in ctrl_changes:
+              assert ctrl_expected.count(before) == 1, 'ctrl log baseline drift'
+              ctrl_expected = ctrl_expected.replace(before, after, 1)
+          ctrl_new = Path(ctrl_path).read_text()
+          assert ctrl_new == ctrl_expected, 'ctrl behavior changed outside reviewed diagnostic redactions'
+          for forbidden in ['TXT id=$mac', '$peer ->', 'receiver=${receiverId', 'rest.toByteArray().take(64)']:
+              assert forbidden not in ctrl_new, 'raw ctrl diagnostic content reintroduced'
+          assert 'requestLine.startsWith("GET /ctrl-int/")' in ctrl_new
+          assert 'output.write(response.toByteArray(Charsets.US_ASCII))' in ctrl_new
+          print(f'CarPlay ctrl: {len(ctrl_changes)} exact log-only redactions verified')
           print(f'VideoSender: {len(video_replacements)} endpoint/exception log redactions verified')
           print(f'SessionController: {len(session_replacements)} diagnostic-only redactions verified')
           print('Bluetooth target names, addresses, identity and raw exception text removed from logs')
