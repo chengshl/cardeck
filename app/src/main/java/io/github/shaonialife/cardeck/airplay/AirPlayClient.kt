@@ -156,6 +156,9 @@ class AirPlayClient(
     /** T82 read-only: counts B233 event replies and progressing receiver audio clock. */
     private val audioControlLiveness = AudioControlLiveness()
 
+    // B233 only: prevent retired keepAlive/feedback workers from adopting a new RTSP session.
+    private val b233HeartbeatSessionGate = B233HeartbeatSessionGate()
+
     /** T98: resource-claim/RTSP EOF correlation, never claims ownership. */
     private val b233ResourceEofEvidence = B233ResourceEofEvidence()
 
@@ -455,6 +458,9 @@ class AirPlayClient(
         port: Int,
     ) {
         if (port <= 0) return
+        // Snapshot before scheduling; a delayed worker must not adopt a later session.
+        val b233HeartbeatWorker = endpoint.isBuickB233
+        val heartbeatToken = if (b233HeartbeatWorker) b233HeartbeatSessionGate.snapshot() else 0L
         Thread({
             var udp: java.net.DatagramSocket? = null
             try {
@@ -475,12 +481,23 @@ class AirPlayClient(
                 val address = java.net.InetAddress.getByName(host)
                 var sent = 0
                 var lastSentAt = 0L
-                while (isSessionAlive() && udp?.isClosed == false) {
+                while (isSessionAlive() && udp?.isClosed == false &&
+                    (!b233HeartbeatWorker || b233HeartbeatSessionGate.isCurrent(heartbeatToken))
+                ) {
                     val now = SystemClock.uptimeMillis()
                     val gap = if (lastSentAt == 0L) 0L else now - lastSentAt
                     lastSentAt = now
                     val payload = ByteArray(4).also(java.security.SecureRandom()::nextBytes)
-                    udp.send(java.net.DatagramPacket(payload, payload.size, address, port))
+                    val activeUdp = udp ?: break
+                    val datagram = java.net.DatagramPacket(payload, payload.size, address, port)
+                    val sentOnCurrentSession =
+                        if (b233HeartbeatWorker) {
+                            b233HeartbeatSessionGate.runIfCurrent(heartbeatToken) { activeUdp.send(datagram) }
+                        } else {
+                            activeUdp.send(datagram)
+                            true
+                        }
+                    if (!sentOnCurrentSession) break
                     sent++
                     // Capture each B233 heartbeat in the critical 45s window.
                     if ((endpoint.isBuickB233 && sent <= 10) || sent <= 3 || sent % 60 == 0) {
@@ -505,12 +522,21 @@ class AirPlayClient(
      * /feedback——接收端的活动看门狗。RTSP 事务由 [rtspLock] 串行化。
      */
     fun startFeedbackLoop() {
+        val b233HeartbeatWorker = endpoint.isBuickB233
+        val heartbeatToken = if (b233HeartbeatWorker) b233HeartbeatSessionGate.snapshot() else 0L
         Thread({
             var sent = 0
             var lastSuccessAt = 0L
-            while (isSessionAlive()) {
+            while (isSessionAlive() &&
+                (!b233HeartbeatWorker || b233HeartbeatSessionGate.isCurrent(heartbeatToken))
+            ) {
                 try {
-                    val (status, body) = request("POST", "/feedback", ByteArray(0))
+                    val (status, body) = request(
+                        "POST", "/feedback", ByteArray(0),
+                        expectedB233SessionToken = if (b233HeartbeatWorker) heartbeatToken else null,
+                    )
+                    // Late replies belong to the retired session, not this session's telemetry.
+                    if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break
                     if (endpoint.isBuickB233 && status.contains("200")) {
                         // T86: PCM streams use type=100, AAC uses type=102.
                         // Read-only telemetry: this does not change /feedback transport.
@@ -545,6 +571,7 @@ class AirPlayClient(
                         logFeedbackBody(body)
                     }
                 } catch (error: IOException) {
+                    if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break
                     if (endpoint.isBuickB233) {
                         log("AIRPLAY T62: B233 feedback 结束 #$sent 原因=${error.javaClass.simpleName}")
                         audioFailureTrace?.event("feedback_error", "replies=$sent type=${error.javaClass.simpleName}")
@@ -573,6 +600,9 @@ class AirPlayClient(
     private fun isSessionAlive(): Boolean = socket?.isClosed == false
 
     fun close() {
+        // Always retire: updateEndpoint() may already have changed the receiver type.
+        // Non-B233 workers never consult this gate.
+        b233HeartbeatSessionGate.retire()
         if (endpoint.isBuickB233) b233ResourceEofEvidence.resetForNewConnection()
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
@@ -2771,13 +2801,29 @@ class AirPlayClient(
         timeoutMillis: Int = 10_000,
         contentType: String = "application/octet-stream",
         extraHeaders: List<Pair<String, String>> = emptyList(),
+        expectedB233SessionToken: Long? = null,
     ): Pair<String, ByteArray> {
-        val client = socket ?: throw IOException("未连接")
         val startedAt = SystemClock.uptimeMillis()
-        startReader(client)
         val queue = java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>(1)
+        val client =
+            if (expectedB233SessionToken != null) {
+                // Capture the original session socket; never hold the gate across TCP I/O.
+                b233HeartbeatSessionGate.captureIfCurrent(expectedB233SessionToken) {
+                    socket ?: throw IOException("未连接")
+                } ?: throw IOException("B233 心跳所属 RTSP 会话已退役")
+            } else {
+                (socket ?: throw IOException("未连接")).also { startReader(it) }
+            }
         val cseq: Int
         synchronized(rtspWriteLock) {
+            if (expectedB233SessionToken != null) {
+                // Recheck after acquiring the write lock: close/reconnect can occur meanwhile.
+                if (!b233HeartbeatSessionGate.isCurrent(expectedB233SessionToken) || socket !== client) {
+                    throw IOException("B233 心跳所属 RTSP 会话已退役")
+                }
+                // This reentrant lock protects reader identity without holding the session gate.
+                startReader(client)
+            }
             cseq = ++cSeq
             // 先登记再写：响应可能在 write 返回前就到达
             pendingResponses[cseq] = queue
