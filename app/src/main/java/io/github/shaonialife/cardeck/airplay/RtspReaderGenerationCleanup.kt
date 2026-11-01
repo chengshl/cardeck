@@ -33,6 +33,26 @@ internal object RtspReaderGenerationCleanup {
         activeReader: Any?,
     ): Boolean = sourceGeneration == activeGeneration && isCurrentSocket(sourceReader, activeReader)
 
+    /**
+     * A terminated B233 reader must retire its own published socket, not only
+     * its response waiters. Caller holds rtspWriteLock and clears the socket,
+     * reader and cipher only when this returns a non-null list.
+     * The extra socket identity check also covers publication before the new
+     * reader has started (and incremented readerGeneration).
+     */
+    fun <T> retireIfCurrent(
+        exitingGeneration: Int,
+        activeGeneration: Int,
+        exitingSocket: Any,
+        activeReader: Any?,
+        publishedSocket: Any?,
+        pending: MutableMap<Int, T>,
+    ): List<T>? {
+        if (!isCurrentReader(exitingGeneration, activeGeneration, exitingSocket, activeReader)) return null
+        if (!isCurrentSocket(exitingSocket, publishedSocket)) return null
+        return drainAll(pending)
+    }
+
     fun <T> drainIfCurrent(
         exitingGeneration: Int,
         activeGeneration: Int,
