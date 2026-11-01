@@ -1,0 +1,75 @@
+name: B233 RTSP request socket ownership (offline)
+on:
+  pull_request:
+    branches:
+      - experiment/buick-b233-rtsp-stale-dispatch-t94
+    paths:
+      - '.github/workflows/ci-b233-rtsp-request-ownership-gate.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-rtsp-request-ownership-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, four-file scope and B233 request ownership wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=354f4c61d3f90c6bafd8f208affbff4ed4a3fdb1
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41284870699 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41284870699 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/b233-actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-rtsp-request-ownership-gate.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt' | sort > /tmp/b233-expected
+          diff -u /tmp/b233-expected /tmp/b233-actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt').read_text()
+          request = src.split('    private fun request(', 1)[1].split('    /**\n     * 控制通道读线程', 1)[0]
+          assert 'if (!endpoint.isBuickB233) startReader(it)' in request
+          assert 'else if (endpoint.isBuickB233)' in request
+          assert 'isCurrentSocket(client, socket)' in request
+          assert 'startReader(client)' in request
+          assert 'synchronized(rtspWriteLock)' in request
+          assert 'val retiredWaiters = if (endpoint.isBuickB233)' in src
+          assert 'val published = synchronized(rtspWriteLock)' in src
+          assert 'isCurrentSocket(client, socket)' in src
+          assert 'fun isCurrentSocket(' in helper
+          assert 'staleRequestCannotReplaceNewReaderAfterReconnect' in tests
+          print('B233 request socket publication, retirement and reader re-arm share ownership lock')
+          PY
+      - name: RTSP request/reconnect negative concurrency regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.RtspReaderGenerationCleanupTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, release, installation or stable merge.
