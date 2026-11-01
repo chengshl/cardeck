@@ -53,6 +53,8 @@ class Iap2BluetoothClient(
     }
 
     private var thread: Thread? = null
+    /** Serialize socket publication with stop()/start() retirement. */
+    private val lifecycleLock = Any()
     private val currentSocket = AtomicReference<BluetoothSocket?>(null)
 
     /**
@@ -98,8 +100,15 @@ class Iap2BluetoothClient(
             log("BT-C: 蓝牙不可用或未开启")
             return false
         }
-        running = true
-        val myGeneration = generation.incrementAndGet()
+        val worker = synchronized(lifecycleLock) {
+            if (running) return true
+            running = true
+            val myGeneration = generation.incrementAndGet()
+            Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
+                isDaemon = true
+                thread = this
+            }
+        }
         val target = targetProvider()
         log(
             "BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）" +
@@ -109,11 +118,7 @@ class Iap2BluetoothClient(
                     "（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）"
                 },
         )
-        Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
-            isDaemon = true
-            thread = this
-            start()
-        }
+        worker.start()
         return true
     }
 
@@ -207,7 +212,7 @@ class Iap2BluetoothClient(
                         }
                     }
                 }
-                val socket = tryConnect(device)
+                val socket = tryConnect(device, myGeneration)
                 if (socket != null) {
                     // RFCOMM connect() can block for seconds while the user changes
                     // the selected receiver. Retire this socket before handing it
@@ -317,7 +322,7 @@ class Iap2BluetoothClient(
     }
 
     @SuppressLint("MissingPermission")
-    private fun tryConnect(device: BluetoothDevice): BluetoothSocket? {
+    private fun tryConnect(device: BluetoothDevice, myGeneration: Long): BluetoothSocket? {
         val socket =
             try {
                 device.createRfcommSocketToServiceRecord(ACCESSORY_IAP2_UUID)
@@ -326,7 +331,20 @@ class Iap2BluetoothClient(
             }
         // 连接前就登记：connect() 是阻塞调用（SDP 查询 + 建链最长可达数十秒），
         // stop() 只有能拿到 socket 引用才能 close() 打断它，否则线程会滞留。
-        currentSocket.set(socket)
+        // A retired worker must never publish a late socket after stop() has
+        // already drained the old connection and a successor start() has begun.
+        val published = synchronized(lifecycleLock) {
+            if (!running || generation.get() != myGeneration) {
+                false
+            } else {
+                currentSocket.set(socket)
+                true
+            }
+        }
+        if (!published) {
+            runCatching { socket.close() }
+            return null
+        }
         return try {
             socket.connect()
             socket
@@ -384,13 +402,20 @@ class Iap2BluetoothClient(
     }
 
     fun stop() {
-        running = false
-        // 递增世代：即便有线程卡在 connect()，事后也会因世代不符自杀，不会在下次启动时复活
-        generation.incrementAndGet()
-        currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
-        activeChannel.getAndSet(null)?.let { runCatching { it.close() } }
-        thread?.interrupt()
-        thread = null
+        // Retire the generation and detach its resources atomically with
+        // tryConnect() publication. Close outside the lock to avoid blocking start().
+        val (closingSocket, closingChannel, worker) = synchronized(lifecycleLock) {
+            running = false
+            generation.incrementAndGet()
+            Triple(
+                currentSocket.getAndSet(null),
+                activeChannel.getAndSet(null),
+                thread.also { thread = null },
+            )
+        }
+        closingSocket?.let { runCatching { it.close() } }
+        closingChannel?.let { runCatching { it.close() } }
+        worker?.interrupt()
         log("BT-C: 已停止")
     }
 
