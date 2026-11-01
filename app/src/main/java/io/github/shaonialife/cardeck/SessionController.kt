@@ -368,7 +368,7 @@ object SessionController {
             val target = appContext?.let { TargetDevicePrefs.get(it) } ?: return@run
             val connected = BtProfiles.connectedNames(context.applicationContext, target.address)
             appendLog(
-                "BT-PROFILE: 连接前「${target.name}」的蓝牙配置文件状态=" +
+                "BT-PROFILE: 连接前指定目标的蓝牙配置文件状态=" +
                     (connected.takeIf { it.isNotEmpty() }?.joinToString("/") ?: "未连接"),
             )
         }
