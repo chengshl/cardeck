@@ -2,7 +2,7 @@ name: B233 audio SETUP strict RTSP transport status and private logs (offline)
 on:
   pull_request:
     branches:
-      - experiment/buick-b233-modes-status-strict-privacy-t94
+      - experiment/buick-b233-modes-reply-status-strict-t94
     paths:
       - '.github/workflows/ci-b233-audio-setup-transport-strict.yml'
       - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
