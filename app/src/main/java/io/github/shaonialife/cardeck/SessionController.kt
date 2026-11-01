@@ -14,6 +14,7 @@ import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
+import io.github.shaonialife.cardeck.audio.AudioSenderCallbackOwner
 import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.B233PairingMonitor
@@ -1530,6 +1531,7 @@ object SessionController {
             activeAudioReceiverKey = identity
             activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
             b233AudioStartedInSession = client.currentEndpoint.isBuickB233
+            val callbackOwner = AudioSenderCallbackOwner()
             val sender =
                 AudioSender(
                     host = host,
@@ -1570,7 +1572,7 @@ object SessionController {
                             { error ->
                                 Bg.run("b233-audio-refused") {
                                     val active = audioSender
-                                    if (active != null && currentClient === client &&
+                                    if (active != null && callbackOwner.owns(active) && currentClient === client &&
                                         activeAudioProfile?.key == profile.key
                                     ) {
                                         if (
@@ -1642,6 +1644,7 @@ object SessionController {
                             null
                         },
                 )
+            callbackOwner.bind(sender)
             audioSender = sender
             // T79: observe only this live sender's successful RTP sequence window.
             // No media packet retention or retransmission; stale sender -> no snapshot.
