@@ -54,7 +54,7 @@ jobs:
               ('            val sender =\n                AudioSender(\n',
                '            val callbackOwner = AudioSenderCallbackOwner()\n            val sender =\n                AudioSender(\n'),
               ('if (active != null && currentClient === client &&',
-               'if (callbackOwner.owns(active) && currentClient === client &&'),
+               'if (active != null && callbackOwner.owns(active) && currentClient === client &&'),
               ('                )\n            audioSender = sender\n',
                '                )\n            callbackOwner.bind(sender)\n            audioSender = sender\n'),
           ]
