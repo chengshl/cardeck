@@ -1,8 +1,13 @@
 name: E5 BT-A B233 profile preserve - manual guarded signing (#24)
-# This L3 draft remains manual-only until an installable, data-preserving
-# recovery path and device acceptance plan are approved. Source changes alone
-# must never mint a higher-version APK.
+# L3 signed release is opt-in. A branch-only workflow_dispatch may not be
+# registered by GitHub when absent from default main; use a narrow push event
+# ONLY when this workflow file changes with the exact release-request message.
+# Normal source/CI pushes must never allocate versions or sign an APK.
 on:
+  push:
+    branches: [work/e5-bt-a-profile-preserve-24-20261030]
+    paths:
+      - '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
   workflow_dispatch:
 concurrency:
   # Serialize signed version allocation with official E5 and other channels.
@@ -12,9 +17,29 @@ permissions:
   contents: write
 jobs:
   signed-experiment:
+    # Exact commit message plus a change to THIS workflow file is the deliberate
+    # release request. Ordinary pushes only create a skipped workflow run.
+    if: ${{ github.ref == 'refs/heads/work/e5-bt-a-profile-preserve-24-20261030' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'BT-A-24-signed-release-request')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
+      - name: Fail closed on unapproved or unrelated signing events
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/work/e5-bt-a-profile-preserve-24-20261030
+          python3 - <<'PY'
+          import json
+          import os
+          with open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8') as f:
+              event = json.load(f)
+          if os.environ['GITHUB_EVENT_NAME'] == 'push':
+              assert event.get('head_commit', {}).get('message') == 'BT-A-24-signed-release-request'
+              assert not event.get('forced') and not event.get('deleted')
+              assert '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml' in event.get('head_commit', {}).get('modified', [])
+          else:
+              assert os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
+          PY
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
