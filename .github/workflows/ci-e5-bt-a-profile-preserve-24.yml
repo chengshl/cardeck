@@ -83,7 +83,7 @@ jobs:
           assert "assert modified == {workflow}" in release
           assert "assert not event.get('head_commit', {}).get('added', [])" in release
           assert "assert not event.get('head_commit', {}).get('removed', [])" in release
-          assert "reviewed_source = '61a72cd7600c74dd4a8766299ac49d96210b5750'" in release
+          assert "reviewed_source = 'bba74fb74835b217f9049942b608fce7e3f17d34'" in release
           assert "assert actual == expected" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
@@ -220,6 +220,19 @@ jobs:
           for before_part, after_part in ownership_edits:
               assert expected_client.count(before_part) == 1, 'Unexpected channel/socket owner block'
               expected_client = expected_client.replace(before_part, after_part)
+          # Replay only the newly audited stop/start socket-publication fix.
+          lifecycle_edits = (
+              ("    private var thread: Thread? = null\n", "    private var thread: Thread? = null\n    /** Serialize socket publication with stop()/start() retirement. */\n    private val lifecycleLock = Any()\n"),
+              ("        running = true\n        val myGeneration = generation.incrementAndGet()\n        val target = targetProvider()\n        log(\n            \"BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）\" +\n                if (target != null) {\n                    \"，目标：「${target.name}」${target.address}（只连该设备）\"\n                } else {\n                    \"（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）\"\n                },\n        )\n        Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {\n            isDaemon = true\n            thread = this\n            start()\n        }\n", "        val worker = synchronized(lifecycleLock) {\n            if (running) return true\n            running = true\n            val myGeneration = generation.incrementAndGet()\n            Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {\n                isDaemon = true\n                thread = this\n            }\n        }\n        val target = targetProvider()\n        log(\n            \"BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）\" +\n                if (target != null) {\n                    \"，目标：「${target.name}」${target.address}（只连该设备）\"\n                } else {\n                    \"（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）\"\n                },\n        )\n        worker.start()\n"),
+              ("val socket = tryConnect(device)", "val socket = tryConnect(device, myGeneration)"),
+              ("private fun tryConnect(device: BluetoothDevice): BluetoothSocket? {", "private fun tryConnect(device: BluetoothDevice, myGeneration: Long): BluetoothSocket? {"),
+              ("        currentSocket.set(socket)\n        return try {", "        // A retired worker must never publish a late socket after stop() has\n        // already drained the old connection and a successor start() has begun.\n        val published = synchronized(lifecycleLock) {\n            if (!running || generation.get() != myGeneration) {\n                false\n            } else {\n                currentSocket.set(socket)\n                true\n            }\n        }\n        if (!published) {\n            runCatching { socket.close() }\n            return null\n        }\n        return try {"),
+              ("    fun stop() {\n        running = false\n        // 递增世代：即便有线程卡在 connect()，事后也会因世代不符自杀，不会在下次启动时复活\n        generation.incrementAndGet()\n        currentSocket.getAndSet(null)?.let { runCatching { it.close() } }\n        activeChannel.getAndSet(null)?.let { runCatching { it.close() } }\n        thread?.interrupt()\n        thread = null\n        log(\"BT-C: 已停止\")\n    }\n\n", "    fun stop() {\n        // Retire the generation and detach its resources atomically with\n        // tryConnect() publication. Close outside the lock to avoid blocking start().\n        val (closingSocket, closingChannel, worker) = synchronized(lifecycleLock) {\n            running = false\n            generation.incrementAndGet()\n            Triple(\n                currentSocket.getAndSet(null),\n                activeChannel.getAndSet(null),\n                thread.also { thread = null },\n            )\n        }\n        closingSocket?.let { runCatching { it.close() } }\n        closingChannel?.let { runCatching { it.close() } }\n        worker?.interrupt()\n        log(\"BT-C: 已停止\")\n    }\n\n"),
+          )
+          for before_part, after_part in lifecycle_edits:
+              assert expected_client.count(before_part) == 1, 'Unexpected lifecycle block drift'
+              expected_client = expected_client.replace(before_part, after_part)
+          assert 'synchronized(lifecycleLock)' in new
           assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
           assert new.count('activeChannel.compareAndSet(channel, null)') == 1
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
