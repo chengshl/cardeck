@@ -182,6 +182,10 @@ class VideoSender(
                 val surface = codec.createInputSurface()
                 inputSurface = surface
                 codec.start()
+                synchronized(dataPortLock) {
+                    // A new TCP video session must receive its own codec config.
+                    configSent = false
+                }
                 running.set(true)
                 lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
 
@@ -283,7 +287,7 @@ class VideoSender(
                             if (buffer != null) {
                                 val flags = bufferInfo.flags
                                 if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                                    sendVideoConfig(buffer, bufferInfo.size, output)
+                                    sendVideoConfig(buffer, bufferInfo.size, output, epoch)
                                 } else if (bufferInfo.size > 0) {
                                     sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output, epoch)
                                 }
@@ -367,6 +371,7 @@ class VideoSender(
         buffer: java.nio.ByteBuffer,
         size: Int,
         output: java.io.OutputStream,
+        epoch: Long,
     ) {
         val annexB = ByteArray(size)
         buffer.get(annexB)
@@ -403,7 +408,10 @@ class VideoSender(
         output.write(header)
         output.write(body)
         output.flush()
-        configSent = true
+        synchronized(dataPortLock) {
+            // A retired drain cannot mark a replacement session config-ready.
+            if (running.get() && dataPortEpoch == epoch) configSent = true
+        }
         log(
             "VIDEO: ✓ VideoConfig 已发送 avcC=${body.size}B（SPS ${sps.size}B/PPS ${pps.size}B，" +
                 "profile=${sps[1].toInt() and 0xFF} level=${sps[3].toInt() and 0xFF} " +
@@ -419,8 +427,11 @@ class VideoSender(
         output: java.io.OutputStream,
         epoch: Long,
     ) {
-        if (!configSent) {
-            log("VIDEO: 丢弃一帧（config 尚未发送）")
+        val configReady = synchronized(dataPortLock) {
+            running.get() && dataPortEpoch == epoch && configSent
+        }
+        if (!configReady) {
+            log("VIDEO: 丢弃一帧（config 尚未发送或会话已结束）")
             return
         }
         val annexB = ByteArray(size)

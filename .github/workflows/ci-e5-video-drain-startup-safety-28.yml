@@ -387,7 +387,20 @@ jobs:
           for old_text, new_text in frame_changes:
               assert expected.count(old_text) == 1, 'Frame ownership edit ambiguous'
               expected = expected.replace(old_text, new_text)
-          assert new == expected, 'Unexpected changes outside frame-statistics ownership fix'
+          # Immutable previous HEAD: replay only this session-config ownership repair.
+          previous_config_head = '22a9c1808dc63fb2ddf2b657a9ada6c4d8d20700'
+          assert expected == subprocess.check_output(
+              ['git', 'show', previous_config_head + ':' + source_path], text=True
+          ), 'Previously reviewed #83 config baseline drifted'
+          config_changes = [["                codec.start()\n                running.set(true)","                codec.start()\n                synchronized(dataPortLock) {\n                    // A new TCP video session must receive its own codec config.\n                    configSent = false\n                }\n                running.set(true)"],["sendVideoConfig(buffer, bufferInfo.size, output)","sendVideoConfig(buffer, bufferInfo.size, output, epoch)"],["    private fun sendVideoConfig(\n        buffer: java.nio.ByteBuffer,\n        size: Int,\n        output: java.io.OutputStream,\n    ) {","    private fun sendVideoConfig(\n        buffer: java.nio.ByteBuffer,\n        size: Int,\n        output: java.io.OutputStream,\n        epoch: Long,\n    ) {"],["        output.flush()\n        configSent = true\n        log(","        output.flush()\n        synchronized(dataPortLock) {\n            // A retired drain cannot mark a replacement session config-ready.\n            if (running.get() && dataPortEpoch == epoch) configSent = true\n        }\n        log("],["    ) {\n        if (!configSent) {\n            log(\"VIDEO: 丢弃一帧（config 尚未发送）\")","    ) {\n        val configReady = synchronized(dataPortLock) {\n            running.get() && dataPortEpoch == epoch && configSent\n        }\n        if (!configReady) {\n            log(\"VIDEO: 丢弃一帧（config 尚未发送或会话已结束）\")"]]
+          for old_text, new_text in config_changes:
+              assert expected.count(old_text) == 1, 'Video config epoch edit ambiguous'
+              expected = expected.replace(old_text, new_text)
+          assert new == expected, 'Unexpected changes outside video config epoch ownership fix'
+          assert new.count('sendVideoConfig(buffer, bufferInfo.size, output, epoch)') == 1
+          assert new.count('if (running.get() && dataPortEpoch == epoch) configSent = true') == 1
+          assert new.count('configSent = false') == 2
+          assert new.count('running.get() && dataPortEpoch == epoch && configSent') == 1
           assert new.count('sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output, epoch)') == 1
           assert new.count('val sentCount = synchronized(dataPortLock) {') == 1
           assert new.count('maybeSendKeepAlive(output, epoch)') == 2
