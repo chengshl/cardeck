@@ -71,6 +71,7 @@ jobs:
               ('private fun dumpOutbound(bytes: ByteArray) {', 'private fun dumpOutbound(count: Int) {'),
               ('val shown = minOf(bytes.size, txDumpBudget)', 'val shown = minOf(count, txDumpBudget)'),
               ('log("RAW tx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })', 'log("LINK tx: payloadRedactedBytes=$shown")'),
+              ('log("LINK closed: ${failure.message}")', 'log("LINK closed: ${failure.javaClass.simpleName} (detail redacted)")'),
           ]
           for before, after in channel_changes:
               assert expected_channel.count(before) == 1, 'Transport redaction baseline drift'
