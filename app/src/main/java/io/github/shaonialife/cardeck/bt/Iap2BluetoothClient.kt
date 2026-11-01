@@ -210,6 +210,19 @@ class Iap2BluetoothClient(
                 }
                 val socket = tryConnect(device)
                 if (socket != null) {
+                    // RFCOMM connect() can block for seconds while the user changes
+                    // the selected receiver. Retire this socket before handing it
+                    // to iAP2; never close a newer worker's socket.
+                    val targetUnchanged = runCatching {
+                        targetProvider() == selectedForCandidates
+                    }.getOrDefault(false)
+                    if (!running || generation.get() != myGeneration || !targetUnchanged) {
+                        currentSocket.compareAndSet(socket, null)
+                        runCatching { socket.close() }
+                        if (!running || generation.get() != myGeneration) return
+                        log("BT-C: RFCOMM 就绪时目标已变化，释放过期连接并重新扫描")
+                        continue@scan
+                    }
                     log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
                     connected = socket
                     break
