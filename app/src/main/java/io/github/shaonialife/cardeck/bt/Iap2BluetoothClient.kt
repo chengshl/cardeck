@@ -85,7 +85,11 @@ class Iap2BluetoothClient(
             PackageManager.PERMISSION_GRANTED
 
     fun start(): Boolean {
-        if (running) return true
+        // A slow permission/target preflight must not resurrect a client after stop().
+        val startLease = synchronized(lifecycleLock) {
+            if (running) return true
+            generation.get()
+        }
         if (!hasPermission()) {
             log("BT-C: 缺少 BLUETOOTH_CONNECT 权限")
             return false
@@ -96,20 +100,18 @@ class Iap2BluetoothClient(
             } catch (_: Exception) {
                 null
             }
-        if (adapter == null || !adapter.isEnabled) {
+        val enabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }
+        if (!enabled) {
             log("BT-C: 蓝牙不可用或未开启")
             return false
         }
-        val worker = synchronized(lifecycleLock) {
-            if (running) return true
-            running = true
-            val myGeneration = generation.incrementAndGet()
-            Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
-                isDaemon = true
-                thread = this
-            }
+        // Resolve the potentially throwing provider and logger before publishing running.
+        val target = try {
+            targetProvider()
+        } catch (error: Exception) {
+            runCatching { log("BT-C: 读取目标失败（${error.javaClass.simpleName}）") }
+            return false
         }
-        val target = targetProvider()
         log(
             "BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）" +
                 if (target != null) {
@@ -118,8 +120,29 @@ class Iap2BluetoothClient(
                     "（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）"
                 },
         )
-        worker.start()
-        return true
+        return synchronized(lifecycleLock) {
+            if (running) return@synchronized true
+            // stop() invalidated this preflight while it was outside the lock.
+            if (generation.get() != startLease) return@synchronized false
+            running = true
+            val myGeneration = generation.incrementAndGet()
+            try {
+                // Start while holding the lifecycle lock: stop() cannot retire a
+                // not-yet-started worker and allow it to start after its successor.
+                Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
+                    isDaemon = true
+                    thread = this
+                    start()
+                }
+                true
+            } catch (error: Exception) {
+                running = false
+                generation.incrementAndGet()
+                thread = null
+                runCatching { log("BT-C: 连接线程启动失败（${error.javaClass.simpleName}）") }
+                false
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
