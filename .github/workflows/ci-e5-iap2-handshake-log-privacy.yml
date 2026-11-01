@@ -9,6 +9,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -51,7 +52,33 @@ jobs:
           bt_path = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
           session_path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
           video_path = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
-          assert files == {path, bt_path, session_path, video_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          channel_path = 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
+          assert files == {path, bt_path, session_path, video_path, channel_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+
+          # Raw iAP2 transport payloads may contain identifiers or credentials.
+          # The only allowed new runtime delta is bounded byte-count logging.
+          old_channel = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + channel_path], text=True
+          )
+          expected_channel = old_channel
+          channel_changes = [
+              ('dumpInbound(buffer.copyOf(count))', 'dumpInbound(count)'),
+              ('private fun dumpInbound(bytes: ByteArray) {', 'private fun dumpInbound(count: Int) {'),
+              ('if (bytes.isEmpty() || rxDumpBudget <= 0) return', 'if (count <= 0 || rxDumpBudget <= 0) return'),
+              ('val shown = minOf(bytes.size, rxDumpBudget)', 'val shown = minOf(count, rxDumpBudget)'),
+              ('log("RAW rx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })', 'log("LINK rx: payloadRedactedBytes=$shown")'),
+              ('dumpOutbound(bytes)', 'dumpOutbound(bytes.size)'),
+              ('private fun dumpOutbound(bytes: ByteArray) {', 'private fun dumpOutbound(count: Int) {'),
+              ('val shown = minOf(bytes.size, txDumpBudget)', 'val shown = minOf(count, txDumpBudget)'),
+              ('log("RAW tx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })', 'log("LINK tx: payloadRedactedBytes=$shown")'),
+          ]
+          for before, after in channel_changes:
+              assert expected_channel.count(before) == 1, 'Transport redaction baseline drift'
+              expected_channel = expected_channel.replace(before, after, 1)
+          assert Path(channel_path).read_text() == expected_channel, 'Unexpected transport behavior change'
+          assert 'RAW rx:' not in expected_channel and 'RAW tx:' not in expected_channel
+          assert 'payloadRedactedBytes=$shown' in expected_channel
+          print('Exact iAP2 raw transport payload redaction verified')
           old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + path], text=True)
           new = Path(path).read_text()
           assert old.count('编码=${availabilityFrame.joinToString') == 1
