@@ -628,6 +628,11 @@ class AirPlayClient(
                 readerSocket = null
                 readerThread = null
                 readerGeneration++
+                // Host/route and socket belong to one B233 connection generation.
+                // Retire them together; a delayed old close must not erase the
+                // metadata of a newer published connection.
+                activeHost = null
+                activeAddress = null
                 // B233 must not retain raw peer response headers across reconnects.
                 responseHeads.clear()
                 old to RtspReaderGenerationCleanup.drainAll(pendingResponses)
@@ -644,8 +649,10 @@ class AirPlayClient(
             }
             null
         }
-        activeHost = null
-        activeAddress = null
+        if (!endpoint.isBuickB233) {
+            activeHost = null
+            activeAddress = null
+        }
         // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
         // 清掉，否则重连后的读线程会把明文应答当密文帧解，后续所有请求超时。
         cipher = null
@@ -2719,6 +2726,10 @@ class AirPlayClient(
                         ).also {
                             if (it == RtspReaderGenerationCleanup.CandidatePublication.PUBLISH) {
                                 b233ResourceEofEvidence.resetForNewConnection()
+                                // Publish the route metadata before the socket becomes
+                                // visible to concurrent B233 requests/reconnects.
+                                activeAddress = address
+                                activeHost = addressLiteral(address)
                                 socket = newSocket
                             }
                         }
@@ -2730,9 +2741,9 @@ class AirPlayClient(
                     }
                 } else {
                     socket = newSocket
+                    activeAddress = address
+                    activeHost = addressLiteral(address)
                 }
-                activeAddress = address
-                activeHost = addressLiteral(address)
                 log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")
                 return true
             } catch (error: IOException) {
