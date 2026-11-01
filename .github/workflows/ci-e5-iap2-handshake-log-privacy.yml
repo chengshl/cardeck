@@ -11,6 +11,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -55,7 +56,8 @@ jobs:
           video_path = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
           channel_path = 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
           ctrl_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
-          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          nsd_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
+          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, nsd_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
 
           # Raw iAP2 transport payloads may contain identifiers or credentials.
           # The only allowed new runtime delta is bounded byte-count logging.
@@ -277,6 +279,23 @@ jobs:
               assert forbidden not in ctrl_new, 'raw ctrl diagnostic content reintroduced'
           assert 'requestLine.startsWith("GET /ctrl-int/")' in ctrl_new
           assert 'output.write(response.toByteArray(Charsets.US_ASCII))' in ctrl_new
+          # NSD callbacks previously exposed peer-controlled TXT values,
+          # service identity, IP and raw network/exception details in logs.
+          # Replay exactly from stable; no discovery or endpoint behavior may change.
+          nsd_expected = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + nsd_path], text=True
+          )
+          nsd_changes = [["log(\"$TAG T47: scoped discovery $serviceType physicalWifi=$carWifiNetwork\")","log(\"$TAG T47: scoped discovery $serviceType (physical Wi-Fi selected; network redacted)\")"],["log(\"$TAG T47: scoped discovery unavailable (${error.message}); trying legacy discovery\")","log(\"$TAG T47: scoped discovery unavailable (${error.javaClass.simpleName}; detail redacted); trying legacy discovery\")"],["log(\"$TAG: 服务发现启动异常 - ${error.message}\")","log(\"$TAG: 服务发现启动异常 - ${error.javaClass.simpleName}（详情已脱敏）\")"],["log(\"$TAG: 发现服务 ${serviceInfo.serviceName} (${serviceInfo.serviceType})，解析中…\")","log(\"$TAG: 发现服务（名称已脱敏，type=${serviceInfo.serviceType}），解析中…\")"],["log(\"$TAG: 服务消失 ${serviceInfo.serviceName}\")","log(\"$TAG: 服务消失（名称已脱敏）\")"],["log(\"$TAG: 解析失败 ${info.serviceName} code=$errorCode\")","log(\"$TAG: 解析失败（名称已脱敏） code=$errorCode\")"],["                    val host = info.host?.hostAddress ?: \"no-host\"\n                    val txt =\n                        info.attributes.entries.joinToString(\", \") { (key, value) ->\n                            val text =\n                                value\n                                    ?.toString(Charsets.UTF_8)\n                                    ?.trimEnd { it.code == 0 }\n                                    .orEmpty()\n                            \"$key=$text\"\n                        }","                    // Preserve the resolved service for the consumer; log counts only.\n                    val txtCount = info.attributes.size"],["log(\"$TAG: OK ${info.serviceName} -> $host:${info.port}${if (accepted) \"\" else \"（非车机，忽略）\"}\")","log(\"$TAG: OK（服务名/地址已脱敏）port=${info.port} txtCount=$txtCount${if (accepted) \"\" else \"（非车机，忽略）\"}\")"],["                    if (txt.isNotEmpty()) log(\"$TAG: TXT $txt\")",""]]
+          for before, after in nsd_changes:
+              assert nsd_expected.count(before) == 1, 'NSD diagnostic baseline drift'
+              nsd_expected = nsd_expected.replace(before, after, 1)
+          nsd_new = Path(nsd_path).read_text()
+          assert nsd_new == nsd_expected, 'Unexpected NSD discovery/endpoint behavior change'
+          assert 'info.attributes.entries.joinToString' not in nsd_new
+          assert 'log("$TAG: TXT $txt")' not in nsd_new
+          assert 'if (accepted) resolved = info' in nsd_new
+          assert 'onEndpoint(info)' in nsd_new
+          print(f'NSD: {len(nsd_changes)} exact diagnostic redactions verified')
           print(f'CarPlay ctrl: {len(ctrl_changes)} exact log-only redactions verified')
           print(f'VideoSender: {len(video_replacements)} endpoint/exception log redactions verified')
           print(f'SessionController: {len(session_replacements)} diagnostic-only redactions verified')
