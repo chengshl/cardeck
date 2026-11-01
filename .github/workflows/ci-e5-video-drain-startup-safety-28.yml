@@ -345,9 +345,30 @@ jobs:
           assert expected.count(startup_catch_before) == 1, 'Retired startup catch is ambiguous'
           expected = expected.replace(startup_catch_before, startup_catch_after)
           assert new.count('if (synchronized(dataPortLock) { dataPortEpoch == startEpoch }) {') == 1
-          assert new == expected, 'Unexpected change outside reviewed drain epoch fence'
+          # A retired drain must not emit keepAlive or mutate a successor's counters
+          # after stop() -> start() makes running=true again.
+          prior_keepalive_source = subprocess.check_output(
+              ['git', 'show', '0995f186dd69966b542d2978fa58d7733e1195d8:' + source_path],
+              text=True,
+          )
+          assert expected == prior_keepalive_source, 'Reviewed #83 keepAlive baseline drifted'
+          old_keepalive_call = 'maybeSendKeepAlive(output)'
+          assert expected.count(old_keepalive_call) == 2, 'Old keepAlive call sites drifted'
+          expected = expected.replace(old_keepalive_call, 'maybeSendKeepAlive(output, epoch)')
+          old_keepalive_method = 'private fun maybeSendKeepAlive(output: java.io.OutputStream) {\\n        if (!running.get()) return'
+          new_keepalive_method = (
+              'private fun maybeSendKeepAlive(output: java.io.OutputStream, epoch: Long) {\\n'
+              '        // An old drain can wake after stop() and a new start() sets running=true.\\n'
+              '        // Do not send its keepAlive or reset the new session\\'s counters.\\n'
+              '        if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != epoch }) return'
+          )
+          assert expected.count(old_keepalive_method) == 1, 'Old keepAlive method drifted'
+          expected = expected.replace(old_keepalive_method, new_keepalive_method)
+          assert new == expected, 'Unexpected change outside reviewed keepAlive epoch fence'
+          assert new.count('maybeSendKeepAlive(output, epoch)') == 2
+          assert new.count('private fun maybeSendKeepAlive(output: java.io.OutputStream, epoch: Long)') == 1
           assert new.count('Pair(encoder, socket)') == 1
-          assert new.count('dataPortEpoch != epoch })') == 2
+          assert new.count('dataPortEpoch != epoch })') == 3
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
           assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
           assert start.index('inputSurface = surface') < start.index('codec.start()')
