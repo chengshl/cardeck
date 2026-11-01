@@ -97,7 +97,109 @@ jobs:
           # A signed L3 candidate must never be published without an independently
           # installable, higher-version, same-signed original-E5 recovery APK.
           assert '  workflow_dispatch:' in release and '  push:' in release.splitlines()
-          assert 'if: ${{ github.ref ==' in release, 'Signed job must be opt-in even on push'
+          assert ('if: 
+          assert 'EXP_TAG="exp-buick-e5-bt-a-profile-preserve-24-$EXP_NAME"' in release
+          assert 'REST_TAG="e5-stable-restore-bt-a-24-$CARDECK_RELEASE_VERSION_NAME"' in release
+          assert 'GITHUB_REF_NAME=Buick-E5' in release
+          assert 'GITHUB_SHA=5e565a08b228d157ff1d739f38b8c09fad80f8a5' in release
+          assert 'test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"' in release
+          assert 'test "${REC_CERT,,}" = "${EXP_CERT,,}"' in release
+          assert 'sha256sum CarDeck-Buick-E5-BT-A-Stable-Restore.apk' in release
+          assert release.index('gh release create "$REST_TAG"') < release.index('gh release create "$EXP_TAG"')
+          assert 'recoveryFor=%s' in release and 'recoveryTag=%s' in release
+          assert 'sourceBranch=work/e5-bt-a-profile-preserve-24-20261030' in release
+          assert 'baseBranch=Buick-E5' in release and 'artifactKind=experiment' in release
+          assert 'updaterSchema=2' in release and 'artifactKind=recovery' in release
+          assert '持续采集运行超过4小时' not in release, 'Stale Rescue acceptance copied into BT-A release notes'
+
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + client], text=True)
+          new = Path(client).read_text()
+          before = "                if (!t35Buick) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          after = "                // #24 BT-A: keep ordinary HFP/A2DP connected for a narrowly\n                // identified B233 candidate. This does not change RFCOMM,\n                // iAP2 handshakes, retry pacing or other receivers.\n                val selected = selectedForCandidates\n                val protectB233Profiles = BuickB233Route.shouldProtectProfiles(\n                    advertisedName = name,\n                    selectedName = selected?.name,\n                    selectedMatchesDevice = selected != null &&\n                        TargetDevicePrefs.matches(selected, device.address),\n                )\n                if (protectB233Profiles) {\n                    val now = android.os.SystemClock.uptimeMillis()\n                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {\n                        lastProfileLogAt = now\n                        log(\"BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped\")\n                    }\n                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          assert old.count(before) == 1
+          # Keep the selection used to enumerate candidate devices identical to
+          # the selection used to decide whether HFP/A2DP may be disconnected.
+          # Otherwise a mid-scan UI target change can expose a previously
+          # selected B233 receiver to the destructive fallback.
+          expected_client = old.replace(before, after)
+          before_candidates = "            val candidates = candidateDevices(adapter)"
+          after_candidates = "            val selectedForCandidates = targetProvider()\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          before_signature = "    private fun candidateDevices(adapter: android.bluetooth.BluetoothAdapter): List<BluetoothDevice> {"
+          after_signature = "    private fun candidateDevices(\n        adapter: android.bluetooth.BluetoothAdapter,\n        selectedTarget: TargetDevicePrefs.Target?,\n    ): List<BluetoothDevice> {"
+          before_target = "        targetProvider()?.let { target ->"
+          after_target = "        selectedTarget?.let { target ->"
+          for before_part, after_part in (
+              (before_candidates, after_candidates),
+              (before_signature, after_signature),
+              (before_target, after_target),
+          ):
+              assert expected_client.count(before_part) == 1, f'Unexpected baseline selection block: {before_part}'
+              expected_client = expected_client.replace(before_part, after_part)
+          # One additional BT-A cancellation fence: a worker retired by stop()
+          # must not begin the destructive profile-disconnect call.
+          before_guard = "                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          after_guard = "                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    // Stop can retire this worker while candidate selection or policy checks run.\n                    // Do not start a destructive profile disconnect for an already retired worker.\n                    if (!running || generation.get() != myGeneration) return\n                    val dropped = BtProfiles.disconnect(context, device)"
+          assert expected_client.count(before_guard) == 1, 'Unreviewed BT-A disconnect block'
+          expected_client = expected_client.replace(before_guard, after_guard)
+          assert new == expected_client, 'Unrelated runtime behavior changed'
+          assert new.count('val selectedForCandidates = targetProvider()') == 1
+          assert 'val selected = selectedForCandidates' in new
+          policy = Path(route).read_text()
+          assert 'BUICK_[0-9]{4}' in policy
+          assert 'selectedMatchesDevice && isKnownReceiver(selectedName)' in policy
+          assert '!legacyT35Buick && !protectB233Profiles' in policy, 'T35 no-disconnect guard missing'
+          assert 'shouldDisconnectProfiles(t35Buick, protectB233Profiles)' in new, 'T35 guard bypassed'
+          assert 'BluetoothDevice.disconnect' not in new.replace(old.replace(before, ''), '')
+          checks = Path(test).read_text()
+          assert 'protectsOnlyB233CandidateOrExplicitlyMatchedSelection' in checks
+          assert 'narrowlyMatchesFourDigitBuickHint' in checks
+          assert 'legacyT35GuardRemainsActiveForAllCandidates' in checks
+          print('Profile-only L3 isolation verified; no other runtime change')
+          PY
+      - name: Verify shared global version allocator regression tests
+        run: python3 -m unittest tools.release.test_allocate_version
+      - name: Run Android unit tests and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Run full Lint and reject errors on touched files (existing E5 baseline debt)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug --stacktrace > e5-lint-output.txt 2>&1
+          LINT_EXIT=$?
+          set -e
+          if (( LINT_EXIT != 0 )); then
+            grep -E 'Lint found|First failure:' e5-lint-output.txt | head -n 8 || true
+          fi
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          touched_paths = {
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt',
+          }
+          report = Path('app/build/reports/lint-results-debug.xml')
+          if not report.is_file():
+              raise SystemExit('Lint XML missing: refusing to waive an unreviewed failure')
+          issues = []
+          for issue in ET.parse(report).getroot().findall('.//issue'):
+              if issue.get('severity', '').lower() not in ('error', 'fatal'):
+                  continue
+              loc = issue.find('location')
+              path = (loc.get('file', '') if loc is not None else '').replace('\\', '/')
+              if '/app/' in path:
+                  path = 'app/' + path.split('/app/', 1)[1]
+              issues.append((issue.get('id'), path))
+          touched = [(i, p) for i, p in issues if p in touched_paths]
+          print(f'Full E5 Lint errors: {len(issues)}; touched-file errors: {len(touched)}')
+          if touched:
+              raise SystemExit(f'Lint errors on BT-A changed files: {touched}')
+          print('Existing unrelated E5 Lint debt remains; no touched-file error introduced')
+          PY
+ + '{' + '{ github.ref ==') in release, 'Signed job must be opt-in even on push'
           assert 'EXP_TAG="exp-buick-e5-bt-a-profile-preserve-24-$EXP_NAME"' in release
           assert 'REST_TAG="e5-stable-restore-bt-a-24-$CARDECK_RELEASE_VERSION_NAME"' in release
           assert 'GITHUB_REF_NAME=Buick-E5' in release
