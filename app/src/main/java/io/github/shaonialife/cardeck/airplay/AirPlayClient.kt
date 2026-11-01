@@ -576,6 +576,13 @@ class AirPlayClient(
         if (endpoint.isBuickB233) b233ResourceEofEvidence.resetForNewConnection()
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
+        // B233: retire the published event channel together with this session.
+        synchronized(eventCommandLock) {
+            if (b233EventSocketOwner.retire()) {
+                eventCommandSocket = null
+                eventCommandCipher = null
+            }
+        }
         runCatching { socket?.close() }
         socket = null
         activeHost = null
@@ -655,6 +662,7 @@ class AirPlayClient(
     private var eventCommandCipher: ControlCipher? = null
 
     private val eventCommandLock = Any()
+    private val b233EventSocketOwner = B233EventSocketOwner()
     private var eventCseq = 0
 
     /** 未知请求（非 /command 的合法请求）累计数：前 10 条留痕后静默。 */
@@ -678,8 +686,16 @@ class AirPlayClient(
         socket: Socket,
         cipher: ControlCipher?,
     ) {
-        eventCommandSocket = socket
-        eventCommandCipher = cipher
+        if (endpoint.isBuickB233) {
+            synchronized(eventCommandLock) {
+                b233EventSocketOwner.publish(socket)
+                eventCommandSocket = socket
+                eventCommandCipher = cipher
+            }
+        } else {
+            eventCommandSocket = socket
+            eventCommandCipher = cipher
+        }
     }
 
     /** 在事件通道上发 POST /command（通道加密时加密）。通道未就绪时返回 false。 */
@@ -2378,7 +2394,14 @@ class AirPlayClient(
         val host = receiverHost() ?: return
         try {
             val socket = newVehicleSocket()
-            socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)
+            if (endpoint.isBuickB233) {
+                // Resolution may throw before TCP connect: retire unpublished candidates.
+                B233EventSocketConnection.connect(socket, 5_000) {
+                    InetSocketAddress(resolveAddress(host), setup.eventPort)
+                }
+            } else {
+                socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)
+            }
             socket.tcpNoDelay = true
             socket.soTimeout = 30_000
             log("EVENT: ✓ 已连接事件通道 $host:${setup.eventPort}（${if (sessionKey != null) "加密" else "明文"}）")
@@ -2400,11 +2423,12 @@ class AirPlayClient(
                 }
             registerEventCommandChannel(socket, cipher)
             Thread({
-                val input = socket.getInputStream()
                 val accumulator = RtspAccumulator()
                 var pending = ByteArray(0)
                 val buffer = ByteArray(8192)
                 try {
+                    // getInputStream failure also belongs to reader cleanup.
+                    val input = socket.getInputStream()
                     while (true) {
                         val count =
                             try {
@@ -2505,6 +2529,14 @@ class AirPlayClient(
                     if (audioFailureTrace != null) {
                         audioFailureTrace?.event("event_channel_read_error", error.javaClass.simpleName)
                         log("AUDIO T82: event_read_error ${audioControlLiveness.summary()}")
+                    }
+                } finally {
+                    // An old reader cannot retire a replacement event socket.
+                    synchronized(eventCommandLock) {
+                        if (b233EventSocketOwner.retireIfCurrent(socket)) {
+                            eventCommandSocket = null
+                            eventCommandCipher = null
+                        }
                     }
                 }
             }, "event-reader").apply {
