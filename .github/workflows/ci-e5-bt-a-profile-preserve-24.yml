@@ -72,7 +72,15 @@ jobs:
           assert changed == {client, route, test, workflow, publish}, f'Unexpected diff: {changed}'
           release = Path(publish).read_text()
           assert '  workflow_dispatch:' in release
-          assert '\n  push:' not in release and '\n  pull_request:' not in release
+          assert release.count('\n  push:') == 1 and '\n  pull_request:' not in release
+          assert '    branches: [work/e5-bt-a-profile-preserve-24-20261030]' in release
+          assert "      - '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'" in release
+          assert "github.ref == 'refs/heads/work/e5-bt-a-profile-preserve-24-20261030'" in release
+          assert "github.event_name == 'workflow_dispatch'" in release
+          assert "github.event_name == 'push'" in release
+          assert "github.event.head_commit.message == 'BT-A-24-signed-release-request'" in release
+          assert "assert not event.get('forced') and not event.get('deleted')" in release
+          assert "event.get('head_commit', {}).get('modified', [])" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
           assert 'python3 tools/release/allocate_version.py' in release
@@ -88,7 +96,8 @@ jobs:
           assert 'test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"' in release
           # A signed L3 candidate must never be published without an independently
           # installable, higher-version, same-signed original-E5 recovery APK.
-          assert '  workflow_dispatch:' in release and '  push:' not in release.splitlines()
+          assert '  workflow_dispatch:' in release and '  push:' in release.splitlines()
+          assert 'if: ${{ github.ref ==' in release, 'Signed job must be opt-in even on push'
           assert 'EXP_TAG="exp-buick-e5-bt-a-profile-preserve-24-$EXP_NAME"' in release
           assert 'REST_TAG="e5-stable-restore-bt-a-24-$CARDECK_RELEASE_VERSION_NAME"' in release
           assert 'GITHUB_REF_NAME=Buick-E5' in release
