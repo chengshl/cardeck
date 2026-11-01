@@ -1,0 +1,79 @@
+name: B233 bootstrap RTSP status validation (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-bootstrap-rtsp-status-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-event-diagnostic-redaction-t94
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, negative control and B233-only source scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=ca0269533327b63b984e4e18c9c986264fc6261d
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41327006496 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41327006496 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-bootstrap-rtsp-status.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt > /tmp/parent.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          def section(text, start, stop):
+              return text.split(start, 1)[1].split(stop, 1)[0]
+          old_setup = section(old, 'fun runSetup(): SetupInfo?', 'val root =')
+          new_setup = section(new, 'fun runSetup(): SetupInfo?', 'val root =')
+          assert 'if (!statusLine.contains("200"))' in old_setup
+          assert 'if (!B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233))' in new_setup
+          old_fetch = section(old, 'fun fetchInfo(', 'fun startKeepAlive(')
+          new_fetch = section(new, 'fun fetchInfo(', 'fun startKeepAlive(')
+          assert 'if (body.isEmpty()) return null' in old_fetch
+          assert '!B233ModeReplySummary.isTransportAccepted(statusLine, true)' in new_fetch
+          old_info = section(old, 'private fun loadInfoWithDiagnostics()', 'private fun scheduleSideProbe(')
+          new_info = section(new, 'private fun loadInfoWithDiagnostics()', 'private fun scheduleSideProbe(')
+          assert '!statusLine.contains("200")' in old_info
+          assert 'retry.first.contains("200")' in old_info
+          assert 'B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233)' in new_info
+          assert 'B233ModeReplySummary.isTransportAccepted(retry.first, endpoint.isBuickB233)' in new_info
+          assert 'B233ModeReplySummary.isTransportAccepted(statusLine, true)' in new_info
+          old_side = section(old, 'private fun probeInfoOnSideConnection(', 'class SetupInfo(')
+          new_side = section(new, 'private fun probeInfoOnSideConnection(', 'class SetupInfo(')
+          assert 'return parseInfoBody("侧信道 $line", infoBody)' in old_side
+          assert '!B233ModeReplySummary.isTransportAccepted(line, true)' in new_side
+          assert 'return parseInfoBody("侧信道 $line", infoBody)' in new_side
+          # Existing JUnit exercises forged "500 200" and malformed RTSP
+          # statuses; the production guards above must use that exact parser.
+          print('B233 bootstrap/info status guards and parent negative control passed')
+          PY
+      - name: Android JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline-only; no signing, release, installation or stable merge.
