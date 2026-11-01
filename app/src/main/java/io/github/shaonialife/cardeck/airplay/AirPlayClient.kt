@@ -648,7 +648,8 @@ class AirPlayClient(
             }
             null
         }
-        if (!endpoint.isBuickB233) {
+        // Use the same retirement branch result even if endpoint changes meanwhile.
+        if (retiredWaiters == null) {
             activeHost = null
             activeAddress = null
         }
