@@ -109,7 +109,9 @@ jobs:
           assert 'test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"' in release
           assert 'test "${REC_CERT,,}" = "${EXP_CERT,,}"' in release
           assert 'sha256sum CarDeck-Buick-E5-BT-A-Stable-Restore.apk' in release
-          assert release.index('gh release create "$REST_TAG"') < release.index('gh release create "$EXP_TAG"')
+          assert release.index('gh release create "$REST_TAG"') < release.index('gh release download "$REST_TAG"') < release.index('gh release create "$EXP_TAG"'), 'Recovery must be remotely downloadable before experiment is published'
+          assert 'sha256sum -c "$REST_APK.sha256"' in release, 'Published recovery SHA256 must be verified'
+          assert 'cmp "$REST_APK" "$verify_dir/$REST_APK"' in release, 'Published recovery must match signed local APK'
           assert 'recoveryFor=%s' in release and 'recoveryTag=%s' in release
           assert 'sourceBranch=work/e5-bt-a-profile-preserve-24-20261030' in release
           assert 'baseBranch=Buick-E5' in release and 'artifactKind=experiment' in release
