@@ -27,6 +27,10 @@ import java.security.SecureRandom
 import java.util.Base64
 import java.util.UUID
 
+/** Compare the exact listener instance, never only the shared AirPlay session. */
+internal fun ownsReverseAudioPort(current: Any?, expected: Any?): Boolean =
+    expected != null && current === expected
+
 /** B233 iAP2 handshake and control bytes must not enter uploadable logs. */
 internal fun safeB233IapPayloadLog(payload: ByteArray): String =
     "payload=${payload.size}B redacted"
@@ -191,6 +195,18 @@ class AirPlayClient(
         reverseAudioControlPort?.close()
         reverseAudioControlPort = null
         audioRtpSentCountProvider = null
+    }
+
+    /** Snapshot the listener created for this B233 audio SETUP. */
+    @Synchronized
+    fun reverseAudioControlPortOwner(): Any? = reverseAudioControlPort
+
+    /** A stopped sender must not close a replacement sender's reverse RTCP listener. */
+    @Synchronized
+    fun closeReverseAudioControlPortIfOwner(owner: Any?) {
+        if (ownsReverseAudioPort(reverseAudioControlPort, owner)) {
+            closeReverseAudioControlPort()
+        }
     }
 
     /** pair-verify 之后启用：所有后续 RTSP 报文整体加密封装。 */
@@ -1999,7 +2015,7 @@ class AirPlayClient(
                     }
                     return null
                 }
-                reverseAudioControlPort = reverse
+                synchronized(this) { reverseAudioControlPort = reverse }
                 log("AUDIO T73: SETUP 即将声明手机本地 controlPort=$port，区别于车机返回的控制端口")
                 port
             } else {
