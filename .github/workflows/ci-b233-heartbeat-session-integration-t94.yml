@@ -42,8 +42,8 @@ jobs:
           git merge-base --is-ancestor "$BASE" HEAD
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41260922626 --jq .head_sha)" = "$BASE"
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41260922626 --jq .conclusion)" = success
-          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41176112171 --jq .head_sha)" = "6fbc4dae3fc2720c57f304ecf5a35a584880d95f"
-          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41176112171 --jq .conclusion)" = success
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41176379014 --jq .head_sha)" = "3cf99390e2710ea758420192d96a4ba122b04fc3"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41176379014 --jq .conclusion)" = success
           git diff --name-only "$BASE" HEAD > /tmp/heartbeat-integration-scope
           test "$(wc -l < /tmp/heartbeat-integration-scope)" -eq 4
           while IFS= read -r f; do
@@ -66,6 +66,8 @@ jobs:
           assert 'b233HeartbeatSessionGate.runIfCurrent(heartbeatToken)' in keep
           assert 'expectedB233SessionToken = if (b233HeartbeatWorker) heartbeatToken else null' in feedback
           assert 'b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break' in feedback
+          failure = feedback.split('} catch (error: IOException) {', 1)[1]
+          assert failure.index('b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break') < failure.index('audioFailureTrace?.event("feedback_error"')
           assert 'b233HeartbeatSessionGate.captureIfCurrent(expectedB233SessionToken)' in request
           assert 'socket !== client' in request and 'startReader(client)' in request
           assert 'AtomicLong(0L)' in gate and '@Synchronized' in gate
@@ -73,6 +75,7 @@ jobs:
                        'delayedOldFeedbackWorkerCannotAdoptReplacementSession',
                        'feedbackResponseAfterCloseCannotBeReportedAsNewSession',
                        'retirementIsNotBlockedByPausedRtspWriteAfterSocketCapture',
+                       'retiredFeedbackFailureCannotContaminateReplacementSessionTrace',
                        'nonB233LegacyWorkerDoesNotDependOnGate'):
               assert name in tests
           assert 'B233ResourceEofEvidence()' in air
