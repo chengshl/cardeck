@@ -1,0 +1,82 @@
+name: B233 RTSP peer CSeq dispatch integration on current audio line (offline)
+on:
+  pull_request:
+    branches:
+      - experiment/buick-b233-aac-codec-startup-ownership-integration-t94
+    paths:
+      - '.github/workflows/ci-b233-rtsp-peer-cseq-integrate-current-audio.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidence.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-peer-cseq-audio-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, reviewed source, and four-file scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4c8823349deafbac70b485c5ddfee8980f17b476
+          SOURCE=b68909a525cedc01410290b67f2bc4d8abc444b2
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --name-only "$BASE" HEAD | sort > /tmp/cseq-actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-rtsp-peer-cseq-integrate-current-audio.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidence.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt' > /tmp/cseq-expected
+          diff -u /tmp/cseq-expected /tmp/cseq-actual
+          git diff --check "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41269009471 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41269009471 --jq .conclusion)" = success
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41172944894 --jq .head_sha)" = "$SOURCE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41172944894 --jq .conclusion)" = success
+          # The donor's reviewed helper and all regression fixtures must be identical.
+          for file in \
+              app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidence.kt \
+              app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspPeerRequestEvidenceTest.kt; do
+            test "$(git rev-parse HEAD:"$file")" = "$(git rev-parse "$SOURCE":"$file")"
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt')
+          data = path.read_text()
+          dispatch = data.split('    private fun dispatchResponse(',1)[1].split('    /** 无匹配报文计数',1)[0]
+          assert 'val absoluteUriPeerRequest = RtspPeerRequestEvidence.isB233AbsoluteUriRequest(' in dispatch
+          assert 'val pathPeerRequest = RtspPeerRequestEvidence.prioritizePathRequestBeforePendingCseq(' in dispatch
+          assert 'if (!absoluteUriPeerRequest && !pathPeerRequest)' in dispatch
+          assert dispatch.index('if (!absoluteUriPeerRequest && !pathPeerRequest)') < dispatch.index('val queue = message.cseq?.let { pendingResponses[it] }')
+          assert 'if (message.isRequest || absoluteUriPeerRequest)' in dispatch
+          assert 'RtspPeerRequestEvidence.safeUnmatchedStartLine(statusLine)' in dispatch
+          assert '[$safeStartLine]' in dispatch and '[$statusLine]' not in dispatch
+          assert 'audioFailureTrace?.event("rtsp_peer_teardown"' in dispatch
+          assert 'b233ResourceEofEvidence.summaryAtPeerEof' in data
+          assert 'B233HeartbeatSessionGate' in data
+          PY
+      - name: Reviewed RTSP path, absolute URI, collision and redaction JVM regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.RtspPeerRequestEvidenceTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft, no signing, publishing, installation, stable branch or VPN change.
