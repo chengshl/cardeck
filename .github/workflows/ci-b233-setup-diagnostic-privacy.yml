@@ -1,0 +1,74 @@
+name: B233 initial SETUP diagnostic privacy (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-setup-diagnostic-privacy-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-bootstrap-rtsp-status-t94
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, leak negative control and minimal scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=7e69538ff09d261eeb70b0def374e6a495fc3244
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41331829472 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41331829472 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-setup-diagnostic-privacy.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233SetupDiagnostics.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233SetupDiagnosticsTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt > /tmp/parent.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          def setup(text):
+              return text.split('fun runSetup(): SetupInfo?', 1)[1].split('val root =', 1)[0]
+          old_setup, new_setup = setup(old), setup(new)
+          for leak in ('deviceID=$deviceId', 'SETUP 失败 - ${error.message}', 'plistKeys=${errorKeys', 'connectedHost=${activeHost'):
+              assert leak in old_setup, f'parent negative control missing {leak}'
+          assert 'B233SetupDiagnostics.attempt(body.size, timingServer.port, cipher != null)' in new_setup
+          assert 'B233SetupDiagnostics.failure(error)' in new_setup
+          assert 'B233SetupDiagnostics.rejection(' in new_setup
+          assert 'B233SetupDiagnostics.forbiddenHint(statusLine)?.let(log)' in new_setup
+          early = new_setup.split('if (endpoint.isBuickB233) {\n                log(B233SetupDiagnostics.rejection(', 1)[1]
+          assert 'return null' in early.split('log("AIRPLAY: SETUP 应答', 1)[0]
+          assert 'plistKeys=${errorKeys' in new_setup and 'connectedHost=${activeHost' in new_setup
+          assert 'if (!B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233))' in new_setup
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233SetupDiagnostics.kt').read_text()
+          assert 'safeTransportStatus(statusLine, true)' in helper
+          assert 'error.message' not in helper and 'deviceId' not in helper
+          print('parent leak reproduced; B233 early privacy fence and legacy compatibility verified')
+          PY
+      - name: Android JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline-only; no signing, release, installation or stable merge.
