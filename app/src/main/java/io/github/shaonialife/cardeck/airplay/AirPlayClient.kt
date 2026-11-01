@@ -430,7 +430,11 @@ class AirPlayClient(
         if (!ensureConnected()) return null
         return try {
             val (statusLine, body) = requestInfo(timeoutMillis)
-            log("AIRPLAY: ✓ /info [$statusLine] body=${body.size} 字节")
+            log("AIRPLAY: ✓ /info [${B233ModeReplySummary.safeTransportStatus(statusLine, endpoint.isBuickB233)}] body=${body.size} 字节")
+            // A peer error mentioning "200" must not become negotiated capabilities.
+            if (endpoint.isBuickB233 &&
+                !B233ModeReplySummary.isTransportAccepted(statusLine, true)
+            ) return null
             if (body.isEmpty()) return null
             val root = BinaryPlist.parse(body)
             if (root is Map<*, *>) {
@@ -908,8 +912,12 @@ class AirPlayClient(
                 log("AIRPLAY: SETUP 失败 - ${error.message}")
                 return null
             }
-        if (!statusLine.contains("200")) {
-            log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")
+        if (!B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233)) {
+            log(if (endpoint.isBuickB233) {
+                "AIRPLAY: B233 initial SETUP rejected status=${B233ModeReplySummary.safeTransportStatus(statusLine, true)} redacted"
+            } else {
+                "AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）"
+            })
             // Safe non-200 diagnostics: no raw plist/password/pairing keys.
             val errorKeys = runCatching {
                 (BinaryPlist.parse(responseBody) as? Map<*, *>)?.keys
@@ -1075,21 +1083,30 @@ class AirPlayClient(
             val first = requestInfo()
             statusLine = first.first
             body = first.second
-            if (!statusLine.contains("200") || body.isEmpty()) {
-                log("AIRPLAY: /info 首次 [$statusLine] body=${body.size}B → 800ms 后重试一次")
+            if (!B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233) || body.isEmpty()) {
+                log("AIRPLAY: /info 首次 [${B233ModeReplySummary.safeTransportStatus(statusLine, endpoint.isBuickB233)}] body=${body.size}B → 800ms 后重试一次")
                 Thread.sleep(800)
                 ensureConnected(2_000)
                 val retry = requestInfo(5_000)
-                log("AIRPLAY: /info 重试 [${retry.first}] body=${retry.second.size}B")
-                if (retry.first.contains("200") && retry.second.isNotEmpty()) {
+                log("AIRPLAY: /info 重试 [${B233ModeReplySummary.safeTransportStatus(retry.first, endpoint.isBuickB233)}] body=${retry.second.size}B")
+                if (B233ModeReplySummary.isTransportAccepted(retry.first, endpoint.isBuickB233) && retry.second.isNotEmpty()) {
                     statusLine = retry.first
                     body = retry.second
                 }
             }
         } catch (error: Exception) {
-            log("AIRPLAY: /info 请求异常 - ${error.javaClass.simpleName}: ${error.message}")
+            log(if (endpoint.isBuickB233) {
+                "AIRPLAY: B233 /info request error type=${error.javaClass.simpleName} redacted"
+            } else {
+                "AIRPLAY: /info 请求异常 - ${error.javaClass.simpleName}: ${error.message}"
+            })
         }
-        parseInfoBody(statusLine, body)?.let { return it }
+        // Never parse an error response body as a successful B233 /info.
+        if (!endpoint.isBuickB233 ||
+            B233ModeReplySummary.isTransportAccepted(statusLine, true)
+        ) {
+            parseInfoBody(statusLine, body)?.let { return it }
+        }
         scheduleSideProbe()
         return null
     }
@@ -1214,6 +1231,14 @@ class AirPlayClient(
             }
             val headText = String(bytes, 0, separator, Charsets.ISO_8859_1)
             val (line, contentLength) = parseRtspHead(headText)
+            // A side probe is a separate RTSP transaction; it must meet the
+            // same strict B233 success condition as the in-session /info.
+            if (target.isBuickB233 &&
+                !B233ModeReplySummary.isTransportAccepted(line, true)
+            ) {
+                log("AIRPLAY: B233 side /info rejected status=${B233ModeReplySummary.safeTransportStatus(line, true)} redacted")
+                return null
+            }
             val bodyStart = separator + HEAD_SEPARATOR.size
             val infoBody = bytes.copyOfRange(bodyStart, minOf(bodyStart + contentLength, bytes.size))
             return parseInfoBody("侧信道 $line", infoBody)
