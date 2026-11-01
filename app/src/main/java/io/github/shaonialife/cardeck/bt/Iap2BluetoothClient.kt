@@ -133,7 +133,7 @@ class Iap2BluetoothClient(
                 it.address.equals("30:DF:17:9F:AE:4C", ignoreCase = true)
         } == true
         var t35Attempts = 0
-        while (running && generation.get() == myGeneration) {
+        scan@ while (running && generation.get() == myGeneration) {
             // T35's two successful RFCOMM sessions used to stop this entire client.
             // A Buick that only restarts CarPlay after head-unit reboot would then
             // never see a new phone-initiated attempt. Keep retrying with backoff.
@@ -177,6 +177,13 @@ class Iap2BluetoothClient(
                     selectedMatchesDevice = selected != null &&
                         TargetDevicePrefs.matches(selected, device.address),
                 )
+                // The user can switch receivers after candidate enumeration. Do not
+                // disconnect the old candidate's HFP/A2DP or dial a stale target.
+                // A failed selection read must also fail closed before profile actions.
+                if (!runCatching { targetProvider() == selectedForCandidates }.getOrDefault(false)) {
+                    log("BT-C: 目标已变更或暂不可读，重新扫描（未断开普通蓝牙）")
+                    continue@scan
+                }
                 if (protectB233Profiles) {
                     val now = android.os.SystemClock.uptimeMillis()
                     if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {
