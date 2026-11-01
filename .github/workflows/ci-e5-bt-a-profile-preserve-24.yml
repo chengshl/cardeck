@@ -83,7 +83,7 @@ jobs:
           assert "assert modified == {workflow}" in release
           assert "assert not event.get('head_commit', {}).get('added', [])" in release
           assert "assert not event.get('head_commit', {}).get('removed', [])" in release
-          assert "reviewed_source = 'd65395a85ec18d26fe19fc4391b6b3b6874b06fd'" in release
+          assert "reviewed_source = '22b1a2e7e68830dbd75978eb3c1c740dd5fb07c2'" in release
           assert "assert actual == expected" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
@@ -161,9 +161,27 @@ jobs:
           policy_after = "                // The user can switch receivers after candidate enumeration. Do not\n                // disconnect the old candidate's HFP/A2DP or dial a stale target.\n                // A failed selection read must also fail closed before profile actions.\n                if (!runCatching { targetProvider() == selectedForCandidates }.getOrDefault(false)) {\n                    log(\"BT-C: 目标已变更或暂不可读，重新扫描（未断开普通蓝牙）\")\n                    continue@scan\n                }\n                if (protectB233Profiles) {\n                    val now"
           assert expected_client.count(policy_before) == 1, 'BT-A profile policy block drifted'
           expected_client = expected_client.replace(policy_before, policy_after)
-          assert new == expected_client, 'Unrelated BT-A runtime behavior changed'
-          assert new.count('continue@scan') == 1
-          assert new.count('targetProvider() == selectedForCandidates') == 1
+          # Preserve the prior reviewed BT-A source before a new, narrow
+          # post-connect target-ownership fence. The socket may block for
+          # seconds; a changed selection must not enter an iAP2 session.
+          baseline_source = subprocess.check_output(
+              ['git', 'show', 'de00527f686e7a063e188863495bb27d91cd2a03:' + client], text=True
+          )
+          assert expected_client == baseline_source, 'Previous signed-source lease drifted'
+          late_before = "                val socket = tryConnect(device)\n                if (socket != null) {\n                    log(\"BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）\")\n                    connected = socket\n                    break\n                } else {"
+          late_after = "                val socket = tryConnect(device)\n                if (socket != null) {\n                    // RFCOMM connect() can block for seconds while the user changes\n                    // the selected receiver. Retire this socket before handing it\n                    // to iAP2; never close a newer worker's socket.\n                    val targetUnchanged = runCatching {\n                        targetProvider() == selectedForCandidates\n                    }.getOrDefault(false)\n                    if (!running || generation.get() != myGeneration || !targetUnchanged) {\n                        currentSocket.compareAndSet(socket, null)\n                        runCatching { socket.close() }\n                        if (!running || generation.get() != myGeneration) return\n                        log(\"BT-C: RFCOMM 就绪时目标已变化，释放过期连接并重新扫描\")\n                        continue@scan\n                    }\n                    log(\"BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）\")\n                    connected = socket\n                    break\n                } else {"
+          assert expected_client.count(late_before) == 1, 'RFComm connect success block ambiguous'
+          expected_client = expected_client.replace(late_before, late_after)
+          assert new == expected_client, 'Unexpected runtime diff beyond post-connect target guard'
+          assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
+          assert new.index('val targetUnchanged = runCatching') < new.index('connected = socket')
+          assert new.index('currentSocket.compareAndSet(socket, null)', new.index('val targetUnchanged')) < new.index('connected = socket')
+          reviewed_source = subprocess.check_output(
+              ['git', 'show', '22b1a2e7e68830dbd75978eb3c1c740dd5fb07c2:' + client], text=True
+          )
+          assert new == reviewed_source, 'Final BT-A signed-source lease changed'
+          assert new.count('continue@scan') == 2
+          assert new.count('targetProvider() == selectedForCandidates') == 2
           assert new.index('targetProvider() == selectedForCandidates') < new.index('val dropped = BtProfiles.disconnect(context, device)')
           assert new.count('val selectedForCandidates = targetProvider()') == 1
           assert 'val selected = selectedForCandidates' in new
