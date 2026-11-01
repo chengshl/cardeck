@@ -628,6 +628,8 @@ class AirPlayClient(
                 readerSocket = null
                 readerThread = null
                 readerGeneration++
+                // B233 must not retain raw peer response headers across reconnects.
+                responseHeads.clear()
                 old to RtspReaderGenerationCleanup.drainAll(pendingResponses)
             }
             runCatching { retiredSocket?.close() }
@@ -1450,7 +1452,11 @@ class AirPlayClient(
                 return null
             }
         if (!statusLine.contains("200")) {
-            log("TUNNEL: SETUP 应答 [$statusLine]（响应头：${lastResponseHeadOfRequest()}）")
+            if (endpoint.isBuickB233) {
+                log("TUNNEL: SETUP 应答 status=${B233PairingReplySummary.safeStatus(statusLine)} respBytes=${responseBody.size} redacted")
+            } else {
+                log("TUNNEL: SETUP 应答 [$statusLine]（响应头：${lastResponseHeadOfRequest()}）")
+            }
             return null
         }
         val root =
@@ -2335,10 +2341,16 @@ class AirPlayClient(
                 return null
             }
         if (!statusLine.contains("200")) {
-            log(
-                "AIRPLAY: 流协商应答 [$statusLine]（响应头：${lastResponseHeadOfRequest()}）\n" +
-                    "  ↳ 请求体(${body.size}B)=" + body.joinToString("") { "%02x".format(it) },
-            )
+            if (endpoint.isBuickB233) {
+                // The screen SETUP request contains receiver UUID and stream ID.
+                // Neither the raw request body nor peer headers belong in uploaded logs.
+                log("AIRPLAY: 流协商应答 status=${B233PairingReplySummary.safeStatus(statusLine)} reqBytes=${body.size} respBytes=${responseBody.size} redacted")
+            } else {
+                log(
+                    "AIRPLAY: 流协商应答 [$statusLine]（响应头：${lastResponseHeadOfRequest()}）\n" +
+                        "  ↳ 请求体(${body.size}B)=" + body.joinToString("") { "%02x".format(it) },
+                )
+            }
             return null
         }
         val root =
@@ -3129,7 +3141,9 @@ class AirPlayClient(
                     if (!RtspReaderGenerationCleanup.isCurrentReader(
                             sourceGeneration, readerGeneration, sourceSocket, readerSocket,
                         )) return
-                    message.cseq?.let { responseHeads[it] = head }
+                    // Raw peer headers are unbounded across /feedback replies and
+                    // may contain private metadata. B233 needs only CSeq dispatch;
+                    // do not cache the header or forward it to diagnostics.
                     message.cseq?.let { pendingResponses[it] }?.also {
                         it.offer(message.statusLine to message.body)
                     }
@@ -3247,11 +3261,12 @@ class AirPlayClient(
 
     /** 取本线程最近一次请求的响应头（诊断用；读不到返回空串）。 */
     private fun lastResponseHeadOfRequest(): String =
-        lastRequestCSeq
-            .get()
-            ?.let { responseHeads[it] }
-            ?.replace("\r\n", " | ")
-            .orEmpty()
+        if (endpoint.isBuickB233) "" else
+            lastRequestCSeq
+                .get()
+                ?.let { responseHeads[it] }
+                ?.replace("\r\n", " | ")
+                .orEmpty()
 
     /** 解析结果（报文 + 未消费的剩余字节）。 */
     private class ParsedRtsp(
