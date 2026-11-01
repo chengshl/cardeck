@@ -1,0 +1,78 @@
+name: B233 RTSP response-header privacy and retention (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-rtsp-header-retention-privacy-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-rtsp-connect-candidate-ownership-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-rtsp-header-privacy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, two-file scope and negative privacy regression
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=432e1d371e15b9336ccdcc7f995a67af04eb59c6
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41301459573 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41301459573 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-rtsp-header-privacy.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt > /tmp/parent-airplay.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent-airplay.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          def b233_dispatch(src):
+              return src.split('val queue = if (endpoint.isBuickB233) {', 1)[1].split('} else {', 1)[0]
+          # Negative control: verified parent retained raw peer headers for every
+          # B233 feedback response; this check must fail on the parent.
+          assert 'responseHeads[it] = head' in b233_dispatch(old)
+          assert 'responseHeads[it] = head' not in b233_dispatch(new)
+          assert 'message.cseq?.let { pendingResponses[it] }' in b233_dispatch(new)
+          # Other receiver behavior remains byte-for-byte unchanged in dispatch.
+          def legacy_dispatch(src):
+              return src.split('val queue = if (endpoint.isBuickB233) {', 1)[1].split('} else {', 1)[1].split('if (queue != null)', 1)[0]
+          assert legacy_dispatch(old) == legacy_dispatch(new)
+          assert 'responseHeads.clear()' in new.split('fun close() {', 1)[1].split('} else {', 1)[0]
+          assert 'if (endpoint.isBuickB233) "" else' in new
+          # B233 failure logs never print raw RTSP status reason, peer headers,
+          # or hex-encoded stream identifiers. Legacy branches stay intact.
+          assert 'TUNNEL: SETUP 应答 status=${B233PairingReplySummary.safeStatus(statusLine)}' in new
+          assert 'AIRPLAY: 流协商应答 status=${B233PairingReplySummary.safeStatus(statusLine)}' in new
+          assert new.count('lastResponseHeadOfRequest()') == old.count('lastResponseHeadOfRequest()')
+          assert 'body.joinToString("") { "%02x".format(it) }' in new # legacy only
+          print('Negative control reproduced; B233 no raw header cache, peer-header diagnostics redacted')
+          PY
+      - name: B233 strict status and privacy unit regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233PairingReplySummaryTest --tests io.github.shaonialife.cardeck.airplay.B233ModeReplySummaryTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Isolated offline-only privacy repair: no signing, release, installation or stable merge.
