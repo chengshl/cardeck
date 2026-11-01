@@ -83,7 +83,7 @@ jobs:
           assert "assert modified == {workflow}" in release
           assert "assert not event.get('head_commit', {}).get('added', [])" in release
           assert "assert not event.get('head_commit', {}).get('removed', [])" in release
-          assert "reviewed_source = 'c1353a7626797d645d1ad8b433f09c0376f76d13'" in release
+          assert "reviewed_source = '61a72cd7600c74dd4a8766299ac49d96210b5750'" in release
           assert "assert actual == expected" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
@@ -178,7 +178,51 @@ jobs:
           retire_after = "            if (generation.get() != myGeneration) {\n                // stop()/start() can overlap this worker after RFCOMM connect.\n                // Retire only the socket owned by this generation; never drain\n                // a successor worker's currentSocket while it is connecting.\n                currentSocket.compareAndSet(connected, null)\n                runCatching { connected.close() }\n                return\n            }"
           assert expected_client.count(retire_before) == 1, 'Old generation cleanup not unique'
           expected_client = expected_client.replace(retire_before, retire_after)
-          assert new == expected_client, 'Unexpected runtime diff beyond owner-scoped post-connect cleanup'
+          # A retired runSession() must never clear a new worker's channel/socket.
+          # Reconstruct only the reviewed ownership changes from the previous
+          # exact HEAD, rather than accepting arbitrary edits in this client.
+          previous_client = expected_client
+          prior_head = subprocess.check_output(
+              ['git', 'show', '08e01669f5670efe5a146d6b927e0f60974e4921:' + client], text=True
+          )
+          assert previous_client == prior_head, 'Prior BT-A reviewed runtime drifted'
+          ownership_edits = (
+              (
+                  '@Volatile\n    private var activeChannel: Iap2LinkChannel? = null',
+                  'private val activeChannel = AtomicReference<Iap2LinkChannel?>(null)',
+              ),
+              (
+                  '        activeChannel = channel\n        try {',
+                  '        activeChannel.set(channel)\n        try {',
+              ),
+              (
+                  '        } finally {\n            activeChannel = null\n'
+                  '            currentSocket.getAndSet(null)?.let { runCatching { it.close() } }\n'
+                  '            runCatching { socket.close() }\n            channel.close()',
+                  '        } finally {\n'
+                  '            // An old RFCOMM session can finish after stop() and a new start().\n'
+                  "            // Retire only this session's channel/socket, never the successor's.\n"
+                  '            activeChannel.compareAndSet(channel, null)\n'
+                  '            currentSocket.compareAndSet(socket, null)\n'
+                  '            runCatching { socket.close() }\n            channel.close()',
+              ),
+              (
+                  '        activeChannel?.let { channel ->\n'
+                  '            activeChannel = null\n            channel.close()',
+                  '        activeChannel.getAndSet(null)?.let { channel ->\n'
+                  '            channel.close()',
+              ),
+              (
+                  '        activeChannel?.let { runCatching { it.close() } }',
+                  '        activeChannel.getAndSet(null)?.let { runCatching { it.close() } }',
+              ),
+          )
+          for before_part, after_part in ownership_edits:
+              assert expected_client.count(before_part) == 1, 'Unexpected channel/socket owner block'
+              expected_client = expected_client.replace(before_part, after_part)
+          assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
+          assert new.count('activeChannel.compareAndSet(channel, null)') == 1
+          assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
           assert new.index('val targetUnchanged = runCatching') < new.index('connected = socket')
           assert new.index('currentSocket.compareAndSet(socket, null)', new.index('val targetUnchanged')) < new.index('connected = socket')
@@ -186,7 +230,7 @@ jobs:
               ['git', 'show', '22b1a2e7e68830dbd75978eb3c1c740dd5fb07c2:' + client], text=True
           )
           assert reviewed_source.count(retire_before) == 1, 'Prior reviewed source changed'
-          assert new == reviewed_source.replace(retire_before, retire_after), 'Final BT-A signed-source lease changed'
+          assert previous_client == reviewed_source.replace(retire_before, retire_after), 'Prior BT-A signed-source lease changed'
           assert new.index('currentSocket.compareAndSet(connected, null)') < new.index('runSession(connected)'), 'Old worker may clear a newer socket'
           assert new.count('continue@scan') == 2
           assert new.count('targetProvider() == selectedForCandidates') == 2
