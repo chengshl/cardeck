@@ -628,9 +628,8 @@ class AirPlayClient(
                 readerSocket = null
                 readerThread = null
                 readerGeneration++
-                // Host/route and socket belong to one B233 connection generation.
-                // Retire them together; a delayed old close must not erase the
-                // metadata of a newer published connection.
+                // Keep the published B233 route metadata consistent with
+                // the socket retirement under the same lock.
                 activeHost = null
                 activeAddress = null
                 // B233 must not retain raw peer response headers across reconnects.
