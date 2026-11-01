@@ -207,4 +207,53 @@ class RtspReaderGenerationCleanupTest {
         }
         assertFalse("old peer request must not be ACKed on new RTSP socket", mayAck)
     }
+
+    @Test fun staleRequestCannotReplaceNewReaderAfterReconnect() {
+        val writeLock = Any()
+        val oldSocket = Any()
+        val newSocket = Any()
+        val requestCapturedOldSocket = CountDownLatch(1)
+        val releaseStaleRequest = CountDownLatch(1)
+        val workerFailure = AtomicReference<Throwable?>()
+        var publishedSocket: Any? = oldSocket
+        var readerSocket: Any? = oldSocket
+        var staleReaderInstalled = false
+
+        val staleRequest = Thread {
+            try {
+                // request() captures oldSocket before acquiring rtspWriteLock.
+                val captured = oldSocket
+                requestCapturedOldSocket.countDown()
+                check(releaseStaleRequest.await(3, TimeUnit.SECONDS))
+                synchronized(writeLock) {
+                    if (RtspReaderGenerationCleanup.isCurrentSocket(captured, publishedSocket)) {
+                        readerSocket = captured
+                        staleReaderInstalled = true
+                    }
+                }
+            } catch (error: Throwable) {
+                workerFailure.set(error)
+            }
+        }
+        staleRequest.start()
+        try {
+            assertTrue(requestCapturedOldSocket.await(3, TimeUnit.SECONDS))
+            // New connection publication uses the same lock as request().
+            synchronized(writeLock) {
+                publishedSocket = newSocket
+                readerSocket = newSocket
+            }
+        } finally {
+            releaseStaleRequest.countDown()
+        }
+        staleRequest.join(3000)
+        assertFalse(staleRequest.isAlive)
+        assertNull(workerFailure.get())
+        assertFalse("retired request must not replace the active reader", staleReaderInstalled)
+        assertTrue("new RTSP reader must remain owned by new socket", readerSocket === newSocket)
+        assertTrue(RtspReaderGenerationCleanup.isCurrentSocket(newSocket, publishedSocket))
+        assertFalse(RtspReaderGenerationCleanup.isCurrentSocket(oldSocket, publishedSocket))
+        assertFalse(RtspReaderGenerationCleanup.isCurrentSocket(oldSocket, null))
+    }
+
 }
