@@ -65,7 +65,7 @@ jobs:
           ret = retirement(new)
           assert 'activeHost = null' in ret and 'activeAddress = null' in ret
           assert ret.index('readerGeneration++') < ret.index('activeHost = null')
-          assert 'if (!endpoint.isBuickB233) {\n            activeHost = null\n            activeAddress = null' in new
+          assert 'if (retiredWaiters == null) {\n            activeHost = null\n            activeAddress = null' in new
           # Legacy route assignment remains in its preexisting else branch.
           assert 'else {\n                    socket = newSocket\n                    activeAddress = address\n                    activeHost = addressLiteral(address)' in new
           print('Negative control reproduced: B233 socket/route publish and retirement now atomic')
