@@ -990,6 +990,7 @@ class AirPlayClient(
         // uuid → HID 描述符（媒体键记录需按下标取 Usage，触摸记录不需要但一并留存）
         val parsedHidDescriptors = HashMap<String, ByteArray>()
         infoRoot?.let { root ->
+            if (!endpoint.isBuickB233) {
             val skipped = setOf("displays")
             val summary =
                 root.entries.joinToString("; ") { (key, value) ->
@@ -1019,9 +1020,10 @@ class AirPlayClient(
                         "in=${latency["inputLatencyMicros"]} out=${latency["outputLatencyMicros"]}",
                 )
             }
+            }
             for (hidKey in listOf("hidDevices", "hids", "hid")) {
                 (root[hidKey] as? List<*>)?.forEachIndexed { index, h ->
-                    log("AIRPLAY: /info $hidKey[$index]=$h")
+                    if (!endpoint.isBuickB233) log("AIRPLAY: /info $hidKey[$index]=$h")
                     if (h is Map<*, *>) {
                         // 奥迪实测：uuid 是字符串 "0"/"1"（13:38 诊断 uuidClass=String）；
                         // DiPlay 是整数。统一转字符串，hidSetInputMode/hidSendReport 原样回传
@@ -1033,7 +1035,7 @@ class AirPlayClient(
                             }
                         if (uuid != null) parsedHidUuids += uuid
                         (h["hidDescriptor"] as? ByteArray)?.let { descriptor ->
-                            log(
+                            if (!endpoint.isBuickB233) log(
                                 "AIRPLAY: hidDescriptor[$index] ${descriptor.size}B hex=" +
                                     descriptor.take(96).joinToString(" ") { "%02x".format(it) },
                             )
@@ -1045,7 +1047,9 @@ class AirPlayClient(
                 }
             }
         }
-        log("AIRPLAY: hidDevices 解析结果 uuids=$parsedHidUuids")
+        log(if (endpoint.isBuickB233) {
+            "AIRPLAY: B233 /info hidDevices parsedCount=${parsedHidUuids.size} redacted"
+        } else "AIRPLAY: hidDevices 解析结果 uuids=$parsedHidUuids")
         val info =
             SetupInfo(
                 eventPort = portOf(root["eventPort"]),
@@ -1072,12 +1076,15 @@ class AirPlayClient(
                 // 奥迪 MMI 3315 声明 true：屏幕流 keepAlive 用 opcode=5 带 bplist 统计体
                 keepAliveSendStatsAsBody = (infoRoot?.get("keepAliveSendStatsAsBody") as? Boolean) == true,
             )
-        log(
+        log(if (endpoint.isBuickB233) {
+            "AIRPLAY: B233 SETUP complete eventPort=${info.eventPort} timingPort=${info.timingPort} " +
+                "featureCount=${info.enabledFeatures.size} display=${info.displayWidth}x${info.displayHeight}@${info.maxFps} identity=redacted"
+        } else {
             "AIRPLAY: ✓ SETUP 完成 eventPort=${info.eventPort} timingPort=${info.timingPort} " +
                 "keepAlive=${info.keepAlivePort ?: "无"} features=${info.enabledFeatures} " +
                 "display=${info.displayWidth}x${info.displayHeight}@${info.maxFps} " +
-                "displayUuid=${info.displayUuid}",
-        )
+                "displayUuid=${info.displayUuid}"
+        })
         return info
     }
 
@@ -1152,7 +1159,9 @@ class AirPlayClient(
                     log("AIRPLAY: 侧信道 /info 成功但车机未声明 HID 设备 → 触摸不走 AirPlay HID 通路")
                     return@Thread
                 }
-                log("AIRPLAY: 侧信道拿到 HID 设备 $uuids → 补发 hidSetInputMode（触摸可能立即生效）")
+                log(if (endpoint.isBuickB233) {
+                    "AIRPLAY: B233 side /info HID count=${uuids.size} → hidSetInputMode"
+                } else "AIRPLAY: 侧信道拿到 HID 设备 $uuids → 补发 hidSetInputMode（触摸可能立即生效）")
                 uuids.forEach { uuid -> runCatching { sendHidSetInputMode(uuid, mode = 0) } }
             },
             "info-side-probe",
@@ -1164,16 +1173,24 @@ class AirPlayClient(
         statusLine: String,
         body: ByteArray,
     ): Map<*, *>? {
-        log("AIRPLAY: /info 应答 [$statusLine] body=${body.size}B")
+        log(if (endpoint.isBuickB233) {
+            B233InfoDiagnostics.response(statusLine, body.size)
+        } else "AIRPLAY: /info 应答 [$statusLine] body=${body.size}B")
         if (body.isEmpty()) return null
         val info =
             try {
                 val result = BinaryPlist.parseRecovered(body)
-                result.note?.let { log("AIRPLAY: /info $it") }
+                result.note?.let {
+                    log(if (endpoint.isBuickB233) "AIRPLAY: B233 /info recovered=true redacted" else "AIRPLAY: /info $it")
+                }
                 result.value as? Map<*, *>
             } catch (error: IllegalArgumentException) {
-                log("AIRPLAY: /info plist 解析失败 - ${error.message}")
-                log("AIRPLAY: /info 原始体（${body.size}B）hex=" + hexDump(body, 320))
+                if (endpoint.isBuickB233) {
+                    log(B233InfoDiagnostics.parseFailure(error, body.size))
+                } else {
+                    log("AIRPLAY: /info plist 解析失败 - ${error.message}")
+                    log("AIRPLAY: /info 原始体（${body.size}B）hex=" + hexDump(body, 320))
+                }
                 null
             }
         if (info == null) return null
@@ -1195,7 +1212,9 @@ class AirPlayClient(
             activeHost ?: EndpointHosts.candidates(target.ipAddresses).firstOrNull() ?: return null
         var probe: Socket? = null
         return try {
-            log("AIRPLAY: /info 侧信道探测 → $host:${target.airPlayPort}（独立短连接，不碰会话）")
+            log(if (target.isBuickB233) {
+                "AIRPLAY: B233 /info side probe port=${target.airPlayPort} host=redacted"
+            } else "AIRPLAY: /info 侧信道探测 → $host:${target.airPlayPort}（独立短连接，不碰会话）")
             probe =
                 newVehicleSocket().apply {
                     connect(InetSocketAddress(resolveAddress(host), target.airPlayPort), timeoutMillis)
@@ -1256,7 +1275,9 @@ class AirPlayClient(
             val infoBody = bytes.copyOfRange(bodyStart, minOf(bodyStart + contentLength, bytes.size))
             return parseInfoBody("侧信道 $line", infoBody)
         } catch (error: Exception) {
-            log("AIRPLAY: /info 侧信道失败 - ${error.javaClass.simpleName}: ${error.message}")
+            log(if (target.isBuickB233) {
+                "AIRPLAY: B233 /info side probe failure type=${error.javaClass.simpleName} redacted"
+            } else "AIRPLAY: /info 侧信道失败 - ${error.javaClass.simpleName}: ${error.message}")
             null
         } finally {
             runCatching { probe?.close() }
@@ -3502,6 +3523,10 @@ class AirPlayClient(
         }
 
     private fun logInfoSummary(root: Map<*, *>) {
+        if (endpoint.isBuickB233) {
+            B233InfoDiagnostics.summary(root).forEach { log(it) }
+            return
+        }
         // 顶层字段全量清单（键: 类型）——车机把能力藏在哪个键下一目了然，避免只认得
         // Apple 官方那几个键（宝马 iD9 的 HID 声明可能就在我们没解析的键上）
         log(

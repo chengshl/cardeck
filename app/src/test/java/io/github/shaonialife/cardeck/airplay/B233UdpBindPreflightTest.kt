@@ -58,7 +58,7 @@ class B233UdpBindPreflightTest {
         val result = B233UdpBindPreflight(
             bindNetwork = {},
             log = {},
-            networkStillValid = { ++checks <= 2 },
+            networkStillValid = { ++checks == 1 },
         ).run(25L)
         assertEquals("network_changed", result.status)
         assertFalse(result.passed)
