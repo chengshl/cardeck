@@ -1,0 +1,80 @@
+name: B233 feedback RTSP status and privacy (offline)
+on:
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-setup-transport-strict-t94
+    paths:
+      - '.github/workflows/ci-b233-feedback-status-strict.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233FeedbackReply.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233FeedbackReplyTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-feedback-status-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, B233 scope, and production feedback wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=8a3008b98ace6779d8e77d7343235afef2b7643c
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41275352213 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41275352213 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/b233-feedback-actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-feedback-status-strict.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233FeedbackReply.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233FeedbackReplyTest.kt' | sort > /tmp/b233-feedback-expected
+          diff -u /tmp/b233-feedback-expected /tmp/b233-feedback-actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          feedback = source.split('    fun startFeedbackLoop() {', 1)[1].split('    /** Diagnostic-only /feedback view:', 1)[0]
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233FeedbackReply.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233FeedbackReplyTest.kt').read_text()
+          assert 'B233FeedbackReply.isTransportAccepted(status, b233HeartbeatWorker)' in feedback
+          assert 'B233FeedbackReply.safeStatus(status, b233HeartbeatWorker)' in feedback
+          assert 'if (b233HeartbeatWorker && feedbackAccepted)' in feedback
+          assert 'if (b233HeartbeatWorker && (gap > 2_500L || !feedbackAccepted))' in feedback
+          assert 'status=$safeFeedbackStatus' in feedback
+          assert 'feedback #$sent [$safeFeedbackStatus]' in feedback
+          assert 'status.contains("200")' not in feedback
+          assert 'status=$status' not in feedback
+          assert 'feedback #$sent [$status]' not in feedback
+          assert 'B233ModeReplySummary.isTransportAccepted' in helper
+          assert 'B233ModeReplySummary.safeTransportStatus' in helper
+          for case in ('genuineRtsp200CanUpdateFeedbackLivenessButDoesNotProveOwnership',
+                       'peerFailureContaining200CannotAdvanceB233FeedbackLiveness',
+                       'b233FeedbackLogsNeverEchoPeerReasonOrInjectedHeaders',
+                       'nonB233FeedbackAcceptanceAndLogTextRemainUnchanged'):
+              assert case in tests
+          PY
+      - name: B233 feedback positive, negative, and privacy JVM regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233FeedbackReplyTest --tests io.github.shaonialife.cardeck.airplay.B233ModeReplySummaryTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft/offline only. No signing, Release, installation or stable merge.
