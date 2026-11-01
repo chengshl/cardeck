@@ -394,7 +394,8 @@ jobs:
           assert new.count('private fun maybeSendKeepAlive(output: java.io.OutputStream, epoch: Long)') == 1
           assert new.count('Pair(encoder, socket)') == 1
           assert new.count('dataPortEpoch != epoch })') == 2
-          assert new.count('if (!running.get() || dataPortEpoch != epoch)') == 1
+          # KeepAlive snapshot and post-flush frame accounting both check epoch under the same lock.
+          assert new.count('if (!running.get() || dataPortEpoch != epoch)') == 2
           start = new.split('fun start(onSurfaceReady:', 1)[1].split('fun stop()', 1)[0]
           assert start.index('encoder = codec') < start.index('codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)')
           assert start.index('inputSurface = surface') < start.index('codec.start()')
