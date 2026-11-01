@@ -1089,11 +1089,7 @@ object SessionController {
                     }
                     if (keys != null) {
                         phaseHint = "配对完成，建立 CarPlay 会话…"
-                        appendLog(
-                            "AIRPLAY: ✓ 配对完成 writeKey=" +
-                                keys.phoneWriteKey.joinToString("") { "%02x".format(it) }.take(16) + "… " +
-                                "readKey=" + keys.phoneReadKey.joinToString("") { "%02x".format(it) }.take(16) + "…",
-                        )
+                        appendLog("AIRPLAY: ✓ 配对完成（会话密钥已脱敏）")
                         val setup = client.runSetup()
                         if (setup != null) {
                             // T44 controlled Buick B233 experiment: the real-iPhone Wi-Fi
