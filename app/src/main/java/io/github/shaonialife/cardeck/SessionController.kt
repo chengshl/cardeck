@@ -1572,7 +1572,7 @@ object SessionController {
                             { error ->
                                 Bg.run("b233-audio-refused") {
                                     val active = audioSender
-                                    if (callbackOwner.owns(active) && currentClient === client &&
+                                    if (active != null && callbackOwner.owns(active) && currentClient === client &&
                                         activeAudioProfile?.key == profile.key
                                     ) {
                                         if (
