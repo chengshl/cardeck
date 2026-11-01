@@ -1,0 +1,77 @@
+name: B233 audio sender callback ownership (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-audio-callback-ownership-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-record-status-strict-t94
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, stale callback negative control, scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=c342c55784fb52790704085e041ff5aa042df991
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41346750269 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41346750269 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-callback-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwner.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt > /tmp/parent.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          replacements = [
+              ('import io.github.shaonialife.cardeck.audio.AudioSender\n',
+               'import io.github.shaonialife.cardeck.audio.AudioSender\nimport io.github.shaonialife.cardeck.audio.AudioSenderCallbackOwner\n'),
+              ('            val sender =\n                AudioSender(\n',
+               '            val callbackOwner = AudioSenderCallbackOwner()\n            val sender =\n                AudioSender(\n'),
+              ('if (active != null && currentClient === client &&',
+               'if (callbackOwner.owns(active) && currentClient === client &&'),
+              ('                )\n            audioSender = sender\n',
+               '                )\n            callbackOwner.bind(sender)\n            audioSender = sender\n'),
+          ]
+          for before, after in replacements:
+              assert old.count(before) == 1, f'parent negative control absent: {before[:55]}'
+              old = old.replace(before, after, 1)
+          assert old == new, 'unexpected production change outside callback ownership'
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwner.kt').read_text()
+          test = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt').read_text()
+          assert 'owner === activeSender' in helper
+          assert 'queuedOldSyncRefusalCannotMutateReplacementWithSameProfile' in test
+          assert 'dispatch(oldCallback) // Delayed Bg.run' in test
+          print('parent stale callback reproduced; new sender-identity guard and four-file scope verified')
+          PY
+      - name: Android JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline only: no signing, Release, install or stable merge.
