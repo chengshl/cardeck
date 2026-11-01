@@ -333,6 +333,24 @@ jobs:
             --title "E5 BT-A #24 original-stable recovery $CARDECK_RELEASE_VERSION_NAME" \
             --notes-file restore-notes.txt --prerelease --latest=false
           gh release view "$REST_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          # A release object alone does not prove its recovery assets were uploaded.
+          # Download and verify the published recovery BEFORE exposing the experiment.
+          verify_dir="$(mktemp -d)"
+          for attempt in 1 2 3; do
+            if gh release download "$REST_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$REST_APK" --pattern "$REST_APK.sha256" --dir "$verify_dir"; then
+              break
+            fi
+            if (( attempt == 3 )); then
+              echo "::error::Stable recovery assets could not be downloaded; experiment not published"
+              exit 1
+            fi
+            sleep 2
+          done
+          test -s "$verify_dir/$REST_APK" && test -s "$verify_dir/$REST_APK.sha256"
+          (cd "$verify_dir" && sha256sum -c "$REST_APK.sha256")
+          cmp "$REST_APK" "$verify_dir/$REST_APK"
+          rm -rf "$verify_dir"
           {
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\n'
             printf 'sourceBranch=work/e5-bt-a-profile-preserve-24-20261030\n'
