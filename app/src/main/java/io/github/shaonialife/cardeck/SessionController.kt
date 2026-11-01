@@ -1551,6 +1551,7 @@ object SessionController {
                     completePartialPcmReads = client.currentEndpoint.isBuickB233 && profile.codec == AudioCodec.PCM,
                     vehicleNetwork =
                         if (client.currentEndpoint.isBuickB233) wifiConnector?.currentNetwork else null,
+                    failClosedOnVehicleNetworkBind = client.currentEndpoint.isBuickB233,
                     // T71/B233 type=102 media: catplay modern TX does not actively
                     // emit traditional RAOP 0xD4 synchronization packets.
                     // Keep the actual negotiated controlPort for truthful logs;
