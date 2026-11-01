@@ -272,7 +272,7 @@ class VideoSender(
                 }
                 when {
                     index == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                        maybeSendKeepAlive(output)
+                        maybeSendKeepAlive(output, epoch)
                         continue
                     }
 
@@ -292,7 +292,7 @@ class VideoSender(
                             // Return every dequeued index, including null or failed buffer acquisition.
                             codec.releaseOutputBuffer(index, false)
                         }
-                        maybeSendKeepAlive(output)
+                        maybeSendKeepAlive(output, epoch)
                     }
                 }
             }
@@ -322,8 +322,10 @@ class VideoSender(
      * 帧计数；带统计体时 opcode=5，并把 body 长度写进头部 params[14] 的后 4 字节
      * （f32 LE），与 catplay 逐字节一致。
      */
-    private fun maybeSendKeepAlive(output: java.io.OutputStream) {
-        if (!running.get()) return
+    private fun maybeSendKeepAlive(output: java.io.OutputStream, epoch: Long) {
+        // An old drain can wake after stop() and a new start() sets running=true.
+        // Do not send its keepAlive or reset the new session's counters.
+        if (!running.get() || synchronized(dataPortLock) { dataPortEpoch != epoch }) return
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastKeepAliveAt < KEEPALIVE_INTERVAL_MS) return
         val elapsedNanos = (now - lastKeepAliveAt).coerceAtLeast(1L) * 1_000_000.0
