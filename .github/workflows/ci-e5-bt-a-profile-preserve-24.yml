@@ -83,7 +83,7 @@ jobs:
           assert "assert modified == {workflow}" in release
           assert "assert not event.get('head_commit', {}).get('added', [])" in release
           assert "assert not event.get('head_commit', {}).get('removed', [])" in release
-          assert "reviewed_source = '22b1a2e7e68830dbd75978eb3c1c740dd5fb07c2'" in release
+          assert "reviewed_source = 'c1353a7626797d645d1ad8b433f09c0376f76d13'" in release
           assert "assert actual == expected" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
@@ -172,14 +172,22 @@ jobs:
           late_after = "                val socket = tryConnect(device)\n                if (socket != null) {\n                    // RFCOMM connect() can block for seconds while the user changes\n                    // the selected receiver. Retire this socket before handing it\n                    // to iAP2; never close a newer worker's socket.\n                    val targetUnchanged = runCatching {\n                        targetProvider() == selectedForCandidates\n                    }.getOrDefault(false)\n                    if (!running || generation.get() != myGeneration || !targetUnchanged) {\n                        currentSocket.compareAndSet(socket, null)\n                        runCatching { socket.close() }\n                        if (!running || generation.get() != myGeneration) return\n                        log(\"BT-C: RFCOMM 就绪时目标已变化，释放过期连接并重新扫描\")\n                        continue@scan\n                    }\n                    log(\"BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）\")\n                    connected = socket\n                    break\n                } else {"
           assert expected_client.count(late_before) == 1, 'RFComm connect success block ambiguous'
           expected_client = expected_client.replace(late_before, late_after)
-          assert new == expected_client, 'Unexpected runtime diff beyond post-connect target guard'
+          # After stop/start, an old worker must never drain a successor's socket.
+          # Replay exactly this one ownership fix onto the prior audited source.
+          retire_before = "            if (generation.get() != myGeneration) {\n                // stop() 与 connect() 成功竞争：本线程已过期，不建会话\n                currentSocket.getAndSet(null)?.let { runCatching { it.close() } }\n                return\n            }"
+          retire_after = "            if (generation.get() != myGeneration) {\n                // stop()/start() can overlap this worker after RFCOMM connect.\n                // Retire only the socket owned by this generation; never drain\n                // a successor worker's currentSocket while it is connecting.\n                currentSocket.compareAndSet(connected, null)\n                runCatching { connected.close() }\n                return\n            }"
+          assert expected_client.count(retire_before) == 1, 'Old generation cleanup not unique'
+          expected_client = expected_client.replace(retire_before, retire_after)
+          assert new == expected_client, 'Unexpected runtime diff beyond owner-scoped post-connect cleanup'
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
           assert new.index('val targetUnchanged = runCatching') < new.index('connected = socket')
           assert new.index('currentSocket.compareAndSet(socket, null)', new.index('val targetUnchanged')) < new.index('connected = socket')
           reviewed_source = subprocess.check_output(
               ['git', 'show', '22b1a2e7e68830dbd75978eb3c1c740dd5fb07c2:' + client], text=True
           )
-          assert new == reviewed_source, 'Final BT-A signed-source lease changed'
+          assert reviewed_source.count(retire_before) == 1, 'Prior reviewed source changed'
+          assert new == reviewed_source.replace(retire_before, retire_after), 'Final BT-A signed-source lease changed'
+          assert new.index('currentSocket.compareAndSet(connected, null)') < new.index('runSession(connected)'), 'Old worker may clear a newer socket'
           assert new.count('continue@scan') == 2
           assert new.count('targetProvider() == selectedForCandidates') == 2
           assert new.index('targetProvider() == selectedForCandidates') < new.index('val dropped = BtProfiles.disconnect(context, device)')
