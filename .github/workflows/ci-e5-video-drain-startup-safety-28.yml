@@ -405,9 +405,9 @@ jobs:
           stats_after = "                synchronized(dataPortLock) {\n                    // A new TCP video session must receive its own codec config\n                    // and must not inherit the previous session's keepAlive stats.\n                    configSent = false\n                    framesSinceKeepAlive = 0\n                    bytesSinceKeepAlive = 0L\n                    keepAliveCount = 0L\n                    lastKeepAliveAt = android.os.SystemClock.uptimeMillis()\n                }\n                running.set(true)"
           assert expected.count(stats_before) == 1, 'Session-stat reset location ambiguous'
           expected = expected.replace(stats_before, stats_after)
-          assert expected.count('framesSinceKeepAlive = 0') == 2
-          assert expected.count('bytesSinceKeepAlive = 0L') == 1
-          assert expected.count('keepAliveCount = 0L') == 1
+          assert expected.count('framesSinceKeepAlive = 0') == 3
+          assert expected.count('bytesSinceKeepAlive = 0L') == 2
+          assert expected.count('keepAliveCount = 0L') == 2
           assert expected.count('lastKeepAliveAt = android.os.SystemClock.uptimeMillis()') == 1
           assert new == expected, 'Unexpected changes outside video config epoch ownership fix'
           assert new.count('sendVideoConfig(buffer, bufferInfo.size, output, epoch)') == 1
