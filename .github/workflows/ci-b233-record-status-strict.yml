@@ -1,0 +1,77 @@
+name: B233 RECORD strict RTSP activation (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-record-status-strict-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-info-diagnostics-privacy-t94
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, negative control, B233-only scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=2401d2c9927e767e00546c208d67e0e84994b22c
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41342259891 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41342259891 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-record-status-strict.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt > /tmp/parent.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          start = '    fun record(): Boolean ='
+          end = '\n    /**\n     * 连接事件通道'
+          assert old.count(start) == new.count(start) == 1
+          assert old.count(end) == new.count(end) == 1
+          old_body = old.split(start,1)[1].split(end,1)[0]
+          new_body = new.split(start,1)[1].split(end,1)[0]
+          assert 'val ok = statusLine.contains("200")' in old_body, 'parent negative control absent'
+          assert 'val ok = B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233)' in new_body
+          assert 'B233ModeReplySummary.safeTransportStatus(statusLine, endpoint.isBuickB233)' in new_body
+          assert 'B233ModeReplySummary.safeTransportError(error, endpoint.isBuickB233)' in new_body
+          assert 'statusLine.contains("200")' not in new_body
+          assert 'RECORD 应答 [$statusLine]' not in new_body
+          assert '${error.message}' not in new_body
+          assert old.replace(start + old_body, start + new_body) == new, 'changes outside RECORD'
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummary.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ModeReplySummaryTest.kt').read_text()
+          assert 'if (isBuickB233) B233PairingReplySummary.isSuccessfulPairingStatus(statusLine)' in helper
+          assert 'else statusLine.contains("200")' in helper
+          assert 'b233ModeClaimRequiresExactRtsp200NotReasonPhrase' in tests
+          assert 'legacyNonB233ModeClaimDecisionRemainsUnchanged' in tests
+          assert 'b233ModeStatusAndFailureLogsDoNotEchoPeerText' in tests
+          print('negative parent reproduced; strict B233 RECORD + legacy preservation verified')
+          PY
+      - name: Android JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline only. No signing, release, install or stable merge.
