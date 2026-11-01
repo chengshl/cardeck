@@ -183,11 +183,15 @@ class VideoSender(
                 inputSurface = surface
                 codec.start()
                 synchronized(dataPortLock) {
-                    // A new TCP video session must receive its own codec config.
+                    // A new TCP video session must receive its own codec config
+                    // and must not inherit the previous session's keepAlive stats.
                     configSent = false
+                    framesSinceKeepAlive = 0
+                    bytesSinceKeepAlive = 0L
+                    keepAliveCount = 0L
+                    lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
                 }
                 running.set(true)
-                lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
 
                 onSurfaceReady(surface)
                 // onSurfaceReady may stop and restart this sender; never launch the old epoch's drain.
