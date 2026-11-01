@@ -31,7 +31,7 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Exact signed T94 ancestor, three-file scope, and B233 ownership wiring
+      - name: Exact #108 parent, reviewed #96 source, three-file scope and B233 wiring
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -42,8 +42,8 @@ jobs:
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41256565583 --jq .head_sha)" = "$BASE"
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41256565583 --jq .conclusion)" = success
           # Original internal #96 source must have independently passed its exact HEAD.
-          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41196834453 --jq .head_sha)" = "69c3c8fe8b723f5d951a0202ae96269bda1af421"
-          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41196834453 --jq .conclusion)" = success
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41201017630 --jq .head_sha)" = "69c3c8fe8b723f5d951a0202ae96269bda1af421"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41201017630 --jq .conclusion)" = success
           git diff --name-only "$BASE" HEAD > /tmp/audio-udp-scope
           test "$(wc -l < /tmp/audio-udp-scope)" -eq 3
           while IFS= read -r f; do
