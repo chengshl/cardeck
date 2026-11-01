@@ -1,0 +1,75 @@
+name: B233 RTSP stale-reader dispatch isolation (offline)
+on:
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-teardown-strict-t94
+    paths:
+      - '.github/workflows/ci-b233-rtsp-dispatch-session-gate.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-rtsp-dispatch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, four-file scope and production dispatch gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=628e0c5c345c2759d6ef299903255891482b7c7c
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41281074458 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41281074458 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/b233-actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-rtsp-dispatch-session-gate.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt' | sort > /tmp/b233-expected
+          diff -u /tmp/b233-expected /tmp/b233-actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          reader = src.split('    private fun readLoop(', 1)[1].split('    /** 控制通道报文', 1)[0]
+          dispatch = src.split('    private fun dispatchResponse(', 1)[1].split('    /** 无匹配报文计数', 1)[0]
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanup.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/RtspReaderGenerationCleanupTest.kt').read_text()
+          assert 'dispatchResponse(parsed.statusLine, parsed.body, parsed.head, generation, client)' in reader
+          assert 'sourceGeneration: Int' in dispatch and 'sourceSocket: Socket' in dispatch
+          assert dispatch.count('RtspReaderGenerationCleanup.isCurrentReader(') >= 3
+          assert dispatch.count('synchronized(rtspWriteLock)') >= 3
+          assert 'sourceReader === activeReader' in helper
+          for name in ('onlyOwningReaderMayDispatchOrAcknowledge',
+                       'staleReaderCannotDeliverIntoReconnectedSessionPendingQueue',
+                       'ackGateRechecksReaderIdentityAfterReconnect'):
+              assert name in tests
+          print('B233 stale-reader dispatch/ACK fenced; non-B233 legacy retained')
+          PY
+      - name: RTSP stale dispatch and ACK negative concurrency regression
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.RtspReaderGenerationCleanupTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only. No signing, release, installation or stable merge.
