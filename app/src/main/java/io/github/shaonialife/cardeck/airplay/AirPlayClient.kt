@@ -779,7 +779,7 @@ class AirPlayClient(
             }
             true
         } catch (error: IOException) {
-            log("EVENT: 命令发送失败 - ${error.message}")
+            log(if (endpoint.isBuickB233) B233EventLogRedactor.error(B233EventLogRedactor.Stage.SEND, error) else "EVENT: 命令发送失败 - ${error.message}")
             false
         }
     }
@@ -2492,7 +2492,7 @@ class AirPlayClient(
             }
             socket.tcpNoDelay = true
             socket.soTimeout = 30_000
-            log("EVENT: ✓ 已连接事件通道 $host:${setup.eventPort}（${if (sessionKey != null) "加密" else "明文"}）")
+            log(if (endpoint.isBuickB233) "EVENT: B233 event channel connected encrypted=${sessionKey != null} redacted" else "EVENT: ✓ 已连接事件通道 $host:${setup.eventPort}（${if (sessionKey != null) "加密" else "明文"}）")
             val cipher =
                 sessionKey?.let { secret ->
                     val phoneWriteKey =
@@ -2568,7 +2568,7 @@ class AirPlayClient(
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
                                 if (unknownEventRequests <= 10) {
-                                    log("EVENT: 未知请求 [$firstLine] body=${message.body.size}B")
+                                    log(if (endpoint.isBuickB233) B233EventLogRedactor.unknownRequest(message.body.size) else "EVENT: 未知请求 [$firstLine] body=${message.body.size}B")
                                 }
                                 continue
                             }
@@ -2577,13 +2577,13 @@ class AirPlayClient(
                                 try {
                                     val result = BinaryPlist.parseRecovered(message.body)
                                     result.note?.let { note ->
-                                        log("EVENT: /command 容错解析成功——$note")
+                                        log(if (endpoint.isBuickB233) B233EventLogRedactor.recoveredCommand(message.body.size) else "EVENT: /command 容错解析成功——$note")
                                     }
                                     result.value
                                 } catch (error: Throwable) {
                                     // 不能只 catch IllegalArgumentException：越界/长度异常若逃出
                                     // 这里会直接打死事件读线程，车机会把整个会话拆掉。
-                                    commandError = "${error.javaClass.simpleName}: ${error.message}"
+                                    if (!endpoint.isBuickB233) commandError = "${error.javaClass.simpleName}: ${error.message}"
                                     null
                                 }
                             val command = parsed as? Map<*, *>
@@ -2591,18 +2591,22 @@ class AirPlayClient(
                                 // 车机每秒都会 POST 一条解不出来的 /command——按「体型指纹」
                                 // 去重，每种体型留一次全文（原因 + 报文头 + 完整 hex），其余只计数。
                                 badEventCommands++
-                                val signature =
-                                    message.body.size.toString() + ":" + hexPrefix(message.body, 8)
+                                val signature = if (endpoint.isBuickB233) B233EventLogRedactor.malformedSignature(message.body.size) else message.body.size.toString() + ":" + hexPrefix(message.body, 8)
                                 if (badEventSignatures.add(signature) && badEventSignatures.size <= 4) {
-                                    log(
-                                        "EVENT: 命令无法识别 [$firstLine] body=${message.body.size}B " +
-                                            "原因=" + (commandError ?: "解析结果=${parsed?.javaClass?.simpleName}"),
-                                    )
-                                    log(
-                                        "EVENT: 命令报文头=" +
-                                            message.head.replace("\r\n", " | ").take(300),
-                                    )
-                                    log("EVENT: 命令报文体（${message.body.size}B）hex=" + hexDump(message.body))
+                                    if (endpoint.isBuickB233) {
+                                        // Never persist peer-controlled headers, bytes, parser notes or error messages.
+                                        log(B233EventLogRedactor.malformedCommand(message.body.size))
+                                    } else {
+                                        log(
+                                            "EVENT: 命令无法识别 [$firstLine] body=${message.body.size}B " +
+                                                "原因=" + (commandError ?: "解析结果=${parsed?.javaClass?.simpleName}"),
+                                        )
+                                        log(
+                                            "EVENT: 命令报文头=" +
+                                                message.head.replace("\r\n", " | ").take(300),
+                                        )
+                                        log("EVENT: 命令报文体（${message.body.size}B）hex=" + hexDump(message.body))
+                                    }
                                 }
                                 if (badEventCommands % 120 == 0) {
                                     log("EVENT: 累计 $badEventCommands 条 /command 解析失败（已静默，仅计数）")
@@ -2617,12 +2621,12 @@ class AirPlayClient(
                             try {
                                 onCommand(command)
                             } catch (error: Exception) {
-                                log("EVENT: 命令处理异常 - ${error.message}")
+                                log(if (endpoint.isBuickB233) B233EventLogRedactor.error(B233EventLogRedactor.Stage.DISPATCH, error) else "EVENT: 命令处理异常 - ${error.message}")
                             }
                         }
                     }
                 } catch (error: IOException) {
-                    log("EVENT: 读取结束 - ${error.message}")
+                    log(if (endpoint.isBuickB233) B233EventLogRedactor.error(B233EventLogRedactor.Stage.READ, error) else "EVENT: 读取结束 - ${error.message}")
                     if (audioFailureTrace != null) {
                         audioFailureTrace?.event("event_channel_read_error", error.javaClass.simpleName)
                         log("AUDIO T82: event_read_error ${audioControlLiveness.summary()}")
@@ -2641,7 +2645,7 @@ class AirPlayClient(
                 start()
             }
         } catch (error: IOException) {
-            log("EVENT: 连接失败 - ${error.message}")
+            log(if (endpoint.isBuickB233) B233EventLogRedactor.error(B233EventLogRedactor.Stage.CONNECT, error) else "EVENT: 连接失败 - ${error.message}")
         }
     }
 

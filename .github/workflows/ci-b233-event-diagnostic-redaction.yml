@@ -1,0 +1,75 @@
+name: B233 event diagnostic redaction (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-event-diagnostic-redaction-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-event-channel-owner-fence-t94
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Validate the actual PR head, not GitHub's synthetic merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, privacy negative control and scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=c53588cc0bbd4629d83d2e1e77a69bc9860b58fb
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41321188306 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41321188306 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-event-diagnostic-redaction.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233EventLogRedactor.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233EventLogRedactorTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt > /tmp/parent.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233EventLogRedactor.kt').read_text()
+          start = 'if (command == null) {'
+          stop = 'if (badEventCommands % 120 == 0)'
+          old_part = old.split(start, 1)[1].split(stop, 1)[0]
+          new_part = new.split(start, 1)[1].split(stop, 1)[0]
+          assert 'hexDump(message.body)' in old_part
+          assert 'if (endpoint.isBuickB233)' in new_part
+          assert 'B233EventLogRedactor.malformedCommand(message.body.size)' in new_part
+          assert 'B233EventLogRedactor.malformedSignature(message.body.size)' in new_part
+          assert 'hexDump(message.body)' in new_part  # legacy non-B233 unchanged
+          assert 'error.message' not in helper
+          assert 'message.head' not in helper
+          assert 'message.body' not in helper
+          for method in ('unknownRequest', 'recoveredCommand', 'malformedCommand'):
+              assert f'B233EventLogRedactor.{method}(message.body.size)' in new
+          for stage in ('SEND', 'READ', 'CONNECT', 'DISPATCH'):
+              assert f'B233EventLogRedactor.Stage.{stage}' in new
+          print('Parent raw-log negative control and B233 redaction wiring passed')
+          PY
+      - name: Android JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline-only; no signing, release, installation or stable merge.
