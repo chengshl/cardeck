@@ -285,7 +285,7 @@ class VideoSender(
                                 if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                                     sendVideoConfig(buffer, bufferInfo.size, output)
                                 } else if (bufferInfo.size > 0) {
-                                    sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output)
+                                    sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output, epoch)
                                 }
                             }
                         } finally {
@@ -417,6 +417,7 @@ class VideoSender(
         size: Int,
         keyFrame: Boolean,
         output: java.io.OutputStream,
+        epoch: Long,
     ) {
         if (!configSent) {
             log("VIDEO: 丢弃一帧（config 尚未发送）")
@@ -461,11 +462,21 @@ class VideoSender(
         output.write(header)
         output.write(sealed)
         output.flush()
-        framesSent++
-        framesSinceKeepAlive++
-        bytesSinceKeepAlive += plain.size.toLong()
-        if (keyFrame || framesSent <= 3 || framesSent % 150 == 0L) {
-            log("VIDEO: 帧 #$framesSent ${plain.size}B${if (keyFrame) " (key)" else ""} 已发送")
+        // A retired drain may finish its old-socket flush after stop/start.
+        // Commit successful-frame statistics only to the epoch that sent them;
+        // keepAlive snapshots use this same lock.
+        val sentCount = synchronized(dataPortLock) {
+            if (!running.get() || dataPortEpoch != epoch) {
+                null
+            } else {
+                framesSent++
+                framesSinceKeepAlive++
+                bytesSinceKeepAlive += plain.size.toLong()
+                framesSent
+            }
+        } ?: return
+        if (keyFrame || sentCount <= 3 || sentCount % 150 == 0L) {
+            log("VIDEO: 帧 #$sentCount ${plain.size}B${if (keyFrame) " (key)" else ""} 已发送")
         }
     }
 
