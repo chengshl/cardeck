@@ -915,7 +915,15 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
-                if (endpoint.isBuickB233) {
+                log(if (endpoint.isBuickB233) {
+                    B233SetupDiagnostics.failure(error)
+                } else {
+                    "AIRPLAY: SETUP 失败 - ${error.message}"
+                })
+                return null
+            }
+        if (!B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233)) {
+            if (endpoint.isBuickB233) {
                 log(B233SetupDiagnostics.rejection(
                     statusLine, responseBody.size, EndpointHosts.candidates(endpoint.ipAddresses).size,
                 ))
