@@ -18,6 +18,18 @@ internal object RtspReaderGenerationCleanup {
         return waiting
     }
 
+    /**
+     * Used while holding rtspWriteLock for B233 reader dispatch and ACK.
+     * A generation match alone is insufficient when a new socket replaces the
+     * reader; reference identity prevents old frames reaching the new session.
+     */
+    fun isCurrentReader(
+        sourceGeneration: Int,
+        activeGeneration: Int,
+        sourceReader: Any,
+        activeReader: Any?,
+    ): Boolean = sourceGeneration == activeGeneration && sourceReader === activeReader
+
     fun <T> drainIfCurrent(
         exitingGeneration: Int,
         activeGeneration: Int,
