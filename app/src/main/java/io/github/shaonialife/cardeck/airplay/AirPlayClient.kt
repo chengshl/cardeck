@@ -617,29 +617,38 @@ class AirPlayClient(
                 eventCommandCipher = null
             }
         }
-        runCatching { socket?.close() }
-        socket = null
-        activeHost = null
-        activeAddress = null
-        // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
-        // 清掉，否则重连后的读线程会把明文应答当密文帧解，后续所有请求超时。
-        cipher = null
-        // B233: retire pending waiters under the same lock used by new RTSP requests.
-        // Other receivers retain the established close behavior.
-        if (endpoint.isBuickB233) {
-            val waiting = synchronized(rtspWriteLock) {
+        // B233 socket retirement and pending-queue retirement share the same
+        // lock as request ownership checks and new socket publication.
+        // Keep the non-B233 close sequence unchanged.
+        val retiredWaiters = if (endpoint.isBuickB233) {
+            val (retiredSocket, waiting) = synchronized(rtspWriteLock) {
+                val old = socket
+                socket = null
                 readerSocket = null
                 readerThread = null
                 readerGeneration++
-                RtspReaderGenerationCleanup.drainAll(pendingResponses)
+                old to RtspReaderGenerationCleanup.drainAll(pendingResponses)
             }
-            wakePending("控制通道关闭", waiting)
+            runCatching { retiredSocket?.close() }
+            waiting
         } else {
+            runCatching { socket?.close() }
+            socket = null
             synchronized(rtspWriteLock) {
                 readerSocket = null
                 readerThread = null
                 readerGeneration++
             }
+            null
+        }
+        activeHost = null
+        activeAddress = null
+        // 新连接总是从**明文**开始（pair-verify 成功后才切加密）：旧连接的 cipher 必须
+        // 清掉，否则重连后的读线程会把明文应答当密文帧解，后续所有请求超时。
+        cipher = null
+        if (retiredWaiters != null) {
+            wakePending("控制通道关闭", retiredWaiters)
+        } else {
             failAllPending("控制通道关闭")
         }
         runCatching { iapTunnel?.socket?.close() }
@@ -2683,8 +2692,23 @@ class AirPlayClient(
                 newSocket.soTimeout = 0
                 // A reused client must start each RTSP connection with empty
                 // resource/EOF evidence, even after an unexpected peer EOF.
-                if (target.isBuickB233) b233ResourceEofEvidence.resetForNewConnection()
-                socket = newSocket
+                if (target.isBuickB233) {
+                    // A late request holding the old socket must never re-arm
+                    // its reader after this socket is published.
+                    val published = synchronized(rtspWriteLock) {
+                        if (generation != endpointGeneration) false else {
+                            b233ResourceEofEvidence.resetForNewConnection()
+                            socket = newSocket
+                            true
+                        }
+                    }
+                    if (!published) {
+                        runCatching { newSocket.close() }
+                        return false
+                    }
+                } else {
+                    socket = newSocket
+                }
                 activeAddress = address
                 activeHost = addressLiteral(address)
                 log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")
@@ -2829,7 +2853,9 @@ class AirPlayClient(
                     socket ?: throw IOException("未连接")
                 } ?: throw IOException("B233 心跳所属 RTSP 会话已退役")
             } else {
-                (socket ?: throw IOException("未连接")).also { startReader(it) }
+                (socket ?: throw IOException("未连接")).also {
+                    if (!endpoint.isBuickB233) startReader(it)
+                }
             }
         val cseq: Int
         synchronized(rtspWriteLock) {
@@ -2839,6 +2865,14 @@ class AirPlayClient(
                     throw IOException("B233 心跳所属 RTSP 会话已退役")
                 }
                 // This reentrant lock protects reader identity without holding the session gate.
+                startReader(client)
+            } else if (endpoint.isBuickB233) {
+                // Unlike legacy requests, B233 may have reconnected between
+                // capturing the socket and taking this lock. Reject the stale
+                // request before it can replace/close the new RTSP reader.
+                if (!RtspReaderGenerationCleanup.isCurrentSocket(client, socket)) {
+                    throw IOException("B233 RTSP 请求所属会话已退役")
+                }
                 startReader(client)
             }
             cseq = ++cSeq
@@ -3146,6 +3180,9 @@ class AirPlayClient(
     private fun startReader(client: Socket) {
         val previous: Socket?
         synchronized(rtspWriteLock) {
+            if (endpoint.isBuickB233 &&
+                !RtspReaderGenerationCleanup.isCurrentSocket(client, socket)
+            ) return
             if (readerSocket === client && readerThread?.isAlive == true) return
             previous = readerSocket
             readerSocket = client
