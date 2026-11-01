@@ -1,0 +1,83 @@
+name: B233 audio SETUP strict RTSP transport status and private logs (offline)
+on:
+  pull_request:
+    branches:
+      - experiment/buick-b233-modes-status-strict-privacy-t94
+    paths:
+      - '.github/workflows/ci-b233-audio-setup-transport-strict.yml'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233AudioSetupReply.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233AudioSetupReplyTest.kt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-audio-setup-status-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, strict B233 scope, and production audio SETUP wiring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=33a809640c1bc4cf43ca1b384e37712f9a7213d0
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41272996710 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41272996710 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/b233-setup-status-actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-setup-transport-strict.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233AudioSetupReply.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233AudioSetupReplyTest.kt' > /tmp/b233-setup-status-expected
+          diff -u /tmp/b233-setup-status-expected /tmp/b233-setup-status-actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          start = p.index('    fun runAudioStream(')
+          end = p.index('    fun ', start + 25)
+          audio = p[start:end]
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233AudioSetupReply.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233AudioSetupReplyTest.kt').read_text()
+          assert 'B233AudioSetupReply.isTransportAccepted(statusLine, endpoint.isBuickB233)' in audio
+          assert 'B233AudioSetupReply.safeStatus(statusLine, endpoint.isBuickB233)' in audio
+          assert 'B233AudioSetupReply.safeError(error, endpoint.isBuickB233)' in audio
+          assert 'if (setupTransportAccepted)' in audio
+          assert 'audioSetupMayHaveCreatedStream = true' in audio
+          assert 'if (!setupTransportAccepted)' in audio
+          assert 'if (statusLine.contains("200"))' not in audio
+          assert 'log("AIRPLAY: 音频流协商应答 [$safeSetupStatus]")' in audio
+          assert 'B233ModeReplySummary.isTransportAccepted' in helper
+          assert 'B233ModeReplySummary.safeTransportStatus' in helper
+          assert 'B233ModeReplySummary.safeTransportError' in helper
+          for case in ('validRtsp200MeansTransportOnlyNeverAudioResourceOwnership',
+                       'b233RejectsPeerReasonTextWithFakeSuccessNumber',
+                       'peerSuppliedErrorReasonAndExceptionMessageAreRedacted',
+                       'nonB233AcceptanceAndDiagnosticsRemainLegacy',
+                       'bogus200CannotMarkPotentiallyCreatedStream'):
+              assert case in tests
+          PY
+      - name: Audio SETUP transport strict status and privacy negative JVM regressions
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.airplay.B233AudioSetupReplyTest --tests io.github.shaonialife.cardeck.airplay.B233ModeReplySummaryTest --stacktrace
+      - name: Full Android JUnit, Lint and Debug build
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only, no signing, APK, Release, network change or stable branch merge.

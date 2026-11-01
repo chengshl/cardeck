@@ -1968,17 +1968,24 @@ class AirPlayClient(
                 // may have created a stream before the read/write failure.
                 audioSetupMayHaveCreatedStream = true
                 closeReverseAudioControlPort()
-                log("AIRPLAY: 音频流协商失败 - ${error.message}")
+                log("AIRPLAY: 音频流协商失败 - " +
+                    B233AudioSetupReply.safeError(error, endpoint.isBuickB233))
                 return null
             }
-        if (statusLine.contains("200")) {
-            // A 200 with a missing/malformed body remains a possible stream.
+        // B233: a peer error reason that happens to mention "200" is not
+        // a successful audio SETUP. Do not change the legacy non-B233 policy.
+        val setupTransportAccepted =
+            B233AudioSetupReply.isTransportAccepted(statusLine, endpoint.isBuickB233)
+        if (setupTransportAccepted) {
+            // A true 200 with an invalid body may still have created a stream.
+            // This flag does not prove receiver playback or resource ownership.
             audioSetupMayHaveCreatedStream = true
         }
-        log("AIRPLAY: 音频 SETUP 往返 ${SystemClock.uptimeMillis() - startedAt}ms [$statusLine]")
-        if (!statusLine.contains("200")) {
+        val safeSetupStatus = B233AudioSetupReply.safeStatus(statusLine, endpoint.isBuickB233)
+        log("AIRPLAY: 音频 SETUP 往返 ${SystemClock.uptimeMillis() - startedAt}ms [$safeSetupStatus]")
+        if (!setupTransportAccepted) {
             closeReverseAudioControlPort()
-            log("AIRPLAY: 音频流协商应答 [$statusLine]")
+            log("AIRPLAY: 音频流协商应答 [$safeSetupStatus]")
             return null
         }
         val root =
