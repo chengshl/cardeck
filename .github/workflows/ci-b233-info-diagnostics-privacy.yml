@@ -40,7 +40,8 @@ jobs:
             '.github/workflows/ci-b233-info-diagnostics-privacy.yml' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
             'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233InfoDiagnostics.kt' \
-            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233InfoDiagnosticsTest.kt' | sort > /tmp/expected
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233InfoDiagnosticsTest.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt' | sort > /tmp/expected
           diff -u /tmp/expected /tmp/actual
           git diff --check "$BASE" HEAD
           git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt > /tmp/parent.kt
@@ -55,6 +56,9 @@ jobs:
           assert 'if (!endpoint.isBuickB233) {' in new
           assert 'B233InfoDiagnostics.response(statusLine, body.size)' in new
           assert 'B233InfoDiagnostics.parseFailure(error, body.size)' in new
+          old_udp = __import__('subprocess').check_output(['git', 'show', BASE + ':app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt'], text=True)
+          new_udp = Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt').read_text()
+          assert '++checks <= 2' in old_udp and '++checks == 1' in new_udp
           helper = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233InfoDiagnostics.kt').read_text()
           assert 'hexDump(' not in helper and 'error.message' not in helper
           print('parent leak reproduced; B233 safe summary and legacy gates present')
