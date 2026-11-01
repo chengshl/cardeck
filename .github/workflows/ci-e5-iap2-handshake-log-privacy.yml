@@ -201,6 +201,9 @@ jobs:
               ["                                        val hex = frame.body.joinToString(\" \") { \"%02x\".format(it) }\n", ""],
               ["if (frame.body.isNotEmpty()) \" hex=${hex.take(120)}\" else \"\"", "\"（原始体已脱敏）\""],
           ]
+          # Unknown event command types are peer-supplied values; never log them.
+          session_replacements.append([r'''else -> appendLog("EVENT: 命令 type=${command["type"]}")''', r'''else -> appendLog("EVENT: 未识别命令类型（值已脱敏）")'''])
+          assert 'else -> appendLog("EVENT: 命令 type=${command["type"]}")' not in Path(session_path).read_text()
           session_replacements.append([
               "                        appendLog(\n                            \"AIRPLAY: ✓ 配对完成 writeKey=\" +\n                                keys.phoneWriteKey.joinToString(\"\") { \"%02x\".format(it) }.take(16) + \"… \" +\n                                \"readKey=\" + keys.phoneReadKey.joinToString(\"\") { \"%02x\".format(it) }.take(16) + \"…\",\n                        )",
               "                        appendLog(\"AIRPLAY: ✓ 配对完成（会话密钥已脱敏）\")",

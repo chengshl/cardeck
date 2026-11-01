@@ -1221,7 +1221,7 @@ object SessionController {
                                         client.assertModes()
                                     }
 
-                                    else -> appendLog("EVENT: 命令 type=${command["type"]}")
+                                    else -> appendLog("EVENT: 未识别命令类型（值已脱敏）")
                                 }
                             }
                             // 资源声明（must）：真车对未声明资源的屏幕流 SETUP 直接 400
