@@ -537,7 +537,11 @@ class AirPlayClient(
                     )
                     // Late replies belong to the retired session, not this session's telemetry.
                     if (b233HeartbeatWorker && !b233HeartbeatSessionGate.isCurrent(heartbeatToken)) break
-                    if (endpoint.isBuickB233 && status.contains("200")) {
+                    // B233 peer reason text must not fabricate a successful feedback response.
+                    // This only affects diagnostics/liveness interpretation, never the wire request.
+                    val feedbackAccepted = B233FeedbackReply.isTransportAccepted(status, b233HeartbeatWorker)
+                    val safeFeedbackStatus = B233FeedbackReply.safeStatus(status, b233HeartbeatWorker)
+                    if (b233HeartbeatWorker && feedbackAccepted) {
                         // T86: PCM streams use type=100, AAC uses type=102.
                         // Read-only telemetry: this does not change /feedback transport.
                         val sampleTime = runCatching {
@@ -553,8 +557,8 @@ class AirPlayClient(
                     val gap = if (lastSuccessAt == 0L) 0L else now - lastSuccessAt
                     lastSuccessAt = now
                     sent++
-                    if (endpoint.isBuickB233 && (gap > 2_500L || !status.contains("200"))) {
-                        log("AIRPLAY T62: B233 feedback 异常 #$sent gap=${gap}ms status=$status")
+                    if (b233HeartbeatWorker && (gap > 2_500L || !feedbackAccepted)) {
+                        log("AIRPLAY T62: B233 feedback 异常 #$sent gap=${gap}ms status=$safeFeedbackStatus")
                     }
                     // T13 B233: T12 mistakenly treated 8s of logged feedback
                     // as feedback stopping at 8s. Dump every reply across the
@@ -563,7 +567,7 @@ class AirPlayClient(
                     if (b233AudioTrace || sent <= 6 || sent % 30 == 0) {
                         log(
                             (if (b233AudioTrace) "AIRPLAY T13: B233" else "AIRPLAY:") +
-                                " feedback #$sent [$status]" +
+                                " feedback #$sent [$safeFeedbackStatus]" +
                                 if (body.isNotEmpty()) " body=${body.size}B" else " body=empty",
                         )
                     }
