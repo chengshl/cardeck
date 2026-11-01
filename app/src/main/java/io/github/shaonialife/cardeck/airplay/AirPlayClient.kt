@@ -3050,6 +3050,11 @@ class AirPlayClient(
                     )
                     if (owned != null) {
                         socket = null
+                        // Peer EOF is another socket retirement path: do not
+                        // leave the retired B233 route published after EOF.
+                        // This runs under the same lock as ensureConnected().
+                        activeHost = null
+                        activeAddress = null
                         readerSocket = null
                         readerThread = null
                         readerGeneration++

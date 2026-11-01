@@ -1,0 +1,78 @@
+name: B233 RTSP peer EOF route retirement (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-rtsp-eof-route-retirement-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-rtsp-published-host-atomic-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-rtsp-eof-route-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify exact parent, change scope and EOF negative control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=b97fcfd41c4fd59b9e9f92acd1e4ee01363179b4
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41311190095 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41311190095 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-rtsp-eof-route-retirement.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt > /tmp/parent.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          def eof_retirement(source):
+              block = source.split('val owned = RtspReaderGenerationCleanup.retireIfCurrent(',1)[1]
+              return block.split('if (waiting != null)',1)[0]
+          old_eof, new_eof = eof_retirement(old), eof_retirement(new)
+          # Negative control: the verified parent retires the socket on EOF
+          # but retains the route metadata until a later explicit close.
+          assert 'socket = null' in old_eof
+          assert 'activeHost = null' not in old_eof
+          assert 'activeAddress = null' not in old_eof
+          # On the owned-generation branch, route and socket are retired together.
+          assert 'if (owned != null)' in new_eof
+          assert 'socket = null' in new_eof
+          assert 'activeHost = null' in new_eof
+          assert 'activeAddress = null' in new_eof
+          assert new_eof.index('socket = null') < new_eof.index('activeHost = null') < new_eof.index('readerGeneration++')
+          # The stale-reader path must still be guarded by generation and socket.
+          assert 'if (owned != null)' in new_eof
+          assert 'generation, readerGeneration, client, readerSocket, socket, pendingResponses' in new_eof
+          # Explicit close and connection publication remain present.
+          assert 'activeHost = addressLiteral(address)' in new
+          assert 'val retiredWaiters = if (endpoint.isBuickB233)' in new
+          print('Negative control reproduced; owned B233 EOF now retires route metadata atomically')
+          PY
+      - name: Full Android JUnit, Lint and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline-only; no APK signing, release, installation or stable merge.
