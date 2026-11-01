@@ -2513,11 +2513,14 @@ class AirPlayClient(
                     BinaryPlist.encode(linkedMapOf<String, Any?>()),
                     contentType = "application/x-apple-binary-plist",
                 )
-            val ok = statusLine.contains("200")
-            log(if (ok) "AIRPLAY: ✓ RECORD 完成——会话已激活" else "AIRPLAY: RECORD 应答 [$statusLine]")
+            // RECORD activates the session: a peer error reason containing "200"
+            // must never be accepted as a successful B233 activation.
+            val ok = B233ModeReplySummary.isTransportAccepted(statusLine, endpoint.isBuickB233)
+            val safeStatus = B233ModeReplySummary.safeTransportStatus(statusLine, endpoint.isBuickB233)
+            log(if (ok) "AIRPLAY: ✓ RECORD 完成——会话已激活" else "AIRPLAY: RECORD 应答 [$safeStatus]")
             ok
         } catch (error: IOException) {
-            log("AIRPLAY: RECORD 失败 - ${error.message}")
+            log("AIRPLAY: RECORD 失败 - ${B233ModeReplySummary.safeTransportError(error, endpoint.isBuickB233)}")
             false
         }
 
