@@ -10,6 +10,42 @@ import org.junit.Test
 
 class AudioSenderCallbackOwnerTest {
     @Test
+    fun staleAacTeardownCompletionCannotRevokeReplacementAudioClaim() {
+        val lock = Any()
+        val oldSender = Any()
+        val replacement = Any()
+        val oldOwner = AudioSenderCallbackOwner().apply { bind(oldSender) }
+        var activeSender: Any? = replacement
+        var activeProfile: String? = "aac"
+        var audioEnabled = true
+        var downgraded = false
+
+        fun completeOldTeardown(): Boolean = oldOwner.retireIfCurrent(
+            lock = lock,
+            isCurrentSession = { activeProfile == "aac" },
+            activeSender = { activeSender },
+        ) {
+            activeSender = null
+            activeProfile = null
+            audioEnabled = false
+            downgraded = true
+        }
+
+        assertFalse(completeOldTeardown()) // New sender owns the current stream.
+        assertSame(replacement, activeSender)
+        assertEquals("aac", activeProfile)
+        assertTrue(audioEnabled)
+        assertFalse(downgraded)
+
+        activeSender = oldSender
+        assertTrue(completeOldTeardown()) // Current owner still retires normally.
+        assertEquals(null, activeSender)
+        assertEquals(null, activeProfile)
+        assertFalse(audioEnabled)
+        assertTrue(downgraded)
+    }
+
+    @Test
     fun queuedOldSyncRefusalCannotMutateReplacementWithSameProfile() {
         // Both callbacks belong to the same client/profile; only sender identity differs.
         val oldSender = Any()
