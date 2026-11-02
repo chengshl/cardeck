@@ -66,7 +66,10 @@ jobs:
           assert 'B233AudioSetupReply.safeError(error, endpoint.isBuickB233)' in after
           assert 'else {\n                    closeReverseAudioControlPort()\n                }' in after
           delta = subprocess.check_output(['git', 'diff', '--unified=0', base, 'HEAD', '--', path], text=True)
-          assert sum(line.startswith('@@') for line in delta.splitlines()) == 3, 'only owner capture, publication and request failure catch may change'
+          assert 'fun runAudioStream(' in delta and 'setupPortOwner' in delta
+          assert old.split('fun runAudioStream(', 1)[0] == new.split('fun runAudioStream(', 1)[0]
+          marker = '    /**\n     * 查询并纠正接收端音量'
+          assert old.split(marker, 1)[1] == new.split(marker, 1)[1], 'later methods must remain unchanged'
           print('Negative control: parent closes whichever reverse RTCP listener is current.')
           print('New B233 request failures retire only the originating listener; legacy IOException behavior remains.')
           PY
