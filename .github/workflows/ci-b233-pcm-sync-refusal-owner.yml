@@ -1,0 +1,75 @@
+name: B233 PCM sync refusal sender ownership (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-pcm-sync-refusal-owner-11
+  pull_request:
+    branches:
+      - experiment/buick-b233-exception-atomic-retire-11
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: b233-pcm-refusal-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Parent CI, old-source negative control and exact B233-only edit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=041290c1b5224b35d20767be746f58833b74cda4
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41465412811 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41465412811 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-pcm-sync-refusal-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = '041290c1b5224b35d20767be746f58833b74cda4'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          old = subprocess.check_output(['git', 'show', base+':'+path], text=True)
+          new = Path(path).read_text()
+          before = "                                        } else {\n                                            appendLog(\n                                                \"AUDIO T10: B233 sync端口拒绝（$error）；\" +\n                                                    \"停止本次音频，保留视频会话\",\n                                            )\n                                            audioSender = null\n                                            activeAudioProfile = null\n                                            activeAudioStartedAt = 0L\n                                            audioAutoDowngradedForSession = true\n                                            AudioProfileMemory.recordTransportFailure(\n                                                context.applicationContext, identity, profile.key,\n                                            )\n                                            active.stop()\n                                            uiHintSink?.invoke(\n                                                \"B233 音频同步端口拒绝，已退回纯视频；下次尝试其他档位\",\n                                            )\n                                        }"
+          after = "                                        } else {\n                                            // The queued PCM refusal may run after a replacement\n                                            // sender has published. Retire only this sender's state.\n                                            val retired = callbackOwner.retireIfCurrent(\n                                                lock = this@SessionController,\n                                                isCurrentSession = {\n                                                    currentClient === client && activeAudioProfile?.key == profile.key\n                                                },\n                                                activeSender = { audioSender },\n                                            ) {\n                                                audioSender = null\n                                                activeAudioProfile = null\n                                                activeAudioStartedAt = 0L\n                                                audioAutoDowngradedForSession = true\n                                            }\n                                            if (retired) {\n                                                appendLog(\n                                                    \"AUDIO T10: B233 sync端口拒绝（$error）；\" +\n                                                        \"停止本次音频，保留视频会话\",\n                                                )\n                                                AudioProfileMemory.recordTransportFailure(\n                                                    context.applicationContext, identity, profile.key,\n                                                )\n                                                active.stop()\n                                                uiHintSink?.invoke(\n                                                    \"B233 音频同步端口拒绝，已退回纯视频；下次尝试其他档位\",\n                                                )\n                                            }\n                                        }"
+          assert old.count(before) == 1, 'parent unsafe PCM refusal cleanup not found'
+          assert new == old.replace(before, after, 1), 'unexpected production change'
+          assert 'val retired = callbackOwner.retireIfCurrent(' in after
+          assert 'if (retired) {' in after
+          assert 'currentClient === client && activeAudioProfile?.key == profile.key' in after
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt').read_text()
+          assert 'queuedOldSyncRefusalCannotMutateReplacementWithSameProfile' in tests
+          assert 'failedStartRetirementCannotRaceReplacementPublication' in tests
+          print('Unsafe PCM refusal rejected; exact owner-fenced replacement and existing regression verified')
+          PY
+      - name: Existing callback and lock JUnit, full Android JUnit Lint Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, release, install, stable merge, routing or volume changes.

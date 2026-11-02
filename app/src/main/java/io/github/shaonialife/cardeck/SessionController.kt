@@ -1682,21 +1682,33 @@ object SessionController {
                                                 )
                                             }
                                         } else {
-                                            appendLog(
-                                                "AUDIO T10: B233 sync端口拒绝（$error）；" +
-                                                    "停止本次音频，保留视频会话",
-                                            )
-                                            audioSender = null
-                                            activeAudioProfile = null
-                                            activeAudioStartedAt = 0L
-                                            audioAutoDowngradedForSession = true
-                                            AudioProfileMemory.recordTransportFailure(
-                                                context.applicationContext, identity, profile.key,
-                                            )
-                                            active.stop()
-                                            uiHintSink?.invoke(
-                                                "B233 音频同步端口拒绝，已退回纯视频；下次尝试其他档位",
-                                            )
+                                            // The queued PCM refusal may run after a replacement
+                                            // sender has published. Retire only this sender's state.
+                                            val retired = callbackOwner.retireIfCurrent(
+                                                lock = this@SessionController,
+                                                isCurrentSession = {
+                                                    currentClient === client && activeAudioProfile?.key == profile.key
+                                                },
+                                                activeSender = { audioSender },
+                                            ) {
+                                                audioSender = null
+                                                activeAudioProfile = null
+                                                activeAudioStartedAt = 0L
+                                                audioAutoDowngradedForSession = true
+                                            }
+                                            if (retired) {
+                                                appendLog(
+                                                    "AUDIO T10: B233 sync端口拒绝（$error）；" +
+                                                        "停止本次音频，保留视频会话",
+                                                )
+                                                AudioProfileMemory.recordTransportFailure(
+                                                    context.applicationContext, identity, profile.key,
+                                                )
+                                                active.stop()
+                                                uiHintSink?.invoke(
+                                                    "B233 音频同步端口拒绝，已退回纯视频；下次尝试其他档位",
+                                                )
+                                            }
                                         }
                                     }
                                 }
