@@ -81,6 +81,45 @@ class AudioSenderCallbackOwnerTest {
     }
 
     @Test
+    fun asyncCaptureStopClearsOnlyItsOwnLiveSessionState() {
+        val failedCapture = Any()
+        val replacement = Any()
+        val owner = AudioSenderCallbackOwner().apply { bind(failedCapture) }
+        var activeSender: Any? = replacement
+        var sameClient = true
+        var activeProfile: String? = "aac"
+        var startedAt = 123L
+        var sessionAudioStarted = true
+        fun onStopped() {
+            if (sameClient && owner.owns(activeSender)) {
+                activeSender = null
+                activeProfile = null
+                startedAt = 0L
+                sessionAudioStarted = false
+            }
+        }
+
+        onStopped() // Old capture worker must not retire a replacement.
+        assertTrue(activeSender === replacement)
+        assertEquals("aac", activeProfile)
+        assertEquals(123L, startedAt)
+        assertTrue(sessionAudioStarted)
+
+        activeSender = failedCapture
+        sameClient = false // A retired session cannot mutate a newer session.
+        onStopped()
+        assertTrue(activeSender === failedCapture)
+        assertEquals("aac", activeProfile)
+
+        sameClient = true
+        onStopped() // The current stopped sender must retire its own state.
+        assertEquals(null, activeSender)
+        assertEquals(null, activeProfile)
+        assertEquals(0L, startedAt)
+        assertFalse(sessionAudioStarted)
+    }
+
+    @Test
     fun unboundNullAndRetiredSendersCannotPassOwnership() {
         val sender = Any()
         val gate = AudioSenderCallbackOwner()

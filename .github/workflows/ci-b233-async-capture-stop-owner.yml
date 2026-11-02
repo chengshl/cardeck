@@ -1,0 +1,75 @@
+name: B233 async audio capture stop ownership (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-async-capture-stop-owner-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-exception-owner-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-async-stop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact successful parent, negative control, and isolated owner guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=a96ef8eea03c7b7604a7dc8fd2a0fbfc86c18a05
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41377404659 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41377404659 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-async-capture-stop-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = 'a96ef8eea03c7b7604a7dc8fd2a0fbfc86c18a05'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          old = subprocess.check_output(['git','show',base+':'+path], text=True)
+          new = Path(path).read_text()
+          assert old.count('onStopped =\n                        if (reversePortOwner != null)') == 1, 'unsafe parent control absent'
+          assert new.count('onStopped =\n                        if (client.currentEndpoint.isBuickB233)') == 1
+          assert 'currentClient === client && callbackOwner.owns(audioSender)' in new
+          assert 'client.closeReverseAudioControlPortIfOwner(reversePortOwner)' in new
+          assert 'b233AudioStartedInSession = false' in new
+          delta = subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--',path], text=True)
+          assert delta.count('\n@@') == 1, 'production changes outside B233 onStopped callback'
+          test_path = 'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt'
+          old_test = subprocess.check_output(['git','show',base+':'+test_path], text=True)
+          new_test = Path(test_path).read_text()
+          assert 'asyncCaptureStopClearsOnlyItsOwnLiveSessionState' not in old_test
+          assert 'asyncCaptureStopClearsOnlyItsOwnLiveSessionState' in new_test
+          assert 'sameClient = false' in new_test
+          print('B233 async stop owner guard and parent negative control verified')
+          PY
+      - name: Android negative regression, full JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only. No signing, release, install, merge or user-network change.
