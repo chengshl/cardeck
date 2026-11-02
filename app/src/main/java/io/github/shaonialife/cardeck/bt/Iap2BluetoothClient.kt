@@ -368,6 +368,13 @@ class Iap2BluetoothClient(
             runCatching { socket.close() }
             log("BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）")
             null
+        } catch (error: RuntimeException) {
+            // A Bluetooth stack runtime failure must not kill the reconnect worker.
+            // Retire only the socket owned by this attempt, then use normal backoff.
+            currentSocket.compareAndSet(socket, null)
+            runCatching { socket.close() }
+            log("BT-C: RFCOMM 建链异常（${error.javaClass.simpleName}；本轮连接已释放）")
+            null
         }
     }
 
