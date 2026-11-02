@@ -9,6 +9,26 @@ import org.junit.Test
 
 class AudioVehicleNetworkBindGuardTest {
     @Test
+    fun b233AudioDiagnosticsDoNotExposePeerOrPlatformExceptionText() {
+        val peer = audioDiagnosticPeer("192.0.2.41", 6011, true)
+        assertEquals("vehicle_port=6011", peer)
+        assertFalse(peer.contains("192.0.2.41"))
+        val failure = audioDiagnosticFailure(
+            SocketException("sendto failed 192.0.2.41 path=/private/device"),
+            true,
+        )
+        assertEquals("SocketException", failure)
+        assertFalse(failure.contains("192.0.2.41"))
+        assertFalse(failure.contains("/private/device"))
+    }
+
+    @Test
+    fun legacyAudioDiagnosticsPreserveOriginalDetail() {
+        assertEquals("192.0.2.41:6011", audioDiagnosticPeer("192.0.2.41", 6011, false))
+        assertEquals("legacy detail", audioDiagnosticFailure(SocketException("legacy detail"), false))
+    }
+
+    @Test
     fun b233PcmRequiresLocalRtcpTransportBeforeRtpWhenControlPortAdvertised() {
         assertTrue(requiresB233AudioSyncStartup(true, true, 6011))
         assertFalse(requiresB233AudioSyncStartup(true, false, 6011)) // B233 modern AAC
