@@ -456,7 +456,30 @@ jobs:
           csd_after = '        val csd = asAnnexB(sps) + (pps?.let(::asAnnexB) ?: byteArrayOf())'
           assert expected.count(pps_before) == 1 and expected.count(csd_before) == 1, 'CSD anchors ambiguous'
           expected = expected.replace(pps_before, pps_after).replace(csd_before, csd_after)
-          assert new == expected, 'Unexpected change outside combined-csd-0 fallback'
+          # The previous reviewed HEAD is immutable: replay only the socket-close
+          # ordering change that unblocks a blocked TCP drain before codec.stop().
+          prior_close_head = 'b66587921dc43fe7bc6d82ac11e0b4e34f0014ff'
+          assert expected == subprocess.check_output(
+              ['git', 'show', prior_close_head + ':' + source_path], text=True
+          ), 'Reviewed #83 socket-close baseline drifted'
+          close_before = """            runCatching { encoder?.stop() }
+            runCatching { encoder?.release() }
+            encoder = null
+            runCatching { inputSurface?.release() }
+            inputSurface = null
+            runCatching { closingSocket?.close() }"""
+          close_after = """            // Unblock a pending video TCP write before stopping MediaCodec.
+            // A codec stop can wait for the drain worker to release its output slot.
+            runCatching { closingSocket?.close() }
+            runCatching { encoder?.stop() }
+            runCatching { encoder?.release() }
+            encoder = null
+            runCatching { inputSurface?.release() }
+            inputSurface = null"""
+          assert expected.count(close_before) == 1, 'Original stop close ordering drifted'
+          expected = expected.replace(close_before, close_after)
+          assert expected.count(close_after) == 1, 'New stop close ordering missing'
+          assert new == expected, 'Unexpected change outside reviewed #83 source replay'
           assert new.count('val csd = asAnnexB(sps) + (pps?.let(::asAnnexB) ?: byteArrayOf())') == 1
           assert new.count('} catch (error: java.io.IOException) {') == 1
           assert new.count('throw error') >= 1
