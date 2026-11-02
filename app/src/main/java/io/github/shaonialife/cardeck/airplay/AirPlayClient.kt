@@ -685,7 +685,7 @@ class AirPlayClient(
         val body = buildSessionSetupBody(deviceId, timingServer.port, encrypted = cipher != null)
         log(
             "AIRPLAY: 初始 SETUP body=${body.size}B timingPort=${timingServer.port} " +
-                "deviceID=$deviceId 加密=${if (cipher != null) "是" else "否（et=NONE）"}",
+                "deviceIdPlaceholder=${deviceId == DeviceIdentity.PLACEHOLDER_MAC} 加密=${if (cipher != null) "是" else "否（et=NONE）"}",
         )
         val (statusLine, responseBody) =
             try {
@@ -698,18 +698,18 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
-                log("AIRPLAY: SETUP 失败 - ${error.message}")
+                log("AIRPLAY: SETUP 失败 - ${error.javaClass.simpleName}（详情已脱敏）")
                 return null
             }
         if (!statusLine.contains("200")) {
-            log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")
+            log("AIRPLAY: SETUP 应答失败（原始状态行/设备标识已脱敏）")
             if (statusLine.contains("403")) {
                 // 403 的两类成因按可能性排序：设备过滤（WinPlay 等「只接受指定
                 // iPhone」）最常见，其次是接收端不接受的配对/信任状态。把本机
-                // 蓝牙地址直接打出来，用户对照接收端设置即可自查。
+                // 本机蓝牙地址仅用于协议，不写入可导出的诊断日志。
                 log(
-                    "AIRPLAY: 403 排查——接收端若启用了设备过滤，请在接收端选择本机蓝牙地址 " +
-                        "$deviceId" +
+                    "AIRPLAY: 403 排查——检查接收端设备过滤与配对；身份已脱敏 " +
+                        "（身份不输出）" +
                         if (deviceId == DeviceIdentity.PLACEHOLDER_MAC) {
                             "（当前是占位值：未能解析真实蓝牙 MAC，Shizuku 是否就绪？）"
                         } else {
