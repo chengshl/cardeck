@@ -9,6 +9,15 @@ import org.junit.Test
 
 class AudioVehicleNetworkBindGuardTest {
     @Test
+    fun b233PcmRequiresLocalRtcpTransportBeforeRtpWhenControlPortAdvertised() {
+        assertTrue(requiresB233AudioSyncStartup(true, true, 6011))
+        assertFalse(requiresB233AudioSyncStartup(true, false, 6011)) // B233 modern AAC
+        assertFalse(requiresB233AudioSyncStartup(true, true, 0)) // no negotiated port
+        assertFalse(requiresB233AudioSyncStartup(false, true, 6011)) // legacy
+        assertFalse(requiresB233AudioSyncStartup(false, false, 6011))
+    }
+
+    @Test
     fun b233RejectedVehicleBindClosesSocketInsteadOfUsingDefaultRoute() {
         val socket = DatagramSocket()
         var failures = 0

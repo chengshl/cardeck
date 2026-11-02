@@ -35,6 +35,18 @@ internal fun connectOwnedAudioDatagramSocket(
 }
 
 /**
+ * Only B233 PCM with a negotiated RTCP control port requires successful
+ * local RTCP transport setup before beginning RTP. Modern B233 AAC deliberately
+ * sends no classic RTCP, and legacy receivers retain best-effort startup.
+ * This does not claim that UDP connect proves remote port acceptance.
+ */
+internal fun requiresB233AudioSyncStartup(
+    failClosedOnVehicleNetworkBind: Boolean,
+    sendLegacyAudioSyncPackets: Boolean,
+    controlPort: Int,
+): Boolean = failClosedOnVehicleNetworkBind && sendLegacyAudioSyncPackets && controlPort > 0
+
+/**
  * Fail closed for B233 if the intended vehicle Network rejects UDP binding.
  * A failed bind must never silently fall through to Android's default route.
  * Legacy receivers keep their existing best-effort behavior.
@@ -501,8 +513,14 @@ class AudioSender(
                     },
             )
 
-            // 同步包线程先起：锚点越早建立，接收端越早能排播
-            startSyncLoop()
+            // B233 PCM with an advertised controlPort must not run RTP
+            // when its own RTCP transport cannot be bound to vehicle Wi-Fi.
+            // AAC modern timing and non-B233 best-effort remain unchanged.
+            if (!startSyncLoop()) {
+                log("AUDIO: B233 PCM sync_transport_unavailable sender_skipped=true")
+                stop()
+                return false
+            }
 
             Thread(
                 {
@@ -586,17 +604,20 @@ class AudioSender(
 
     // ---- 音频同步包（RTP 时间戳 ↔ NTP，每秒一个） ----
 
-    private fun startSyncLoop() {
+    private fun startSyncLoop(): Boolean {
+        val syncRequired = requiresB233AudioSyncStartup(
+            failClosedOnVehicleNetworkBind, sendLegacyAudioSyncPackets, controlPort,
+        )
         if (!sendLegacyAudioSyncPackets) {
             log(
                 "AUDIO T71: B233 102/media 已协商 controlPort=$controlPort，" +
                     "本轮不主动发送传统 0xD4；避免混淆为车机未下发端口",
             )
-            return
+            return true
         }
         if (controlPort <= 0) {
             log("AUDIO: 车机未下发 controlPort——不发同步包（只能靠音频包自带时间戳）")
-            return
+            return true
         }
         val client =
             try {
@@ -617,16 +638,18 @@ class AudioSender(
                             else "AUDIO T24: RTCP WiFi 路由绑定失败 - ${error.message}") },
                     )) {
                     if (vehicleBinder == null) log("AUDIO T24: B233 RTCP vehicle_network_missing=true sync_skipped=true")
-                    return
+                    return !syncRequired
                 }
                 connectOwnedAudioDatagramSocket(udp, host, controlPort)
             } catch (error: Exception) {
-                log("AUDIO: 同步包套接字创建失败 - ${error.message}")
-                return
+                log(if (syncRequired)
+                    "AUDIO: B233 PCM sync_transport_create_failed=${error.javaClass.simpleName}"
+                    else "AUDIO: 同步包套接字创建失败 - ${error.message}")
+                return !syncRequired
             }
         if (verboseStartupDiagnostics) {
             if (!b233DatagramGate.publish(client, { !stopped.get() }) { syncSocket = client }) {
-                return // stop() retired this B233 sender during RTCP connect
+                return false // stop() retired this B233 sender during RTCP connect
             }
         } else {
             syncSocket = client
@@ -679,6 +702,7 @@ class AudioSender(
         worker.isDaemon = true
         worker.start()
         syncThread = worker
+        return true
     }
 
     // ---- 采集循环 → 封包发送 ----
