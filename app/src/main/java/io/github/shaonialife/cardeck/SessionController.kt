@@ -1686,11 +1686,20 @@ object SessionController {
                 if (audioSender === sender) sender.sentPacketCountSnapshot() else null
             }
             if (!sender.start(projection)) {
-                client.closeReverseAudioControlPort()
-                audioSender = null
-                activeAudioProfile = null
-                activeAudioStartedAt = 0L
-                b233AudioStartedInSession = false
+                // A B233 sender can finish its failed start after a replacement
+                // has already published a new reverse RTCP listener and sender.
+                // Retire only the failed attempt's resources, not the replacement.
+                if (client.currentEndpoint.isBuickB233) {
+                    client.closeReverseAudioControlPortIfOwner(reversePortOwner)
+                } else {
+                    client.closeReverseAudioControlPort()
+                }
+                if (!client.currentEndpoint.isBuickB233 || callbackOwner.owns(audioSender)) {
+                    audioSender = null
+                    activeAudioProfile = null
+                    activeAudioStartedAt = 0L
+                    b233AudioStartedInSession = false
+                }
                 false
             } else {
                 true

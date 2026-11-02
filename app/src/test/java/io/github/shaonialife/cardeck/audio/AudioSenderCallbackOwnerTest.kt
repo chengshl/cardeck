@@ -29,6 +29,29 @@ class AudioSenderCallbackOwnerTest {
     }
 
     @Test
+    fun failedStartupFromOldSenderCannotClearReplacement() {
+        val failedSender = Any()
+        val replacementSender = Any()
+        val failedAttemptOwner = AudioSenderCallbackOwner().apply { bind(failedSender) }
+        var activeSender: Any? = replacementSender
+        var cleared = 0
+        fun cleanupFailedAttempt() {
+            if (failedAttemptOwner.owns(activeSender)) {
+                activeSender = null
+                cleared++
+            }
+        }
+
+        cleanupFailedAttempt() // Old start() returns false after a new sender is installed.
+        assertTrue(activeSender === replacementSender)
+        assertEquals(0, cleared)
+        activeSender = failedSender
+        cleanupFailedAttempt() // The current failed attempt still cleans itself.
+        assertFalse(activeSender === failedSender)
+        assertEquals(1, cleared)
+    }
+
+    @Test
     fun unboundNullAndRetiredSendersCannotPassOwnership() {
         val sender = Any()
         val gate = AudioSenderCallbackOwner()
