@@ -83,7 +83,7 @@ jobs:
           assert "assert modified == {workflow}" in release
           assert "assert not event.get('head_commit', {}).get('added', [])" in release
           assert "assert not event.get('head_commit', {}).get('removed', [])" in release
-          assert "reviewed_source = '1cca4ada9996bfa58311d2dd9fb34198479b1261'" in release
+          assert "reviewed_source = '02f21fdd820886f38e2772b16281c0bf96557f50'" in release
           assert "assert actual == expected" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
