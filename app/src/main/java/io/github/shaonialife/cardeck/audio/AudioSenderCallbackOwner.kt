@@ -17,4 +17,22 @@ internal class AudioSenderCallbackOwner {
 
     fun owns(activeSender: Any?): Boolean =
         activeSender != null && owner === activeSender
+
+    /**
+     * The caller's lock must also protect replacement sender publication.
+     * Keep session/identity checks and state retirement in one critical section.
+     */
+    fun retireIfCurrent(
+        lock: Any,
+        isCurrentSession: () -> Boolean,
+        activeSender: () -> Any?,
+        retire: () -> Unit,
+    ): Boolean = synchronized(lock) {
+        if (!isCurrentSession() || !owns(activeSender())) {
+            false
+        } else {
+            retire()
+            true
+        }
+    }
 }
