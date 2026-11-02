@@ -1466,7 +1466,7 @@ object SessionController {
                 val routeReady = preflightB233AudioRouteBeforeClaim(
                     isBuickB233 = true,
                     bindToVehicleNetwork = route?.let { network ->
-                        { udp -> network.bindSocket(udp) }
+                        { udp: java.net.DatagramSocket -> network.bindSocket(udp) }
                     },
                     onFailure = { error ->
                         appendLog("AUDIO T134: preclaim_vehicle_udp_bind_failed=" +
