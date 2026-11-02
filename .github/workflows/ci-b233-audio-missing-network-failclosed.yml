@@ -1,0 +1,69 @@
+name: B233 audio missing vehicle Network fail-closed (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-audio-missing-network-failclosed-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-udp-bind-failclosed-t94
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verified parent, missing-network negative control and three-file scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=26e0aba2b003f998ff17db24a794a8031dfcd722
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41362133405 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41362133405 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-missing-network-failclosed.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioVehicleNetworkBindGuardTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt > /tmp/parent-audio.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent-audio.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt').read_text()
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioVehicleNetworkBindGuardTest.kt').read_text()
+          assert 'if (bind == null) return true' in old
+          assert old.count('vehicleNetwork?.let { network ->') >= 2
+          assert 'if (bind == null) return true' not in new
+          assert 'if (failClosed) socket.close()' in new
+          assert 'return !failClosed' in new
+          assert new.count('val vehicleBinder: (() -> Unit)? = vehicleNetwork?.let') == 2
+          assert new.count('if (!bindOwnedAudioDatagramSocket(') == 2
+          assert 'B233 RTP vehicle_network_missing=true sender_skipped=true' in new
+          assert 'B233 RTCP vehicle_network_missing=true sync_skipped=true' in new
+          assert 'b233AbsentVehicleNetworkClosesSocketInsteadOfUsingDefaultRoute' in tests
+          assert 'legacyAbsentVehicleBinderPreservesBestEffortSocket' in tests
+          print('parent missing-network fail-open confirmed; B233 RTP/RTCP fail closed and legacy negative regression')
+          PY
+      - name: Android JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 offline only: no signing, Release, install or stable merge.

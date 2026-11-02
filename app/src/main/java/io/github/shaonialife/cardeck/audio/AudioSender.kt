@@ -45,7 +45,10 @@ internal fun bindOwnedAudioDatagramSocket(
     failClosed: Boolean,
     onFailure: (Exception) -> Unit,
 ): Boolean {
-    if (bind == null) return true
+    if (bind == null) {
+        if (failClosed) socket.close()
+        return !failClosed
+    }
     return try {
         bind()
         true
@@ -379,17 +382,23 @@ class AudioSender(
         failureTrace?.event("audio_sender_start")
         return try {
             val client = DatagramSocket()
-            vehicleNetwork?.let { network ->
-                if (!bindOwnedAudioDatagramSocket(
-                        client,
-                        { network.bindSocket(client)
-                          log(if (failClosedOnVehicleNetworkBind) "AUDIO T24: B233 RTP vehicle_network_bound=true"
-                              else "AUDIO T24: RTP UDP 指定车机 WiFi Network=$network") },
-                        failClosedOnVehicleNetworkBind,
-                        { error -> log(if (failClosedOnVehicleNetworkBind)
-                            "AUDIO T24: B233 RTP vehicle_network_bind_failed=${error.javaClass.simpleName} sender_skipped=true"
-                            else "AUDIO T24: RTP WiFi 路由绑定失败 - ${error.message}") },
-                    )) return false
+            val vehicleBinder: (() -> Unit)? = vehicleNetwork?.let { network ->
+                {
+                    network.bindSocket(client)
+                    log(if (failClosedOnVehicleNetworkBind) "AUDIO T24: B233 RTP vehicle_network_bound=true"
+                        else "AUDIO T24: RTP UDP 指定车机 WiFi Network=$network")
+                }
+            }
+            if (!bindOwnedAudioDatagramSocket(
+                    client,
+                    vehicleBinder,
+                    failClosedOnVehicleNetworkBind,
+                    { error -> log(if (failClosedOnVehicleNetworkBind)
+                        "AUDIO T24: B233 RTP vehicle_network_bind_failed=${error.javaClass.simpleName} sender_skipped=true"
+                        else "AUDIO T24: RTP WiFi 路由绑定失败 - ${error.message}") },
+                )) {
+                if (vehicleBinder == null) log("AUDIO T24: B233 RTP vehicle_network_missing=true sender_skipped=true")
+                return false
             }
             val connected = connectOwnedAudioDatagramSocket(client, host, dataPort)
             if (verboseStartupDiagnostics) {
@@ -592,17 +601,23 @@ class AudioSender(
         val client =
             try {
                 val udp = DatagramSocket()
-                vehicleNetwork?.let { network ->
-                    if (!bindOwnedAudioDatagramSocket(
-                            udp,
-                            { network.bindSocket(udp)
-                              log(if (failClosedOnVehicleNetworkBind) "AUDIO T24: B233 RTCP vehicle_network_bound=true"
-                                  else "AUDIO T24: RTCP UDP 指定车机 WiFi Network=$network") },
-                            failClosedOnVehicleNetworkBind,
-                            { error -> log(if (failClosedOnVehicleNetworkBind)
-                                "AUDIO T24: B233 RTCP vehicle_network_bind_failed=${error.javaClass.simpleName} sync_skipped=true"
-                                else "AUDIO T24: RTCP WiFi 路由绑定失败 - ${error.message}") },
-                        )) return
+                val vehicleBinder: (() -> Unit)? = vehicleNetwork?.let { network ->
+                    {
+                        network.bindSocket(udp)
+                        log(if (failClosedOnVehicleNetworkBind) "AUDIO T24: B233 RTCP vehicle_network_bound=true"
+                            else "AUDIO T24: RTCP UDP 指定车机 WiFi Network=$network")
+                    }
+                }
+                if (!bindOwnedAudioDatagramSocket(
+                        udp,
+                        vehicleBinder,
+                        failClosedOnVehicleNetworkBind,
+                        { error -> log(if (failClosedOnVehicleNetworkBind)
+                            "AUDIO T24: B233 RTCP vehicle_network_bind_failed=${error.javaClass.simpleName} sync_skipped=true"
+                            else "AUDIO T24: RTCP WiFi 路由绑定失败 - ${error.message}") },
+                    )) {
+                    if (vehicleBinder == null) log("AUDIO T24: B233 RTCP vehicle_network_missing=true sync_skipped=true")
+                    return
                 }
                 connectOwnedAudioDatagramSocket(udp, host, controlPort)
             } catch (error: Exception) {
