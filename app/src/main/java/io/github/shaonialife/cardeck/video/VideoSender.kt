@@ -223,12 +223,14 @@ class VideoSender(
                 dataPortEpoch++
                 socket.also { socket = null }
             }
+            // Unblock a pending video TCP write before stopping MediaCodec.
+            // A codec stop can wait for the drain worker to release its output slot.
+            runCatching { closingSocket?.close() }
             runCatching { encoder?.stop() }
             runCatching { encoder?.release() }
             encoder = null
             runCatching { inputSurface?.release() }
             inputSurface = null
-            runCatching { closingSocket?.close() }
         }
     }
 
