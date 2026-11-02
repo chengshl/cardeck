@@ -1654,20 +1654,30 @@ object SessionController {
                                             )
                                             val audioRemoved =
                                                 client.teardownAudioStream(profile.streamType)
-                                            if (audioRemoved && currentClient === client &&
-                                                audioSender === active
+                                            // A stream-scoped TEARDOWN may finish after a
+                                            // replacement sender has been published. Its
+                                            // completion must retire only the original sender.
+                                            val retired = audioRemoved && callbackOwner.retireIfCurrent(
+                                                lock = this@SessionController,
+                                                isCurrentSession = {
+                                                    currentClient === client &&
+                                                        activeAudioProfile?.key == profile.key
+                                                },
+                                                activeSender = { audioSender },
                                             ) {
                                                 audioSender = null
                                                 activeAudioProfile = null
                                                 activeAudioStartedAt = 0L
+                                                audioEnabledForSession = false
+                                                audioAutoDowngradedForSession = true
+                                            }
+                                            if (retired) {
                                                 active.stop()
                                                 // T64: a successful stream-scoped TEARDOWN did
                                                 // not release the previously claimed CarPlay
                                                 // main-audio RESOURCE. B233 still tore down the
                                                 // video session 14s later. Reassert video-only
                                                 // ownership while keeping Bluetooth A2DP.
-                                                audioEnabledForSession = false
-                                                audioAutoDowngradedForSession = true
                                                 val videoOnlyClaimed =
                                                     client.assertModes(claimAudioResource = false)
                                                 appendLog(
