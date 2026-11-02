@@ -91,8 +91,12 @@ jobs:
           assert 'modesChanged 失败（${error.javaClass.simpleName}；详细内容已脱敏）' in new_air
           # Exact prior-HEAD delta and immutable source blobs: no hidden runtime edits.
           previous_head = 'c6a37ff09d48af1fe75ab7ebd940248c90db6234'
+          # pull_request checks out GitHub's synthetic merge commit: HEAD^2 is
+          # the actual candidate PR HEAD, while push checks out HEAD directly.
+          import os
+          candidate_ref = 'HEAD^2' if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request' else 'HEAD'
           since_prior = set(subprocess.check_output(
-              ['git', 'diff', '--name-only', previous_head, 'HEAD'], text=True
+              ['git', 'diff', '--name-only', previous_head, candidate_ref], text=True
           ).splitlines())
           assert since_prior == {air, policy, test, workflow}, (
               f'Unexpected BT-B incremental scope: {sorted(since_prior)}'
