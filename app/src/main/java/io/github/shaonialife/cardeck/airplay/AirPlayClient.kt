@@ -654,11 +654,13 @@ class AirPlayClient(
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
+            val succeeded = statusLine.contains("200")
             log("AIRPLAY: modesChanged（声明主屏；主音频=" +
-                (if (claimAudioResource) "CarPlay" else "未声明；普通蓝牙状态需独立验证") + "）[$statusLine]")
-            statusLine.contains("200")
+                (if (claimAudioResource) "CarPlay" else "未声明；普通蓝牙状态需独立验证") +
+                "；成功=$succeeded；响应内容已脱敏）")
+            succeeded
         } catch (error: IOException) {
-            log("AIRPLAY: modesChanged 失败 - ${error.message}")
+            log("AIRPLAY: modesChanged 失败（${error.javaClass.simpleName}；详细内容已脱敏）")
             false
         }
     }
