@@ -1,0 +1,85 @@
+name: B233 reverse RTCP preflight preservation (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-audio-preflight-preserve-port-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-stale-setup-accept-owner-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-preflight-preserve-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact successful parent, strict scope and old-code negative control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=17db99269dea4865f784f1937108f3b0fdd04acf
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41413951878 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41413951878 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-preflight-preserve-port.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/ReverseAudioPortOwnershipTest.kt' \
+            | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = '17db99269dea4865f784f1937108f3b0fdd04acf'
+          source = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+          test = 'app/src/test/java/io/github/shaonialife/cardeck/airplay/ReverseAudioPortOwnershipTest.kt'
+          old = subprocess.check_output(['git', 'show', base + ':' + source], text=True)
+          new = Path(source).read_text()
+          old_test = subprocess.check_output(['git', 'show', base + ':' + test], text=True)
+          new_test = Path(test).read_text()
+          assert 'shouldSkipAudioSetupBeforePortReplacement' not in old
+          assert 'missingB233RouteSkipsSetupBeforeReplacingReverseListener' not in old_test
+          assert 'shouldSkipAudioSetupBeforePortReplacement' in new
+          assert 'missingB233RouteSkipsSetupBeforeReplacingReverseListener' in new_test
+          start = new.index('    fun runAudioStream(')
+          end = new.index('    private fun probeAndFixVolume(', start)
+          section = new[start:end]
+          precheck = section.index('if (shouldSkipAudioSetupBeforePortReplacement(')
+          old_port_close = section.index('        closeReverseAudioControlPort()\n        val reversePort')
+          assert precheck < old_port_close, 'route guard must precede closing previous listener'
+          assert 'return null\n        }\n        closeReverseAudioControlPort()' in section
+          assert 'val network = if (endpoint.isBuickB233) b233Route else vehicleNetwork' in section
+          assert 'val b233Route = if (endpoint.isBuickB233 && needsReversePort) vehicleNetwork else null' in section
+          assert 'if (needsReversePort)' in section
+          old_start = old.index('    fun runAudioStream(')
+          old_end = old.index('    private fun probeAndFixVolume(', old_start)
+          assert '        closeReverseAudioControlPort()\n        val reversePort =\n            if (BuickAudioTimingPolicy.advertiseReverseControlPort' in old[old_start:old_end]
+          assert old.count('shouldSkipAudioSetupBeforePortReplacement') == 0
+          print('Old code closes live reverse listener before missing-Network preflight.')
+          print('New B233 preflight returns before closing it; legacy and no-reverse cases remain compatible.')
+          PY
+      - name: Reverse listener regression tests and full Android JUnit, Lint, Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, release, installation or stable merge.

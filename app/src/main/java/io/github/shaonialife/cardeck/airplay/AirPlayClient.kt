@@ -40,6 +40,13 @@ internal fun canActivateAcceptedAudioSetup(
     !isBuickB233 || advertisedListener == null ||
         ownsReverseAudioPort(currentListener, advertisedListener)
 
+/** A missing B233 vehicle Network must not retire a live reverse RTCP listener. */
+internal fun shouldSkipAudioSetupBeforePortReplacement(
+    isBuickB233: Boolean,
+    advertisesReversePort: Boolean,
+    hasVehicleNetwork: Boolean,
+): Boolean = isBuickB233 && advertisesReversePort && !hasVehicleNetwork
+
 /** B233 iAP2 handshake and control bytes must not enter uploadable logs. */
 internal fun safeB233IapPayloadLog(payload: ByteArray): String =
     "payload=${payload.size}B redacted"
@@ -2010,10 +2017,23 @@ class AirPlayClient(
                 closeReverseAudioControlPort()
             }
         }
+        val needsReversePort =
+            BuickAudioTimingPolicy.advertiseReverseControlPort(endpoint.isBuickB233, profile)
+        // Do not close an existing sender's listener when this B233 attempt
+        // cannot even bind its own reverse RTCP socket. Snapshot the Network
+        // once so it cannot disappear between the check and socket creation.
+        val b233Route = if (endpoint.isBuickB233 && needsReversePort) vehicleNetwork else null
+        if (shouldSkipAudioSetupBeforePortReplacement(
+                endpoint.isBuickB233, needsReversePort, b233Route != null,
+            )
+        ) {
+            log("AUDIO T73: 未取得车机 WiFi Network；保留原反向控制端口，跳过本次音频 SETUP")
+            return null
+        }
         closeReverseAudioControlPort()
         val reversePort =
-            if (BuickAudioTimingPolicy.advertiseReverseControlPort(endpoint.isBuickB233, profile)) {
-                val network = vehicleNetwork
+            if (needsReversePort) {
+                val network = if (endpoint.isBuickB233) b233Route else vehicleNetwork
                 if (network == null) {
                     log("AUDIO T73: 未取得车机 WiFi Network；不启动缺失反向控制端口的音频")
                     return null
