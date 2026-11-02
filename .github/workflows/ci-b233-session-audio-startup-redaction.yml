@@ -1,0 +1,67 @@
+name: B233 session audio startup error redaction (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-session-audio-startup-redaction-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-diagnostic-redaction-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-session-audio-error-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, original leak negative control and two-file scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=a8a322bc7ab330aa972cdb4cfb819e13da392836
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41389097287 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41389097287 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' '.github/workflows/ci-b233-session-audio-startup-redaction.yml' 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = 'a8a322bc7ab330aa972cdb4cfb819e13da392836'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          old = subprocess.check_output(['git','show',base+':'+path], text=True)
+          new = Path(path).read_text()
+          old_line = 'appendLog("AUDIO: 通道启动异常 - ${error.message}")'
+          new_line = 'appendLog("AUDIO: 通道启动异常 - ${if (client.currentEndpoint.isBuickB233) audioDiagnosticFailure(error, true) else error.message}")'
+          assert old.count(old_line) == 1, 'parent must expose original exception text'
+          assert new.count(new_line) == 1 and old_line not in new
+          assert 'import io.github.shaonialife.cardeck.audio.audioDiagnosticFailure' in new
+          delta = subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--',path], text=True)
+          assert delta.count('\n@@') == 2, 'only import and B233 startup catch may change'
+          assert 'if (client.currentEndpoint.isBuickB233) audioDiagnosticFailure(error, true) else error.message' in new
+          print('B233 startup exception text redacted; legacy null/message interpolation unchanged')
+          PY
+      - name: Existing B233 redaction negative regression, all JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only; no signing, release, installation, or stable merge.
