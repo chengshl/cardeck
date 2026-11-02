@@ -336,6 +336,11 @@ class Iap2BluetoothClient(
             } catch (_: SecurityException) {
                 log("BT-C: 建立 RFCOMM Socket 时蓝牙权限已失效（已跳过本轮）")
                 return null
+            } catch (error: RuntimeException) {
+                // Socket creation may fail before ownership can be published.
+                // No socket exists to close; retain the bounded reconnect loop.
+                log("BT-C: RFCOMM Socket 创建异常（${error.javaClass.simpleName}；稍后重试）")
+                return null
             }
         // 连接前就登记：connect() 是阻塞调用（SDP 查询 + 建链最长可达数十秒），
         // stop() 只有能拿到 socket 引用才能 close() 打断它，否则线程会滞留。
