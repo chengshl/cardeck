@@ -243,10 +243,15 @@ jobs:
           connect_before = "        } catch (_: SecurityException) {\n            // Android permission can be revoked while blocking inside connect().\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            log(\"BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）\")\n            null\n        }\n    }\n\n    private fun runSession"
           connect_after = "        } catch (_: SecurityException) {\n            // Android permission can be revoked while blocking inside connect().\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            log(\"BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）\")\n            null\n        } catch (error: RuntimeException) {\n            // A Bluetooth stack runtime failure must not kill the reconnect worker.\n            // Retire only the socket owned by this attempt, then use normal backoff.\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            log(\"BT-C: RFCOMM 建链异常（${error.javaClass.simpleName}；本轮连接已释放）\")\n            null\n        }\n    }\n\n    private fun runSession"
           assert previous_runtime.count(connect_before) == 1, 'Runtime catch anchor drifted'
-          assert client == previous_runtime.replace(connect_before, connect_after), (
-              'Unexpected #34 change beyond owned RFCOMM runtime-error cleanup'
+          # RFCOMM socket creation may throw an unchecked platform exception
+          # before any socket is published. Replay only this bounded retry catch.
+          creation_before = "            } catch (_: SecurityException) {\n                log(\"BT-C: 建立 RFCOMM Socket 时蓝牙权限已失效（已跳过本轮）\")\n                return null\n            }\n        // 连接前就登记"
+          creation_after = "            } catch (_: SecurityException) {\n                log(\"BT-C: 建立 RFCOMM Socket 时蓝牙权限已失效（已跳过本轮）\")\n                return null\n            } catch (error: RuntimeException) {\n                // Socket creation may fail before ownership can be published.\n                // No socket exists to close; retain the bounded reconnect loop.\n                log(\"BT-C: RFCOMM Socket 创建异常（${error.javaClass.simpleName}；稍后重试）\")\n                return null\n            }\n        // 连接前就登记"
+          assert previous_runtime.count(creation_before) == 1, 'Socket creation baseline drifted'
+          assert client == previous_runtime.replace(connect_before, connect_after).replace(creation_before, creation_after), (
+              'Unexpected #34 change beyond owned RFCOMM runtime/creation cleanup'
           )
-          assert client.count('catch (error: RuntimeException) {') == 1
+          assert client.count('catch (error: RuntimeException) {') == 2
           assert client.count('val socketPublished = synchronized(this) {') == 1
           assert client.count('val published = synchronized(this) {') == 1
           assert client.count('if (!published) {') == 1
