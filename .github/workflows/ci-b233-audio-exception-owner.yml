@@ -53,7 +53,7 @@ jobs:
           path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
           old = Path('/tmp/parent-session.kt').read_text()
           new = Path(path).read_text()
-          old_catch = '        } catch (error: Exception) {\\n            client.closeReverseAudioControlPort()'
+          old_catch = '        } catch (error: Exception) {\n            client.closeReverseAudioControlPort()'
           assert old.count(old_catch) == 1, 'parent exception cleanup negative control absent'
           assert 'var exceptionSenderOwner: AudioSenderCallbackOwner? = null' in new
           assert 'var exceptionPortOwner: Any? = null' in new
