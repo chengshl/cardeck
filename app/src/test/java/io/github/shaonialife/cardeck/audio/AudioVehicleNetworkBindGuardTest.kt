@@ -56,10 +56,23 @@ class AudioVehicleNetworkBindGuardTest {
     }
 
     @Test
-    fun absentExplicitBinderDoesNotCloseSocket() {
+    fun b233AbsentVehicleNetworkClosesSocketInsteadOfUsingDefaultRoute() {
+        val socket = DatagramSocket()
+        var failures = 0
+        val accepted = bindOwnedAudioDatagramSocket(
+            socket, null, failClosed = true,
+            onFailure = { failures++ },
+        )
+        assertFalse(accepted)
+        assertTrue(socket.isClosed)
+        assertEquals(0, failures) // No binder was attempted; distinct from a rejected bind.
+    }
+
+    @Test
+    fun legacyAbsentVehicleBinderPreservesBestEffortSocket() {
         DatagramSocket().use { socket ->
             assertTrue(bindOwnedAudioDatagramSocket(
-                socket, null, failClosed = true,
+                socket, null, failClosed = false,
                 onFailure = { throw AssertionError("no bind attempted") },
             ))
             assertFalse(socket.isClosed)
