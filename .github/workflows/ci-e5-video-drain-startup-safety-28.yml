@@ -444,7 +444,20 @@ jobs:
           io_after = "                                        try {\n                                            trySendOutputFormatConfig(codec, output, epoch)\n                                        } catch (error: java.io.IOException) {\n                                            // A broken data socket is not missing codec metadata.\n                                            // Let drainEncoder retire this session after releasing the slot.\n                                            throw error\n                                        } catch (error: Exception) {\n                                            log(\"VIDEO: codec CSD fallback unavailable (${error.javaClass.simpleName})\")\n                                        }"
           assert expected.count(io_before) == 1, 'CSD fallback exception handler ambiguous'
           expected = expected.replace(io_before, io_after)
-          assert new == expected, 'Unexpected change outside CSD transport-error handling'
+          # Verify the previously reviewed HEAD before replaying the narrowly scoped
+          # AVC outputFormat variant where csd-0 contains both SPS and PPS.
+          prior_csd_head = '5951ff9c177d16d2460b4159c55cefd44c29e60b'
+          assert expected == subprocess.check_output(
+              ['git', 'show', prior_csd_head + ':' + source_path], text=True
+          ), 'Reviewed CSD fallback HEAD drifted'
+          pps_before = '        val pps = format.getByteBuffer("csd-1")?.duplicate() ?: return'
+          pps_after = '        // Some AVC encoders place both Annex-B SPS and PPS in csd-0.\n        val pps = format.getByteBuffer("csd-1")?.duplicate()'
+          csd_before = '        val csd = asAnnexB(sps) + asAnnexB(pps)'
+          csd_after = '        val csd = asAnnexB(sps) + (pps?.let(::asAnnexB) ?: byteArrayOf())'
+          assert expected.count(pps_before) == 1 and expected.count(csd_before) == 1, 'CSD anchors ambiguous'
+          expected = expected.replace(pps_before, pps_after).replace(csd_before, csd_after)
+          assert new == expected, 'Unexpected change outside combined-csd-0 fallback'
+          assert new.count('val csd = asAnnexB(sps) + (pps?.let(::asAnnexB) ?: byteArrayOf())') == 1
           assert new.count('} catch (error: java.io.IOException) {') == 1
           assert new.count('throw error') >= 1
           assert new.count('sendVideoConfig(buffer, bufferInfo.size, output, epoch)') == 1
