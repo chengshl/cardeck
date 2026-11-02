@@ -339,8 +339,13 @@ class Iap2BluetoothClient(
             }
         // 连接前就登记：connect() 是阻塞调用（SDP 查询 + 建链最长可达数十秒），
         // stop() 只有能拿到 socket 引用才能 close() 打断它，否则线程会滞留。
-        // Never overwrite the socket published by a newer worker after stop/start.
-        if (!running || generation.get() != myGeneration || !currentSocket.compareAndSet(null, socket)) {
+        // stop()/start() can invalidate this worker between a generation check
+        // and the socket CAS. Publish under the same lifecycle monitor as stop().
+        val socketPublished = synchronized(this) {
+            running && generation.get() == myGeneration &&
+                currentSocket.compareAndSet(null, socket)
+        }
+        if (!socketPublished) {
             runCatching { socket.close() }
             return null
         }
