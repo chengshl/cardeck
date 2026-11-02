@@ -213,22 +213,22 @@ jobs:
               'Previous reviewed channel publication drifted'
           )
           socket_before = (
-              "        // Never overwrite the socket published by a newer worker after stop/start.\\n"
-              "        if (!running || generation.get() != myGeneration || !currentSocket.compareAndSet(null, socket)) {\\n"
-              "            runCatching { socket.close() }\\n"
-              "            return null\\n"
+              "        // Never overwrite the socket published by a newer worker after stop/start.\n"
+              "        if (!running || generation.get() != myGeneration || !currentSocket.compareAndSet(null, socket)) {\n"
+              "            runCatching { socket.close() }\n"
+              "            return null\n"
               "        }"
           )
           socket_after = (
-              "        // stop()/start() can invalidate this worker between a generation check\\n"
-              "        // and the socket CAS. Publish under the same lifecycle monitor as stop().\\n"
-              "        val socketPublished = synchronized(this) {\\n"
-              "            running && generation.get() == myGeneration &&\\n"
-              "                currentSocket.compareAndSet(null, socket)\\n"
-              "        }\\n"
-              "        if (!socketPublished) {\\n"
-              "            runCatching { socket.close() }\\n"
-              "            return null\\n"
+              "        // stop()/start() can invalidate this worker between a generation check\n"
+              "        // and the socket CAS. Publish under the same lifecycle monitor as stop().\n"
+              "        val socketPublished = synchronized(this) {\n"
+              "            running && generation.get() == myGeneration &&\n"
+              "                currentSocket.compareAndSet(null, socket)\n"
+              "        }\n"
+              "        if (!socketPublished) {\n"
+              "            runCatching { socket.close() }\n"
+              "            return null\n"
               "        }"
           )
           assert reviewed_socket.count(socket_before) == 1, 'Socket publication anchor drifted'
