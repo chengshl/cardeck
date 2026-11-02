@@ -1,0 +1,75 @@
+name: B233 PCM RTCP startup fail-closed (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-rtcp-startup-failclosed-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-async-capture-stop-owner-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-rtcp-start-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact successful parent, negative control, and isolated B233 scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=9f95c4c5506389bb5f3abee4b927829d93760362
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41382964366 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41382964366 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-rtcp-startup-failclosed.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioVehicleNetworkBindGuardTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = '9f95c4c5506389bb5f3abee4b927829d93760362'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt'
+          old = subprocess.check_output(['git','show',base+':'+path], text=True)
+          new = Path(path).read_text()
+          assert 'private fun startSyncLoop() {' in old
+          assert 'startSyncLoop()\n\n            Thread(' in old
+          assert 'if (!startSyncLoop()) {' not in old
+          assert 'private fun startSyncLoop(): Boolean {' in new
+          assert 'if (!startSyncLoop()) {' in new
+          assert 'val syncRequired = requiresB233AudioSyncStartup(' in new
+          assert new.count('return !syncRequired') == 2
+          assert 'return false // stop() retired this B233 sender during RTCP connect' in new
+          assert 'failClosedOnVehicleNetworkBind && sendLegacyAudioSyncPackets && controlPort > 0' in new
+          assert 'if (!sendLegacyAudioSyncPackets) {' in new
+          assert 'if (controlPort <= 0) {' in new
+          test = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioVehicleNetworkBindGuardTest.kt').read_text()
+          assert 'b233PcmRequiresLocalRtcpTransportBeforeRtpWhenControlPortAdvertised' in test
+          print('B233 PCM local RTCP startup fail-closed, old-code negative control, legacy and AAC exceptions verified')
+          PY
+      - name: Android negative regression, full JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, release, installation or stable merge.
