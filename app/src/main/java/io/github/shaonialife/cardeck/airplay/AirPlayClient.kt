@@ -658,10 +658,10 @@ class AirPlayClient(
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
-            log("AIRPLAY: modesChanged（声明持有主屏/主音频资源）[$statusLine]")
+            log("AIRPLAY: modesChanged（声明持有主屏/主音频资源；statusOk=${statusLine.contains(\"200\")}；原始状态行已脱敏）")
             statusLine.contains("200")
         } catch (error: IOException) {
-            log("AIRPLAY: modesChanged 失败 - ${error.message}")
+            log("AIRPLAY: modesChanged 失败 - ${error.javaClass.simpleName}（详细异常已脱敏）")
             false
         }
     }
