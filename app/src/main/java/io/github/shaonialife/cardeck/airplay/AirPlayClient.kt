@@ -47,6 +47,17 @@ internal fun shouldSkipAudioSetupBeforePortReplacement(
     hasVehicleNetwork: Boolean,
 ): Boolean = isBuickB233 && advertisesReversePort && !hasVehicleNetwork
 
+/** Preserve a working reverse RTCP listener until a replacement is ready. */
+internal fun <T : Any> installReadyReverseAudioPort(
+    previous: T?,
+    replacement: T?,
+    retirePrevious: (T) -> Unit,
+): T? {
+    if (replacement == null) return previous
+    if (previous !== replacement) previous?.let(retirePrevious)
+    return replacement
+}
+
 /** B233 iAP2 handshake and control bytes must not enter uploadable logs. */
 internal fun safeB233IapPayloadLog(payload: ByteArray): String =
     "payload=${payload.size}B redacted"
@@ -2030,7 +2041,10 @@ class AirPlayClient(
             log("AUDIO T73: 未取得车机 WiFi Network；保留原反向控制端口，跳过本次音频 SETUP")
             return null
         }
-        closeReverseAudioControlPort()
+        // B233 must keep the previous listener until the new socket has
+        // successfully bound to the vehicle Network. A failed local bind
+        // must not interrupt a sender that is still using the old listener.
+        if (!endpoint.isBuickB233 || !needsReversePort) closeReverseAudioControlPort()
         val reversePort =
             if (needsReversePort) {
                 val network = if (endpoint.isBuickB233) b233Route else vehicleNetwork
@@ -2057,7 +2071,21 @@ class AirPlayClient(
                     return null
                 }
                 synchronized(this) {
-                    reverseAudioControlPort = reverse
+                    if (endpoint.isBuickB233) {
+                        // The worker can exit between start() and publication.
+                        // If it did, preserve the still-live previous listener.
+                        if (reverse.port == 0) {
+                            log("AUDIO: B233 reverse RTCP listener stopped before replacement; keep previous")
+                            return null
+                        }
+                        reverseAudioControlPort = installReadyReverseAudioPort(
+                            reverseAudioControlPort,
+                            reverse,
+                        ) { previous -> previous.close() }
+                        audioRtpSentCountProvider = null
+                    } else {
+                        reverseAudioControlPort = reverse
+                    }
                     setupPortOwner = reverse
                 }
                 log("AUDIO T73: SETUP 即将声明手机本地 controlPort=$port，区别于车机返回的控制端口")
