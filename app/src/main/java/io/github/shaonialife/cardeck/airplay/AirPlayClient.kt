@@ -193,9 +193,8 @@ class AirPlayClient(
         endpoint = newEndpoint
         endpointGeneration++
         log(
-            "AIRPLAY: 端点更新（$reason）" +
-                "${old.ipAddresses.firstOrNull()}:${old.airPlayPort} → " +
-                "${newEndpoint.ipAddresses.firstOrNull()}:${newEndpoint.airPlayPort}" +
+            "AIRPLAY: 端点更新（地址与原因已脱敏）" +
+                " oldPort=${old.airPlayPort} newPort=${newEndpoint.airPlayPort}" +
                 "（配对循环下一轮使用新地址）",
         )
         close()
@@ -213,7 +212,7 @@ class AirPlayClient(
 
     private fun runPairingLoop(windowMillis: Long): PairVerifyClient.ControlKeys? {
         val identity = loadOrCreateIdentity()
-        log("AIRPLAY: 控制器身份 pairingId=${identity.pairingId}")
+        log("AIRPLAY: 控制器身份已准备（pairingId 已脱敏）")
         // 车机 AirPlay 窗口是「用户点车机上的手机图标 / 收到 ctrl 邀请后才开」的
         // （Audi 实测：端口从 Connection refused 变为开放）。因此重试采用时限制：
         // 默认 120s 内每 2s 试一次——用户在车机上点一下的等待不会被提前放弃。
@@ -250,8 +249,8 @@ class AirPlayClient(
                             "AIRPLAY: pair-setup " +
                                 when {
                                     forbidden -> "被 403 拒绝（车机不接受匿名配对——iAP2 已完成信任）→ 转已配对快路径"
-                                    unsupported -> "不被支持（$message）——该接收端是 pre-HomeKit 老车机，转明文会话"
-                                    else -> "失败（$message）"
+                                    unsupported -> "不被支持（详细原因已脱敏）——该接收端是 pre-HomeKit 老车机，转明文会话"
+                                    else -> "失败（详细原因已脱敏）"
                                 },
                         )
                         if (unsupported) {
@@ -280,7 +279,7 @@ class AirPlayClient(
                 return keys
             } catch (error: IOException) {
                 val message = error.message.orEmpty()
-                log("AIRPLAY: 配对第 $attempt 次尝试失败 - $message")
+                log("AIRPLAY: 配对第 $attempt 次尝试失败（详情已脱敏）")
                 if (PAIRING_UNSUPPORTED_STATUS.any { message.contains(it) }) {
                     pairingUnsupported = true
                     log("AIRPLAY: 接收端不提供 HomeKit 配对通道——停止重试，转明文会话（et=NONE）")
@@ -299,7 +298,7 @@ class AirPlayClient(
         if (!ensureConnected()) return null
         return try {
             val (statusLine, body) = requestInfo(timeoutMillis)
-            log("AIRPLAY: ✓ /info [$statusLine] body=${body.size} 字节")
+            log("AIRPLAY: /info 已应答（状态行已脱敏）body=${body.size} 字节")
             if (body.isEmpty()) return null
             val root = BinaryPlist.parse(body)
             if (root is Map<*, *>) {
@@ -309,7 +308,7 @@ class AirPlayClient(
                 null
             }
         } catch (error: IOException) {
-            log("AIRPLAY: /info 失败 - ${error.message}")
+            log("AIRPLAY: /info 失败 - ${error.javaClass.simpleName}（详情已脱敏）")
             null
         }
     }
@@ -658,10 +657,10 @@ class AirPlayClient(
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
-            log("AIRPLAY: modesChanged（声明持有主屏/主音频资源）[$statusLine]")
+            log("AIRPLAY: modesChanged（声明持有主屏/主音频资源；statusOk=${statusLine.contains("200")}；原始状态行已脱敏）")
             statusLine.contains("200")
         } catch (error: IOException) {
-            log("AIRPLAY: modesChanged 失败 - ${error.message}")
+            log("AIRPLAY: modesChanged 失败 - ${error.javaClass.simpleName}（详细异常已脱敏）")
             false
         }
     }
@@ -685,7 +684,7 @@ class AirPlayClient(
         val body = buildSessionSetupBody(deviceId, timingServer.port, encrypted = cipher != null)
         log(
             "AIRPLAY: 初始 SETUP body=${body.size}B timingPort=${timingServer.port} " +
-                "deviceID=$deviceId 加密=${if (cipher != null) "是" else "否（et=NONE）"}",
+                "deviceIdPlaceholder=${deviceId == DeviceIdentity.PLACEHOLDER_MAC} 加密=${if (cipher != null) "是" else "否（et=NONE）"}",
         )
         val (statusLine, responseBody) =
             try {
@@ -698,18 +697,18 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
-                log("AIRPLAY: SETUP 失败 - ${error.message}")
+                log("AIRPLAY: SETUP 失败 - ${error.javaClass.simpleName}（详情已脱敏）")
                 return null
             }
         if (!statusLine.contains("200")) {
-            log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")
+            log("AIRPLAY: SETUP 应答失败（原始状态行/设备标识已脱敏）")
             if (statusLine.contains("403")) {
                 // 403 的两类成因按可能性排序：设备过滤（WinPlay 等「只接受指定
                 // iPhone」）最常见，其次是接收端不接受的配对/信任状态。把本机
-                // 蓝牙地址直接打出来，用户对照接收端设置即可自查。
+                // 本机蓝牙地址仅用于协议，不写入可导出的诊断日志。
                 log(
-                    "AIRPLAY: 403 排查——接收端若启用了设备过滤，请在接收端选择本机蓝牙地址 " +
-                        "$deviceId" +
+                    "AIRPLAY: 403 排查——检查接收端设备过滤与配对；身份已脱敏 " +
+                        "（身份不输出）" +
                         if (deviceId == DeviceIdentity.PLACEHOLDER_MAC) {
                             "（当前是占位值：未能解析真实蓝牙 MAC，Shizuku 是否就绪？）"
                         } else {
@@ -1540,18 +1539,17 @@ class AirPlayClient(
             frameCount++
             val frames = parser.offer(bytes)
             for (frame in frames) {
-                val hex = frame.body.joinToString(" ") { "%02x".format(it) }
                 if (frameCount <= 30 || frameCount % 100 == 0) {
                     log(
                         "IAPLINK: rx 0x${frame.messageId.toString(16)} " +
                             "(${Iap2MessageIds.nameOf(frame.messageId)}) " +
-                            "${frame.body.size}B hex=${hex.take(160)}",
+                            "${frame.body.size}B（原始体已脱敏）",
                     )
                 }
                 maybeRespondTunnelCsmLocked(frame)
             }
             if (frames.isEmpty() && frameCount <= 10) {
-                log("IAPLINK: rx ${bytes.size}B（非 CSM）hex=" + bytes.joinToString(" ") { "%02x".format(it) }.take(160))
+                log("IAPLINK: rx ${bytes.size}B（非 CSM；原始体已脱敏）")
             }
         }
 
@@ -1560,9 +1558,8 @@ class AirPlayClient(
 
         fun handleEaData(bytes: ByteArray) {
             eaCount++
-            val hex = bytes.joinToString(" ") { "%02x".format(it) }
             if (eaCount <= 30 || eaCount % 100 == 0) {
-                log("IAPLINK: EA 数据 #$eaCount ${bytes.size}B hex=${hex.take(200)}")
+                log("IAPLINK: EA 数据 #$eaCount ${bytes.size}B（原始体已脱敏）")
             }
             onEaData?.invoke(bytes)
         }
@@ -2101,7 +2098,7 @@ class AirPlayClient(
                             if (firstLine.startsWith("RTSP/") || firstLine.startsWith("HTTP/")) {
                                 unexpectedEventResponseCount++
                                 if (unexpectedEventResponseCount <= 3) {
-                                    log("EVENT T40: unexpected response on reverse Events channel [$firstLine]; expected car-originated POST requests")
+                                    log("EVENT T40: unexpected response on reverse Events channel（状态行已脱敏）")
                                 }
                                 continue
                             }
@@ -2116,7 +2113,7 @@ class AirPlayClient(
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
                                 if (unknownEventRequests <= 10) {
-                                    log("EVENT: 未知请求 [$firstLine] body=${message.body.size}B")
+                                    log("EVENT: 未知请求（请求行已脱敏）body=${message.body.size}B")
                                 }
                                 continue
                             }
@@ -2125,17 +2122,17 @@ class AirPlayClient(
                                     BinaryPlist.parse(message.body) as? Map<*, *>
                                 } catch (error: Exception) {
                                     // Malformed event payload must never kill the event reader.
-                                    log("EVENT: 命令解析异常 - ${error.javaClass.simpleName}: ${error.message}")
+                                    log("EVENT: 命令解析异常 - ${error.javaClass.simpleName}（异常文本已脱敏）")
                                     null
                                 }
                             if (command == null) {
-                                log("EVENT: 命令 plist 解析失败 [$firstLine] body=${message.body.size}B prefix=" + message.body.take(32).joinToString(" ") { "%02x".format(it) })
+                                log("EVENT: 命令 plist 解析失败（请求行与原始体已脱敏）body=${message.body.size}B")
                                 continue
                             }
                             try {
                                 onCommand(command)
                             } catch (error: Exception) {
-                                log("EVENT: 命令处理异常 - ${error.message}")
+                                log("EVENT: 命令处理异常 - ${error.javaClass.simpleName}（异常文本已脱敏）")
                             }
                         }
                     }

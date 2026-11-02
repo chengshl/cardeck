@@ -1,0 +1,436 @@
+name: E5 iAP2 4300/4301 diagnostic redaction (#33)
+on:
+  push:
+    branches: [work/e5-iap2-4300-4301-redacted-logs-33]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/net/WifiCarPlayConnector.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayNetworkSockets.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+      - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  redaction-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify only diagnostic logs changed and no identifiers leak
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          # Lease this read-only redaction to the exact reviewed E5 stable branch.
+          old_base = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          reviewed_base = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          assert base == reviewed_base, f'E5 stable moved; review new runtime before continuing: {base}'
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', old_base, reviewed_base], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unexpected stable E5 change: {sorted(stable_delta)}'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt'
+          files = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          bt_path = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+          session_path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          video_path = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+          channel_path = 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
+          ctrl_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
+          nsd_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
+          wifi_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/WifiCarPlayConnector.kt'
+          socket_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayNetworkSockets.kt'
+          airplay_path = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, nsd_path, wifi_path, socket_path, airplay_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+
+          # Peer-controlled RTSP status text and platform IOException details must
+          # not enter exported modesChanged diagnostics. Preserve the exact
+          # request, response success predicate and all other AirPlay behavior.
+          airplay_old = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + airplay_path], text=True
+          )
+          airplay_expected = airplay_old
+          airplay_changes = [
+              (r'''log("AIRPLAY: modesChanged（声明持有主屏/主音频资源）[$statusLine]")''',
+               r'''log("AIRPLAY: modesChanged（声明持有主屏/主音频资源；statusOk=${statusLine.contains("200")}；原始状态行已脱敏）")'''),
+              (r'''log("AIRPLAY: modesChanged 失败 - ${error.message}")''',
+               r'''log("AIRPLAY: modesChanged 失败 - ${error.javaClass.simpleName}（详细异常已脱敏）")'''),
+              (r'''"deviceID=$deviceId 加密=${if (cipher != null) "是" else "否（et=NONE）"}",''',
+               r'''"deviceIdPlaceholder=${deviceId == DeviceIdentity.PLACEHOLDER_MAC} 加密=${if (cipher != null) "是" else "否（et=NONE）"}",'''),
+              (r'''log("AIRPLAY: SETUP 失败 - ${error.message}")''',
+               r'''log("AIRPLAY: SETUP 失败 - ${error.javaClass.simpleName}（详情已脱敏）")'''),
+              (r'''log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")''',
+               r'''log("AIRPLAY: SETUP 应答失败（原始状态行/设备标识已脱敏）")'''),
+              (r'''// 蓝牙地址直接打出来，用户对照接收端设置即可自查。''',
+               r'''// 本机蓝牙地址仅用于协议，不写入可导出的诊断日志。'''),
+              (r'''"AIRPLAY: 403 排查——接收端若启用了设备过滤，请在接收端选择本机蓝牙地址 " +''',
+               r'''"AIRPLAY: 403 排查——检查接收端设备过滤与配对；身份已脱敏 " +'''),
+              (r'''"$deviceId" +''',
+               r'''"（身份不输出）" +'''),
+          ]
+          # Independently reviewed pairing/endpoint and /info diagnostics: no protocol edits.
+          airplay_changes.extend([
+              ("\"AIRPLAY: 端点更新（$reason）\" +\n                \"${old.ipAddresses.firstOrNull()}:${old.airPlayPort} → \" +\n                \"${newEndpoint.ipAddresses.firstOrNull()}:${newEndpoint.airPlayPort}\" +\n                \"（配对循环下一轮使用新地址）\"", "\"AIRPLAY: 端点更新（地址与原因已脱敏）\" +\n                \" oldPort=${old.airPlayPort} newPort=${newEndpoint.airPlayPort}\" +\n                \"（配对循环下一轮使用新地址）\""),
+              (r'''log("AIRPLAY: 控制器身份 pairingId=${identity.pairingId}")''', r'''log("AIRPLAY: 控制器身份已准备（pairingId 已脱敏）")'''),
+              (r'''unsupported -> "不被支持（$message）——该接收端是 pre-HomeKit 老车机，转明文会话"''', r'''unsupported -> "不被支持（详细原因已脱敏）——该接收端是 pre-HomeKit 老车机，转明文会话"'''),
+              (r'''else -> "失败（$message）"''', r'''else -> "失败（详细原因已脱敏）"'''),
+              (r'''log("AIRPLAY: 配对第 $attempt 次尝试失败 - $message")''', r'''log("AIRPLAY: 配对第 $attempt 次尝试失败（详情已脱敏）")'''),
+              (r'''log("AIRPLAY: ✓ /info [$statusLine] body=${body.size} 字节")''', r'''log("AIRPLAY: /info 已应答（状态行已脱敏）body=${body.size} 字节")'''),
+              (r'''log("AIRPLAY: /info 失败 - ${error.message}")''', r'''log("AIRPLAY: /info 失败 - ${error.javaClass.simpleName}（详情已脱敏）")'''),
+          ])
+          # Project-owned iAP2/event diagnostics: no raw peer payloads, RTSP request
+          # lines, or platform exception messages in user-exportable logs.
+          # Preserve parser.offer, CSM dispatch, onEaData and event ACK/command routing.
+          airplay_changes.extend([
+              ("                val hex = frame.body.joinToString(\" \") { \"%02x\".format(it) }\n", ""),
+              ("\"${frame.body.size}B hex=${hex.take(160)}\",", "\"${frame.body.size}B（原始体已脱敏）\","),
+              ("log(\"IAPLINK: rx ${bytes.size}B（非 CSM）hex=\" + bytes.joinToString(\" \") { \"%02x\".format(it) }.take(160))", "log(\"IAPLINK: rx ${bytes.size}B（非 CSM；原始体已脱敏）\")"),
+              ("            eaCount++\n            val hex = bytes.joinToString(\" \") { \"%02x\".format(it) }\n            if (eaCount <= 30", "            eaCount++\n            if (eaCount <= 30"),
+              ("log(\"IAPLINK: EA 数据 #$eaCount ${bytes.size}B hex=${hex.take(200)}\")", "log(\"IAPLINK: EA 数据 #$eaCount ${bytes.size}B（原始体已脱敏）\")"),
+              ("log(\"EVENT T40: unexpected response on reverse Events channel [$firstLine]; expected car-originated POST requests\")", "log(\"EVENT T40: unexpected response on reverse Events channel（状态行已脱敏）\")"),
+              ("log(\"EVENT: 未知请求 [$firstLine] body=${message.body.size}B\")", "log(\"EVENT: 未知请求（请求行已脱敏）body=${message.body.size}B\")"),
+              ("log(\"EVENT: 命令解析异常 - ${error.javaClass.simpleName}: ${error.message}\")", "log(\"EVENT: 命令解析异常 - ${error.javaClass.simpleName}（异常文本已脱敏）\")"),
+              ("log(\"EVENT: 命令 plist 解析失败 [$firstLine] body=${message.body.size}B prefix=\" + message.body.take(32).joinToString(\" \") { \"%02x\".format(it) })", "log(\"EVENT: 命令 plist 解析失败（请求行与原始体已脱敏）body=${message.body.size}B\")"),
+              ("log(\"EVENT: 命令处理异常 - ${error.message}\")", "log(\"EVENT: 命令处理异常 - ${error.javaClass.simpleName}（异常文本已脱敏）\")"),
+          ])
+          for before, after in airplay_changes:
+              assert airplay_expected.count(before) == 1, 'AirPlay modesChanged diagnostic baseline drift'
+              airplay_expected = airplay_expected.replace(before, after, 1)
+          assert Path(airplay_path).read_text() == airplay_expected, (
+              'Unexpected AirPlay protocol or session behavior change'
+          )
+          assert 'statusLine.contains("200")' in airplay_expected
+          print('Exact AirPlay modesChanged log-only redaction verified')
+
+          # Raw iAP2 transport payloads may contain identifiers or credentials.
+          # The only allowed new runtime delta is bounded byte-count logging.
+          old_channel = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + channel_path], text=True
+          )
+          expected_channel = old_channel
+          channel_changes = [
+              ('dumpInbound(buffer.copyOf(count))', 'dumpInbound(count)'),
+              ('private fun dumpInbound(bytes: ByteArray) {', 'private fun dumpInbound(count: Int) {'),
+              ('if (bytes.isEmpty() || rxDumpBudget <= 0) return', 'if (count <= 0 || rxDumpBudget <= 0) return'),
+              ('val shown = minOf(bytes.size, rxDumpBudget)', 'val shown = minOf(count, rxDumpBudget)'),
+              ('log("RAW rx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })', 'log("LINK rx: payloadRedactedBytes=$shown")'),
+              ('dumpOutbound(bytes)', 'dumpOutbound(bytes.size)'),
+              ('private fun dumpOutbound(bytes: ByteArray) {', 'private fun dumpOutbound(count: Int) {'),
+              ('val shown = minOf(bytes.size, txDumpBudget)', 'val shown = minOf(count, txDumpBudget)'),
+              ('log("RAW tx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })', 'log("LINK tx: payloadRedactedBytes=$shown")'),
+              ('log("LINK closed: ${failure.message}")', 'log("LINK closed: ${failure.javaClass.simpleName} (detail redacted)")'),
+          ]
+          for before, after in channel_changes:
+              assert expected_channel.count(before) == 1, 'Transport redaction baseline drift'
+              expected_channel = expected_channel.replace(before, after, 1)
+          assert Path(channel_path).read_text() == expected_channel, 'Unexpected transport behavior change'
+          assert 'RAW rx:' not in expected_channel and 'RAW tx:' not in expected_channel
+          assert 'payloadRedactedBytes=$shown' in expected_channel
+          print('Exact iAP2 raw transport payload redaction verified')
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + path], text=True)
+          new = Path(path).read_text()
+          assert old.count('编码=${availabilityFrame.joinToString') == 1
+          assert '编码=${availabilityFrame.joinToString' not in new
+          assert 'deviceId=${carPlayDeviceIdentifier()}' not in new
+          assert 'parsed ssid=${endpoint.ssid}' not in new
+          assert 'ips=${endpoint.ipAddresses}' not in new
+          assert 'device=${endpoint.deviceIdentifier}' not in new
+          assert 'publicKey=${endpoint.publicKey?.take(16)}' not in new
+          assert 'send(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)' in new
+          assert '0x4300 已交给链路发送队列' in new
+          assert 'start4301=' in new
+          assert 'ipCount=${endpoint.ipAddresses.size}' in new
+          assert 'ssidPresent=${endpoint.ssid.isNotBlank()}' in new
+          assert 'deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()}' in new
+          assert '原始体=" + frame.body.joinToString' in old
+          assert '原始体=" + frame.body.joinToString' not in new
+          assert '原始体长度=${frame.body.size}' in new
+          assert 'mac=$mac' not in new
+          assert 'ssid=${wifi.ssid}' not in new
+          assert 'ssidPresent=${wifi.ssid.isNotBlank()}' in new
+          assert '车机身份 name=$name' not in new
+          assert '车机身份 namePresent=${!name.isNullOrBlank()}' in new
+          # Receiver and phone identifiers must never reach diagnostic logs.
+          assert '（$identityText）' not in new
+          assert 'startEASession protocol=$protocolId name=$name' not in new
+          assert '使用真实蓝牙 MAC=$mac' not in new
+          assert 'name=$deviceName mac=$bluetoothMac' not in new
+          assert 'EA 组件[$groupId] protocol=$protocolId name=$name' not in new
+          assert 'model=$model manufacturer=$manufacturer' not in new
+          assert 'srcvers=${endpoint.sourceVersion}' not in new
+          assert new.count('sourceVersionPresent=${!endpoint.sourceVersion.isNullOrBlank()}') == 2
+          assert 'modelPresent=${!model.isNullOrBlank()}' in new
+          assert 'manufacturerPresent=${!manufacturer.isNullOrBlank()}' in new
+          # Non-log transport/handshake code must stay byte-identical.
+          def drop_logs(s):
+              lines = s.splitlines()
+              lines = [line for line in lines if not (
+                  'log("iap2 Buick/GM T17: 0x4300 双参数结构' in line or
+                  'log("iap2 Buick/GM T10: 0x4300 参数字节数' in line or
+                  'log("iap2 Buick/GM T19: parsed ' in line or
+                  'val availabilityFrame = Iap2Csm.encode(Iap2MessageIds.CARPLAY_AVAILABILITY, availabilityBody)' in line or
+                  'Never log the encoded 0x4300 body' in line or
+                  'log("iap2 0x1d01 原始体' in line or
+                  'log("iap2 Buick/GM T10: 无有效本机蓝牙 MAC' in line or
+                  'Identification may include receiver-specific identifiers' in line or
+                  'device=${endpoint.deviceIdentifier} publicKey=' in line or
+                  'deviceIdPresent=${!endpoint.deviceIdentifier.isNullOrBlank()} publicKeyPresent=' in line or
+                  'srcvers=${endpoint.sourceVersion} ips=' in line or
+                  'srcvers=${endpoint.sourceVersion} ipCount=' in line or
+                  'iap2 rx=0x5703 ssid=' in line or
+                  'iap2 rx=0x5703 ssidPresent=' in line or
+                  'iap2 rx=0x1d01 车机身份 name=' in line or
+                  'iap2 rx=0x1d01 车机身份 namePresent=' in line or
+                  'iap2 识别为真车系（' in line or
+                  'iap2 tx=0xea00 startEASession protocol=' in line or
+                  'iap2 Buick/GM T15: 使用真实蓝牙 MAC=' in line or
+                  'iap2 Buick/GM T15: 本机蓝牙 MAC 格式' in line or
+                  'sourceVersionPresent=${!endpoint.sourceVersion.isNullOrBlank()}' in line or
+                  '（name=$deviceName mac=$bluetoothMac）' in line or
+                  '（设备名称与蓝牙标识已脱敏）' in line or
+                  'iap2 0x1d01 EA 组件[' in line
+              )]
+              return '\n'.join(lines)
+          assert drop_logs(old) == drop_logs(new), 'unexpected non-log iAP2 behavior diff'
+          # Exact byte-for-byte audit: only Bluetooth log text and its log-only
+          # device-name lookup may change. Pairing, profile and retry stay intact.
+          bt_old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + bt_path], text=True)
+          bt_new = Path(bt_path).read_text()
+          replacements = [["\"，目标：「${target.name}」${target.address}（只连该设备）\"","\"，已指定目标设备（只连该设备；名称/地址不写入日志）\""],["                val name =\n                    try {\n                        device.name\n                    } catch (_: SecurityException) {\n                        null\n                    } ?: device.address\n",""],["\"BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString(\"/\")}）——已断开\"","\"BT-C: 候选车机处于蓝牙已连接状态（${dropped.joinToString(\"/\")}）——已断开\""],["\"BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）\"","\"BT-C: ✓ 已连入候选车机的无线 iAP2 服务（RFCOMM 建立；身份已脱敏）\""],["\"BT-C: 连接 $name 失败（车机未就绪或不在无线配对窗口），${if (t35Buick) \"6\" else \"3\"} 秒后重试…\"","\"BT-C: 连接候选车机失败（车机未就绪或不在无线配对窗口），${if (t35Buick) \"6\" else \"3\"} 秒后重试…\""],["\"BT-C: 目标设备「${target.name}」(${target.address}) 不在已配对列表\"","\"BT-C: 已指定目标不在已配对列表（名称/地址已脱敏）\""],["\"BT-C T10: pre-session identity=\" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) \"unavailable\" else mac","\"BT-C T10: pre-session identity=\" + if (mac == DeviceIdentity.PLACEHOLDER_MAC) \"unavailable\" else \"present-redacted\""],["log(\"BT-C: SESSION 失败 - ${error.message}\")","log(\"BT-C: SESSION 失败（${error.javaClass.simpleName}；详细原因已脱敏）\")"]]
+          expected_bt = bt_old
+          for before, after in replacements:
+              assert expected_bt.count(before) == 1, 'unexpected BT baseline drift or missing log'
+              expected_bt = expected_bt.replace(before, after)
+          assert bt_new == expected_bt, 'Bluetooth runtime behavior changed outside log redaction'
+          assert 'GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address)' in bt_new
+          assert 'BtProfiles.disconnect(context, device)' in bt_new
+          assert 'TargetDevicePrefs.matches(target, it.address)' in bt_new
+          assert 'channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpoint)' in bt_new
+          # Fail closed: preserve all SessionController networking, UI hints,
+          # pairing, video and session lifecycle; only replace diagnostic text.
+          session_old = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + session_path], text=True
+          )
+          session_expected = session_old
+          session_replacements = [
+              ["BT-PROFILE: 连接前「${target.name}」的蓝牙配置文件状态=", "BT-PROFILE: 连接前指定目标的蓝牙配置文件状态="],
+              ["appendLog(\"CTRL: 广播已在启动连接时发布，此处对齐到热点 ${wifi.ssid}\")","appendLog(\"CTRL: 广播已在启动连接时发布，此处对齐到车机热点（SSID 已脱敏）\")"],
+              ["appendLog(\"WIFI: 用户选择手动连接——等待 WLAN 连上 \\\"${wifi.ssid}\\\"（最长 120 秒）\")","appendLog(\"WIFI: 用户选择手动连接——等待 WLAN 连上车机热点（SSID 已脱敏，最长 120 秒）\")"],
+              ["appendLog(\"WIFI: 已切到车机热点 ${wifi.ssid}\")","appendLog(\"WIFI: 已切到车机热点（SSID 已脱敏）\")"],
+              ["port=${effective.airPlayPort} ips=${effective.ipAddresses}","port=${effective.airPlayPort} ipCount=${effective.ipAddresses.size}"],
+              ["appendLog(\">>> [$source] mDNS 未发现，兜底使用网关地址 $gateway:7000（车机热点网关=车机）\")","appendLog(\">>> [$source] mDNS 未发现，兜底使用网关 port=7000（地址已脱敏）\")"],
+              ["appendLog(\">>> [$source] mDNS 解析到车机地址 $address:${info.port}\")","appendLog(\">>> [$source] mDNS 解析到车机地址（地址已脱敏）port=${info.port}\")"],
+              ["\">>> [$source] 拿到接收端热点：SSID=${endpoint.ssid}；\"","\">>> [$source] 拿到接收端热点：ssidPresent=${endpoint.ssid.isNotBlank()}；\""],
+              ["appendLog(\">>> [Buick T19] 0x4301 SSID=${endpoint.ssid} 当前WiFi=$currentSsid port=${endpoint.airPlayPort} ips=${endpoint.ipAddresses}；优先复用已连接热点\")","appendLog(\">>> [Buick T19] 0x4301 ssidPresent=${endpoint.ssid.isNotBlank()} currentWifiPresent=${!currentSsid.isNullOrBlank()} port=${endpoint.airPlayPort} ipCount=${endpoint.ipAddresses.size}；优先复用已连接热点\")"],
+              ["appendLog(\">>> [$source] 手机当前不在该热点——请到 设置>WLAN 加入 \\\"${endpoint.ssid}\\\" 后断开重连\")","appendLog(\">>> [$source] 手机当前不在车机热点——请到 设置>WLAN 加入已显示的目标热点后断开重连（SSID 已脱敏）\")"],
+              ["appendLog(\"AIRPLAY: 0x4301 端点完整（${endpoint.ipAddresses.firstOrNull()}:${endpoint.airPlayPort}）——直接配对，不等 ctrl 邀请\")","appendLog(\"AIRPLAY: 0x4301 端点完整（ipPresent=${endpoint.ipAddresses.isNotEmpty()} port=${endpoint.airPlayPort}）——直接配对，不等 ctrl 邀请\")"],
+              ["port=${effectiveEndpoint.airPlayPort} ips=${effectiveEndpoint.ipAddresses}","port=${effectiveEndpoint.airPlayPort} ipCount=${effectiveEndpoint.ipAddresses.size}"],
+              ["appendLog(\">>> [$source] 已绑定车机热点 ${endpoint.ssid}，跳过重复绑定\")","appendLog(\">>> [$source] 已绑定车机热点（SSID 已脱敏），跳过重复绑定\")"],
+              ["appendLog(\"WIFI: 等待切换到车机热点（当前 $current）…\")","appendLog(\"WIFI: 等待切换到车机热点（当前WiFi存在=${!current.isNullOrBlank()}；SSID 已脱敏）…\")"],
+              ["appendLog(\">>> [$source] 等待车机热点超时（当前 WiFi: $current）——请到 设置>WLAN 加入 \\\"${endpoint.ssid}\\\" 后重新连接\")","appendLog(\">>> [$source] 等待车机热点超时（当前WiFi存在=${!current.isNullOrBlank()}；SSID 已脱敏）——请到 设置>WLAN 加入已显示的目标热点后重新连接\")"],
+              ["appendLog(\"WIFI: 手机已在车机热点 \\\"$current\\\"——直接绑定\")","appendLog(\"WIFI: 手机已在车机热点（SSID 已脱敏）——直接绑定\")"],
+              ["\">>> 手机不在车机热点 \\\"${wifi.ssid}\\\" 且 Shizuku 未就绪（无法自动加入）——\"","\">>> 手机不在车机热点（SSID 已脱敏）且 Shizuku 未就绪（无法自动加入）——\""],
+              ["\">>> 手机当前 WiFi: ${current ?: \"未连接\"}（非车机热点）——\"","\">>> 当前WiFi存在=${!current.isNullOrBlank()}（非车机热点，SSID 已脱敏）——\""],
+              ["\"经 Shizuku 自动切换到 \\\"${wifi.ssid}\\\"。注意：热点无互联网，系统可能自动切回原 WiFi；\"","\"经 Shizuku 自动切换到车机热点。注意：热点无互联网，系统可能自动切回原 WiFi；\""],
+              ["\"若出现断连，请到 系统设置>WLAN 手动连接 \\\"${wifi.ssid}\\\"（手动连接不会被切回）\"","\"若出现断连，请到 系统设置>WLAN 手动连接目标热点（SSID 已脱敏；手动连接不会被切回）\""],
+              ["\"请到 系统设置>WLAN 手动连接 \\\"${wifi.ssid}\\\"（手动连接不会被自动切回）\"","\"请到 系统设置>WLAN 手动连接目标热点（SSID 已脱敏；手动连接不会被自动切回）\""],
+              ["\">>> 等待 ${WIFI_BIND_WAIT_S}s 仍未绑定到 \\\"${wifi.ssid}\\\"——\"","\">>> 等待 ${WIFI_BIND_WAIT_S}s 仍未绑定到车机热点（SSID 已脱敏）——\""],
+              ["\"WIFI: connect-network 失败（${result.output.take(80).ifEmpty { \"exit=${result.exitCode}\" }}）\"","\"WIFI: connect-network 失败（exit=${result.exitCode}；outputChars=${result.output.length}；原始输出已脱敏）\""],
+              ["appendLog(\"AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.message}\")","appendLog(\"AIRPLAY T42: TEARDOWN 异常（继续清理）- ${it.javaClass.simpleName}（详细异常已脱敏）\")"],
+              ["appendLog(\"AIRPLAY: 配对线程异常 - ${error.message ?: error.javaClass.simpleName}\")","appendLog(\"AIRPLAY: 配对线程异常 - ${error.javaClass.simpleName}（详细异常已脱敏）\")"],
+              ["（uuid=$uuid usage=0x%02x → keyCode=$keyCode）", "（usage=0x%02x → keyCode=$keyCode）"],
+              ["（uuid=$uuid usage=0x%02x）无对应 Android 键，忽略", "（usage=0x%02x）无对应 Android 键，忽略"],
+              ["EVENT: 其他 HID 报告 uuid=$uuid bytes=", "EVENT: 其他 HID 报告 bytes="],
+              [" hex=${report.joinToString(\" \") { \"%02x\".format(it) }}", "（原始HID内容已脱敏）"],
+              ["params=$params", "参数内容已脱敏"],
+              ["                                        val hex = frame.body.joinToString(\" \") { \"%02x\".format(it) }\n", ""],
+              ["if (frame.body.isNotEmpty()) \" hex=${hex.take(120)}\" else \"\"", "\"（原始体已脱敏）\""],
+          ]
+          # Unknown event command types are peer-supplied values; never log them.
+          session_replacements.append([r'''else -> appendLog("EVENT: 命令 type=${command["type"]}")''', r'''else -> appendLog("EVENT: 未识别命令类型（值已脱敏）")'''])
+          assert 'else -> appendLog("EVENT: 命令 type=${command["type"]}")' not in Path(session_path).read_text()
+          session_replacements.append([
+              "                        appendLog(\n                            \"AIRPLAY: ✓ 配对完成 writeKey=\" +\n                                keys.phoneWriteKey.joinToString(\"\") { \"%02x\".format(it) }.take(16) + \"… \" +\n                                \"readKey=\" + keys.phoneReadKey.joinToString(\"\") { \"%02x\".format(it) }.take(16) + \"…\",\n                        )",
+              "                        appendLog(\"AIRPLAY: ✓ 配对完成（会话密钥已脱敏）\")",
+          ])
+          assert 'keys.phoneWriteKey.joinToString' not in Path(session_path).read_text()
+          assert 'keys.phoneReadKey.joinToString' not in Path(session_path).read_text()
+          assert 'BT-PROFILE: 连接前「${target.name}」' not in Path(session_path).read_text()
+          assert 'BT-PROFILE: 连接前指定目标的蓝牙配置文件状态=' in Path(session_path).read_text()
+          for before, after in session_replacements:
+              assert session_expected.count(before) == 1, 'SessionController log baseline drift'
+              session_expected = session_expected.replace(before, after)
+          assert Path(session_path).read_text() == session_expected, (
+              'Unexpected SessionController behavior/UI/networking change'
+          )
+          video_old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + video_path], text=True)
+          video_expected = video_old
+          video_replacements = [
+              [r'''            log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")''',
+               r'''            log("VIDEO: 数据端口已连通（远端地址已脱敏，port=$dataPort；等 RECORD 后启动编码器）")'''],
+              [r'''            log("VIDEO: 数据端口连接失败 - ${error.message}")''',
+               r'''            log("VIDEO: 数据端口连接失败 - ${error.javaClass.simpleName}（详细异常已脱敏，port=$dataPort）")'''],
+              [r'''            log("VIDEO: 启动失败 - ${error.message}")''',
+               r'''            log("VIDEO: 启动失败 - ${error.javaClass.simpleName}（详细异常已脱敏）")'''],
+              [r'''                        log("VIDEO: 编码器取帧异常，停止推流 - ${error.message}")''',
+               r'''                        log("VIDEO: 编码器取帧异常，停止推流 - ${error.javaClass.simpleName}（详细异常已脱敏）")'''],
+              [r'''            log("VIDEO: 推流中止 - ${error.message}（等待接收端恢复后重连）")''',
+               r'''            log("VIDEO: 推流中止 - ${error.javaClass.simpleName}（详细异常已脱敏；等待接收端恢复后重连）")'''],
+          ]
+          for before, after in video_replacements:
+              assert video_expected.count(before) == 1, 'VideoSender diagnostic baseline drift'
+              video_expected = video_expected.replace(before, after)
+          # The shared TCP helper may log Network handles or raw exception
+          # messages. The video-only callsite must forward route class, never
+          # raw helper text, while keeping socket behavior byte-identical.
+          network_before = "                log,\n            )"
+          network_after = "                { networkEvent ->\n                    // CarPlayNetworkSockets may include Network handles or exception\n                    // messages with private endpoint data. Retain only route class.\n                    val route = when {\n                        networkEvent.contains(\"via physical Wi-Fi\") -> \"physical-wifi\"\n                        networkEvent.contains(\"via system LAN route\") -> \"system-route\"\n                        else -> \"fallback-attempt\"\n                    }\n                    log(\"VIDEO: TCP route=$route port=$dataPort (network detail redacted)\")\n                },\n            )"
+          assert video_expected.count(network_before) == 1, 'Video TCP callback baseline drift'
+          video_expected = video_expected.replace(network_before, network_after)
+          assert 'log(networkEvent)' not in Path(video_path).read_text()
+          assert 'log("VIDEO: TCP route=$route port=$dataPort (network detail redacted)")' in Path(video_path).read_text()
+          assert Path(video_path).read_text() == video_expected, (
+              'Unexpected VideoSender runtime or protocol change'
+          )
+          assert '$host:$dataPort' not in Path(video_path).read_text()
+          assert '${error.message}' not in Path(video_path).read_text()
+          # CarPlay ctrl diagnostics must not emit peer addresses, raw HTTP
+          # headers, receiver IDs, BT MAC, or post-response payload bytes.
+          ctrl_old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + ctrl_path], text=True)
+          ctrl_expected = ctrl_old
+          ctrl_changes = [
+            ["log(\"$TAG: 重新注册 mDNS 广播（${registeredSsid ?: \"?\"}${if (force) \"，绑定后时机修正\" else \" → $ssid\"}）\")", "log(\"$TAG: 重新注册 mDNS 广播（SSID 已脱敏；force=$force）\")"],
+            ["log(\"$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id=$mac\")", "log(\"$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE；TXT id 已脱敏\")"],
+            ["log(\"$TAG T11: TXT id=$mac srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}\")", "log(\"$TAG T11: TXT id 已脱敏 srcvers=950.7.1 name=sender service=$SERVICE_TYPE port=${socket.localPort}\")"],
+            ["log(\"$TAG: 蓝牙 MAC 已解析为 $mac——重新注册 ctrl 广播（修复占位 id）\")", "log(\"$TAG: 蓝牙 MAC 已解析（值已脱敏）——重新注册 ctrl 广播（修复占位 id）\")"],
+            ["log(\"$TAG T11: TCP accepted from ${client.inetAddress?.hostAddress ?: \"?\"}:${client.port} to localPort=${client.localPort}\")", "log(\"$TAG T11: TCP accepted (peer redacted) to localPort=${client.localPort}\")"],
+            ["log(\"$TAG: $peer 连入但无请求（EOF）\")", "log(\"$TAG: 对端连入但无请求（EOF；地址已脱敏）\")"],
+            ["            val headers =\n                head\n                    .substringAfter(\"\\r\\n\", \"\")\n                    .lineSequence()\n                    .filter { it.contains(':') }\n                    .joinToString(\"; \") { it.trim() }\n", ""],
+            ["log(\"$TAG: $peer -> [$requestLine] $headers\")", "log(\"$TAG: 收到 ctrl 请求（路径/头部/对端已脱敏；ctrlInt=${requestLine.startsWith(\"GET /ctrl-int/\")}）\")"],
+            ["                val receiverId =\n                    head\n                        .lineSequence()\n                        .firstOrNull {\n                            it.substringBefore(':').trim().equals(\"AirPlay-Receiver-Device-ID\", ignoreCase = true)\n                        }?.substringAfter(':')\n                        ?.trim()\n", ""],
+            ["log(\"$TAG: ✓ 车机 ctrl 邀请（第 $inviteCount 次，receiver=${receiverId ?: \"?\"}）——AirPlay 窗口已开启\")", "log(\"$TAG: ✓ 车机 ctrl 邀请（第 $inviteCount 次，receiver 已脱敏）——AirPlay 窗口已开启\")"],
+            ["                log(\n                    \"$TAG: 应答后收到 ${rest.size()} 字节：\" +\n                        rest.toByteArray().take(64).joinToString(\" \") {\n                            \"%02x\".format(it.toInt() and 0xFF)\n                        },\n                )", "                log(\"$TAG: 应答后收到 ${rest.size()} 字节（内容已脱敏）\")"],
+            ["log(\"$TAG: $peer 连接结束\")", "log(\"$TAG: 对端连接结束（地址已脱敏）\")"],
+            ["log(\"$TAG: $peer 连接异常 - ${error.message}\")", "log(\"$TAG: 对端连接异常 - ${error.javaClass.simpleName}（地址/详情已脱敏）\")"],
+            ["            log(\"$TAG T7: processBoundNetwork=${bound ?: \"(none)\"} activeNetwork=${cm.activeNetwork ?: \"(none)\"}\")","            log(\"$TAG T7: processBound=${bound != null} activeNetworkPresent=${cm.activeNetwork != null}\")"],
+            ["                val props = cm.getLinkProperties(network)\n                val ips = props?.linkAddresses?.joinToString(\",\") { it.address.hostAddress ?: \"?\" }\n                val gateway = props?.routes?.firstOrNull { it.isDefaultRoute }?.gateway?.hostAddress\n                log(\"$TAG T7: wifiNetwork=$network interface=${props?.interfaceName} ips=${ips ?: \"?\"} gateway=${gateway ?: \"?\"} bound=${network == bound}\")","                log(\"$TAG T7: physicalWifi=true bound=${network == bound} (network details redacted)\")"],
+            ["            log(\"$TAG T7: network snapshot failed: ${error.javaClass.simpleName}: ${error.message}\")","            log(\"$TAG T7: network snapshot failed: ${error.javaClass.simpleName} (detail redacted)\")"],
+            ["                log(\"$TAG T30: Wi-Fi multicast lock unavailable: ${error.javaClass.simpleName}: ${error.message}\")","                log(\"$TAG T30: Wi-Fi multicast lock unavailable: ${error.javaClass.simpleName} (detail redacted)\")"],
+            ["            log(\"$TAG T47: NSD physicalHotspot=${serviceWifi ?: \"(none)\"} \" +\n                \"vpnActive=${CarPlayNetworkSockets.isVpnActive(cmForRoute)} \" +\n                \"defaultNetwork=${cmForRoute.activeNetwork ?: \"(none)\"}\")","            log(\"$TAG T47: NSD physicalWifiPresent=${serviceWifi != null} vpnActive=${CarPlayNetworkSockets.isVpnActive(cmForRoute)} defaultNetworkPresent=${cmForRoute.activeNetwork != null}\")"],
+            ["            val nsdInterface = serviceWifi?.let {\n                (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)\n                    .getLinkProperties(it)?.interfaceName\n            } ?: \"(none)\"\n            log(\"$TAG T43: NSD network=${serviceWifi ?: \"(none)\"} interface=$nsdInterface explicit=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null} socketBound=0.0.0.0:${socket.localPort}\")","            log(\"$TAG T43: NSD physicalWifiPresent=${serviceWifi != null} explicit=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceWifi != null} listenerPort=${socket.localPort} (network details redacted)\")"],
+            ["            log(\"$TAG: 启动失败 - ${error.message}\")","            log(\"$TAG: 启动失败 - ${error.javaClass.simpleName} (detail redacted)\")"],
+            ["                        log(\"$TAG T11: SELFTEST TCP PASS via wifi=$wifi address=${ipv4.hostAddress} port=${ownerSocket.localPort} (local-only, not car reachability)\")","                        log(\"$TAG T11: SELFTEST TCP PASS port=${ownerSocket.localPort} (local-only; network details redacted)\")"],
+            ["                    log(\"$TAG T11: SELFTEST TCP FAIL via wifi=$wifi address=${ipv4.hostAddress} port=${ownerSocket.localPort}: ${error.javaClass.simpleName}: ${error.message}\")","                    log(\"$TAG T11: SELFTEST TCP FAIL port=${ownerSocket.localPort}: ${error.javaClass.simpleName} (network/error details redacted)\")"],
+            ["                log(\"$TAG T11: WATCH elapsed=${(index + 1) * 10}s tcpAccepts=$tcpAcceptCount httpRequests=$httpRequestCount ctrlInvites=$inviteCount wifi=${wifiNetwork() ?: \"(none)\"} active=${cm.activeNetwork ?: \"(none)\"} listener=${ownerSocket.localPort}\")","                log(\"$TAG T11: WATCH elapsed=${(index + 1) * 10}s tcpAccepts=$tcpAcceptCount httpRequests=$httpRequestCount ctrlInvites=$inviteCount wifiPresent=${wifiNetwork() != null} activeNetworkPresent=${cm.activeNetwork != null} listener=${ownerSocket.localPort}\")"],
+            ["            log(\"$TAG T11: diagnostic error: ${error.javaClass.simpleName}: ${error.message}\")","            log(\"$TAG T11: diagnostic error: ${error.javaClass.simpleName} (detail redacted)\")"],
+            ["                    log(\"$TAG T12: NSD discovery started type=$serviceType wifi=$wifi (local observation only)\")","                    log(\"$TAG T12: NSD discovery started type=$serviceType wifiPresent=${wifi != null} (local observation only)\")"],
+            ["                    log(\"$TAG T12: NSD FOUND name=${service.serviceName} type=${service.serviceType} port=${service.port} network=${if (Build.VERSION.SDK_INT >= 33) service.network else \"(API<33)\"} (NOT proof of car discovery)\")","                    log(\"$TAG T12: NSD FOUND (name redacted) type=${service.serviceType} port=${service.port} networkPresent=${Build.VERSION.SDK_INT >= 33 && service.network != null} (NOT proof of car discovery)\")"],
+            ["                                    val txtId = resolved.attributes[\"id\"]?.toString(Charsets.UTF_8) ?: \"(missing)\"\n                                    val txtVersion = resolved.attributes[\"srcvers\"]?.toString(Charsets.UTF_8) ?: \"(missing)\"\n                                    log(\"$TAG T13: NSD RESOLVED host=${resolved.host?.hostAddress ?: \"(none)\"} port=${resolved.port} id=$txtId srcvers=$txtVersion network=${if (Build.VERSION.SDK_INT >= 33) resolved.network else \"(API<33)\"} (local-only)\")","                                    log(\"$TAG T13: NSD RESOLVED hostPresent=${resolved.host != null} port=${resolved.port} idPresent=${resolved.attributes.containsKey(\"id\")} srcversPresent=${resolved.attributes.containsKey(\"srcvers\")} networkPresent=${Build.VERSION.SDK_INT >= 33 && resolved.network != null} (local-only; identity redacted)\")"],
+            ["                            log(\"$TAG T13: NSD RESOLVE exception ${error.javaClass.simpleName}: ${error.message}\")","                            log(\"$TAG T13: NSD RESOLVE exception ${error.javaClass.simpleName} (detail redacted)\")"],
+            ["                    log(\"$TAG T12: NSD LOST name=${service.serviceName}\")","                    log(\"$TAG T12: NSD LOST (name redacted)\")"],
+            ["                log(\"$TAG T12: NSD discovery unavailable: ${error.javaClass.simpleName}: ${error.message}\")","                log(\"$TAG T12: NSD discovery unavailable: ${error.javaClass.simpleName} (detail redacted)\")"],
+            ["            log(\"$TAG T12: NSD diagnostic error: ${error.javaClass.simpleName}: ${error.message}\")","            log(\"$TAG T12: NSD diagnostic error: ${error.javaClass.simpleName} (detail redacted)\")"],
+            ["                log(\"$TAG T9: Wi-Fi 查询失败: ${error.message}\")","                log(\"$TAG T9: Wi-Fi 查询失败: ${error.javaClass.simpleName} (detail redacted)\")"],
+            ["                log(\"$TAG T43: 检测到绑定 Wi-Fi 网络切换 ${registeredNetwork ?: \"(none)\"} -> $current；重注册 mDNS\")","                log(\"$TAG T43: 检测到绑定 Wi-Fi 网络切换（句柄已脱敏）；重注册 mDNS\")"],
+            ["                log(\"$TAG: mDNS 注册回调 ${serviceInfo.serviceName} callbackNetwork=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) serviceInfo.network else \"(API<33)\"} callbackPort=${serviceInfo.port} listenerPort=$port（回调端口可能未填充）\")","                log(\"$TAG: mDNS 注册回调（服务名已脱敏） networkPresent=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceInfo.network != null} callbackPort=${serviceInfo.port} listenerPort=$port\")"],
+          ]
+          for before, after in ctrl_changes:
+              assert ctrl_expected.count(before) == 1, 'ctrl log baseline drift'
+              ctrl_expected = ctrl_expected.replace(before, after, 1)
+          ctrl_new = Path(ctrl_path).read_text()
+          assert ctrl_new == ctrl_expected, 'ctrl behavior changed outside reviewed diagnostic redactions'
+          for forbidden in ['TXT id=$mac', '$peer ->', 'receiver=${receiverId', 'rest.toByteArray().take(64)']:
+              assert forbidden not in ctrl_new, 'raw ctrl diagnostic content reintroduced'
+          assert 'requestLine.startsWith("GET /ctrl-int/")' in ctrl_new
+          assert 'output.write(response.toByteArray(Charsets.US_ASCII))' in ctrl_new
+          # NSD callbacks previously exposed peer-controlled TXT values,
+          # service identity, IP and raw network/exception details in logs.
+          # Replay exactly from stable; no discovery or endpoint behavior may change.
+          nsd_expected = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + nsd_path], text=True
+          )
+          nsd_changes = [["log(\"$TAG T47: scoped discovery $serviceType physicalWifi=$carWifiNetwork\")","log(\"$TAG T47: scoped discovery $serviceType (physical Wi-Fi selected; network redacted)\")"],["log(\"$TAG T47: scoped discovery unavailable (${error.message}); trying legacy discovery\")","log(\"$TAG T47: scoped discovery unavailable (${error.javaClass.simpleName}; detail redacted); trying legacy discovery\")"],["log(\"$TAG: 服务发现启动异常 - ${error.message}\")","log(\"$TAG: 服务发现启动异常 - ${error.javaClass.simpleName}（详情已脱敏）\")"],["log(\"$TAG: 发现服务 ${serviceInfo.serviceName} (${serviceInfo.serviceType})，解析中…\")","log(\"$TAG: 发现服务（名称已脱敏，type=${serviceInfo.serviceType}），解析中…\")"],["log(\"$TAG: 服务消失 ${serviceInfo.serviceName}\")","log(\"$TAG: 服务消失（名称已脱敏）\")"],["log(\"$TAG: 解析失败 ${info.serviceName} code=$errorCode\")","log(\"$TAG: 解析失败（名称已脱敏） code=$errorCode\")"],["                    val host = info.host?.hostAddress ?: \"no-host\"\n                    val txt =\n                        info.attributes.entries.joinToString(\", \") { (key, value) ->\n                            val text =\n                                value\n                                    ?.toString(Charsets.UTF_8)\n                                    ?.trimEnd { it.code == 0 }\n                                    .orEmpty()\n                            \"$key=$text\"\n                        }","                    // Preserve the resolved service for the consumer; log counts only.\n                    val txtCount = info.attributes.size"],["log(\"$TAG: OK ${info.serviceName} -> $host:${info.port}${if (accepted) \"\" else \"（非车机，忽略）\"}\")","log(\"$TAG: OK（服务名/地址已脱敏）port=${info.port} txtCount=$txtCount${if (accepted) \"\" else \"（非车机，忽略）\"}\")"],["                    if (txt.isNotEmpty()) log(\"$TAG: TXT $txt\")",""]]
+          for before, after in nsd_changes:
+              assert nsd_expected.count(before) == 1, 'NSD diagnostic baseline drift'
+              nsd_expected = nsd_expected.replace(before, after, 1)
+          nsd_new = Path(nsd_path).read_text()
+          assert nsd_new == nsd_expected, 'Unexpected NSD discovery/endpoint behavior change'
+          assert 'info.attributes.entries.joinToString' not in nsd_new
+          assert 'log("$TAG: TXT $txt")' not in nsd_new
+          assert 'if (accepted) resolved = info' in nsd_new
+          assert 'onEndpoint(info)' in nsd_new
+          # E5 Wi-Fi diagnostics must not disclose SSID, Android Network handles,
+          # interface names or raw Android exception messages. Reconstruct the
+          # precise source from stable and reject all non-log Wi-Fi changes.
+          wifi_expected = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + wifi_path], text=True
+          )
+          wifi_changes = [["log(\"WiFi T47: ignored non-physical Wi-Fi network=$network ($label)\")","log(\"WiFi T47: ignored non-physical Wi-Fi (source=$label; network redacted)\")"],["log(\"WiFi T47: process binding unavailable: ${error.message}\")","log(\"WiFi T47: process binding unavailable: ${error.javaClass.simpleName} (detail redacted)\")"],["        val iface = connectivityManager.getLinkProperties(network)?.interfaceName ?: \"?\"\n        log(\n            \"WiFi T47: car hotspot selected network=$network interface=$iface \" +\n                \"vpnActive=$vpnActive processBound=$bound \" +\n                \"(CarPlay uses physical Wi-Fi per socket; VPN remains enabled)\",\n        )","        log(\n            \"WiFi T47: car hotspot selected (network/interface redacted) \" +\n                \"vpnActive=$vpnActive processBound=$bound \" +\n                \"(CarPlay uses physical Wi-Fi per socket; VPN remains enabled)\",\n        )"],["log(\"WiFi: 已加入应用专属网络 \\\"$ssid\\\"（$network）——不影响其它应用联网\")","log(\"WiFi: 已加入应用专属网络（SSID/Network 已脱敏）——不影响其它应用联网\")"],["log(\"WiFi: 系统未允许加入 \\\"$ssid\\\"（用户拒绝或热点不在范围内）\")","log(\"WiFi: 系统未允许加入应用专属网络（SSID 已脱敏；用户拒绝或热点不在范围内）\")"],["log(\"WiFi: 应用专属网络 \\\"$ssid\\\" 已断开（$network）\")","log(\"WiFi: 应用专属网络已断开（SSID/Network 已脱敏）\")"],["log(\"WiFi: 发起应用专属网络请求失败（${error.message}）——可能需要位置权限或系统不支持\")","log(\"WiFi: 发起应用专属网络请求失败（${error.javaClass.simpleName}；详情已脱敏）——可能需要位置权限或系统不支持\")"],["                \"WiFi: 等待加入 \\\"$ssid\\\" 超时（${timeoutMillis / 1000}s）\" +\n                    if (unavailable.get()) \"——系统已判定不可用\" else \"——系统确认框可能仍在前台\",","                \"WiFi: 等待加入应用专属网络超时（SSID 已脱敏；${timeoutMillis / 1000}s）\" +\n                    if (unavailable.get()) \"——系统已判定不可用\" else \"——系统确认框可能仍在前台\","],["log(\"WiFi: 构造应用专属网络参数失败（${error.message}）\")","log(\"WiFi: 构造应用专属网络参数失败（${error.javaClass.simpleName}；详情已脱敏）\")"],["log(\"WiFi: 已选定当前车机WiFi网络 $network（VPN 存在时不全局改路由）\")","log(\"WiFi: 已选定当前车机WiFi网络（Network 已脱敏；VPN 存在时不全局改路由）\")"],["log(\"WiFi: 绑定的 WiFi 网络已断开（$network）\")","log(\"WiFi: 绑定的 WiFi 网络已断开（Network 已脱敏）\")"]]
+          for before, after in wifi_changes:
+              assert wifi_expected.count(before) == 1, 'Wi-Fi log source baseline drift'
+              wifi_expected = wifi_expected.replace(before, after, 1)
+          wifi_new = Path(wifi_path).read_text()
+          assert wifi_new == wifi_expected, 'Unexpected Wi-Fi binding/callback behavior change'
+          assert 'getLinkProperties(network)?.interfaceName' not in wifi_new
+          for forbidden in ['network=$network', '（$network）', '${error.message}', '"$ssid"']:
+              assert forbidden not in wifi_new, f'Raw Wi-Fi diagnostic content: {forbidden}'
+          assert 'onNetworkLost?.invoke(ssid)' in wifi_new
+          assert 'connectivityManager.bindProcessToNetwork(network)' in wifi_new
+          assert 'connectivityManager.requestNetwork(request, newCallback)' in wifi_new
+          # Physical Wi-Fi socket routing must not leak Android Network IDs or
+          # exception messages. Replay only two log expressions from stable.
+          socket_old = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + socket_path], text=True
+          )
+          socket_expected = socket_old
+          socket_edits = [
+              ('log("CAR-NET T47: TCP $port via physical Wi-Fi network=$physicalWifi")',
+               'log("CAR-NET T47: TCP $port via physical Wi-Fi (network redacted)")'),
+              ('"(${failure.javaClass.simpleName}: ${failure.message}); " +',
+               '"(${failure.javaClass.simpleName}; detail redacted); " +'),
+          ]
+          for before, after in socket_edits:
+              assert socket_expected.count(before) == 1, 'Socket diagnostic baseline drift'
+              socket_expected = socket_expected.replace(before, after, 1)
+          socket_new = Path(socket_path).read_text()
+          assert socket_new == socket_expected, 'Unexpected physical Wi-Fi socket behavior change'
+          assert 'network=$physicalWifi' not in socket_new
+          assert '${failure.message}' not in socket_new
+          assert 'physicalWifi.socketFactory.createSocket()' in socket_new
+          assert 'socket.connect(InetSocketAddress(address, port), timeoutMillis)' in socket_new
+          print('Physical Wi-Fi TCP: two exact log redactions verified')
+
+          print(f'Wi-Fi: {len(wifi_changes)} exact log redactions verified')
+          print(f'NSD: {len(nsd_changes)} exact diagnostic redactions verified')
+          print(f'CarPlay ctrl: {len(ctrl_changes)} exact log-only redactions verified')
+          print(f'VideoSender: {len(video_replacements)} endpoint/exception log redactions verified')
+          print(f'SessionController: {len(session_replacements)} diagnostic-only redactions verified')
+          print('Bluetooth target names, addresses, identity and raw exception text removed from logs')
+          print('iAP2 CSM payload, ACK and handshake unchanged; BT/Wi-Fi/video updates are diagnostic-log-only')
+          PY
+      - name: Android unit tests and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace

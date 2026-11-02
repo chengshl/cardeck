@@ -63,7 +63,7 @@ class WifiCarPlayConnector(
      */
     private fun selectCarWifi(network: Network, label: String): Boolean {
         if (!CarPlayNetworkSockets.isPhysicalWifi(connectivityManager, network)) {
-            log("WiFi T47: ignored non-physical Wi-Fi network=$network ($label)")
+            log("WiFi T47: ignored non-physical Wi-Fi (source=$label; network redacted)")
             return false
         }
         val vpnActive = CarPlayNetworkSockets.isVpnActive(connectivityManager)
@@ -71,15 +71,14 @@ class WifiCarPlayConnector(
             try {
                 connectivityManager.bindProcessToNetwork(network)
             } catch (error: Exception) {
-                log("WiFi T47: process binding unavailable: ${error.message}")
+                log("WiFi T47: process binding unavailable: ${error.javaClass.simpleName} (detail redacted)")
                 false
             }
         } else false
         processBoundByUs.set(bound)
         boundNetwork.set(network)
-        val iface = connectivityManager.getLinkProperties(network)?.interfaceName ?: "?"
         log(
-            "WiFi T47: car hotspot selected network=$network interface=$iface " +
+            "WiFi T47: car hotspot selected (network/interface redacted) " +
                 "vpnActive=$vpnActive processBound=$bound " +
                 "(CarPlay uses physical Wi-Fi per socket; VPN remains enabled)",
         )
@@ -186,13 +185,13 @@ class WifiCarPlayConnector(
                 override fun onAvailable(network: Network) {
                     if (!selectCarWifi(network, "dedicated hotspot")) return
                     result.set(network)
-                    log("WiFi: 已加入应用专属网络 \"$ssid\"（$network）——不影响其它应用联网")
+                    log("WiFi: 已加入应用专属网络（SSID/Network 已脱敏）——不影响其它应用联网")
                     latch.countDown()
                 }
 
                 override fun onUnavailable() {
                     unavailable.set(true)
-                    log("WiFi: 系统未允许加入 \"$ssid\"（用户拒绝或热点不在范围内）")
+                    log("WiFi: 系统未允许加入应用专属网络（SSID 已脱敏；用户拒绝或热点不在范围内）")
                     latch.countDown()
                 }
 
@@ -201,7 +200,7 @@ class WifiCarPlayConnector(
                         if (processBoundByUs.getAndSet(false)) {
                             connectivityManager.bindProcessToNetwork(null)
                         }
-                        log("WiFi: 应用专属网络 \"$ssid\" 已断开（$network）")
+                        log("WiFi: 应用专属网络已断开（SSID/Network 已脱敏）")
                         onNetworkLost?.invoke(ssid)
                     }
                 }
@@ -212,7 +211,7 @@ class WifiCarPlayConnector(
                 connectivityManager.requestNetwork(request, newCallback)
                 true
             } catch (error: Exception) {
-                log("WiFi: 发起应用专属网络请求失败（${error.message}）——可能需要位置权限或系统不支持")
+                log("WiFi: 发起应用专属网络请求失败（${error.javaClass.simpleName}；详情已脱敏）——可能需要位置权限或系统不支持")
                 false
             }
         if (!accepted) {
@@ -235,7 +234,7 @@ class WifiCarPlayConnector(
         val network = result.get()
         if (network == null) {
             log(
-                "WiFi: 等待加入 \"$ssid\" 超时（${timeoutMillis / 1000}s）" +
+                "WiFi: 等待加入应用专属网络超时（SSID 已脱敏；${timeoutMillis / 1000}s）" +
                     if (unavailable.get()) "——系统已判定不可用" else "——系统确认框可能仍在前台",
             )
             release()
@@ -275,7 +274,7 @@ class WifiCarPlayConnector(
             }
             builder.build()
         } catch (error: Exception) {
-            log("WiFi: 构造应用专属网络参数失败（${error.message}）")
+            log("WiFi: 构造应用专属网络参数失败（${error.javaClass.simpleName}；详情已脱敏）")
             null
         }
     }
@@ -304,7 +303,7 @@ class WifiCarPlayConnector(
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     if (!selectCarWifi(network, "current Wi-Fi")) return
-                    log("WiFi: 已选定当前车机WiFi网络 $network（VPN 存在时不全局改路由）")
+                    log("WiFi: 已选定当前车机WiFi网络（Network 已脱敏；VPN 存在时不全局改路由）")
                     if (reported.compareAndSet(false, true)) onResult(true)
                 }
 
@@ -315,7 +314,7 @@ class WifiCarPlayConnector(
 
                 override fun onLost(network: Network) {
                     if (boundNetwork.compareAndSet(network, null)) {
-                        log("WiFi: 绑定的 WiFi 网络已断开（$network）")
+                        log("WiFi: 绑定的 WiFi 网络已断开（Network 已脱敏）")
                     }
                 }
             }

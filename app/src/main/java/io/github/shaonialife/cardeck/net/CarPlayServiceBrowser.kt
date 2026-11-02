@@ -76,10 +76,10 @@ class CarPlayServiceBrowser(
                     discoveryListener,
                 )
                 discovering = true
-                log("$TAG T47: scoped discovery $serviceType physicalWifi=$carWifiNetwork")
+                log("$TAG T47: scoped discovery $serviceType (physical Wi-Fi selected; network redacted)")
                 return
             } catch (error: Exception) {
-                log("$TAG T47: scoped discovery unavailable (${error.message}); trying legacy discovery")
+                log("$TAG T47: scoped discovery unavailable (${error.javaClass.simpleName}; detail redacted); trying legacy discovery")
             }
         }
         try {
@@ -87,7 +87,7 @@ class CarPlayServiceBrowser(
             nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
             discovering = true
         } catch (error: Exception) {
-            log("$TAG: 服务发现启动异常 - ${error.message}")
+            log("$TAG: 服务发现启动异常 - ${error.javaClass.simpleName}（详情已脱敏）")
         }
     }
 
@@ -120,12 +120,12 @@ class CarPlayServiceBrowser(
             override fun onDiscoveryStopped(serviceType: String) = Unit
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                log("$TAG: 发现服务 ${serviceInfo.serviceName} (${serviceInfo.serviceType})，解析中…")
+                log("$TAG: 发现服务（名称已脱敏，type=${serviceInfo.serviceType}），解析中…")
                 resolveWithRetry(serviceInfo, attempts = 3)
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                log("$TAG: 服务消失 ${serviceInfo.serviceName}")
+                log("$TAG: 服务消失（名称已脱敏）")
             }
         }
 
@@ -145,25 +145,17 @@ class CarPlayServiceBrowser(
                             resolveWithRetry(info, attempts - 1)
                         }.start()
                     } else {
-                        log("$TAG: 解析失败 ${info.serviceName} code=$errorCode")
+                        log("$TAG: 解析失败（名称已脱敏） code=$errorCode")
                     }
                 }
 
                 override fun onServiceResolved(info: NsdServiceInfo) {
-                    val host = info.host?.hostAddress ?: "no-host"
-                    val txt =
-                        info.attributes.entries.joinToString(", ") { (key, value) ->
-                            val text =
-                                value
-                                    ?.toString(Charsets.UTF_8)
-                                    ?.trimEnd { it.code == 0 }
-                                    .orEmpty()
-                            "$key=$text"
-                        }
+                    // Preserve the resolved service for the consumer; log counts only.
+                    val txtCount = info.attributes.size
                     // 验收放在缓存之前：非车机端点（如同一 WiFi 上的 Mac）不得污染 awaitEndpoint
                     val accepted = accept(info)
-                    log("$TAG: OK ${info.serviceName} -> $host:${info.port}${if (accepted) "" else "（非车机，忽略）"}")
-                    if (txt.isNotEmpty()) log("$TAG: TXT $txt")
+                    log("$TAG: OK（服务名/地址已脱敏）port=${info.port} txtCount=$txtCount${if (accepted) "" else "（非车机，忽略）"}")
+
                     if (accepted) resolved = info
                     onEndpoint(info)
                 }

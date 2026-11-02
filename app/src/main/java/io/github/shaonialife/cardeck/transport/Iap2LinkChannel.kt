@@ -181,7 +181,7 @@ class Iap2LinkChannel(
                     if (terminated) return
                     rxBytesTotal += count.toLong()
                     rxReadCalls++
-                    dumpInbound(buffer.copyOf(count))
+                    dumpInbound(count)
                     engine.feed(buffer.copyOf(count), nowMillis())
                     processEventsLocked()
                     drainOutputLocked()
@@ -197,10 +197,10 @@ class Iap2LinkChannel(
      * 原始字节抓包（真车字节级对照的唯一手段）：每方向仅转储前
      * [RAW_DUMP_LIMIT] 字节，防止长期会话日志爆炸。
      */
-    private fun dumpInbound(bytes: ByteArray) {
-        if (bytes.isEmpty() || rxDumpBudget <= 0) return
-        val shown = minOf(bytes.size, rxDumpBudget)
-        log("RAW rx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })
+    private fun dumpInbound(count: Int) {
+        if (count <= 0 || rxDumpBudget <= 0) return
+        val shown = minOf(count, rxDumpBudget)
+        log("LINK rx: payloadRedactedBytes=$shown")
         rxDumpBudget -= shown
     }
 
@@ -257,7 +257,7 @@ class Iap2LinkChannel(
     private fun drainOutputLocked() {
         val bytes = engine.takeOutput()
         if (bytes.isEmpty()) return
-        dumpOutbound(bytes)
+        dumpOutbound(bytes.size)
         try {
             stream.write(bytes)
         } catch (error: IOException) {
@@ -266,10 +266,10 @@ class Iap2LinkChannel(
         signalReadyLocked()
     }
 
-    private fun dumpOutbound(bytes: ByteArray) {
+    private fun dumpOutbound(count: Int) {
         if (txDumpBudget <= 0) return
-        val shown = minOf(bytes.size, txDumpBudget)
-        log("RAW tx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })
+        val shown = minOf(count, txDumpBudget)
+        log("LINK tx: payloadRedactedBytes=$shown")
         txDumpBudget -= shown
     }
 
@@ -293,7 +293,7 @@ class Iap2LinkChannel(
         lock.notifyAll()
         runCatching { stream.close() }
         if (failure != null) {
-            log("LINK closed: ${failure.message}")
+            log("LINK closed: ${failure.javaClass.simpleName} (detail redacted)")
         } else {
             log("LINK closed")
         }
