@@ -14,6 +14,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/WifiCarPlayConnector.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayNetworkSockets.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -61,7 +62,30 @@ jobs:
           nsd_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
           wifi_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/WifiCarPlayConnector.kt'
           socket_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayNetworkSockets.kt'
-          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, nsd_path, wifi_path, socket_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          airplay_path = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, nsd_path, wifi_path, socket_path, airplay_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+
+          # Peer-controlled RTSP status text and platform IOException details must
+          # not enter exported modesChanged diagnostics. Preserve the exact
+          # request, response success predicate and all other AirPlay behavior.
+          airplay_old = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + airplay_path], text=True
+          )
+          airplay_expected = airplay_old
+          airplay_changes = [
+              (r'''log("AIRPLAY: modesChanged（声明持有主屏/主音频资源）[$statusLine]")''',
+               r'''log("AIRPLAY: modesChanged（声明持有主屏/主音频资源；statusOk=${statusLine.contains("200")}；原始状态行已脱敏）")'''),
+              (r'''log("AIRPLAY: modesChanged 失败 - ${error.message}")''',
+               r'''log("AIRPLAY: modesChanged 失败 - ${error.javaClass.simpleName}（详细异常已脱敏）")'''),
+          ]
+          for before, after in airplay_changes:
+              assert airplay_expected.count(before) == 1, 'AirPlay modesChanged diagnostic baseline drift'
+              airplay_expected = airplay_expected.replace(before, after, 1)
+          assert Path(airplay_path).read_text() == airplay_expected, (
+              'Unexpected AirPlay protocol or session behavior change'
+          )
+          assert 'statusLine.contains("200")' in airplay_expected
+          print('Exact AirPlay modesChanged log-only redaction verified')
 
           # Raw iAP2 transport payloads may contain identifiers or credentials.
           # The only allowed new runtime delta is bounded byte-count logging.
