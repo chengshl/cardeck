@@ -43,13 +43,13 @@ object CarPlayNetworkSockets {
             try {
                 socket = physicalWifi.socketFactory.createSocket()
                 socket.connect(InetSocketAddress(address, port), timeoutMillis)
-                log("CAR-NET T47: TCP $port via physical Wi-Fi network=$physicalWifi")
+                log("CAR-NET T47: TCP $port via physical Wi-Fi (network redacted)")
                 return socket
             } catch (failure: Exception) {
                 runCatching { socket?.close() }
                 log(
                     "CAR-NET T47: explicit Wi-Fi TCP $port unavailable " +
-                        "(${failure.javaClass.simpleName}: ${failure.message}); " +
+                        "(${failure.javaClass.simpleName}; detail redacted); " +
                         "trying system LAN route (VPN rules apply)",
                 )
             }
