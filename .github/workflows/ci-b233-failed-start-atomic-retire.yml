@@ -1,0 +1,95 @@
+name: B233 failed-start atomic sender retirement (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-failed-start-atomic-retire-11
+  pull_request:
+    branches:
+      - experiment/buick-b233-sender-state-atomic-handoff-11
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: b233-failed-start-retire-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact verified parent, old race negative control and scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=390c121c0b71361f0b971a18aa37e3ce90d19c3c
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41444245191 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41444245191 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-failed-start-atomic-retire.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwner.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt' \
+            | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = '390c121c0b71361f0b971a18aa37e3ce90d19c3c'
+          session = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          owner = 'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwner.kt'
+          tests = 'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt'
+          old = subprocess.check_output(['git','show',base+':'+session], text=True)
+          new = Path(session).read_text()
+          begin = '            if (!sender.start(projection)) {'
+          end = '        } catch (error: Exception) {'
+          before = old.split(begin,1)[1].split(end,1)[0]
+          after = new.split(begin,1)[1].split(end,1)[0]
+          assert 'if (!client.currentEndpoint.isBuickB233 || callbackOwner.owns(audioSender)) {' in before
+          assert 'callbackOwner.retireIfCurrent(' not in before
+          assert 'if (!client.currentEndpoint.isBuickB233 || callbackOwner.owns(audioSender)) {' not in after
+          assert 'callbackOwner.retireIfCurrent(' in after
+          assert 'isCurrentSession = { currentClient === client }' in after
+          assert 'activeSender = { audioSender }' in after
+          assert new.count('callbackOwner.retireIfCurrent(') == 1
+          assert 'synchronized(this@SessionController)' in new
+          # Production diff is confined to the failed-start branch.
+          diff = subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--',session], text=True)
+          assert diff.count('@@ ') == 1, 'unexpected SessionController edit'
+          old_helper = subprocess.check_output(['git','show',base+':'+owner], text=True)
+          new_helper = Path(owner).read_text()
+          assert 'fun retireIfCurrent(' not in old_helper
+          assert 'fun retireIfCurrent(' in new_helper
+          assert 'Boolean = synchronized(lock)' in new_helper
+          assert new_helper.index('if (!isCurrentSession() || !owns(activeSender()))') > new_helper.index('Boolean = synchronized(lock)')
+          old_tests = subprocess.check_output(['git','show',base+':'+tests], text=True)
+          new_tests = Path(tests).read_text()
+          assert 'failedStartRetirementCannotRaceReplacementPublication' not in old_tests
+          assert 'failedStartRetirementCannotRaceReplacementPublication' in new_tests
+          assert 'assertFalse(finished.await(100, TimeUnit.MILLISECONDS))' in new_tests
+          print('Old check-then-clear race reproduced; new retirement shares sender handoff lock, strict scope confirmed.')
+          PY
+      - name: Android full JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only; no signing, Release, install, stable merge or network changes.
