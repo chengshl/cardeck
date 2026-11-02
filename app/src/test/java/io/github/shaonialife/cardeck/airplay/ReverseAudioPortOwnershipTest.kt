@@ -16,6 +16,19 @@ class ReverseAudioPortOwnershipTest {
     }
 
     @Test
+    fun staleAcceptedSetupCannotActivateAfterReplacement() {
+        val originalPort = Any()
+        val replacementPort = Any()
+        assertFalse(canActivateAcceptedAudioSetup(true, originalPort, replacementPort))
+        assertFalse(canActivateAcceptedAudioSetup(true, originalPort, null))
+        assertTrue(canActivateAcceptedAudioSetup(true, originalPort, originalPort))
+        // A B233 profile that never advertises reverse RTCP is unaffected.
+        assertTrue(canActivateAcceptedAudioSetup(true, null, replacementPort))
+        // Other receivers retain their previous accepted-SETUP behavior.
+        assertTrue(canActivateAcceptedAudioSetup(false, originalPort, replacementPort))
+    }
+
+    @Test
     fun absentOrUnownedListenerNeverCloses() {
         val originalPort = Any()
         assertFalse(ownsReverseAudioPort(null, originalPort))
