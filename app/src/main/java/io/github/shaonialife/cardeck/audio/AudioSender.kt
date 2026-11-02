@@ -35,11 +35,6 @@ internal fun connectOwnedAudioDatagramSocket(
 }
 
 /**
- * Fail closed for B233 if the intended vehicle Network rejects UDP binding.
- * A failed bind must never silently fall through to Android's default route.
- * Legacy receivers keep their existing best-effort behavior.
- */
-/**
  * Only B233 PCM with a negotiated RTCP control port requires successful
  * local RTCP transport setup before beginning RTP. Modern B233 AAC deliberately
  * sends no classic RTCP, and legacy receivers retain best-effort startup.
@@ -51,6 +46,11 @@ internal fun requiresB233AudioSyncStartup(
     controlPort: Int,
 ): Boolean = failClosedOnVehicleNetworkBind && sendLegacyAudioSyncPackets && controlPort > 0
 
+/**
+ * Fail closed for B233 if the intended vehicle Network rejects UDP binding.
+ * A failed bind must never silently fall through to Android's default route.
+ * Legacy receivers keep their existing best-effort behavior.
+ */
 internal fun bindOwnedAudioDatagramSocket(
     socket: DatagramSocket,
     bind: (() -> Unit)?,
