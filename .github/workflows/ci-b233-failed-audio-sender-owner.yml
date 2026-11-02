@@ -1,0 +1,97 @@
+name: B233 failed audio sender ownership cleanup (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-failed-audio-sender-owner-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-preclaim-route-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-failed-sender-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact verified parent, negative control, scope and production identity gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=d8b22ba809039dc66a86c5455b08396ef9ffd50e
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41369343512 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41369343512 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-failed-audio-sender-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt > /tmp/parent-session.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/parent-session.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          before = """            if (!sender.start(projection)) {
+                          client.closeReverseAudioControlPort()
+                          audioSender = null
+                          activeAudioProfile = null
+                          activeAudioStartedAt = 0L
+                          b233AudioStartedInSession = false
+                          false
+                      } else {
+                          true
+                      }""".replace('                          ', '                ')
+          after = """            if (!sender.start(projection)) {
+                          // A B233 sender can finish its failed start after a replacement
+                          // has already published a new reverse RTCP listener and sender.
+                          // Retire only the failed attempt's resources, not the replacement.
+                          if (client.currentEndpoint.isBuickB233) {
+                              client.closeReverseAudioControlPortIfOwner(reversePortOwner)
+                          } else {
+                              client.closeReverseAudioControlPort()
+                          }
+                          if (!client.currentEndpoint.isBuickB233 || callbackOwner.owns(audioSender)) {
+                              audioSender = null
+                              activeAudioProfile = null
+                              activeAudioStartedAt = 0L
+                              b233AudioStartedInSession = false
+                          }
+                          false
+                      } else {
+                          true
+                      }""".replace('                          ', '                ')
+          assert old.count(before) == 1, 'old B233 unsafe failed-start cleanup missing'
+          assert new == old.replace(before, after, 1), 'production change outside ownership cleanup'
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt').read_text()
+          parent_tests = __import__('subprocess').check_output(['git','show', 'd8b22ba809039dc66a86c5455b08396ef9ffd50e:app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt'], text=True)
+          assert 'failedStartupFromOldSenderCannotClearReplacement' not in parent_tests
+          assert 'failedStartupFromOldSenderCannotClearReplacement' in tests
+          assert 'activeSender === replacementSender' in tests
+          assert 'failedAttemptOwner.owns(activeSender)' in tests
+          print('parent unsafe cleanup confirmed; B233 owner-fenced failure and legacy unchanged')
+          PY
+      - name: Android negative regression, full JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft offline only. No signing, Release, install, merge or network configuration.
