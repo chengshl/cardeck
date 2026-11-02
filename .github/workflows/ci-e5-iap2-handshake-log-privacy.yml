@@ -12,6 +12,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/net/WifiCarPlayConnector.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -57,7 +58,8 @@ jobs:
           channel_path = 'app/src/main/java/io/github/shaonialife/cardeck/transport/Iap2LinkChannel.kt'
           ctrl_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
           nsd_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
-          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, nsd_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          wifi_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/WifiCarPlayConnector.kt'
+          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, nsd_path, wifi_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
 
           # Raw iAP2 transport payloads may contain identifiers or credentials.
           # The only allowed new runtime delta is bounded byte-count logging.
@@ -316,6 +318,25 @@ jobs:
           assert 'log("$TAG: TXT $txt")' not in nsd_new
           assert 'if (accepted) resolved = info' in nsd_new
           assert 'onEndpoint(info)' in nsd_new
+          # E5 Wi-Fi diagnostics must not disclose SSID, Android Network handles,
+          # interface names or raw Android exception messages. Reconstruct the
+          # precise source from stable and reject all non-log Wi-Fi changes.
+          wifi_expected = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + wifi_path], text=True
+          )
+          wifi_changes = [["log(\"WiFi T47: ignored non-physical Wi-Fi network=$network ($label)\")","log(\"WiFi T47: ignored non-physical Wi-Fi (source=$label; network redacted)\")"],["log(\"WiFi T47: process binding unavailable: ${error.message}\")","log(\"WiFi T47: process binding unavailable: ${error.javaClass.simpleName} (detail redacted)\")"],["        val iface = connectivityManager.getLinkProperties(network)?.interfaceName ?: \"?\"\n        log(\n            \"WiFi T47: car hotspot selected network=$network interface=$iface \" +\n                \"vpnActive=$vpnActive processBound=$bound \" +\n                \"(CarPlay uses physical Wi-Fi per socket; VPN remains enabled)\",\n        )","        log(\n            \"WiFi T47: car hotspot selected (network/interface redacted) \" +\n                \"vpnActive=$vpnActive processBound=$bound \" +\n                \"(CarPlay uses physical Wi-Fi per socket; VPN remains enabled)\",\n        )"],["log(\"WiFi: 已加入应用专属网络 \\\"$ssid\\\"（$network）——不影响其它应用联网\")","log(\"WiFi: 已加入应用专属网络（SSID/Network 已脱敏）——不影响其它应用联网\")"],["log(\"WiFi: 系统未允许加入 \\\"$ssid\\\"（用户拒绝或热点不在范围内）\")","log(\"WiFi: 系统未允许加入应用专属网络（SSID 已脱敏；用户拒绝或热点不在范围内）\")"],["log(\"WiFi: 应用专属网络 \\\"$ssid\\\" 已断开（$network）\")","log(\"WiFi: 应用专属网络已断开（SSID/Network 已脱敏）\")"],["log(\"WiFi: 发起应用专属网络请求失败（${error.message}）——可能需要位置权限或系统不支持\")","log(\"WiFi: 发起应用专属网络请求失败（${error.javaClass.simpleName}；详情已脱敏）——可能需要位置权限或系统不支持\")"],["                \"WiFi: 等待加入 \\\"$ssid\\\" 超时（${timeoutMillis / 1000}s）\" +\n                    if (unavailable.get()) \"——系统已判定不可用\" else \"——系统确认框可能仍在前台\",","                \"WiFi: 等待加入应用专属网络超时（SSID 已脱敏；${timeoutMillis / 1000}s）\" +\n                    if (unavailable.get()) \"——系统已判定不可用\" else \"——系统确认框可能仍在前台\","],["log(\"WiFi: 构造应用专属网络参数失败（${error.message}）\")","log(\"WiFi: 构造应用专属网络参数失败（${error.javaClass.simpleName}；详情已脱敏）\")"],["log(\"WiFi: 已选定当前车机WiFi网络 $network（VPN 存在时不全局改路由）\")","log(\"WiFi: 已选定当前车机WiFi网络（Network 已脱敏；VPN 存在时不全局改路由）\")"],["log(\"WiFi: 绑定的 WiFi 网络已断开（$network）\")","log(\"WiFi: 绑定的 WiFi 网络已断开（Network 已脱敏）\")"]]
+          for before, after in wifi_changes:
+              assert wifi_expected.count(before) == 1, 'Wi-Fi log source baseline drift'
+              wifi_expected = wifi_expected.replace(before, after, 1)
+          wifi_new = Path(wifi_path).read_text()
+          assert wifi_new == wifi_expected, 'Unexpected Wi-Fi binding/callback behavior change'
+          assert 'getLinkProperties(network)?.interfaceName' not in wifi_new
+          for forbidden in ['network=$network', '（$network）', '${error.message}', '"$ssid"']:
+              assert forbidden not in wifi_new, f'Raw Wi-Fi diagnostic content: {forbidden}'
+          assert 'onNetworkLost?.invoke(ssid)' in wifi_new
+          assert 'connectivityManager.bindProcessToNetwork(network)' in wifi_new
+          assert 'connectivityManager.requestNetwork(request, newCallback)' in wifi_new
+          print(f'Wi-Fi: {len(wifi_changes)} exact log redactions verified')
           print(f'NSD: {len(nsd_changes)} exact diagnostic redactions verified')
           print(f'CarPlay ctrl: {len(ctrl_changes)} exact log-only redactions verified')
           print(f'VideoSender: {len(video_replacements)} endpoint/exception log redactions verified')
