@@ -75,6 +75,20 @@ jobs:
               assert before == after, f'BT-B shared runtime changed: {runtime_path}'
           old_air = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + air], text=True)
           new_air = Path(air).read_text()
+          # This L3 BT-B branch must not reintroduce raw RTSP status/error
+          # diagnostics while preserving the original modesChanged result test.
+          # Lock the complete reviewed AirPlay source blob; any further edit
+          # requires an explicit re-review and a new exact-source lease.
+          reviewed_air_blob = '5db1e4fa3b6c954279cb3a392e1b817f724b1ec2'
+          actual_air_blob = subprocess.check_output(
+              ['git', 'hash-object', air], text=True
+          ).strip()
+          assert actual_air_blob == reviewed_air_blob, (
+              f'Unreviewed BT-B AirPlay source drift: {actual_air_blob}'
+          )
+          assert 'val succeeded = statusLine.contains("200")' in new_air
+          assert '；成功=$succeeded；响应内容已脱敏）' in new_air
+          assert 'modesChanged 失败（${error.javaClass.simpleName}；详细内容已脱敏）' in new_air
           assert old_air.count('fun assertModes(): Boolean') == 1
           assert new_air.count('fun assertModes(claimAudioResource: Boolean = true): Boolean') == 1
           assert new_air.count('AirPlayModeClaims.resources(claimAudioResource)') == 1
