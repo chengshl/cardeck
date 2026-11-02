@@ -52,6 +52,35 @@ class AudioSenderCallbackOwnerTest {
     }
 
     @Test
+    fun lateExceptionCannotClearReplacementOrDifferentSession() {
+        val failedSender = Any()
+        val replacementSender = Any()
+        val failedOwner = AudioSenderCallbackOwner().apply { bind(failedSender) }
+        var activeSender: Any? = replacementSender
+        var sameClient = true
+        var clears = 0
+        fun cleanupOnException(owner: AudioSenderCallbackOwner?) {
+            if (sameClient && owner?.owns(activeSender) == true) {
+                activeSender = null
+                clears++
+            }
+        }
+
+        cleanupOnException(failedOwner) // The newer sender must survive.
+        assertTrue(activeSender === replacementSender)
+        cleanupOnException(null) // Exception before an owner was bound.
+        assertTrue(activeSender === replacementSender)
+        activeSender = failedSender
+        sameClient = false // Old session must not clear a new session.
+        cleanupOnException(failedOwner)
+        assertTrue(activeSender === failedSender)
+        sameClient = true
+        cleanupOnException(failedOwner) // Only its own current sender may retire.
+        assertEquals(null, activeSender)
+        assertEquals(1, clears)
+    }
+
+    @Test
     fun unboundNullAndRetiredSendersCannotPassOwnership() {
         val sender = Any()
         val gate = AudioSenderCallbackOwner()
