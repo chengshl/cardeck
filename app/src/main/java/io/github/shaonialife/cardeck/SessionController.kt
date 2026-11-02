@@ -1768,7 +1768,20 @@ object SessionController {
                 client.closeReverseAudioControlPort()
             }
             appendLog("AUDIO: 通道启动异常 - ${if (client.currentEndpoint.isBuickB233) audioDiagnosticFailure(error, true) else error.message}")
-            if (!client.currentEndpoint.isBuickB233 || failedAttemptStillCurrent) {
+            if (client.currentEndpoint.isBuickB233) {
+                // A stale exception must not retire a sender published after
+                // the earlier ownership check. Share the B233 handoff lock.
+                exceptionSenderOwner?.retireIfCurrent(
+                    lock = this,
+                    isCurrentSession = { currentClient === client },
+                    activeSender = { audioSender },
+                ) {
+                    audioSender = null
+                    activeAudioProfile = null
+                    activeAudioStartedAt = 0L
+                    b233AudioStartedInSession = false
+                }
+            } else {
                 audioSender = null
                 activeAudioProfile = null
                 activeAudioStartedAt = 0L

@@ -1,0 +1,74 @@
+name: B233 late audio exception atomic retirement (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-exception-atomic-retire-11
+  pull_request:
+    branches:
+      - experiment/buick-b233-failed-start-atomic-retire-11
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: b233-exception-retire-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verified parent, old-race negative control, strict production scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=f6f2e7cb6dea82e21fceb831eceeaaa0e5febb13
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41454339222 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41454339222 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-exception-atomic-retire.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = 'f6f2e7cb6dea82e21fceb831eceeaaa0e5febb13'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          old = subprocess.check_output(['git','show',base+':'+path], text=True)
+          new = Path(path).read_text()
+          before = "            if (!client.currentEndpoint.isBuickB233 || failedAttemptStillCurrent) {\n                audioSender = null\n                activeAudioProfile = null\n                activeAudioStartedAt = 0L\n                b233AudioStartedInSession = false\n            }"
+          after = "            if (client.currentEndpoint.isBuickB233) {\n                // A stale exception must not retire a sender published after\n                // the earlier ownership check. Share the B233 handoff lock.\n                exceptionSenderOwner?.retireIfCurrent(\n                    lock = this,\n                    isCurrentSession = { currentClient === client },\n                    activeSender = { audioSender },\n                ) {\n                    audioSender = null\n                    activeAudioProfile = null\n                    activeAudioStartedAt = 0L\n                    b233AudioStartedInSession = false\n                }\n            } else {\n                audioSender = null\n                activeAudioProfile = null\n                activeAudioStartedAt = 0L\n                b233AudioStartedInSession = false\n            }"
+          assert old.count(before) == 1, 'parent unsafe exception check-then-clear not found'
+          assert new == old.replace(before, after, 1), 'production changes outside exception retirement'
+          assert new.count('exceptionSenderOwner?.retireIfCurrent(') == 1
+          assert 'if (failedAttemptStillCurrent) {\n                    client.closeReverseAudioControlPortIfOwner(exceptionPortOwner)' in new
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt').read_text()
+          assert 'failedStartRetirementCannotRaceReplacementPublication' in tests
+          assert 'lateExceptionCannotClearReplacementOrDifferentSession' in tests
+          print('Old unsafe exception cleanup rejected; new atomic B233 retirement and legacy behavior verified.')
+          PY
+      - name: Existing lock-race JUnit, full Android JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft offline only: no signing, Release, install, stable merge or network changes.
