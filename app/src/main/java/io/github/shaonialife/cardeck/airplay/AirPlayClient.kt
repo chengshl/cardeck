@@ -31,6 +31,15 @@ import java.util.UUID
 internal fun ownsReverseAudioPort(current: Any?, expected: Any?): Boolean =
     expected != null && current === expected
 
+/** A late accepted B233 SETUP must not activate a stream whose RTCP listener was replaced. */
+internal fun canActivateAcceptedAudioSetup(
+    isBuickB233: Boolean,
+    advertisedListener: Any?,
+    currentListener: Any?,
+): Boolean =
+    !isBuickB233 || advertisedListener == null ||
+        ownsReverseAudioPort(currentListener, advertisedListener)
+
 /** B233 iAP2 handshake and control bytes must not enter uploadable logs. */
 internal fun safeB233IapPayloadLog(payload: ByteArray): String =
     "payload=${payload.size}B redacted"
@@ -2153,6 +2162,18 @@ class AirPlayClient(
         if (dataPort == 0) {
             retireFailedSetupPort()
             log(if (endpoint.isBuickB233) B233AudioSetupLog.missingDataPort() else "AIRPLAY: 音频流未返回 dataPort（$audio）")
+            return null
+        }
+        // An old B233 SETUP may return 200 after a newer SETUP replaced its
+        // phone-local RTCP listener. Do not start an orphaned audio sender.
+        // The accepted peer stream remains conservatively marked as uncertain.
+        if (!canActivateAcceptedAudioSetup(
+                endpoint.isBuickB233,
+                setupPortOwner,
+                reverseAudioControlPortOwner(),
+            )
+        ) {
+            log("AUDIO: B233 audio_setup_superseded; skip stale accepted stream")
             return null
         }
         val streamKey =
