@@ -398,7 +398,8 @@ class VideoSender(
         if (synchronized(dataPortLock) { !running.get() || dataPortEpoch != epoch || configSent }) return
         val format = codec.outputFormat
         val sps = format.getByteBuffer("csd-0")?.duplicate() ?: return
-        val pps = format.getByteBuffer("csd-1")?.duplicate() ?: return
+        // Some AVC encoders place both Annex-B SPS and PPS in csd-0.
+        val pps = format.getByteBuffer("csd-1")?.duplicate()
         fun asAnnexB(buffer: java.nio.ByteBuffer): ByteArray {
             val bytes = ByteArray(buffer.remaining())
             buffer.get(bytes)
@@ -408,7 +409,7 @@ class VideoSender(
                     (bytes.size >= 4 && bytes[2] == 0.toByte() && bytes[3] == 1.toByte()))
             return if (prefixed) bytes else byteArrayOf(0, 0, 0, 1) + bytes
         }
-        val csd = asAnnexB(sps) + asAnnexB(pps)
+        val csd = asAnnexB(sps) + (pps?.let(::asAnnexB) ?: byteArrayOf())
         sendVideoConfig(java.nio.ByteBuffer.wrap(csd), csd.size, output, epoch)
     }
 
