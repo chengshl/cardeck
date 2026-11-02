@@ -39,6 +39,20 @@ class ReverseAudioPortOwnershipTest {
     }
 
     @Test
+    fun failedReversePortBindPreservesActiveListenerUntilReplacementIsReady() {
+        val active = Any()
+        val replacement = Any()
+        var retired: Any? = null
+        val failed = installReadyReverseAudioPort(active, null) { retired = it }
+        assertTrue(failed === active)
+        assertTrue(retired == null)
+
+        val accepted = installReadyReverseAudioPort(failed, replacement) { retired = it }
+        assertTrue(accepted === replacement)
+        assertTrue(retired === active)
+    }
+
+    @Test
     fun absentOrUnownedListenerNeverCloses() {
         val originalPort = Any()
         assertFalse(ownsReverseAudioPort(null, originalPort))
