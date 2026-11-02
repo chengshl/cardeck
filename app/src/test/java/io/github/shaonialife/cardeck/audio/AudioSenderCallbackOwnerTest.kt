@@ -3,6 +3,9 @@ package io.github.shaonialife.cardeck.audio
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertSame
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Test
 
 class AudioSenderCallbackOwnerTest {
@@ -117,6 +120,62 @@ class AudioSenderCallbackOwnerTest {
         assertEquals(null, activeProfile)
         assertEquals(0L, startedAt)
         assertFalse(sessionAudioStarted)
+    }
+
+    @Test
+    fun failedStartRetirementCannotRaceReplacementPublication() {
+        val lock = Any()
+        val failedSender = Any()
+        val replacement = Any()
+        val failedOwner = AudioSenderCallbackOwner().apply { bind(failedSender) }
+        var activeSender: Any? = failedSender
+        var profile: String? = "failed"
+        var retirements = 0
+        val entered = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val worker = Thread {
+            entered.countDown()
+            try {
+                failedOwner.retireIfCurrent(
+                    lock,
+                    { true },
+                    { activeSender },
+                ) {
+                    activeSender = null
+                    profile = null
+                    retirements++
+                }
+            } finally {
+                finished.countDown()
+            }
+        }
+
+        synchronized(lock) {
+            worker.start()
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            // The failed-start cleanup must wait for this publication lock.
+            assertFalse(finished.await(100, TimeUnit.MILLISECONDS))
+            activeSender = replacement
+            profile = "replacement"
+        }
+        assertTrue(finished.await(5, TimeUnit.SECONDS))
+        worker.join()
+        assertSame(replacement, activeSender)
+        assertEquals("replacement", profile)
+        assertEquals(0, retirements)
+
+        activeSender = failedSender
+        assertFalse(failedOwner.retireIfCurrent(lock, { false }, { activeSender }) {
+            retirements++
+        })
+        assertSame(failedSender, activeSender)
+        assertTrue(failedOwner.retireIfCurrent(lock, { true }, { activeSender }) {
+            activeSender = null
+            profile = null
+            retirements++
+        })
+        assertEquals(null, activeSender)
+        assertEquals(1, retirements)
     }
 
     @Test

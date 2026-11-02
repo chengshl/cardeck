@@ -1732,7 +1732,20 @@ object SessionController {
                 } else {
                     client.closeReverseAudioControlPort()
                 }
-                if (!client.currentEndpoint.isBuickB233 || callbackOwner.owns(audioSender)) {
+                if (client.currentEndpoint.isBuickB233) {
+                    // A replacement can publish between a separate owner check
+                    // and state retirement. Use the same lock as B233 handoff.
+                    callbackOwner.retireIfCurrent(
+                        lock = this,
+                        isCurrentSession = { currentClient === client },
+                        activeSender = { audioSender },
+                    ) {
+                        audioSender = null
+                        activeAudioProfile = null
+                        activeAudioStartedAt = 0L
+                        b233AudioStartedInSession = false
+                    }
+                } else {
                     audioSender = null
                     activeAudioProfile = null
                     activeAudioStartedAt = 0L
