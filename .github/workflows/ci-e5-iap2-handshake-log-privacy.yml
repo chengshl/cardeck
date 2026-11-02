@@ -92,12 +92,7 @@ jobs:
           ]
           # Independently reviewed pairing/endpoint and /info diagnostics: no protocol edits.
           airplay_changes.extend([
-              (r'''"AIRPLAY: 端点更新（$reason）" +
-                "${old.ipAddresses.firstOrNull()}:${old.airPlayPort} → " +
-                "${newEndpoint.ipAddresses.firstOrNull()}:${newEndpoint.airPlayPort}" +
-                "（配对循环下一轮使用新地址）"''', r'''"AIRPLAY: 端点更新（地址与原因已脱敏）" +
-                " oldPort=${old.airPlayPort} newPort=${newEndpoint.airPlayPort}" +
-                "（配对循环下一轮使用新地址）"'''),
+              ("\"AIRPLAY: 端点更新（$reason）\" +\n                \"${old.ipAddresses.firstOrNull()}:${old.airPlayPort} → \" +\n                \"${newEndpoint.ipAddresses.firstOrNull()}:${newEndpoint.airPlayPort}\" +\n                \"（配对循环下一轮使用新地址）\"", "\"AIRPLAY: 端点更新（地址与原因已脱敏）\" +\n                \" oldPort=${old.airPlayPort} newPort=${newEndpoint.airPlayPort}\" +\n                \"（配对循环下一轮使用新地址）\""),
               (r'''log("AIRPLAY: 控制器身份 pairingId=${identity.pairingId}")''', r'''log("AIRPLAY: 控制器身份已准备（pairingId 已脱敏）")'''),
               (r'''unsupported -> "不被支持（$message）——该接收端是 pre-HomeKit 老车机，转明文会话"''', r'''unsupported -> "不被支持（详细原因已脱敏）——该接收端是 pre-HomeKit 老车机，转明文会话"'''),
               (r'''else -> "失败（$message）"''', r'''else -> "失败（详细原因已脱敏）"'''),
