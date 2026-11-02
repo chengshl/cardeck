@@ -8,6 +8,7 @@ import io.github.shaonialife.cardeck.buick.BuickViewport
 import io.github.shaonialife.cardeck.gateway.CriticalEventTrail
 import android.view.KeyEvent
 import io.github.shaonialife.cardeck.airplay.AirPlayClient
+import io.github.shaonialife.cardeck.airplay.AirPlayModeClaims
 import io.github.shaonialife.cardeck.audio.AudioSender
 import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.BtSessionGate
@@ -1096,6 +1097,12 @@ object SessionController {
                         )
                         val setup = client.runSetup()
                         if (setup != null) {
+                            // #24 BT-B: use only the exact receiver model from AirPlay SETUP.
+                            // Unknown/other receivers keep their existing main-audio claim.
+                            // Freeze the choice for initial and changeModes replies this session.
+                            val claimAudioResource = AirPlayModeClaims.claimAudio(
+                                setup.receiverModel, audioEnabledForSession,
+                            )
                             // T44 controlled Buick B233 experiment: the real-iPhone Wi-Fi
                             // handover retires the initial RFCOMM iAP2 transport after the
                             // new wireless control link is ready. Audi keeps its existing
@@ -1221,15 +1228,15 @@ object SessionController {
                                     "changeModes" -> {
                                         // 车机请求资源仲裁（如用户在 MMI 上点了手机）：
                                         // 回 modesChanged 声明手机持有主屏/主音频
-                                        appendLog("EVENT: 车机请求 changeModes → 回 modesChanged 接管资源")
-                                        client.assertModes()
+                                        appendLog("EVENT: 车机请求 changeModes → 回 modesChanged 维持本会话资源声明")
+                                        client.assertModes(claimAudioResource)
                                     }
 
                                     else -> appendLog("EVENT: 命令 type=${command["type"]}")
                                 }
                             }
                             // 资源声明（must）：真车对未声明资源的屏幕流 SETUP 直接 400
-                            client.assertModes()
+                            client.assertModes(claimAudioResource)
                             // HID 输入模式武装：/info hidDevices（奥迪字符串 "0"/"1"，触摸="1"）。
                             // display features=0x08（高保真触摸）已声明，缺这步车机不发 hidSendReport。
                             setup.hidDeviceUuids.forEach { uuid ->
