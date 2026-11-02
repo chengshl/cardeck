@@ -1539,18 +1539,17 @@ class AirPlayClient(
             frameCount++
             val frames = parser.offer(bytes)
             for (frame in frames) {
-                val hex = frame.body.joinToString(" ") { "%02x".format(it) }
                 if (frameCount <= 30 || frameCount % 100 == 0) {
                     log(
                         "IAPLINK: rx 0x${frame.messageId.toString(16)} " +
                             "(${Iap2MessageIds.nameOf(frame.messageId)}) " +
-                            "${frame.body.size}B hex=${hex.take(160)}",
+                            "${frame.body.size}B（原始体已脱敏）",
                     )
                 }
                 maybeRespondTunnelCsmLocked(frame)
             }
             if (frames.isEmpty() && frameCount <= 10) {
-                log("IAPLINK: rx ${bytes.size}B（非 CSM）hex=" + bytes.joinToString(" ") { "%02x".format(it) }.take(160))
+                log("IAPLINK: rx ${bytes.size}B（非 CSM；原始体已脱敏）")
             }
         }
 
@@ -1559,9 +1558,8 @@ class AirPlayClient(
 
         fun handleEaData(bytes: ByteArray) {
             eaCount++
-            val hex = bytes.joinToString(" ") { "%02x".format(it) }
             if (eaCount <= 30 || eaCount % 100 == 0) {
-                log("IAPLINK: EA 数据 #$eaCount ${bytes.size}B hex=${hex.take(200)}")
+                log("IAPLINK: EA 数据 #$eaCount ${bytes.size}B（原始体已脱敏）")
             }
             onEaData?.invoke(bytes)
         }
@@ -2100,7 +2098,7 @@ class AirPlayClient(
                             if (firstLine.startsWith("RTSP/") || firstLine.startsWith("HTTP/")) {
                                 unexpectedEventResponseCount++
                                 if (unexpectedEventResponseCount <= 3) {
-                                    log("EVENT T40: unexpected response on reverse Events channel [$firstLine]; expected car-originated POST requests")
+                                    log("EVENT T40: unexpected response on reverse Events channel（状态行已脱敏）")
                                 }
                                 continue
                             }
@@ -2115,7 +2113,7 @@ class AirPlayClient(
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
                                 if (unknownEventRequests <= 10) {
-                                    log("EVENT: 未知请求 [$firstLine] body=${message.body.size}B")
+                                    log("EVENT: 未知请求（请求行已脱敏）body=${message.body.size}B")
                                 }
                                 continue
                             }
@@ -2124,17 +2122,17 @@ class AirPlayClient(
                                     BinaryPlist.parse(message.body) as? Map<*, *>
                                 } catch (error: Exception) {
                                     // Malformed event payload must never kill the event reader.
-                                    log("EVENT: 命令解析异常 - ${error.javaClass.simpleName}: ${error.message}")
+                                    log("EVENT: 命令解析异常 - ${error.javaClass.simpleName}（异常文本已脱敏）")
                                     null
                                 }
                             if (command == null) {
-                                log("EVENT: 命令 plist 解析失败 [$firstLine] body=${message.body.size}B prefix=" + message.body.take(32).joinToString(" ") { "%02x".format(it) })
+                                log("EVENT: 命令 plist 解析失败（请求行与原始体已脱敏）body=${message.body.size}B")
                                 continue
                             }
                             try {
                                 onCommand(command)
                             } catch (error: Exception) {
-                                log("EVENT: 命令处理异常 - ${error.message}")
+                                log("EVENT: 命令处理异常 - ${error.javaClass.simpleName}（异常文本已脱敏）")
                             }
                         }
                     }
