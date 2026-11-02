@@ -1,0 +1,80 @@
+name: B233 reverse RTCP live-owner gate (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-rtcp-live-owner-gate-11
+  pull_request:
+    branches:
+      - experiment/buick-b233-rtcp-replace-after-bind-11
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-rtcp-live-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact verified parent, strict scope and negative control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=48d5761a454327770e31ba58c56e144310fa9397
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41428409021 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41428409021 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-reverse-rtcp-live-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/ReverseAudioPortOwnershipTest.kt' \
+            | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = '48d5761a454327770e31ba58c56e144310fa9397'
+          source = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+          tests = 'app/src/test/java/io/github/shaonialife/cardeck/airplay/ReverseAudioPortOwnershipTest.kt'
+          old = subprocess.check_output(['git', 'show', base + ':' + source], text=True)
+          new = Path(source).read_text()
+          old_tests = subprocess.check_output(['git', 'show', base + ':' + tests], text=True)
+          new_tests = Path(tests).read_text()
+          helper_old = old[old.index('internal fun canActivateAcceptedAudioSetup('):old.index('/** A missing B233 vehicle Network')]
+          assert 'listenerLive' not in helper_old, 'negative control no longer applies'
+          assert 'listenerLive && ownsReverseAudioPort' in new
+          assert 'deadReverseListenerCannotBeAdvertisedOrActivated' not in old_tests
+          assert 'deadReverseListenerCannotBeAdvertisedOrActivated' in new_tests
+          old_section = old[old.index('    fun runAudioStream('):old.index('    private fun probeAndFixVolume(')]
+          section = new[new.index('    fun runAudioStream('):new.index('    private fun probeAndFixVolume(')]
+          assert 'reverse RTCP listener unavailable before SETUP' not in old_section
+          assert 'reverse RTCP listener unavailable before SETUP' in section
+          assert section.index('reverse RTCP listener unavailable before SETUP') < section.index('lastAudioSetupRequestAttempted = true')
+          assert section.count('canActivateAcceptedAudioSetup(') == 2
+          assert 'val acceptedListenerReady = synchronized(this)' in section
+          assert 'if (!acceptedListenerReady)' in section
+          assert 'retireFailedSetupPort()' in section[section.index('val ready = synchronized(this)'):section.index('val startedAt = SystemClock.uptimeMillis()')]
+          print('Old dead-listener fail-open reproduced; B233 pre-request and accepted-response liveness gates present.')
+          PY
+      - name: Full Android JUnit, Lint and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only. No signing, Release, install, stable merge or user-network change.

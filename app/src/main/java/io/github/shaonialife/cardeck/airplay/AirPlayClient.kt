@@ -31,14 +31,15 @@ import java.util.UUID
 internal fun ownsReverseAudioPort(current: Any?, expected: Any?): Boolean =
     expected != null && current === expected
 
-/** A late accepted B233 SETUP must not activate a stream whose RTCP listener was replaced. */
+/** Only a live, still-owned B233 reverse RTCP listener may be advertised or activated. */
 internal fun canActivateAcceptedAudioSetup(
     isBuickB233: Boolean,
     advertisedListener: Any?,
     currentListener: Any?,
+    listenerLive: Boolean,
 ): Boolean =
     !isBuickB233 || advertisedListener == null ||
-        ownsReverseAudioPort(currentListener, advertisedListener)
+        (listenerLive && ownsReverseAudioPort(currentListener, advertisedListener))
 
 /** A missing B233 vehicle Network must not retire a live reverse RTCP listener. */
 internal fun shouldSkipAudioSetupBeforePortReplacement(
@@ -2134,6 +2135,23 @@ class AirPlayClient(
                 ),
             )
         val host = endpoint.ipAddresses.firstOrNull() ?: "receiver"
+        // The reverse RTCP worker may exit while the SETUP plist is encoded.
+        // Skip a dead or superseded local listener before attempting RTSP.
+        if (endpoint.isBuickB233 && setupPortOwner != null) {
+            val ready = synchronized(this) {
+                canActivateAcceptedAudioSetup(
+                    true,
+                    setupPortOwner,
+                    reverseAudioControlPort,
+                    (setupPortOwner as AudioReverseControlPort).port > 0,
+                )
+            }
+            if (!ready) {
+                retireFailedSetupPort()
+                log("AUDIO: B233 reverse RTCP listener unavailable before SETUP; skip request")
+                return null
+            }
+        }
         val startedAt = SystemClock.uptimeMillis()
         val (statusLine, responseBody) =
             try {
@@ -2215,12 +2233,15 @@ class AirPlayClient(
         // An old B233 SETUP may return 200 after a newer SETUP replaced its
         // phone-local RTCP listener. Do not start an orphaned audio sender.
         // The accepted peer stream remains conservatively marked as uncertain.
-        if (!canActivateAcceptedAudioSetup(
+        val acceptedListenerReady = synchronized(this) {
+            canActivateAcceptedAudioSetup(
                 endpoint.isBuickB233,
                 setupPortOwner,
-                reverseAudioControlPortOwner(),
+                reverseAudioControlPort,
+                (setupPortOwner as? AudioReverseControlPort)?.port?.let { it > 0 } ?: false,
             )
-        ) {
+        }
+        if (!acceptedListenerReady) {
             log("AUDIO: B233 audio_setup_superseded; skip stale accepted stream")
             return null
         }
