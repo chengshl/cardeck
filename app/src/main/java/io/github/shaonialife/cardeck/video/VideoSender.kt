@@ -297,8 +297,15 @@ class VideoSender(
                                     // Some AVC encoders expose CSD only through outputFormat.
                                     // Fall back only for a key frame missing this epoch's config.
                                     if (keyFrame && synchronized(dataPortLock) { dataPortEpoch == epoch && !configSent }) {
-                                        runCatching { trySendOutputFormatConfig(codec, output, epoch) }
-                                            .onFailure { log("VIDEO: codec CSD fallback unavailable (${it.javaClass.simpleName})") }
+                                        try {
+                                            trySendOutputFormatConfig(codec, output, epoch)
+                                        } catch (error: java.io.IOException) {
+                                            // A broken data socket is not missing codec metadata.
+                                            // Let drainEncoder retire this session after releasing the slot.
+                                            throw error
+                                        } catch (error: Exception) {
+                                            log("VIDEO: codec CSD fallback unavailable (${error.javaClass.simpleName})")
+                                        }
                                     }
                                     sendVideoFrame(buffer, bufferInfo.size, keyFrame, output, epoch)
                                 }
