@@ -371,23 +371,23 @@ jobs:
           ), 'Previous BT-A owner-publication source drifted'
           owner_edits = [
               ("                runSession(connected)", "                runSession(connected, myGeneration)"),
-              ("                currentSocket.set(socket)\\n                true",
+              ("                currentSocket.set(socket)\n                true",
                "                currentSocket.compareAndSet(null, socket)"),
               ("    private fun runSession(socket: BluetoothSocket) {",
                "    private fun runSession(socket: BluetoothSocket, myGeneration: Long) {"),
-              ("        activeChannel.set(channel)\\n        try {",
-               "        // stop()/start() can retire this worker while channel construction is in flight.\\n"
-               "        // Publish only to the still-owning generation, never over a successor channel.\\n"
-               "        val channelPublished = synchronized(lifecycleLock) {\\n"
-               "            running && generation.get() == myGeneration &&\\n"
-               "                activeChannel.compareAndSet(null, channel)\\n"
-               "        }\\n"
-               "        if (!channelPublished) {\\n"
-               "            currentSocket.compareAndSet(socket, null)\\n"
-               "            runCatching { socket.close() }\\n"
-               "            runCatching { channel.close() }\\n"
-               "            return\\n"
-               "        }\\n"
+              ("        activeChannel.set(channel)\n        try {",
+               "        // stop()/start() can retire this worker while channel construction is in flight.\n"
+               "        // Publish only to the still-owning generation, never over a successor channel.\n"
+               "        val channelPublished = synchronized(lifecycleLock) {\n"
+               "            running && generation.get() == myGeneration &&\n"
+               "                activeChannel.compareAndSet(null, channel)\n"
+               "        }\n"
+               "        if (!channelPublished) {\n"
+               "            currentSocket.compareAndSet(socket, null)\n"
+               "            runCatching { socket.close() }\n"
+               "            runCatching { channel.close() }\n"
+               "            return\n"
+               "        }\n"
                "        try {"),
           ]
           for before_owner, after_owner in owner_edits:
@@ -398,7 +398,7 @@ jobs:
           assert new.count('activeChannel.compareAndSet(null, channel)') == 1
           assert 'running && generation.get() == myGeneration &&' in new
           assert 'runCatching { channel.close() }' in new
-                    assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
+          assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
           assert new.count('activeChannel.compareAndSet(channel, null)') == 1
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
