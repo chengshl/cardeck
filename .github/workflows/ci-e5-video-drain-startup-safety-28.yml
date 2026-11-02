@@ -409,6 +409,17 @@ jobs:
           assert expected.count('bytesSinceKeepAlive = 0L') == 2
           assert expected.count('keepAliveCount = 0L') == 2
           assert expected.count('lastKeepAliveAt = android.os.SystemClock.uptimeMillis()') == 1
+          # A truncated SPS cannot supply profile/compat/level for avcC.
+          # Replay only the malformed codec-config guard from the exact prior PR HEAD.
+          previous_guard_head = '14c73f9bb5ba597be90a2f6c941d0070720e62f2'
+          assert expected == subprocess.check_output(
+              ['git', 'show', previous_guard_head + ':' + source_path], text=True
+          ), 'Reviewed #83 malformed-SPS baseline drifted'
+          sps_before = '        if (sps == null || pps == null) {\n            log("VIDEO: csd 缺少 SPS/PPS（${nalUnits.size} 个 NAL），跳过 config")\n            return\n        }'
+          sps_after = '        if (sps == null || pps == null || sps.size < 4) {\n            // A truncated SPS has no profile/compat/level bytes; never index sps[1..3].\n            log("VIDEO: csd 缺少有效 SPS/PPS（${nalUnits.size} 个 NAL），跳过 config")\n            return\n        }'
+          assert expected.count(sps_before) == 1, 'Malformed SPS guard baseline ambiguous'
+          expected = expected.replace(sps_before, sps_after)
+          assert new.count('sps.size < 4') == 1
           assert new == expected, 'Unexpected changes outside video config epoch ownership fix'
           assert new.count('sendVideoConfig(buffer, bufferInfo.size, output, epoch)') == 1
           assert new.count('if (running.get() && dataPortEpoch == epoch) configSent = true') == 1

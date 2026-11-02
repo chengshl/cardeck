@@ -382,8 +382,9 @@ class VideoSender(
         val nalUnits = splitAnnexB(annexB)
         val sps = nalUnits.firstOrNull { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 7 }
         val pps = nalUnits.firstOrNull { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 8 }
-        if (sps == null || pps == null) {
-            log("VIDEO: csd 缺少 SPS/PPS（${nalUnits.size} 个 NAL），跳过 config")
+        if (sps == null || pps == null || sps.size < 4) {
+            // A truncated SPS has no profile/compat/level bytes; never index sps[1..3].
+            log("VIDEO: csd 缺少有效 SPS/PPS（${nalUnits.size} 个 NAL），跳过 config")
             return
         }
         val avcc = ByteArrayOutputStream(8 + sps.size + pps.size)
