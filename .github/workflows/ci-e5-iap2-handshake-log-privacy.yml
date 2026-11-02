@@ -13,6 +13,7 @@ on:
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
       - 'app/src/main/java/io/github/shaonialife/cardeck/net/WifiCarPlayConnector.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayNetworkSockets.kt'
       - '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'
   workflow_dispatch:
 permissions:
@@ -59,7 +60,8 @@ jobs:
           ctrl_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayCtrlAdvertiser.kt'
           nsd_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayServiceBrowser.kt'
           wifi_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/WifiCarPlayConnector.kt'
-          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, nsd_path, wifi_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
+          socket_path = 'app/src/main/java/io/github/shaonialife/cardeck/net/CarPlayNetworkSockets.kt'
+          assert files == {path, bt_path, session_path, video_path, channel_path, ctrl_path, nsd_path, wifi_path, socket_path, '.github/workflows/ci-e5-iap2-handshake-log-privacy.yml'}, files
 
           # Raw iAP2 transport payloads may contain identifiers or credentials.
           # The only allowed new runtime delta is bounded byte-count logging.
@@ -336,6 +338,29 @@ jobs:
           assert 'onNetworkLost?.invoke(ssid)' in wifi_new
           assert 'connectivityManager.bindProcessToNetwork(network)' in wifi_new
           assert 'connectivityManager.requestNetwork(request, newCallback)' in wifi_new
+          # Physical Wi-Fi socket routing must not leak Android Network IDs or
+          # exception messages. Replay only two log expressions from stable.
+          socket_old = subprocess.check_output(
+              ['git', 'show', 'origin/Buick-E5:' + socket_path], text=True
+          )
+          socket_expected = socket_old
+          socket_edits = [
+              ('log("CAR-NET T47: TCP $port via physical Wi-Fi network=$physicalWifi")',
+               'log("CAR-NET T47: TCP $port via physical Wi-Fi (network redacted)")'),
+              ('"(${failure.javaClass.simpleName}: ${failure.message}); " +',
+               '"(${failure.javaClass.simpleName}; detail redacted); " +'),
+          ]
+          for before, after in socket_edits:
+              assert socket_expected.count(before) == 1, 'Socket diagnostic baseline drift'
+              socket_expected = socket_expected.replace(before, after, 1)
+          socket_new = Path(socket_path).read_text()
+          assert socket_new == socket_expected, 'Unexpected physical Wi-Fi socket behavior change'
+          assert 'network=$physicalWifi' not in socket_new
+          assert '${failure.message}' not in socket_new
+          assert 'physicalWifi.socketFactory.createSocket()' in socket_new
+          assert 'socket.connect(InetSocketAddress(address, port), timeoutMillis)' in socket_new
+          print('Physical Wi-Fi TCP: two exact log redactions verified')
+
           print(f'Wi-Fi: {len(wifi_changes)} exact log redactions verified')
           print(f'NSD: {len(nsd_changes)} exact diagnostic redactions verified')
           print(f'CarPlay ctrl: {len(ctrl_changes)} exact log-only redactions verified')
