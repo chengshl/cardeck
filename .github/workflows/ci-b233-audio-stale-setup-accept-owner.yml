@@ -1,0 +1,122 @@
+name: B233 accepted SETUP reverse-port ownership (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-audio-stale-setup-accept-owner-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-setup-reply-port-owner-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-stale-setup-accept-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact successful parent, old-code negative control and strict source replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=938c022e9156e1ac93d1667099b14121e60544b4
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41409443158 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41409443158 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-stale-setup-accept-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/ReverseAudioPortOwnershipTest.kt' \
+            | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = '938c022e9156e1ac93d1667099b14121e60544b4'
+          source = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+          test = 'app/src/test/java/io/github/shaonialife/cardeck/airplay/ReverseAudioPortOwnershipTest.kt'
+          old = subprocess.check_output(['git', 'show', base + ':' + source], text=True)
+          new = Path(source).read_text()
+          anchor = '/** B233 iAP2 handshake and control bytes must not enter uploadable logs. */'
+          helper = """\
+          /** A late accepted B233 SETUP must not activate a stream whose RTCP listener was replaced. */
+          internal fun canActivateAcceptedAudioSetup(
+              isBuickB233: Boolean,
+              advertisedListener: Any?,
+              currentListener: Any?,
+          ): Boolean =
+              !isBuickB233 || advertisedListener == null ||
+                  ownsReverseAudioPort(currentListener, advertisedListener)
+
+          """
+          guard = """\
+                  // An old B233 SETUP may return 200 after a newer SETUP replaced its
+                  // phone-local RTCP listener. Do not start an orphaned audio sender.
+                  // The accepted peer stream remains conservatively marked as uncertain.
+                  if (!canActivateAcceptedAudioSetup(
+                          endpoint.isBuickB233,
+                          setupPortOwner,
+                          reverseAudioControlPortOwner(),
+                      )
+                  ) {
+                      log("AUDIO: B233 audio_setup_superseded; skip stale accepted stream")
+                      return null
+                  }
+          """
+          # Python multiline YAML indentation is removed by the runner before execution.
+          helper = '\n'.join(line[10:] if line.startswith('          ') else line for line in helper.split('\n'))
+          guard = '\n'.join(line[10:] if line.startswith('          ') else line for line in guard.split('\n'))
+          assert old.count(anchor) == 1
+          assert old.count('        val streamKey =\n') == 1
+          assert 'canActivateAcceptedAudioSetup' not in old, 'negative control no longer old'
+          expected = old.replace(anchor, helper + anchor, 1)
+          expected = expected.replace('        val streamKey =\n', guard + '        val streamKey =\n', 1)
+          assert new == expected, 'production change differs from approved minimal guard'
+          old_test = subprocess.check_output(['git', 'show', base + ':' + test], text=True)
+          new_test = Path(test).read_text()
+          test_anchor = '    @Test\n    fun absentOrUnownedListenerNeverCloses()'
+          test_block = """\
+              @Test
+              fun staleAcceptedSetupCannotActivateAfterReplacement() {
+                  val originalPort = Any()
+                  val replacementPort = Any()
+                  assertFalse(canActivateAcceptedAudioSetup(true, originalPort, replacementPort))
+                  assertFalse(canActivateAcceptedAudioSetup(true, originalPort, null))
+                  assertTrue(canActivateAcceptedAudioSetup(true, originalPort, originalPort))
+                  // A B233 profile that never advertises reverse RTCP is unaffected.
+                  assertTrue(canActivateAcceptedAudioSetup(true, null, replacementPort))
+                  // Other receivers retain their previous accepted-SETUP behavior.
+                  assertTrue(canActivateAcceptedAudioSetup(false, originalPort, replacementPort))
+              }
+
+          """
+          test_block = '\n'.join(line[10:] if line.startswith('          ') else line for line in test_block.split('\n'))
+          assert old_test.count(test_anchor) == 1
+          assert 'staleAcceptedSetupCannotActivateAfterReplacement' not in old_test
+          assert new_test == old_test.replace(test_anchor, test_block + test_anchor, 1)
+          print('Negative control: old B233 accepted SETUP had no stale-listener activation fence.')
+          print('Current B233 only rejects superseded listener; legacy and no-listener cases retain behavior.')
+          PY
+      - name: Reverse listener owner JVM regressions and Android JUnit, Lint, Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, release, installation or stable merge.
