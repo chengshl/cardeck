@@ -1989,6 +1989,9 @@ class AirPlayClient(
         // T89: extend ONLY the phone-local reverse RTCP port advertisement
         // to B233 PCM/type100 media; do not change modern timestamp policy,
         // classic RTCP sync, RTP, or other audio profiles.
+        // Each SETUP owns only the reverse RTCP listener it published.
+        // A failed old request must not retire a replacement listener.
+        var setupPortOwner: Any? = null
         closeReverseAudioControlPort()
         val reversePort =
             if (BuickAudioTimingPolicy.advertiseReverseControlPort(endpoint.isBuickB233, profile)) {
@@ -2015,7 +2018,10 @@ class AirPlayClient(
                     }
                     return null
                 }
-                synchronized(this) { reverseAudioControlPort = reverse }
+                synchronized(this) {
+                    reverseAudioControlPort = reverse
+                    setupPortOwner = reverse
+                }
                 log("AUDIO T73: SETUP 即将声明手机本地 controlPort=$port，区别于车机返回的控制端口")
                 port
             } else {
@@ -2077,11 +2083,19 @@ class AirPlayClient(
                     timeoutMillis = 8_000,
                     contentType = "application/x-apple-binary-plist",
                 )
-            } catch (error: IOException) {
-                // No authoritative response: conservatively assume the receiver
-                // may have created a stream before the read/write failure.
+            } catch (error: Exception) {
+                // A failed B233 request can race a newer SETUP on this client.
+                // Retire only the listener created by this attempt. Also clean
+                // up an unexpected exception before propagating it to the caller.
+                if (error !is IOException && !endpoint.isBuickB233) throw error
+                // The request may have reached the peer without a usable reply.
                 audioSetupMayHaveCreatedStream = true
-                closeReverseAudioControlPort()
+                if (endpoint.isBuickB233) {
+                    closeReverseAudioControlPortIfOwner(setupPortOwner)
+                } else {
+                    closeReverseAudioControlPort()
+                }
+                if (error !is IOException) throw error
                 log("AIRPLAY: 音频流协商失败 - " +
                     B233AudioSetupReply.safeError(error, endpoint.isBuickB233))
                 return null
