@@ -73,7 +73,7 @@ jobs:
           assert 'synchronized(this@SessionController)' in new
           # Production diff is confined to the failed-start branch.
           diff = subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--',session], text=True)
-          assert diff.count('@@ ') == 1, 'unexpected SessionController edit'
+          assert sum(line.startswith('@@ ') for line in diff.splitlines()) == 1, 'unexpected SessionController edit'
           old_helper = subprocess.check_output(['git','show',base+':'+owner], text=True)
           new_helper = Path(owner).read_text()
           assert 'fun retireIfCurrent(' not in old_helper
