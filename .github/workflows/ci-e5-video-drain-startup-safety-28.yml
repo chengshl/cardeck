@@ -462,7 +462,7 @@ jobs:
           assert expected == subprocess.check_output(
               ['git', 'show', prior_close_head + ':' + source_path], text=True
           ), 'Reviewed #83 socket-close baseline drifted'
-          close_before = '\\n'.join([
+          close_before = '\n'.join([
               '            runCatching { encoder?.stop() }',
               '            runCatching { encoder?.release() }',
               '            encoder = null',
@@ -470,7 +470,7 @@ jobs:
               '            inputSurface = null',
               '            runCatching { closingSocket?.close() }',
           ])
-          close_after = '\\n'.join([
+          close_after = '\n'.join([
               '            // Unblock a pending video TCP write before stopping MediaCodec.',
               '            // A codec stop can wait for the drain worker to release its output slot.',
               '            runCatching { closingSocket?.close() }',
