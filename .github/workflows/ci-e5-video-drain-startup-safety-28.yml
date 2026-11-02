@@ -462,20 +462,24 @@ jobs:
           assert expected == subprocess.check_output(
               ['git', 'show', prior_close_head + ':' + source_path], text=True
           ), 'Reviewed #83 socket-close baseline drifted'
-          close_before = """            runCatching { encoder?.stop() }
-            runCatching { encoder?.release() }
-            encoder = null
-            runCatching { inputSurface?.release() }
-            inputSurface = null
-            runCatching { closingSocket?.close() }"""
-          close_after = """            // Unblock a pending video TCP write before stopping MediaCodec.
-            // A codec stop can wait for the drain worker to release its output slot.
-            runCatching { closingSocket?.close() }
-            runCatching { encoder?.stop() }
-            runCatching { encoder?.release() }
-            encoder = null
-            runCatching { inputSurface?.release() }
-            inputSurface = null"""
+          close_before = '\\n'.join([
+              '            runCatching { encoder?.stop() }',
+              '            runCatching { encoder?.release() }',
+              '            encoder = null',
+              '            runCatching { inputSurface?.release() }',
+              '            inputSurface = null',
+              '            runCatching { closingSocket?.close() }',
+          ])
+          close_after = '\\n'.join([
+              '            // Unblock a pending video TCP write before stopping MediaCodec.',
+              '            // A codec stop can wait for the drain worker to release its output slot.',
+              '            runCatching { closingSocket?.close() }',
+              '            runCatching { encoder?.stop() }',
+              '            runCatching { encoder?.release() }',
+              '            encoder = null',
+              '            runCatching { inputSurface?.release() }',
+              '            inputSurface = null',
+          ])
           assert expected.count(close_before) == 1, 'Original stop close ordering drifted'
           expected = expected.replace(close_before, close_after)
           assert expected.count(close_after) == 1, 'New stop close ordering missing'
