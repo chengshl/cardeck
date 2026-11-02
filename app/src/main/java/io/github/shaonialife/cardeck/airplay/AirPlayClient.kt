@@ -193,9 +193,8 @@ class AirPlayClient(
         endpoint = newEndpoint
         endpointGeneration++
         log(
-            "AIRPLAY: 端点更新（$reason）" +
-                "${old.ipAddresses.firstOrNull()}:${old.airPlayPort} → " +
-                "${newEndpoint.ipAddresses.firstOrNull()}:${newEndpoint.airPlayPort}" +
+            "AIRPLAY: 端点更新（地址与原因已脱敏）" +
+                " oldPort=${old.airPlayPort} newPort=${newEndpoint.airPlayPort}" +
                 "（配对循环下一轮使用新地址）",
         )
         close()
@@ -213,7 +212,7 @@ class AirPlayClient(
 
     private fun runPairingLoop(windowMillis: Long): PairVerifyClient.ControlKeys? {
         val identity = loadOrCreateIdentity()
-        log("AIRPLAY: 控制器身份 pairingId=${identity.pairingId}")
+        log("AIRPLAY: 控制器身份已准备（pairingId 已脱敏）")
         // 车机 AirPlay 窗口是「用户点车机上的手机图标 / 收到 ctrl 邀请后才开」的
         // （Audi 实测：端口从 Connection refused 变为开放）。因此重试采用时限制：
         // 默认 120s 内每 2s 试一次——用户在车机上点一下的等待不会被提前放弃。
@@ -250,8 +249,8 @@ class AirPlayClient(
                             "AIRPLAY: pair-setup " +
                                 when {
                                     forbidden -> "被 403 拒绝（车机不接受匿名配对——iAP2 已完成信任）→ 转已配对快路径"
-                                    unsupported -> "不被支持（$message）——该接收端是 pre-HomeKit 老车机，转明文会话"
-                                    else -> "失败（$message）"
+                                    unsupported -> "不被支持（详细原因已脱敏）——该接收端是 pre-HomeKit 老车机，转明文会话"
+                                    else -> "失败（详细原因已脱敏）"
                                 },
                         )
                         if (unsupported) {
@@ -280,7 +279,7 @@ class AirPlayClient(
                 return keys
             } catch (error: IOException) {
                 val message = error.message.orEmpty()
-                log("AIRPLAY: 配对第 $attempt 次尝试失败 - $message")
+                log("AIRPLAY: 配对第 $attempt 次尝试失败（详情已脱敏）")
                 if (PAIRING_UNSUPPORTED_STATUS.any { message.contains(it) }) {
                     pairingUnsupported = true
                     log("AIRPLAY: 接收端不提供 HomeKit 配对通道——停止重试，转明文会话（et=NONE）")
@@ -299,7 +298,7 @@ class AirPlayClient(
         if (!ensureConnected()) return null
         return try {
             val (statusLine, body) = requestInfo(timeoutMillis)
-            log("AIRPLAY: ✓ /info [$statusLine] body=${body.size} 字节")
+            log("AIRPLAY: /info 已应答（状态行已脱敏）body=${body.size} 字节")
             if (body.isEmpty()) return null
             val root = BinaryPlist.parse(body)
             if (root is Map<*, *>) {
@@ -309,7 +308,7 @@ class AirPlayClient(
                 null
             }
         } catch (error: IOException) {
-            log("AIRPLAY: /info 失败 - ${error.message}")
+            log("AIRPLAY: /info 失败 - ${error.javaClass.simpleName}（详情已脱敏）")
             null
         }
     }
