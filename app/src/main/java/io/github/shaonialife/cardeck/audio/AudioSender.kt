@@ -35,6 +35,17 @@ internal fun connectOwnedAudioDatagramSocket(
 }
 
 /**
+ * Keep B233 diagnostics useful without uploading receiver addresses or
+ * exception messages (which may include IPs, paths or platform details).
+ * Legacy receivers preserve their existing diagnostic format.
+ */
+internal fun audioDiagnosticPeer(host: String, port: Int, b233: Boolean): String =
+    if (b233) "vehicle_port=$port" else "$host:$port"
+
+internal fun audioDiagnosticFailure(error: Throwable, b233: Boolean): String =
+    if (b233) error.javaClass.simpleName else error.message.orEmpty()
+
+/**
  * Only B233 PCM with a negotiated RTCP control port requires successful
  * local RTCP transport setup before beginning RTP. Modern B233 AAC deliberately
  * sends no classic RTCP, and legacy receivers retain best-effort startup.
@@ -503,7 +514,7 @@ class AudioSender(
                     " musicActive=${am?.isMusicActive}（手机可能同时外放）")
             }
             log(
-                "AUDIO: 已启动（播放捕获 ${sampleRate}Hz 立体声 → $host:$dataPort，" +
+                "AUDIO: 已启动（播放捕获 ${sampleRate}Hz 立体声 → ${audioDiagnosticPeer(host, dataPort, failClosedOnVehicleNetworkBind)}，" +
                     "通路=t$streamType/${codec.name}，" +
                     if (codec == AudioCodec.AAC_LC) {
                         "每包 1 个 AAC 帧（${AacLcEncoder.FRAME_SAMPLES} 采样" +
@@ -527,7 +538,7 @@ class AudioSender(
                     try {
                         recorder.startRecording()
                     } catch (error: Exception) {
-                        log("AUDIO: 启动采集失败 - ${error.message}")
+                        log("AUDIO: 启动采集失败 - ${audioDiagnosticFailure(error, failClosedOnVehicleNetworkBind)}")
                         stop()
                         return@Thread
                     }
@@ -541,7 +552,7 @@ class AudioSender(
             }
             true
         } catch (error: Exception) {
-            log("AUDIO: 启动失败 - ${error.message}")
+            log("AUDIO: 启动失败 - ${audioDiagnosticFailure(error, failClosedOnVehicleNetworkBind)}")
             stop()
             false
         }
@@ -654,7 +665,7 @@ class AudioSender(
         } else {
             syncSocket = client
         }
-        log("AUDIO: 同步包已启用 → $host:$controlPort（每 ${SYNC_INTERVAL_MILLIS}ms 一个，建立 RTP↔NTP 锚点）")
+        log("AUDIO: 同步包已启用 → ${audioDiagnosticPeer(host, controlPort, failClosedOnVehicleNetworkBind)}（每 ${SYNC_INTERVAL_MILLIS}ms 一个，建立 RTP↔NTP 锚点）")
         val worker =
             Thread(
                 {
@@ -686,13 +697,13 @@ class AudioSender(
                         }
                     } catch (error: Exception) {
                         if (running.get()) {
-                            log("AUDIO: 同步包发送停止 - ${error.message}")
+                            log("AUDIO: 同步包发送停止 - ${audioDiagnosticFailure(error, failClosedOnVehicleNetworkBind)}")
                             val message = error.message.orEmpty()
                             if (deferSyncUntilRecord &&
                                 (error is java.net.PortUnreachableException ||
                                  message.contains("ECONNREFUSED", ignoreCase = true))
                             ) {
-                                onSyncPortRefused?.invoke(message)
+                                onSyncPortRefused?.invoke(audioDiagnosticFailure(error, failClosedOnVehicleNetworkBind))
                             }
                         }
                     }
@@ -734,7 +745,7 @@ class AudioSender(
                             AudioRecord.READ_BLOCKING,
                         )
                     } catch (error: Exception) {
-                        log("AUDIO: 采集读取异常 - ${error.message}")
+                        log("AUDIO: 采集读取异常 - ${audioDiagnosticFailure(error, failClosedOnVehicleNetworkBind)}")
                         break
                     }
                 if (bytesRead < 0) {
@@ -874,7 +885,7 @@ class AudioSender(
             }
         } catch (error: Throwable) {
             // 后台线程未捕获异常会杀死整个进程——音频异常绝不允许冒泡
-            log("AUDIO: 采集线程异常退出 - ${error.message}")
+            log("AUDIO: 采集线程异常退出 - ${audioDiagnosticFailure(error, failClosedOnVehicleNetworkBind)}")
         } finally {
             if (readWindow != null) {
                 log("AUDIO T94: B233 PCM capture shutdown " + readWindow.diagnosticSummary())
@@ -901,7 +912,7 @@ class AudioSender(
             true
         } catch (error: IOException) {
             failureTrace?.event("audio_rtp_udp_error", error.javaClass.simpleName)
-            log("AUDIO: UDP 发送失败 - ${error.message}")
+            log("AUDIO: UDP 发送失败 - ${audioDiagnosticFailure(error, failClosedOnVehicleNetworkBind)}")
             false
         }
     }
