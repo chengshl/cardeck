@@ -420,12 +420,27 @@ jobs:
           assert expected.count(sps_before) == 1, 'Malformed SPS guard baseline ambiguous'
           expected = expected.replace(sps_before, sps_after)
           assert new.count('sps.size < 4') == 1
+          # Reproduce the last reviewed L3 HEAD, then replay only the AVC CSD
+          # keyframe fallback. Normal codec-config buffers retain their path.
+          assert expected == subprocess.check_output(
+              ['git', 'show', 'f1dfc5242887d684e8dcea4835d0a80966c71394:' + source_path], text=True
+          ), 'Reviewed #83 codec-CSD baseline drifted'
+          fallback_before = "                                } else if (bufferInfo.size > 0) {\n                                    sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output, epoch)\n                                }"
+          fallback_after = "                                } else if (bufferInfo.size > 0) {\n                                    val keyFrame = flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0\n                                    // Some AVC encoders expose CSD only through outputFormat.\n                                    // Fall back only for a key frame missing this epoch's config.\n                                    if (keyFrame && synchronized(dataPortLock) { dataPortEpoch == epoch && !configSent }) {\n                                        runCatching { trySendOutputFormatConfig(codec, output, epoch) }\n                                            .onFailure { log(\"VIDEO: codec CSD fallback unavailable (${it.javaClass.simpleName})\") }\n                                    }\n                                    sendVideoFrame(buffer, bufferInfo.size, keyFrame, output, epoch)\n                                }"
+          assert expected.count(fallback_before) == 1, 'CSD keyframe fallback call ambiguous'
+          expected = expected.replace(fallback_before, fallback_after)
+          helper_before = "    private fun sendVideoConfig(\n"
+          helper_after = "    /**\n     * If an encoder emits a key frame without a codec-config output buffer,\n     * use its AVC csd-0/csd-1 metadata before the frame. Normal encoders that\n     * already sent VideoConfig never take this path.\n     */\n    private fun trySendOutputFormatConfig(\n        codec: MediaCodec,\n        output: java.io.OutputStream,\n        epoch: Long,\n    ) {\n        if (synchronized(dataPortLock) { !running.get() || dataPortEpoch != epoch || configSent }) return\n        val format = codec.outputFormat\n        val sps = format.getByteBuffer(\"csd-0\")?.duplicate() ?: return\n        val pps = format.getByteBuffer(\"csd-1\")?.duplicate() ?: return\n        fun asAnnexB(buffer: java.nio.ByteBuffer): ByteArray {\n            val bytes = ByteArray(buffer.remaining())\n            buffer.get(bytes)\n            val prefixed = bytes.size >= 3 && bytes[0] == 0.toByte() &&\n                bytes[1] == 0.toByte() &&\n                (bytes[2] == 1.toByte() ||\n                    (bytes.size >= 4 && bytes[2] == 0.toByte() && bytes[3] == 1.toByte()))\n            return if (prefixed) bytes else byteArrayOf(0, 0, 0, 1) + bytes\n        }\n        val csd = asAnnexB(sps) + asAnnexB(pps)\n        sendVideoConfig(java.nio.ByteBuffer.wrap(csd), csd.size, output, epoch)\n    }\n\n    private fun sendVideoConfig(\n"
+          assert expected.count(helper_before) == 1, 'CSD fallback helper insertion ambiguous'
+          expected = expected.replace(helper_before, helper_after)
+          assert new.count('trySendOutputFormatConfig(codec, output, epoch)') == 1
+          assert new.count('sendVideoFrame(buffer, bufferInfo.size, keyFrame, output, epoch)') == 1
           assert new == expected, 'Unexpected changes outside video config epoch ownership fix'
           assert new.count('sendVideoConfig(buffer, bufferInfo.size, output, epoch)') == 1
           assert new.count('if (running.get() && dataPortEpoch == epoch) configSent = true') == 1
           assert new.count('configSent = false') == 2
           assert new.count('running.get() && dataPortEpoch == epoch && configSent') == 1
-          assert new.count('sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output, epoch)') == 1
+          assert new.count('sendVideoFrame(buffer, bufferInfo.size, keyFrame, output, epoch)') == 1
           assert new.count('val sentCount = synchronized(dataPortLock) {') == 1
           assert new.count('maybeSendKeepAlive(output, epoch)') == 2
           assert new.count('private fun maybeSendKeepAlive(output: java.io.OutputStream, epoch: Long)') == 1

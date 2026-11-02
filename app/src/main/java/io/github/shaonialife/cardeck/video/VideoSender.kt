@@ -293,7 +293,14 @@ class VideoSender(
                                 if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                                     sendVideoConfig(buffer, bufferInfo.size, output, epoch)
                                 } else if (bufferInfo.size > 0) {
-                                    sendVideoFrame(buffer, bufferInfo.size, flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, output, epoch)
+                                    val keyFrame = flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                                    // Some AVC encoders expose CSD only through outputFormat.
+                                    // Fall back only for a key frame missing this epoch's config.
+                                    if (keyFrame && synchronized(dataPortLock) { dataPortEpoch == epoch && !configSent }) {
+                                        runCatching { trySendOutputFormatConfig(codec, output, epoch) }
+                                            .onFailure { log("VIDEO: codec CSD fallback unavailable (${it.javaClass.simpleName})") }
+                                    }
+                                    sendVideoFrame(buffer, bufferInfo.size, keyFrame, output, epoch)
                                 }
                             }
                         } finally {
@@ -369,6 +376,33 @@ class VideoSender(
                     "body=${frame.size - HEADER_LEN}B fps=$framesPerSecond",
             )
         }
+    }
+
+    /**
+     * If an encoder emits a key frame without a codec-config output buffer,
+     * use its AVC csd-0/csd-1 metadata before the frame. Normal encoders that
+     * already sent VideoConfig never take this path.
+     */
+    private fun trySendOutputFormatConfig(
+        codec: MediaCodec,
+        output: java.io.OutputStream,
+        epoch: Long,
+    ) {
+        if (synchronized(dataPortLock) { !running.get() || dataPortEpoch != epoch || configSent }) return
+        val format = codec.outputFormat
+        val sps = format.getByteBuffer("csd-0")?.duplicate() ?: return
+        val pps = format.getByteBuffer("csd-1")?.duplicate() ?: return
+        fun asAnnexB(buffer: java.nio.ByteBuffer): ByteArray {
+            val bytes = ByteArray(buffer.remaining())
+            buffer.get(bytes)
+            val prefixed = bytes.size >= 3 && bytes[0] == 0.toByte() &&
+                bytes[1] == 0.toByte() &&
+                (bytes[2] == 1.toByte() ||
+                    (bytes.size >= 4 && bytes[2] == 0.toByte() && bytes[3] == 1.toByte()))
+            return if (prefixed) bytes else byteArrayOf(0, 0, 0, 1) + bytes
+        }
+        val csd = asAnnexB(sps) + asAnnexB(pps)
+        sendVideoConfig(java.nio.ByteBuffer.wrap(csd), csd.size, output, epoch)
     }
 
     private fun sendVideoConfig(
