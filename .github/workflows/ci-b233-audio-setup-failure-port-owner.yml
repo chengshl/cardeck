@@ -1,0 +1,81 @@
+name: B233 audio SETUP failure listener ownership (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-audio-setup-failure-port-owner-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-session-audio-startup-redaction-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-setup-port-owner-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact parent, failing-parent negative control, and isolated scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=dfae7a59f27468803424d165e705459afedd5404
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41393675105 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41393675105 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' '.github/workflows/ci-b233-audio-setup-failure-port-owner.yml' 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = 'dfae7a59f27468803424d165e705459afedd5404'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt'
+          old = subprocess.check_output(['git', 'show', base + ':' + path], text=True)
+          new = Path(path).read_text()
+          def setup_request_block(source):
+              start = source.index('val (statusLine, responseBody) =', source.index('fun runAudioStream('))
+              end = source.index('val setupTransportAccepted =', start)
+              return source[start:end]
+          before, after = setup_request_block(old), setup_request_block(new)
+          assert 'catch (error: IOException)' in before
+          assert 'audioSetupMayHaveCreatedStream = true\n                closeReverseAudioControlPort()' in before
+          assert 'var setupPortOwner: Any? = null' not in old
+          assert new.count('setupPortOwner = reverse') == 1
+          assert 'catch (error: Exception)' in after
+          assert 'closeReverseAudioControlPortIfOwner(setupPortOwner)' in after
+          assert 'if (error !is IOException && !endpoint.isBuickB233) throw error' in after
+          assert 'if (error !is IOException) throw error' in after
+          assert 'audioSetupMayHaveCreatedStream = true' in after
+          assert 'B233AudioSetupReply.safeError(error, endpoint.isBuickB233)' in after
+          assert 'else {\n                    closeReverseAudioControlPort()\n                }' in after
+          delta = subprocess.check_output(['git', 'diff', '--unified=0', base, 'HEAD', '--', path], text=True)
+          assert 'setupPortOwner' in delta
+          assert old.split('fun runAudioStream(', 1)[0] == new.split('fun runAudioStream(', 1)[0]
+          marker = '    /**\n     * 查询并纠正接收端音量'
+          assert old.split(marker, 1)[1] == new.split(marker, 1)[1], 'later methods must remain unchanged'
+          print('Negative control: parent closes whichever reverse RTCP listener is current.')
+          print('New B233 request failures retire only the originating listener; legacy IOException behavior remains.')
+          PY
+      - name: Reverse-port ownership regression and full Android JUnit, Lint, Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, Release, install, stable merge or user-network changes.
