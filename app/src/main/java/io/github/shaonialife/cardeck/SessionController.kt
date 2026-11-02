@@ -1601,8 +1601,21 @@ object SessionController {
                     mutePhoneOutput = !client.currentEndpoint.isBuickB233,
                     verboseStartupDiagnostics = client.currentEndpoint.isBuickB233,
                     onStopped =
-                        if (reversePortOwner != null) {
-                            { client.closeReverseAudioControlPortIfOwner(reversePortOwner) }
+                        if (client.currentEndpoint.isBuickB233) {
+                            {
+                                // A capture worker may stop asynchronously after
+                                // start() returned true. Retire only its own sender
+                                // state, never a replacement or another session.
+                                if (reversePortOwner != null) {
+                                    client.closeReverseAudioControlPortIfOwner(reversePortOwner)
+                                }
+                                if (currentClient === client && callbackOwner.owns(audioSender)) {
+                                    audioSender = null
+                                    activeAudioProfile = null
+                                    activeAudioStartedAt = 0L
+                                    b233AudioStartedInSession = false
+                                }
+                            }
                         } else {
                             null
                         },
