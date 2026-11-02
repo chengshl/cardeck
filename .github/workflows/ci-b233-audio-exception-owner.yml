@@ -53,15 +53,7 @@ jobs:
           path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
           old = Path('/tmp/parent-session.kt').read_text()
           new = Path(path).read_text()
-          old_catch = '''        } catch (error: Exception) {
-              client.closeReverseAudioControlPort()
-              appendLog("AUDIO: 通道启动异常 - ${error.message}")
-              audioSender = null
-              activeAudioProfile = null
-              activeAudioStartedAt = 0L
-              b233AudioStartedInSession = false
-              false
-          }'''.replace('              ', '            ')
+          old_catch = '        } catch (error: Exception) {\\n            client.closeReverseAudioControlPort()'
           assert old.count(old_catch) == 1, 'parent exception cleanup negative control absent'
           assert 'var exceptionSenderOwner: AudioSenderCallbackOwner? = null' in new
           assert 'var exceptionPortOwner: Any? = null' in new
@@ -69,7 +61,9 @@ jobs:
           assert 'exceptionSenderOwner = callbackOwner' in new
           assert 'client.closeReverseAudioControlPortIfOwner(exceptionPortOwner)' in new
           assert 'currentClient === client && exceptionSenderOwner?.owns(audioSender) == true' in new
-          assert 'if (!client.currentEndpoint.isBuickB233 ||' in new
+          assert 'val failedAttemptStillCurrent =' in new
+          assert 'if (failedAttemptStillCurrent) {' in new
+          assert 'if (!client.currentEndpoint.isBuickB233 || failedAttemptStillCurrent)' in new
           assert 'else {\n                client.closeReverseAudioControlPort()' in new
           hunks = subprocess.check_output(
               ['git','diff','--unified=0',base,'HEAD','--',path], text=True)
