@@ -100,6 +100,21 @@ jobs:
               (r'''log("AIRPLAY: ✓ /info [$statusLine] body=${body.size} 字节")''', r'''log("AIRPLAY: /info 已应答（状态行已脱敏）body=${body.size} 字节")'''),
               (r'''log("AIRPLAY: /info 失败 - ${error.message}")''', r'''log("AIRPLAY: /info 失败 - ${error.javaClass.simpleName}（详情已脱敏）")'''),
           ])
+          # Project-owned iAP2/event diagnostics: no raw peer payloads, RTSP request
+          # lines, or platform exception messages in user-exportable logs.
+          # Preserve parser.offer, CSM dispatch, onEaData and event ACK/command routing.
+          airplay_changes.extend([
+              ("                val hex = frame.body.joinToString(\" \") { \"%02x\".format(it) }\n", ""),
+              ("\"${frame.body.size}B hex=${hex.take(160)}\",", "\"${frame.body.size}B（原始体已脱敏）\","),
+              ("log(\"IAPLINK: rx ${bytes.size}B（非 CSM）hex=\" + bytes.joinToString(\" \") { \"%02x\".format(it) }.take(160))", "log(\"IAPLINK: rx ${bytes.size}B（非 CSM；原始体已脱敏）\")"),
+              ("            eaCount++\n            val hex = bytes.joinToString(\" \") { \"%02x\".format(it) }\n            if (eaCount <= 30", "            eaCount++\n            if (eaCount <= 30"),
+              ("log(\"IAPLINK: EA 数据 #$eaCount ${bytes.size}B hex=${hex.take(200)}\")", "log(\"IAPLINK: EA 数据 #$eaCount ${bytes.size}B（原始体已脱敏）\")"),
+              ("log(\"EVENT T40: unexpected response on reverse Events channel [$firstLine]; expected car-originated POST requests\")", "log(\"EVENT T40: unexpected response on reverse Events channel（状态行已脱敏）\")"),
+              ("log(\"EVENT: 未知请求 [$firstLine] body=${message.body.size}B\")", "log(\"EVENT: 未知请求（请求行已脱敏）body=${message.body.size}B\")"),
+              ("log(\"EVENT: 命令解析异常 - ${error.javaClass.simpleName}: ${error.message}\")", "log(\"EVENT: 命令解析异常 - ${error.javaClass.simpleName}（异常文本已脱敏）\")"),
+              ("log(\"EVENT: 命令 plist 解析失败 [$firstLine] body=${message.body.size}B prefix=\" + message.body.take(32).joinToString(\" \") { \"%02x\".format(it) })", "log(\"EVENT: 命令 plist 解析失败（请求行与原始体已脱敏）body=${message.body.size}B\")"),
+              ("log(\"EVENT: 命令处理异常 - ${error.message}\")", "log(\"EVENT: 命令处理异常 - ${error.javaClass.simpleName}（异常文本已脱敏）\")"),
+          ])
           for before, after in airplay_changes:
               assert airplay_expected.count(before) == 1, 'AirPlay modesChanged diagnostic baseline drift'
               airplay_expected = airplay_expected.replace(before, after, 1)
