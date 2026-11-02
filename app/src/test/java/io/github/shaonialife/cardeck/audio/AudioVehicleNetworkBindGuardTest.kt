@@ -8,7 +8,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudioVehicleNetworkBindGuardTest {
-
     @Test
     fun b233PcmRequiresLocalRtcpTransportBeforeRtpWhenControlPortAdvertised() {
         assertTrue(requiresB233AudioSyncStartup(true, true, 6011))
@@ -17,6 +16,7 @@ class AudioVehicleNetworkBindGuardTest {
         assertFalse(requiresB233AudioSyncStartup(false, true, 6011)) // legacy
         assertFalse(requiresB233AudioSyncStartup(false, false, 6011))
     }
+
     @Test
     fun b233RejectedVehicleBindClosesSocketInsteadOfUsingDefaultRoute() {
         val socket = DatagramSocket()
