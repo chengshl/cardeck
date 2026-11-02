@@ -1,0 +1,85 @@
+name: B233 audio preclaim vehicle UDP route probe (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-audio-preclaim-route-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-missing-network-failclosed-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-preclaim-route-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact verified parent, parent negative control, four-file scope and production ordering
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=83cdc23fcc60d6491d18c7d5f07f885d921e6ec7
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41367333003 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41367333003 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-preclaim-route-check.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/audio/B233AudioRoutePreclaim.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/B233AudioRoutePreclaimTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt > /tmp/old-session.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          old = Path('/tmp/old-session.kt').read_text()
+          new = Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          helper = Path('app/src/main/java/io/github/shaonialife/cardeck/audio/B233AudioRoutePreclaim.kt').read_text()
+          start = '    fun startAudioChannel('
+          end = '    /**\n     * 会话结束时'
+          a = old.split(start,1)[1].split(end,1)[0]
+          b = new.split(start,1)[1].split(end,1)[0]
+          assert 'preflightB233AudioRouteBeforeClaim' not in a
+          assert b.count('preflightB233AudioRouteBeforeClaim(') == 1
+          assert b.index('preflightB233AudioRouteBeforeClaim(') < b.index('client.b233AudioClaimPrepared = true')
+          assert b.index('client.b233AudioClaimPrepared = true') < b.index('client.assertModes(claimAudioResource = true)')
+          assert b.index('client.assertModes(claimAudioResource = true)') < b.index('client.runAudioStream(sharedSecret, candidate, tuning)')
+          assert 'if (!routeReady)' in b and 'return false' in b.split('if (!routeReady)',1)[1].split('client.b233AudioClaimPrepared = true',1)[0]
+          assert 'wifiConnector?.currentNetwork' in b
+          assert 'bindOwnedAudioDatagramSocket(' in helper
+          assert 'failClosed = true' in helper and 'newSocket().use' in helper
+          assert 'if (!isBuickB233) return true' in helper
+          assert 'send(' not in helper and 'connect(' not in helper
+          # No change to existing RTP/RTCP sender, shared-secret, VPN, or wire.
+          removed = old.replace('import io.github.shaonialife.cardeck.audio.AudioProfile\n','',1)
+          newer = new.replace('import io.github.shaonialife.cardeck.audio.AudioProfile\n','',1).replace('import io.github.shaonialife.cardeck.audio.preflightB233AudioRouteBeforeClaim\n','',1)
+          insertion_start = '            // T134: verify that THIS UID can bind'
+          insertion_end = '            // T85: in B233 only'
+          assert insertion_start in newer
+          newer = newer.split(insertion_start,1)[0] + insertion_end + newer.split(insertion_end,1)[1]
+          assert newer == removed
+          PY
+      - name: B233 route preclaim five negative and compatibility JVM tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests io.github.shaonialife.cardeck.audio.B233AudioRoutePreclaimTest --tests io.github.shaonialife.cardeck.audio.AudioVehicleNetworkBindGuardTest --stacktrace
+      - name: Full Android JUnit Lint Debug
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only, no signing, publication, installation, network control or stable merge.
