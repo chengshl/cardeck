@@ -108,7 +108,7 @@ jobs:
           assert 'activeChannel.compareAndSet(channel, null)' in client
           assert client.count('activeChannel.getAndSet(null)') == 3
           assert 'currentSocket.compareAndSet(connected, null)' in client
-          assert client.count('currentSocket.compareAndSet(socket, null)') == 7  # includes permission-revocation close
+          assert client.count('currentSocket.compareAndSet(socket, null)') == 8  # includes runtime-error retirement
           assert client.count('currentSocket.getAndSet(null)') == 3  # detach/stop + generation-owned worker exit
           assert 'currentSocket.set(socket)' not in client
           assert 'runCatching { connected.close() }' in client
@@ -232,9 +232,21 @@ jobs:
               "        }"
           )
           assert reviewed_socket.count(socket_before) == 1, 'Socket publication anchor drifted'
-          assert client == reviewed_socket.replace(socket_before, socket_after), (
-              'Unexpected #34 runtime change beyond generation-owned socket publication'
+          previous_runtime = subprocess.check_output(
+              ['git', 'show', '74f90d5d740a5038a57b8dd5ddd12ed0202871ad:' + client_path], text=True
           )
+          assert previous_runtime == reviewed_socket.replace(socket_before, socket_after), (
+              'Previous #34 socket publication baseline drifted'
+          )
+          # A Bluetooth stack RuntimeException must not retire the whole reconnect
+          # worker. Replay only the one owned-socket cleanup catch from exact HEAD.
+          connect_before = "        } catch (_: SecurityException) {\n            // Android permission can be revoked while blocking inside connect().\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            log(\"BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）\")\n            null\n        }\n    }\n\n    private fun runSession"
+          connect_after = "        } catch (_: SecurityException) {\n            // Android permission can be revoked while blocking inside connect().\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            log(\"BT-C: RFCOMM 建链中蓝牙权限已失效（本轮连接已释放）\")\n            null\n        } catch (error: RuntimeException) {\n            // A Bluetooth stack runtime failure must not kill the reconnect worker.\n            // Retire only the socket owned by this attempt, then use normal backoff.\n            currentSocket.compareAndSet(socket, null)\n            runCatching { socket.close() }\n            log(\"BT-C: RFCOMM 建链异常（${error.javaClass.simpleName}；本轮连接已释放）\")\n            null\n        }\n    }\n\n    private fun runSession"
+          assert previous_runtime.count(connect_before) == 1, 'Runtime catch anchor drifted'
+          assert client == previous_runtime.replace(connect_before, connect_after), (
+              'Unexpected #34 change beyond owned RFCOMM runtime-error cleanup'
+          )
+          assert client.count('catch (error: RuntimeException) {') == 1
           assert client.count('val socketPublished = synchronized(this) {') == 1
           assert client.count('val published = synchronized(this) {') == 1
           assert client.count('if (!published) {') == 1
