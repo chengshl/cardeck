@@ -55,31 +55,8 @@ jobs:
           path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
           old = subprocess.check_output(['git','show',base+':'+path], text=True)
           new = Path(path).read_text()
-          before = """            if (!client.currentEndpoint.isBuickB233 || failedAttemptStillCurrent) {
-                              audioSender = null
-                              activeAudioProfile = null
-                              activeAudioStartedAt = 0L
-                              b233AudioStartedInSession = false
-                          }""".replace('                              ', '                ')
-          after = """            if (client.currentEndpoint.isBuickB233) {
-                              // A stale exception must not retire a sender published after
-                              // the earlier ownership check. Share the B233 handoff lock.
-                              exceptionSenderOwner?.retireIfCurrent(
-                                  lock = this,
-                                  isCurrentSession = { currentClient === client },
-                                  activeSender = { audioSender },
-                              ) {
-                                  audioSender = null
-                                  activeAudioProfile = null
-                                  activeAudioStartedAt = 0L
-                                  b233AudioStartedInSession = false
-                              }
-                          } else {
-                              audioSender = null
-                              activeAudioProfile = null
-                              activeAudioStartedAt = 0L
-                              b233AudioStartedInSession = false
-                          }""".replace('                              ', '                ')
+          before = "            if (!client.currentEndpoint.isBuickB233 || failedAttemptStillCurrent) {\n                audioSender = null\n                activeAudioProfile = null\n                activeAudioStartedAt = 0L\n                b233AudioStartedInSession = false\n            }"
+          after = "            if (client.currentEndpoint.isBuickB233) {\n                // A stale exception must not retire a sender published after\n                // the earlier ownership check. Share the B233 handoff lock.\n                exceptionSenderOwner?.retireIfCurrent(\n                    lock = this,\n                    isCurrentSession = { currentClient === client },\n                    activeSender = { audioSender },\n                ) {\n                    audioSender = null\n                    activeAudioProfile = null\n                    activeAudioStartedAt = 0L\n                    b233AudioStartedInSession = false\n                }\n            } else {\n                audioSender = null\n                activeAudioProfile = null\n                activeAudioStartedAt = 0L\n                b233AudioStartedInSession = false\n            }"
           assert old.count(before) == 1, 'parent unsafe exception check-then-clear not found'
           assert new == old.replace(before, after, 1), 'production changes outside exception retirement'
           assert new.count('exceptionSenderOwner?.retireIfCurrent(') == 1
