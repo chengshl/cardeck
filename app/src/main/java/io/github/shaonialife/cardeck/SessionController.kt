@@ -1350,6 +1350,10 @@ object SessionController {
             client.audioFailureTrace = AudioFailureTrace(::appendLog)
             client.audioFailureTrace?.event("audio_attempt_begin")
         }
+        // Capture only this start attempt's resources for B233 exception cleanup.
+        // An older attempt must never retire a replacement sender/listener.
+        var exceptionSenderOwner: AudioSenderCallbackOwner? = null
+        var exceptionPortOwner: Any? = null
         return try {
             // 车机身份 → 只用于「本车机哪些音频档位踩过雷」的持久化记忆。
             val identity = client.receiverIdentity()
@@ -1565,6 +1569,7 @@ object SessionController {
             val callbackOwner = AudioSenderCallbackOwner()
             val reversePortOwner =
                 if (client.currentEndpoint.isBuickB233) client.reverseAudioControlPortOwner() else null
+            exceptionPortOwner = reversePortOwner
             val sender =
                 AudioSender(
                     host = host,
@@ -1679,6 +1684,7 @@ object SessionController {
                         },
                 )
             callbackOwner.bind(sender)
+            exceptionSenderOwner = callbackOwner
             audioSender = sender
             // T79: observe only this live sender's successful RTP sequence window.
             // No media packet retention or retransmission; stale sender -> no snapshot.
@@ -1705,12 +1711,23 @@ object SessionController {
                 true
             }
         } catch (error: Exception) {
-            client.closeReverseAudioControlPort()
+            if (client.currentEndpoint.isBuickB233) {
+                // A late exception belongs to its originating audio attempt.
+                // Before an owner is captured, preserve an uncertain listener
+                // rather than closing another attempt's listener.
+                client.closeReverseAudioControlPortIfOwner(exceptionPortOwner)
+            } else {
+                client.closeReverseAudioControlPort()
+            }
             appendLog("AUDIO: 通道启动异常 - ${error.message}")
-            audioSender = null
-            activeAudioProfile = null
-            activeAudioStartedAt = 0L
-            b233AudioStartedInSession = false
+            if (!client.currentEndpoint.isBuickB233 ||
+                (currentClient === client && exceptionSenderOwner?.owns(audioSender) == true)
+            ) {
+                audioSender = null
+                activeAudioProfile = null
+                activeAudioStartedAt = 0L
+                b233AudioStartedInSession = false
+            }
             false
         }
     }
