@@ -1563,10 +1563,14 @@ object SessionController {
                         "与 T14 先触发 6011 拒绝后继续 RTP 不同",
                 )
             }
-            activeAudioProfile = profile
-            activeAudioReceiverKey = identity
-            activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
-            b233AudioStartedInSession = client.currentEndpoint.isBuickB233
+            // For B233, publish sender + metadata together below. A previous
+            // sender's late onStopped must not clear the next sender's profile.
+            if (!client.currentEndpoint.isBuickB233) {
+                activeAudioProfile = profile
+                activeAudioReceiverKey = identity
+                activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
+                b233AudioStartedInSession = false
+            }
             val callbackOwner = AudioSenderCallbackOwner()
             val reversePortOwner =
                 if (client.currentEndpoint.isBuickB233) client.reverseAudioControlPortOwner() else null
@@ -1610,11 +1614,15 @@ object SessionController {
                                 if (reversePortOwner != null) {
                                     client.closeReverseAudioControlPortIfOwner(reversePortOwner)
                                 }
-                                if (currentClient === client && callbackOwner.owns(audioSender)) {
-                                    audioSender = null
-                                    activeAudioProfile = null
-                                    activeAudioStartedAt = 0L
-                                    b233AudioStartedInSession = false
+                                // Check and retire under the same lock used to
+                                // publish a replacement sender's metadata.
+                                synchronized(this@SessionController) {
+                                    if (currentClient === client && callbackOwner.owns(audioSender)) {
+                                        audioSender = null
+                                        activeAudioProfile = null
+                                        activeAudioStartedAt = 0L
+                                        b233AudioStartedInSession = false
+                                    }
                                 }
                             }
                         } else {
@@ -1699,7 +1707,17 @@ object SessionController {
                 )
             callbackOwner.bind(sender)
             exceptionSenderOwner = callbackOwner
-            audioSender = sender
+            if (client.currentEndpoint.isBuickB233) {
+                synchronized(this) {
+                    audioSender = sender
+                    activeAudioProfile = profile
+                    activeAudioReceiverKey = identity
+                    activeAudioStartedAt = android.os.SystemClock.uptimeMillis()
+                    b233AudioStartedInSession = true
+                }
+            } else {
+                audioSender = sender
+            }
             // T79: observe only this live sender's successful RTP sequence window.
             // No media packet retention or retransmission; stale sender -> no snapshot.
             client.audioRtpSentCountProvider = {
