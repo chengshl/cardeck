@@ -435,7 +435,18 @@ jobs:
           expected = expected.replace(helper_before, helper_after)
           assert new.count('trySendOutputFormatConfig(codec, output, epoch)') == 1
           assert new.count('sendVideoFrame(buffer, bufferInfo.size, keyFrame, output, epoch)') == 1
-          assert new == expected, 'Unexpected changes outside video config epoch ownership fix'
+          # Keep the reviewed CSD fallback immutable; only change exception routing.
+          reviewed_fallback = subprocess.check_output(
+              ['git', 'show', 'b82dd88aa47bad12b3d3fa2b6bab5fadcb5b19b4:' + source_path], text=True
+          )
+          assert expected == reviewed_fallback, 'Reviewed #83 CSD fallback source drifted'
+          io_before = "                                        runCatching { trySendOutputFormatConfig(codec, output, epoch) }\n                                            .onFailure { log(\"VIDEO: codec CSD fallback unavailable (${it.javaClass.simpleName})\") }"
+          io_after = "                                        try {\n                                            trySendOutputFormatConfig(codec, output, epoch)\n                                        } catch (error: java.io.IOException) {\n                                            // A broken data socket is not missing codec metadata.\n                                            // Let drainEncoder retire this session after releasing the slot.\n                                            throw error\n                                        } catch (error: Exception) {\n                                            log(\"VIDEO: codec CSD fallback unavailable (${error.javaClass.simpleName})\")\n                                        }"
+          assert expected.count(io_before) == 1, 'CSD fallback exception handler ambiguous'
+          expected = expected.replace(io_before, io_after)
+          assert new == expected, 'Unexpected change outside CSD transport-error handling'
+          assert new.count('} catch (error: java.io.IOException) {') == 1
+          assert new.count('throw error') >= 1
           assert new.count('sendVideoConfig(buffer, bufferInfo.size, output, epoch)') == 1
           assert new.count('if (running.get() && dataPortEpoch == epoch) configSent = true') == 1
           assert new.count('configSent = false') == 2
