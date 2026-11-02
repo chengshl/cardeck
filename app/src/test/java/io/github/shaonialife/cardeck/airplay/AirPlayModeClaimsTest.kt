@@ -23,6 +23,19 @@ class AirPlayModeClaimsTest {
         }
     }
 
+    @Test fun rtspSuccessRequiresExactStatusCode() {
+        listOf("RTSP/1.0 200 OK", "RTSP/1.0 200", "RTSP/2.0 200 OK").forEach {
+            assertTrue("Expected success for $it", AirPlayModeClaims.isSuccessfulRtspStatus(it))
+        }
+        listOf(
+            "RTSP/1.0 500 200 retry", "RTSP/1.0 2000 OK",
+            "RTSP/1.0 404 200 not found", "HTTP/1.1 200 OK",
+            "garbage 200", "",
+        ).forEach {
+            assertFalse("Unexpected success for $it", AirPlayModeClaims.isSuccessfulRtspStatus(it))
+        }
+    }
+
     @Test fun resourcePayloadPreservesOriginalEntitiesAndOrder() {
         val screen = AirPlayModeClaims.resources(false).single()
         assertEquals(mapOf("resourceID" to 1L, "entity" to 1L, "permanentEntity" to 1L), screen)

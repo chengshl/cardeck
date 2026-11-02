@@ -79,16 +79,40 @@ jobs:
           # diagnostics while preserving the original modesChanged result test.
           # Lock the complete reviewed AirPlay source blob; any further edit
           # requires an explicit re-review and a new exact-source lease.
-          reviewed_air_blob = '5db1e4fa3b6c954279cb3a392e1b817f724b1ec2'
+          reviewed_air_blob = '6f76d1428d39fea7fa40c94d105d11766a2d02de'
           actual_air_blob = subprocess.check_output(
               ['git', 'hash-object', air], text=True
           ).strip()
           assert actual_air_blob == reviewed_air_blob, (
               f'Unreviewed BT-B AirPlay source drift: {actual_air_blob}'
           )
-          assert 'val succeeded = statusLine.contains("200")' in new_air
+          assert 'val succeeded = AirPlayModeClaims.isSuccessfulRtspStatus(statusLine)' in new_air
           assert '；成功=$succeeded；响应内容已脱敏）' in new_air
           assert 'modesChanged 失败（${error.javaClass.simpleName}；详细内容已脱敏）' in new_air
+          # Exact prior-HEAD delta and immutable source blobs: no hidden runtime edits.
+          previous_head = 'c6a37ff09d48af1fe75ab7ebd940248c90db6234'
+          since_prior = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_head, 'HEAD'], text=True
+          ).splitlines())
+          assert since_prior == {air, policy, test, workflow}, (
+              f'Unexpected BT-B incremental scope: {sorted(since_prior)}'
+          )
+          prior_air = subprocess.check_output(
+              ['git', 'show', previous_head + ':' + air], text=True
+          )
+          assert new_air == prior_air.replace(
+              'val succeeded = statusLine.contains("200")',
+              'val succeeded = AirPlayModeClaims.isSuccessfulRtspStatus(statusLine)',
+          ), 'BT-B AirPlay change exceeds reviewed status check'
+          for locked_path, locked_blob in (
+              (policy, '20dfde303daf627011e1062756f7cc9d3969f059'),
+              (test, '9620b00ccc408225b3f05f797242474ea14e05db'),
+          ):
+              assert subprocess.check_output(
+                  ['git', 'hash-object', locked_path], text=True
+              ).strip() == locked_blob, f'Unreviewed source drift: {locked_path}'
+          assert 'fun isSuccessfulRtspStatus(statusLine: String)' in Path(policy).read_text()
+          assert 'rtspSuccessRequiresExactStatusCode' in Path(test).read_text()
           assert old_air.count('fun assertModes(): Boolean') == 1
           assert new_air.count('fun assertModes(claimAudioResource: Boolean = true): Boolean') == 1
           assert new_air.count('AirPlayModeClaims.resources(claimAudioResource)') == 1

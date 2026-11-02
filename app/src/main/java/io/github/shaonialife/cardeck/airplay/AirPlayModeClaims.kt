@@ -9,6 +9,11 @@ internal object AirPlayModeClaims {
     fun claimAudio(receiverModel: String?, audioEnabledForSession: Boolean): Boolean =
         !receiverModel?.trim().equals("B233", ignoreCase = true) || audioEnabledForSession
 
+    private val successfulRtspStatus = Regex("""RTSP/\d+\.\d+[ \t]+200(?:[ \t]+.*)?""")
+
+    fun isSuccessfulRtspStatus(statusLine: String): Boolean =
+        successfulRtspStatus.matches(statusLine.trim())
+
     fun resources(claimAudio: Boolean): List<Map<String, Long>> {
         val screen = linkedMapOf(
             "resourceID" to 1L, "entity" to 1L, "permanentEntity" to 1L,
