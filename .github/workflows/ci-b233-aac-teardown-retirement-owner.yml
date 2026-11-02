@@ -1,0 +1,76 @@
+name: B233 AAC teardown completion owner (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-aac-teardown-retirement-owner-11
+  pull_request:
+    branches:
+      - experiment/buick-b233-pcm-sync-refusal-owner-11
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-aac-teardown-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify parent CI, exact scope, old-code negative control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=d452efd08eb74b38521899be84f2f1556627a82f
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41473897724 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41473897724 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-aac-teardown-retirement-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt' \
+            | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = 'd452efd08eb74b38521899be84f2f1556627a82f'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          old = subprocess.check_output(['git', 'show', base+':'+path], text=True)
+          new = Path(path).read_text()
+          before = 'if (audioRemoved && currentClient === client &&\n                                                audioSender === active'
+          after = 'val retired = audioRemoved && callbackOwner.retireIfCurrent('
+          assert old.count(before) == 1, 'unsafe AAC completion missing in parent'
+          assert new.count(before) == 0, 'unsafe AAC completion remains'
+          assert new.count(after) == 1, 'AAC owner retirement missing'
+          region = new[new.index(after):new.index('AUDIO T63: 音频流撤销未确认', new.index(after))]
+          assert 'lock = this@SessionController' in region
+          assert 'currentClient === client' in region
+          assert 'activeSender = { audioSender }' in region
+          assert 'audioEnabledForSession = false' in region
+          assert 'if (retired)' in region
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt').read_text()
+          assert 'staleAacTeardownCompletionCannotRevokeReplacementAudioClaim' in tests
+          print('Old unsafe AAC teardown completion rejected; new owner-gated completion verified')
+          PY
+      - name: Android JUnit, Lint and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, Release, install, stable merge or network changes.
