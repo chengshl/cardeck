@@ -77,6 +77,18 @@ jobs:
                r'''log("AIRPLAY: modesChanged（声明持有主屏/主音频资源；statusOk=${statusLine.contains("200")}；原始状态行已脱敏）")'''),
               (r'''log("AIRPLAY: modesChanged 失败 - ${error.message}")''',
                r'''log("AIRPLAY: modesChanged 失败 - ${error.javaClass.simpleName}（详细异常已脱敏）")'''),
+              (r'''"deviceID=$deviceId 加密=${if (cipher != null) "是" else "否（et=NONE）"}",''',
+               r'''"deviceIdPlaceholder=${deviceId == DeviceIdentity.PLACEHOLDER_MAC} 加密=${if (cipher != null) "是" else "否（et=NONE）"}",'''),
+              (r'''log("AIRPLAY: SETUP 失败 - ${error.message}")''',
+               r'''log("AIRPLAY: SETUP 失败 - ${error.javaClass.simpleName}（详情已脱敏）")'''),
+              (r'''log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")''',
+               r'''log("AIRPLAY: SETUP 应答失败（原始状态行/设备标识已脱敏）")'''),
+              (r'''// 蓝牙地址直接打出来，用户对照接收端设置即可自查。''',
+               r'''// 本机蓝牙地址仅用于协议，不写入可导出的诊断日志。'''),
+              (r'''"AIRPLAY: 403 排查——接收端若启用了设备过滤，请在接收端选择本机蓝牙地址 " +''',
+               r'''"AIRPLAY: 403 排查——检查接收端设备过滤与配对；身份已脱敏 " +'''),
+              (r'''"$deviceId" +''',
+               r'''"（身份不输出）" +'''),
           ]
           for before, after in airplay_changes:
               assert airplay_expected.count(before) == 1, 'AirPlay modesChanged diagnostic baseline drift'
