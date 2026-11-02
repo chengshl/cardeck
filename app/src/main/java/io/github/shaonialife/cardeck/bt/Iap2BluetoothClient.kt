@@ -306,7 +306,7 @@ class Iap2BluetoothClient(
             }
             val vehicleId = runCatching { GatewayVehicleIdentity.activate(context, connected.remoteDevice?.address) }.getOrNull()
             try {
-                runSession(connected)
+                runSession(connected, myGeneration)
             } finally {
                 GatewayVehicleIdentity.clearIfActive(vehicleId)
             }
@@ -384,8 +384,7 @@ class Iap2BluetoothClient(
             if (!running || generation.get() != myGeneration) {
                 false
             } else {
-                currentSocket.set(socket)
-                true
+                currentSocket.compareAndSet(null, socket)
             }
         }
         if (!published) {
@@ -402,13 +401,24 @@ class Iap2BluetoothClient(
         }
     }
 
-    private fun runSession(socket: BluetoothSocket) {
+    private fun runSession(socket: BluetoothSocket, myGeneration: Long) {
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
             }
         val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
-        activeChannel.set(channel)
+        // stop()/start() can retire this worker while channel construction is in flight.
+        // Publish only to the still-owning generation, never over a successor channel.
+        val channelPublished = synchronized(lifecycleLock) {
+            running && generation.get() == myGeneration &&
+                activeChannel.compareAndSet(null, channel)
+        }
+        if (!channelPublished) {
+            currentSocket.compareAndSet(socket, null)
+            runCatching { socket.close() }
+            runCatching { channel.close() }
+            return
+        }
         try {
             // T10: resolve the shared Bluetooth identity before session construction.
             var mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
