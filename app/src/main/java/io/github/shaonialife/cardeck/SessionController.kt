@@ -1711,18 +1711,19 @@ object SessionController {
                 true
             }
         } catch (error: Exception) {
+            val failedAttemptStillCurrent =
+                currentClient === client && exceptionSenderOwner?.owns(audioSender) == true
             if (client.currentEndpoint.isBuickB233) {
-                // A late exception belongs to its originating audio attempt.
-                // Before an owner is captured, preserve an uncertain listener
-                // rather than closing another attempt's listener.
-                client.closeReverseAudioControlPortIfOwner(exceptionPortOwner)
+                // Never close a previous/replacement listener on an early or
+                // stale exception, even if it is still this client's listener.
+                if (failedAttemptStillCurrent) {
+                    client.closeReverseAudioControlPortIfOwner(exceptionPortOwner)
+                }
             } else {
                 client.closeReverseAudioControlPort()
             }
             appendLog("AUDIO: 通道启动异常 - ${error.message}")
-            if (!client.currentEndpoint.isBuickB233 ||
-                (currentClient === client && exceptionSenderOwner?.owns(audioSender) == true)
-            ) {
+            if (!client.currentEndpoint.isBuickB233 || failedAttemptStillCurrent) {
                 audioSender = null
                 activeAudioProfile = null
                 activeAudioStartedAt = 0L
