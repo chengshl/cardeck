@@ -362,7 +362,43 @@ jobs:
           assert 'val enabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }' in new
           assert 'reviewed_source = \'1cca4ada9996bfa58311d2dd9fb34198479b1261\'' in release
           assert 'synchronized(lifecycleLock)' in new
-          assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
+          # #24: a stopped RFCOMM worker may finish channel creation after the
+          # successor has started. Replay only owner-fenced publication changes
+          # against the immutable, previously audited BT-A source.
+          owner_previous = 'ed0cbe57cfa5f33731a515b4a0531655c829c4cf'
+          assert expected_client == subprocess.check_output(
+              ['git', 'show', owner_previous + ':' + client], text=True
+          ), 'Previous BT-A owner-publication source drifted'
+          owner_edits = [
+              ("                runSession(connected)", "                runSession(connected, myGeneration)"),
+              ("                currentSocket.set(socket)\\n                true",
+               "                currentSocket.compareAndSet(null, socket)"),
+              ("    private fun runSession(socket: BluetoothSocket) {",
+               "    private fun runSession(socket: BluetoothSocket, myGeneration: Long) {"),
+              ("        activeChannel.set(channel)\\n        try {",
+               "        // stop()/start() can retire this worker while channel construction is in flight.\\n"
+               "        // Publish only to the still-owning generation, never over a successor channel.\\n"
+               "        val channelPublished = synchronized(lifecycleLock) {\\n"
+               "            running && generation.get() == myGeneration &&\\n"
+               "                activeChannel.compareAndSet(null, channel)\\n"
+               "        }\\n"
+               "        if (!channelPublished) {\\n"
+               "            currentSocket.compareAndSet(socket, null)\\n"
+               "            runCatching { socket.close() }\\n"
+               "            runCatching { channel.close() }\\n"
+               "            return\\n"
+               "        }\\n"
+               "        try {"),
+          ]
+          for before_owner, after_owner in owner_edits:
+              assert expected_client.count(before_owner) == 1, 'BT-A owner edit anchor drifted'
+              expected_client = expected_client.replace(before_owner, after_owner)
+          assert 'activeChannel.set(channel)' not in new
+          assert 'currentSocket.set(socket)' not in new
+          assert new.count('activeChannel.compareAndSet(null, channel)') == 1
+          assert 'running && generation.get() == myGeneration &&' in new
+          assert 'runCatching { channel.close() }' in new
+                    assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
           assert new.count('activeChannel.compareAndSet(channel, null)') == 1
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
@@ -373,7 +409,7 @@ jobs:
           )
           assert reviewed_source.count(retire_before) == 1, 'Prior reviewed source changed'
           assert previous_client == reviewed_source.replace(retire_before, retire_after), 'Prior BT-A signed-source lease changed'
-          assert new.index('currentSocket.compareAndSet(connected, null)') < new.index('runSession(connected)'), 'Old worker may clear a newer socket'
+          assert new.index('currentSocket.compareAndSet(connected, null)') < new.index('runSession(connected, myGeneration)'), 'Old worker may clear a newer socket'
           assert new.count('continue@scan') == 2
           assert new.count('targetProvider() == selectedForCandidates') == 2
           assert new.index('targetProvider() == selectedForCandidates') < new.index('val dropped = BtProfiles.disconnect(context, device)')
