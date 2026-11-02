@@ -12,6 +12,7 @@ import io.github.shaonialife.cardeck.airplay.AirPlayClient
 import io.github.shaonialife.cardeck.airplay.PairVerifyClient
 import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
+import io.github.shaonialife.cardeck.audio.preflightB233AudioRouteBeforeClaim
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
 import io.github.shaonialife.cardeck.audio.AudioSenderCallbackOwner
@@ -1453,6 +1454,36 @@ object SessionController {
                     "（本车机记忆：${AudioProfileMemory.describe(entry)}；" +
                     "封装=${tuning.detail}）",
             )
+            // T134: verify that THIS UID can bind a phone-local UDP socket to
+            // the vehicle Wi-Fi before declaring mainAudio or sending SETUP.
+            // #133 already fails closed at the later RTP/RTCP sender bind; without
+            // this earlier check an accepted SETUP could leave an orphaned audio
+            // stream with zero RTP when the vehicle Network is already missing
+            // or bindSocket is rejected. This is a preflight, not proof that the
+            // peer will receive RTP or that a later bind cannot fail.
+            if (client.currentEndpoint.isBuickB233) {
+                val route = wifiConnector?.currentNetwork
+                val routeReady = preflightB233AudioRouteBeforeClaim(
+                    isBuickB233 = true,
+                    bindToVehicleNetwork = route?.let { network ->
+                        { udp -> network.bindSocket(udp) }
+                    },
+                    onFailure = { error ->
+                        appendLog("AUDIO T134: preclaim_vehicle_udp_bind_failed=" +
+                            error.javaClass.simpleName)
+                    },
+                )
+                if (!routeReady) {
+                    // Do not claim mainAudio or perform an audio SETUP on this path.
+                    // Keep a previous, uncertain accepted stream's claim state
+                    // unchanged rather than implying ownership was released.
+                    appendLog("AUDIO T134: audio_setup_skipped reason=vehicle_route_unavailable " +
+                        "preclaim_probe=false receiver_stream_state=unchanged")
+                    client.audioFailureTrace?.event("audio_setup_skipped",
+                        "reason=vehicle_route_unavailable")
+                    return false
+                }
+            }
             // T85: in B233 only, claim mainAudio just before the first actual
             // audio SETUP, NOT during initial screen/session SETUP. Screen RECORD
             // and initial visual mode are unchanged, as are PCM/AAC and RTP/RTCP.
