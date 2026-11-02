@@ -1,0 +1,90 @@
+name: B233 audio exception ownership cleanup (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-audio-exception-owner-t94
+  pull_request:
+    branches:
+      - experiment/buick-b233-failed-audio-sender-owner-t94
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-exception-owner-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verified parent, negative control, scope and B233 exception ownership gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=3282b9d42bf941a16f00bfc8eb04465bff9ebe4d
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41372705556 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41372705556 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-exception-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          git show "$BASE":app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt > /tmp/parent-session.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = '3282b9d42bf941a16f00bfc8eb04465bff9ebe4d'
+          path = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          old = Path('/tmp/parent-session.kt').read_text()
+          new = Path(path).read_text()
+          old_catch = '''        } catch (error: Exception) {
+              client.closeReverseAudioControlPort()
+              appendLog("AUDIO: 通道启动异常 - ${error.message}")
+              audioSender = null
+              activeAudioProfile = null
+              activeAudioStartedAt = 0L
+              b233AudioStartedInSession = false
+              false
+          }'''.replace('              ', '            ')
+          assert old.count(old_catch) == 1, 'parent exception cleanup negative control absent'
+          assert 'var exceptionSenderOwner: AudioSenderCallbackOwner? = null' in new
+          assert 'var exceptionPortOwner: Any? = null' in new
+          assert 'exceptionPortOwner = reversePortOwner' in new
+          assert 'exceptionSenderOwner = callbackOwner' in new
+          assert 'client.closeReverseAudioControlPortIfOwner(exceptionPortOwner)' in new
+          assert 'currentClient === client && exceptionSenderOwner?.owns(audioSender) == true' in new
+          assert 'if (!client.currentEndpoint.isBuickB233 ||' in new
+          assert 'else {\n                client.closeReverseAudioControlPort()' in new
+          hunks = subprocess.check_output(
+              ['git','diff','--unified=0',base,'HEAD','--',path], text=True)
+          assert hunks.count('\n@@') == 4, 'production changes outside four ownership guard sites'
+          tests = Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt').read_text()
+          parent_tests = subprocess.check_output(['git','show',base+':app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt'], text=True)
+          assert 'lateExceptionCannotClearReplacementOrDifferentSession' not in parent_tests
+          assert 'lateExceptionCannotClearReplacementOrDifferentSession' in tests
+          assert 'cleanupOnException(null)' in tests
+          assert 'sameClient = false' in tests
+          print('unsafe parent confirmed; B233 catch fenced to sender, client and port owner')
+          PY
+      - name: Android negative regression, full JUnit, Lint and Debug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft offline only. No signing, Release, install, merge or network configuration.
