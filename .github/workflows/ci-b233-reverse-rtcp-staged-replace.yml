@@ -69,7 +69,7 @@ jobs:
           assert guard < start_port < install
           assert 'if (reverse.port == 0)' in section[start_port:install]
           assert 'audioRtpSentCountProvider = null' in section[install:install+300]
-          assert 'closeReverseAudioControlPort()\n        val reversePort =' not in section
+          assert '        closeReverseAudioControlPort()\n        val reversePort =' not in section
           delta = subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--',source],text=True)
           assert delta.count('\n@@') == 3, 'unexpected production hunks'
           print('Old B233 pre-bind retirement reproduced; new source preserves previous listener on bind failure.')
