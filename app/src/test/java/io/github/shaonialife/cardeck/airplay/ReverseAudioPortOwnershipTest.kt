@@ -29,6 +29,16 @@ class ReverseAudioPortOwnershipTest {
     }
 
     @Test
+    fun missingB233RouteSkipsSetupBeforeReplacingReverseListener() {
+        assertTrue(shouldSkipAudioSetupBeforePortReplacement(true, true, false))
+        assertFalse(shouldSkipAudioSetupBeforePortReplacement(true, true, true))
+        // No reverse RTCP is advertised: retain existing behavior.
+        assertFalse(shouldSkipAudioSetupBeforePortReplacement(true, false, false))
+        // Non-B233 receivers retain the existing best-effort path.
+        assertFalse(shouldSkipAudioSetupBeforePortReplacement(false, true, false))
+    }
+
+    @Test
     fun absentOrUnownedListenerNeverCloses() {
         val originalPort = Any()
         assertFalse(ownsReverseAudioPort(null, originalPort))
