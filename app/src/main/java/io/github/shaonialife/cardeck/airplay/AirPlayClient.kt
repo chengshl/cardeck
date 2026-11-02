@@ -1992,6 +1992,15 @@ class AirPlayClient(
         // Each SETUP owns only the reverse RTCP listener it published.
         // A failed old request must not retire a replacement listener.
         var setupPortOwner: Any? = null
+        // Response failures must retire this SETUP's listener, not a newer one.
+        // Legacy receivers keep their original best-effort cleanup behavior.
+        fun retireFailedSetupPort() {
+            if (endpoint.isBuickB233) {
+                closeReverseAudioControlPortIfOwner(setupPortOwner)
+            } else {
+                closeReverseAudioControlPort()
+            }
+        }
         closeReverseAudioControlPort()
         val reversePort =
             if (BuickAudioTimingPolicy.advertiseReverseControlPort(endpoint.isBuickB233, profile)) {
@@ -2112,7 +2121,7 @@ class AirPlayClient(
         val safeSetupStatus = B233AudioSetupReply.safeStatus(statusLine, endpoint.isBuickB233)
         log("AIRPLAY: 音频 SETUP 往返 ${SystemClock.uptimeMillis() - startedAt}ms [$safeSetupStatus]")
         if (!setupTransportAccepted) {
-            closeReverseAudioControlPort()
+            retireFailedSetupPort()
             log("AIRPLAY: 音频流协商应答 [$safeSetupStatus]")
             return null
         }
@@ -2122,13 +2131,13 @@ class AirPlayClient(
             } catch (error: IllegalArgumentException) {
                 null
             } ?: run {
-                closeReverseAudioControlPort()
+                retireFailedSetupPort()
                 log("AIRPLAY: 音频流协商应答解析失败")
                 return null
             }
         val streams =
             root["streams"] as? List<*> ?: run {
-                closeReverseAudioControlPort()
+                retireFailedSetupPort()
                 log("AIRPLAY: 音频流协商应答缺少 streams")
                 return null
             }
@@ -2136,13 +2145,13 @@ class AirPlayClient(
             streams.firstOrNull { entry ->
                 ((entry as? Map<*, *>)?.get("type") as? Long) == profile.streamType
             } as? Map<*, *> ?: run {
-                closeReverseAudioControlPort()
+                retireFailedSetupPort()
                 log(if (endpoint.isBuickB233) B233AudioSetupLog.rejected(streams.size) else "AIRPLAY: 音频流被拒绝（streams=$streams）")
                 return null
             }
         val dataPort = portOf(audio["dataPort"])
         if (dataPort == 0) {
-            closeReverseAudioControlPort()
+            retireFailedSetupPort()
             log(if (endpoint.isBuickB233) B233AudioSetupLog.missingDataPort() else "AIRPLAY: 音频流未返回 dataPort（$audio）")
             return null
         }
