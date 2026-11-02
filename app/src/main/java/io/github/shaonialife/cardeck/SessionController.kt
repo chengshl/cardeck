@@ -16,6 +16,7 @@ import io.github.shaonialife.cardeck.audio.preflightB233AudioRouteBeforeClaim
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
 import io.github.shaonialife.cardeck.audio.AudioSenderCallbackOwner
+import io.github.shaonialife.cardeck.audio.audioDiagnosticFailure
 import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.B233PairingMonitor
@@ -1735,7 +1736,7 @@ object SessionController {
             } else {
                 client.closeReverseAudioControlPort()
             }
-            appendLog("AUDIO: 通道启动异常 - ${error.message}")
+            appendLog("AUDIO: 通道启动异常 - ${if (client.currentEndpoint.isBuickB233) audioDiagnosticFailure(error, true) else error.message}")
             if (!client.currentEndpoint.isBuickB233 || failedAttemptStillCurrent) {
                 audioSender = null
                 activeAudioProfile = null
