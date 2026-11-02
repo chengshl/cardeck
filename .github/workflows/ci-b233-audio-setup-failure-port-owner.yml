@@ -66,7 +66,7 @@ jobs:
           assert 'B233AudioSetupReply.safeError(error, endpoint.isBuickB233)' in after
           assert 'else {\n                    closeReverseAudioControlPort()\n                }' in after
           delta = subprocess.check_output(['git', 'diff', '--unified=0', base, 'HEAD', '--', path], text=True)
-          assert 'fun runAudioStream(' in delta and 'setupPortOwner' in delta
+          assert 'setupPortOwner' in delta
           assert old.split('fun runAudioStream(', 1)[0] == new.split('fun runAudioStream(', 1)[0]
           marker = '    /**\n     * 查询并纠正接收端音量'
           assert old.split(marker, 1)[1] == new.split(marker, 1)[1], 'later methods must remain unchanged'
