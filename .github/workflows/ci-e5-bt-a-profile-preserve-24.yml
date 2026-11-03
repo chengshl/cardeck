@@ -404,12 +404,20 @@ jobs:
               ['git', 'show', '1bb5a33ff65b8988652cd54d5953cd9b2c0f0bc5:' + client], text=True
           )
           assert expected_client == prior_target_policy, 'Reviewed BT-A target-policy baseline drifted'
-          legacy_before = "        val t35Buick = targetProvider()?.let {\n            it.name.contains(\"BUICK\", ignoreCase = true) &&\n                it.address.equals(\"30:DF:17:9F:AE:4C\", ignoreCase = true)\n        } == true\n        var t35Attempts = 0\n        scan@ while (running && generation.get() == myGeneration) {"
+          # Preserve the exact previously-reviewed address without copying any
+          # raw device identifier into CI configuration or public metadata.
+          legacy_address_marker = 'it.address.equals("'
+          assert prior_target_policy.count(legacy_address_marker) == 1, 'T35 address anchor drifted'
+          legacy_address = prior_target_policy.split(legacy_address_marker, 1)[1].split('"', 1)[0]
+          assert legacy_address.count(':') == 5, 'T35 legacy selector format changed'
+          legacy_before = "        val t35Buick = targetProvider()?.let {\n            it.name.contains(\"BUICK\", ignoreCase = true) &&\n                it.address.equals(\"__T35_REVIEWED_ADDRESS__\", ignoreCase = true)\n        } == true\n        var t35Attempts = 0\n        scan@ while (running && generation.get() == myGeneration) {"
           legacy_after = "        var t35Attempts = 0\n        var previousSelection: TargetDevicePrefs.Target? = null\n        scan@ while (running && generation.get() == myGeneration) {"
+          legacy_before = legacy_before.replace('__T35_REVIEWED_ADDRESS__', legacy_address)
+          legacy_after = legacy_after.replace('__T35_REVIEWED_ADDRESS__', legacy_address)
           assert expected_client.count(legacy_before) == 1, 'Static T35 exception anchor drifted'
           expected_client = expected_client.replace(legacy_before, legacy_after)
           selected_before = "            val selectedForCandidates = targetProvider()\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
-          selected_after = "            val selectedForCandidates = targetProvider()\n            // Re-evaluate the legacy T35 exception for this scan's target.\n            // A user can change receivers without restarting the worker; do\n            // not keep the previous receiver's HFP/A2DP or cooldown policy.\n            if (selectedForCandidates != previousSelection) {\n                t35Attempts = 0\n                previousSelection = selectedForCandidates\n            }\n            val t35Buick = selectedForCandidates?.let {\n                it.name.contains(\"BUICK\", ignoreCase = true) &&\n                    it.address.equals(\"30:DF:17:9F:AE:4C\", ignoreCase = true)\n            } == true\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          selected_after = "            val selectedForCandidates = targetProvider()\n            // Re-evaluate the legacy T35 exception for this scan's target.\n            // A user can change receivers without restarting the worker; do\n            // not keep the previous receiver's HFP/A2DP or cooldown policy.\n            if (selectedForCandidates != previousSelection) {\n                t35Attempts = 0\n                previousSelection = selectedForCandidates\n            }\n            val t35Buick = selectedForCandidates?.let {\n                it.name.contains(\"BUICK\", ignoreCase = true) &&\n                    it.address.equals(\"__T35_REVIEWED_ADDRESS__\", ignoreCase = true)\n            } == true\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
           assert expected_client.count(selected_before) == 1, 'Target selection snapshot anchor drifted'
           expected_client = expected_client.replace(selected_before, selected_after)
           assert new == expected_client, 'Unreviewed BT-A runtime delta beyond target-specific policy'
