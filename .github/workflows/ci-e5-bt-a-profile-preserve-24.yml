@@ -83,7 +83,7 @@ jobs:
           assert "assert modified == {workflow}" in release
           assert "assert not event.get('head_commit', {}).get('added', [])" in release
           assert "assert not event.get('head_commit', {}).get('removed', [])" in release
-          assert "reviewed_source = '02f21fdd820886f38e2772b16281c0bf96557f50'" in release
+          assert "reviewed_source = '43860819b15b10b977a451034c49def05b7c4cad'" in release
           assert "assert actual == expected" in release
           assert 'group: cardeck-global-signed-release-version' in release
           assert 'cancel-in-progress: false' in release
@@ -360,7 +360,7 @@ jobs:
           assert 'generation.get() != startLease' in new
           assert 'runCatching { log("BT-C: 读取目标失败' in new
           assert 'val enabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }' in new
-          assert 'reviewed_source = \'02f21fdd820886f38e2772b16281c0bf96557f50\'' in release
+          assert 'reviewed_source = \'43860819b15b10b977a451034c49def05b7c4cad\'' in release
           assert 'synchronized(lifecycleLock)' in new
           # #24: a stopped RFCOMM worker may finish channel creation after the
           # successor has started. Replay only owner-fenced publication changes
@@ -398,7 +398,24 @@ jobs:
           assert new.count('activeChannel.compareAndSet(null, channel)') == 1
           assert 'running && generation.get() == myGeneration &&' in new
           assert 'runCatching { channel.close() }' in new
-          assert new == expected_client, 'Unreviewed BT-A runtime delta beyond session ownership'
+          # A target change must refresh the legacy T35 HFP/A2DP exception
+          # and reset reconnect cooldown for the newly selected receiver.
+          prior_target_policy = subprocess.check_output(
+              ['git', 'show', '1bb5a33ff65b8988652cd54d5953cd9b2c0f0bc5:' + client], text=True
+          )
+          assert expected_client == prior_target_policy, 'Reviewed BT-A target-policy baseline drifted'
+          legacy_before = "        val t35Buick = targetProvider()?.let {\n            it.name.contains(\"BUICK\", ignoreCase = true) &&\n                it.address.equals(\"30:DF:17:9F:AE:4C\", ignoreCase = true)\n        } == true\n        var t35Attempts = 0\n        scan@ while (running && generation.get() == myGeneration) {"
+          legacy_after = "        var t35Attempts = 0\n        var previousSelection: TargetDevicePrefs.Target? = null\n        scan@ while (running && generation.get() == myGeneration) {"
+          assert expected_client.count(legacy_before) == 1, 'Static T35 exception anchor drifted'
+          expected_client = expected_client.replace(legacy_before, legacy_after)
+          selected_before = "            val selectedForCandidates = targetProvider()\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          selected_after = "            val selectedForCandidates = targetProvider()\n            // Re-evaluate the legacy T35 exception for this scan's target.\n            // A user can change receivers without restarting the worker; do\n            // not keep the previous receiver's HFP/A2DP or cooldown policy.\n            if (selectedForCandidates != previousSelection) {\n                t35Attempts = 0\n                previousSelection = selectedForCandidates\n            }\n            val t35Buick = selectedForCandidates?.let {\n                it.name.contains(\"BUICK\", ignoreCase = true) &&\n                    it.address.equals(\"30:DF:17:9F:AE:4C\", ignoreCase = true)\n            } == true\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          assert expected_client.count(selected_before) == 1, 'Target selection snapshot anchor drifted'
+          expected_client = expected_client.replace(selected_before, selected_after)
+          assert new == expected_client, 'Unreviewed BT-A runtime delta beyond target-specific policy'
+          assert new.index('val selectedForCandidates = targetProvider()') < new.index('val t35Buick = selectedForCandidates?.let') < new.index('val candidates = candidateDevices')
+          assert new.index('t35Attempts = 0', new.index('val selectedForCandidates = targetProvider()')) < new.index('val t35Buick = selectedForCandidates?.let')
+          assert 'val t35Buick = targetProvider()?.let' not in new
           assert new.count('activeChannel.compareAndSet(channel, null)') == 1
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
           assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
