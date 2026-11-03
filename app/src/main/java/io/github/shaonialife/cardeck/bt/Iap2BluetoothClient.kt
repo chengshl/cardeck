@@ -179,11 +179,8 @@ class Iap2BluetoothClient(
             } ?: return
         var lastFailureLogAt = 0L
         // T39: retain Buick-specific Bluetooth profile safety, but remove T35's bounded retry cap.
-        val t35Buick = targetProvider()?.let {
-            it.name.contains("BUICK", ignoreCase = true) &&
-                it.address.equals("30:DF:17:9F:AE:4C", ignoreCase = true)
-        } == true
         var t35Attempts = 0
+        var previousSelection: TargetDevicePrefs.Target? = null
         scan@ while (running && generation.get() == myGeneration) {
             // T35's two successful RFCOMM sessions used to stop this entire client.
             // A Buick that only restarts CarPlay after head-unit reboot would then
@@ -198,6 +195,17 @@ class Iap2BluetoothClient(
                 continue
             }
             val selectedForCandidates = targetProvider()
+            // Re-evaluate the legacy T35 exception for this scan's target.
+            // A user can change receivers without restarting the worker; do
+            // not keep the previous receiver's HFP/A2DP or cooldown policy.
+            if (selectedForCandidates != previousSelection) {
+                t35Attempts = 0
+                previousSelection = selectedForCandidates
+            }
+            val t35Buick = selectedForCandidates?.let {
+                it.name.contains("BUICK", ignoreCase = true) &&
+                    it.address.equals("30:DF:17:9F:AE:4C", ignoreCase = true)
+            } == true
             val candidates = candidateDevices(adapter, selectedForCandidates)
             if (candidates.isEmpty()) {
                 log("BT-C: 没有已配对的蓝牙设备——请先在系统设置里与车机完成蓝牙配对")
