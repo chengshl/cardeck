@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.gateway
 
+import io.github.shaonialife.cardeck.BuildConfig
 import io.github.shaonialife.cardeck.config.EntryAddress
 import io.github.shaonialife.cardeck.config.EntryConfig
 import okhttp3.OkHttpClient
@@ -86,6 +87,12 @@ class GatewayProbe(
     fun start(config: EntryConfig) {
         if (started || stopped) return
         started = true
+        // The Gateway registration already reports VERSION_NAME; the app log
+        // includes the installed APK's integer code without changing the wire
+        // schema or requiring the user to run ADB for routine diagnostics.
+        if (deviceInfo != null) {
+            appLogs?.offer("APP_BUILD: installedVersionCode=${BuildConfig.VERSION_CODE}")
+        }
         val request = runCatching {
             val address = EntryAddress.normalize(config.gatewayUrl)
             require(config.token.isNotBlank() && config.token.length <= 4096)
