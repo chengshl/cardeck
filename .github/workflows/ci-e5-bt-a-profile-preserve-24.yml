@@ -418,6 +418,7 @@ jobs:
           expected_client = expected_client.replace(legacy_before, legacy_after)
           selected_before = "            val selectedForCandidates = targetProvider()\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
           selected_after = "            val selectedForCandidates = targetProvider()\n            // Re-evaluate the legacy T35 exception for this scan's target.\n            // A user can change receivers without restarting the worker; do\n            // not keep the previous receiver's HFP/A2DP or cooldown policy.\n            if (selectedForCandidates != previousSelection) {\n                t35Attempts = 0\n                previousSelection = selectedForCandidates\n            }\n            val t35Buick = selectedForCandidates?.let {\n                it.name.contains(\"BUICK\", ignoreCase = true) &&\n                    it.address.equals(\"__T35_REVIEWED_ADDRESS__\", ignoreCase = true)\n            } == true\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          selected_after = selected_after.replace('__T35_REVIEWED_ADDRESS__', legacy_address)
           assert expected_client.count(selected_before) == 1, 'Target selection snapshot anchor drifted'
           expected_client = expected_client.replace(selected_before, selected_after)
           assert new == expected_client, 'Unreviewed BT-A runtime delta beyond target-specific policy'
