@@ -1,0 +1,77 @@
+name: B233 RTP diagnostic sender ownership (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-audio-rtp-provider-owner-11
+  pull_request:
+    branches:
+      - experiment/buick-b233-aac-teardown-retirement-owner-11
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-rtp-provider-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify exact tested parent and narrowly scoped correction
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=e2713298262432f874693e5deceb3c691f94eb54
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41480776143 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41480776143 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            '.github/workflows/ci-b233-audio-rtp-provider-owner.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwner.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt' \
+            | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base='e2713298262432f874693e5deceb3c691f94eb54'
+          path='app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
+          old=subprocess.check_output(['git','show',base+':'+path],text=True)
+          new=Path(path).read_text()
+          assert old.count('client.audioRtpSentCountProvider = {')==1
+          assert 'callbackOwner.publishIfCurrent(' not in old
+          assert new.count('client.audioRtpSentCountProvider = {')==2
+          block=new[new.index('// T79: observe only this sender'):new.index('if (!sender.start(projection))')]
+          assert block.count('callbackOwner.publishIfCurrent(')==1
+          assert 'lock = this' in block and 'currentClient === client' in block
+          assert 'activeSender = { audioSender }' in block
+          assert 'client.currentEndpoint.isBuickB233' in block
+          assert 'Preserve legacy non-B233 diagnostic assignment semantics' in block
+          helper=Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwner.kt').read_text()
+          assert 'fun publishIfCurrent(' in helper and 'synchronized(lock)' in helper
+          test=Path('app/src/test/java/io/github/shaonialife/cardeck/audio/AudioSenderCallbackOwnerTest.kt').read_text()
+          assert 'staleAudioStartCannotOverwriteReplacementRtpCountProvider' in test
+          print('Old unguarded RTP telemetry publication negative control verified')
+          PY
+      - name: Android JUnit, Lint and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only: no signing, Release, installation, stable merge or protocol changes.

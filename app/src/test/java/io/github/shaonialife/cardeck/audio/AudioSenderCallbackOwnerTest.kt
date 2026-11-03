@@ -215,6 +215,44 @@ class AudioSenderCallbackOwnerTest {
     }
 
     @Test
+    fun staleAudioStartCannotOverwriteReplacementRtpCountProvider() {
+        val lock = Any()
+        val oldSender = Any()
+        val replacement = Any()
+        val oldOwner = AudioSenderCallbackOwner().apply { bind(oldSender) }
+        val newOwner = AudioSenderCallbackOwner().apply { bind(replacement) }
+        var activeSender: Any? = oldSender
+        var sameClient = true
+        var provider: () -> Int? = { null }
+
+        assertTrue(oldOwner.publishIfCurrent(lock, { sameClient }, { activeSender }) {
+            provider = { if (activeSender === oldSender) 100 else null }
+        })
+        assertEquals(100, provider())
+
+        // A replacement publishes first; the old start's delayed assignment
+        // must not erase the new sender's diagnostic provider.
+        synchronized(lock) {
+            activeSender = replacement
+            assertTrue(newOwner.publishIfCurrent(lock, { sameClient }, { activeSender }) {
+                provider = { if (activeSender === replacement) 200 else null }
+            })
+        }
+        assertFalse(oldOwner.publishIfCurrent(lock, { sameClient }, { activeSender }) {
+            provider = { 100 }
+        })
+        assertEquals(200, provider())
+
+        // A retired client cannot publish even when the sender identity matches.
+        activeSender = oldSender
+        sameClient = false
+        assertFalse(oldOwner.publishIfCurrent(lock, { sameClient }, { activeSender }) {
+            provider = { 100 }
+        })
+        assertEquals(null, provider()) // New provider observes its replaced sender.
+    }
+
+    @Test
     fun unboundNullAndRetiredSendersCannotPassOwnership() {
         val sender = Any()
         val gate = AudioSenderCallbackOwner()

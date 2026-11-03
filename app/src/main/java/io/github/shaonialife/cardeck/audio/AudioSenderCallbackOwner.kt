@@ -19,6 +19,25 @@ internal class AudioSenderCallbackOwner {
         activeSender != null && owner === activeSender
 
     /**
+     * Publish a sender-owned diagnostic callback only while the sender is still
+     * current. The lock must also protect publication of replacement senders.
+     * A delayed old start attempt must not replace the new sender's RTP probe.
+     */
+    fun publishIfCurrent(
+        lock: Any,
+        isCurrentSession: () -> Boolean,
+        activeSender: () -> Any?,
+        publish: () -> Unit,
+    ): Boolean = synchronized(lock) {
+        if (!isCurrentSession() || !owns(activeSender())) {
+            false
+        } else {
+            publish()
+            true
+        }
+    }
+
+    /**
      * The caller's lock must also protect replacement sender publication.
      * Keep session/identity checks and state retirement in one critical section.
      */
