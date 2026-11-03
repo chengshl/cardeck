@@ -1,0 +1,365 @@
+name: E5 BT-A B233 profile preserve - manual guarded signing (#24)
+# L3 signed release is opt-in. A branch-only workflow_dispatch may not be
+# registered by GitHub when absent from default main; use a narrow push event
+# ONLY when this workflow file changes with the exact release-request message.
+# Normal source/CI pushes must never allocate versions or sign an APK.
+on:
+  push:
+    branches: [work/e5-bt-a-profile-preserve-24-20261030]
+    paths:
+      - '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
+  workflow_dispatch:
+concurrency:
+  # Serialize signed version allocation with official E5 and other channels.
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  signed-experiment:
+    # Exact commit message plus a change to THIS workflow file is the deliberate
+    # release request. Ordinary pushes only create a skipped workflow run.
+    if: ${{ github.ref == 'refs/heads/work/e5-bt-a-profile-preserve-24-20261030' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'BT-A-24-signed-release-request')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Fail closed on unapproved or unrelated signing events
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/work/e5-bt-a-profile-preserve-24-20261030
+          python3 - <<'PY'
+          import json
+          import os
+          with open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8') as f:
+              event = json.load(f)
+          if os.environ['GITHUB_EVENT_NAME'] == 'push':
+              assert event.get('head_commit', {}).get('message') == 'BT-A-24-signed-release-request'
+              assert not event.get('forced') and not event.get('deleted')
+              # A release request may modify only this workflow, not Android
+              # runtime, tests or other CI files in the same triggering commit.
+              workflow = '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
+              modified = set(event.get('head_commit', {}).get('modified', []))
+              assert modified == {workflow}, 'Release-request commit changed unrelated files'
+              assert not event.get('head_commit', {}).get('added', [])
+              assert not event.get('head_commit', {}).get('removed', [])
+          else:
+              assert os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
+          PY
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify isolated source and E5 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "work/e5-bt-a-profile-preserve-24-20261030"
+          grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
+          grep -Fq 'private const val RELEASE_TAG = "buick-e5-latest"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+          grep -Fq 'BuickB233Route.shouldProtectProfiles(' app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt
+          grep -Fq 'BUICK_[0-9]{4}' app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt
+          python3 -m unittest tools.release.test_allocate_version
+          test "$(git rev-parse origin/Buick-E5)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
+          # #93 added only review fixtures and a CI workflow; never accept runtime drift.
+          test "$(git diff --name-only 6dff31cac9a4a6f1945b787ba01eea577761d0eb 5e565a08b228d157ff1d739f38b8c09fad80f8a5 | sort)" = "$(printf '%s\n' \
+            .github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt | sort)"
+          python3 - <<'PY'
+          import subprocess
+          files = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          assert files == {
+              '.github/workflows/ci-e5-bt-a-profile-preserve-24.yml',
+              '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt',
+          }, 'Unreviewed BT-A signing source scope: ' + str(files)
+          # File-name allowlisting alone is insufficient: a later release-request
+          # commit must not silently sign new, unreviewed Bluetooth runtime bytes.
+          reviewed_source = '43860819b15b10b977a451034c49def05b7c4cad'
+          reviewed_files = (
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt',
+          )
+          for path in reviewed_files:
+              expected = subprocess.check_output(
+                  ['git', 'rev-parse', f'{reviewed_source}:{path}'], text=True
+              ).strip()
+              actual = subprocess.check_output(
+                  ['git', 'rev-parse', f'HEAD:{path}'], text=True
+              ).strip()
+              assert actual == expected, f'Unreviewed BT-A source/test blob: {path}'
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify all Android tests and debug build
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Lint report and changed diagnostic-file error gate
+        shell: bash
+        run: |
+          set +e
+          ./gradlew :app:lintDebug
+          lint_rc=$?
+          set -e
+          if (( lint_rc != 0 )); then
+            # This E5 base predates the Test Lint baseline. Existing unrelated
+            # L3 virtual-display flags can trigger WrongConstant. We must not
+            # change Shizuku/display behavior or rewrite its baseline just to
+            # ship an isolated L2 updater experiment. Keep full lint visible,
+            # but FAIL if any changed updater source has a new error.
+            python3 - <<'PY'
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+          files = sorted(pathlib.Path("app/build/reports").glob("lint-results-debug*.xml"))
+          if not files:
+              print("::error::Lint failed and no XML report was generated")
+              sys.exit(1)
+          root = ET.parse(files[-1]).getroot()
+          affected = {
+              "app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt",
+              "app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt",
+              "app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt",
+          }
+          failures = []
+          inherited = []
+          for issue in root.findall("issue"):
+              if issue.get("severity") != "Error":
+                  continue
+              details = [
+                  (loc.get("file") or "").replace("\\", "/")
+                  for loc in issue.findall("location")
+              ]
+              if any(any(f.endswith(path) for path in affected) for f in details):
+                  failures.append((issue.get("id"), details))
+              else:
+                  inherited.append((issue.get("id"), details))
+          for item in failures:
+              print("::error::BT-A source has lint error:", item)
+          print(f"Existing unrelated E5 lint errors: {len(inherited)}; new BT-A errors: {len(failures)}")
+          if failures:
+              sys.exit(1)
+          print("::warning::Full-project lint is NOT clean; unrelated pre-existing errors are documented, not marked as passed")
+          PY
+          fi
+      - name: Restore existing release signing identity
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-diagnostics.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-diagnostics.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-diagnostics.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Allocate globally monotonic version (never reuse failed allocations)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/release/allocate_version.py
+          echo "SOURCE_BRANCH=work/e5-bt-a-profile-preserve-24-20261030" >> "$GITHUB_ENV"
+      - name: Build existing-key signed experiment APK
+        run: ./gradlew :app:clean :app:assembleRelease --no-daemon --stacktrace
+      - name: Verify E5 package, signing, and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          # Don't pipe aapt to grep -q with pipefail: grep may close early
+          # and make aapt exit SIGPIPE even when package ID is correct.
+          if ! grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"; then
+            echo "::error::签名包包名不是当前E5安装包"
+            exit 1
+          fi
+          test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          "$APKSIGNER" verify "$APK"
+          CERT_DETAILS="$("$APKSIGNER" verify --print-certs "$APK")"
+          if grep -qi 'CN=Android Debug' <<< "$CERT_DETAILS"; then
+            echo "::error::签名为Android Debug，不允许交付"
+            exit 1
+          fi
+          # Fail closed if the experimental APK cannot upgrade the existing
+          # official E5 identity without changing the Android signing key.
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' <<< "$CERT_DETAILS" | head -n 1)"
+          test -n "$NEW_CERT"
+          mkdir -p "$RUNNER_TEMP/e5-official-reference"
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \
+            --pattern CarDeck-Buick-E5.apk --dir "$RUNNER_TEMP/e5-official-reference"
+          OLD_APK="$RUNNER_TEMP/e5-official-reference/CarDeck-Buick-E5.apk"
+          test -s "$OLD_APK"
+          OLD_CERT="$("$APKSIGNER" verify --print-certs "$OLD_APK" |
+            sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' | head -n 1)"
+          test -n "$OLD_CERT"
+          if [[ "${NEW_CERT,,}" != "${OLD_CERT,,}" ]]; then
+            echo "::error::实验APK与现行E5正式APK签名证书不一致"
+            exit 1
+          fi
+          # aapt's default resource dump prints resource names but typically
+          # omits the compiled STRING VALUES. Use --values explicitly; the
+          # updater reads this value from the APK at runtime.
+          if ! AAPT_RES="$("$AAPT" dump --values resources "$APK")"; then
+            echo "::error::无法读取 APK 编译资源值，拒绝发布"
+            exit 1
+          fi
+          if ! grep -Fq 'cardeck_installed_build_origin' <<< "$AAPT_RES"; then
+            echo "::error::APK内不存在安装来源资源名称，拒绝发布"
+            exit 1
+          fi
+          if ! grep -Fq 'work/e5-bt-a-profile-preserve-24-20261030' <<< "$AAPT_RES"; then
+            echo "::error::APK的来源资源值不是当前实验分支，拒绝发布"
+            grep 'cardeck_installed_build_origin' <<< "$AAPT_RES" | head -n 3 || true
+            exit 1
+          fi
+          echo "E5包名、Android签名和APK内实验来源资源值校验完成"
+          mkdir -p "$RUNNER_TEMP/e5-bt-a-pair"
+          cp "$APK" "$RUNNER_TEMP/e5-bt-a-pair/CarDeck-Buick-E5-BT-A-Profile-Preserve.apk"
+          (cd "$RUNNER_TEMP/e5-bt-a-pair" && sha256sum CarDeck-Buick-E5-BT-A-Profile-Preserve.apk > CarDeck-Buick-E5-BT-A-Profile-Preserve.apk.sha256)
+          echo "EXP_CODE=$CARDECK_BUILD_VERSION_CODE" >> "$GITHUB_ENV"
+          echo "EXP_NAME=$CARDECK_RELEASE_VERSION_NAME" >> "$GITHUB_ENV"
+          echo "EXP_CERT=$NEW_CERT" >> "$GITHUB_ENV"
+          echo "EXP_COMMIT=$GITHUB_SHA" >> "$GITHUB_ENV"
+      - name: Checkout exact E5 stable runtime for data-preserving recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach 5e565a08b228d157ff1d739f38b8c09fad80f8a5
+          test "$(git rev-parse HEAD)" = "5e565a08b228d157ff1d739f38b8c09fad80f8a5"
+          test -s keystore.properties
+          test -s "$RUNNER_TEMP/e5-bt-a-pair/CarDeck-Buick-E5-BT-A-Profile-Preserve.apk"
+      - name: Allocate strictly higher global version for same-signed stable recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          GITHUB_REF_NAME=Buick-E5 \
+            GITHUB_SHA=5e565a08b228d157ff1d739f38b8c09fad80f8a5 \
+            python3 tools/release/allocate_version.py
+          echo "SOURCE_BRANCH=Buick-E5" >> "$GITHUB_ENV"
+      - name: Build original E5 stable runtime as higher-code recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CARDECK_RELEASE_BRANCH" = Buick-E5
+          test "$SOURCE_BRANCH" = Buick-E5
+          test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"
+          ./gradlew :app:clean :app:assembleRelease --no-daemon --stacktrace
+      - name: Verify stable recovery package, same signer, version and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"
+          "$APKSIGNER" verify "$APK"
+          REC_CERT="$("$APKSIGNER" verify --print-certs "$APK" |
+            sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' | head -n 1)"
+          test -n "$REC_CERT" && test "${REC_CERT,,}" = "${EXP_CERT,,}"
+          RESOURCES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$RESOURCES"
+          grep -Fq 'Buick-E5' <<< "$RESOURCES"
+          cp "$APK" "$RUNNER_TEMP/e5-bt-a-pair/CarDeck-Buick-E5-BT-A-Stable-Restore.apk"
+          (cd "$RUNNER_TEMP/e5-bt-a-pair" && sha256sum CarDeck-Buick-E5-BT-A-Stable-Restore.apk > CarDeck-Buick-E5-BT-A-Stable-Restore.apk.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: E5-BT-A-24-signed-pair-${{ github.run_id }}
+          path: ${{ runner.temp }}/e5-bt-a-pair/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish verified recovery FIRST and isolated BT-A experiment SECOND
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$SOURCE_BRANCH" = Buick-E5
+          test "$CARDECK_RELEASE_BRANCH" = Buick-E5
+          test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"
+          test "$(git rev-parse HEAD)" = 5e565a08b228d157ff1d739f38b8c09fad80f8a5
+          cd "$RUNNER_TEMP/e5-bt-a-pair"
+          EXP_TAG="exp-buick-e5-bt-a-profile-preserve-24-$EXP_NAME"
+          REST_TAG="e5-stable-restore-bt-a-24-$CARDECK_RELEASE_VERSION_NAME"
+          EXP_APK=CarDeck-Buick-E5-BT-A-Profile-Preserve.apk
+          REST_APK=CarDeck-Buick-E5-BT-A-Stable-Restore.apk
+          test -s "$EXP_APK" && test -s "$EXP_APK.sha256"
+          test -s "$REST_APK" && test -s "$REST_APK.sha256"
+          if gh release view "$REST_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+             gh release view "$EXP_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Refusing to replace an existing BT-A experiment or recovery release"
+            exit 1
+          fi
+          {
+            printf 'artifactKind=recovery\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=Buick-E5\n'
+            printf 'recoveryFor=%s\nstableRuntimeCommit=5e565a08b228d157ff1d739f38b8c09fad80f8a5\n' "$EXP_TAG"
+            printf 'versionName=%s\nversionCode=%s\napkName=%s\n' "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$REST_APK"
+            printf '\nSame E5 signing identity, unchanged stable runtime and strictly higher code. Overlay to preserve app data; never uninstall or clear storage.\n'
+          } > restore-notes.txt
+          gh release create "$REST_TAG" "$REST_APK" "$REST_APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target 5e565a08b228d157ff1d739f38b8c09fad80f8a5 \
+            --title "E5 BT-A #24 original-stable recovery $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file restore-notes.txt --prerelease --latest=false
+          gh release view "$REST_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          # A release object alone does not prove its recovery assets were uploaded.
+          # Download and verify the published recovery BEFORE exposing the experiment.
+          verify_dir="$(mktemp -d)"
+          for attempt in 1 2 3; do
+            if gh release download "$REST_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$REST_APK" --pattern "$REST_APK.sha256" --dir "$verify_dir"; then
+              break
+            fi
+            if (( attempt == 3 )); then
+              echo "::error::Stable recovery assets could not be downloaded; experiment not published"
+              exit 1
+            fi
+            sleep 2
+          done
+          test -s "$verify_dir/$REST_APK" && test -s "$verify_dir/$REST_APK.sha256"
+          (cd "$verify_dir" && sha256sum -c "$REST_APK.sha256")
+          cmp "$REST_APK" "$verify_dir/$REST_APK"
+          rm -rf "$verify_dir"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\n'
+            printf 'sourceBranch=work/e5-bt-a-profile-preserve-24-20261030\n'
+            printf 'commit=%s\nversionName=%s\nversionCode=%s\napkName=%s\n' "$EXP_COMMIT" "$EXP_NAME" "$EXP_CODE" "$EXP_APK"
+            printf 'recoveryTag=%s\nrecoveryVersionCode=%s\n' "$REST_TAG" "$CARDECK_BUILD_VERSION_CODE"
+            printf '\nBT-A #24 B233 ordinary HFP/A2DP/LE profile preservation ONLY. No #33 ACK, #28 video or #11 audio change. Source and CI: Draft PR #74.\n'
+            printf '\nNOT DEVICE ACCEPTED: test video-only connect, manual stop, 3+ RFCOMM reconnect cycles, ordinary HFP/A2DP, video/touch and no FATAL. Check installed E5 code/signature first; use linked higher-code same-signed stable recovery by overlay without clearing data.\n'
+          } > experiment-notes.txt
+          gh release create "$EXP_TAG" "$EXP_APK" "$EXP_APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target "$EXP_COMMIT" \
+            --title "Buick-E5 BT-A B233 profile preserve $EXP_NAME (test)" \
+            --notes-file experiment-notes.txt --prerelease --latest=false

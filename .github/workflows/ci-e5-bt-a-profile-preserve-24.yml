@@ -1,0 +1,498 @@
+name: E5 B233 Bluetooth profile protection isolated regression (#24)
+on:
+  push:
+    branches: [work/e5-bt-a-profile-preserve-24-20261030]
+  pull_request:
+    branches: [Buick-E5]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt'
+      - '.github/workflows/ci-e5-bt-a-profile-preserve-24.yml'
+      - '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-bt-a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify exact E5 baseline and profile-only diff
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = subprocess.check_output(['git', 'rev-parse', 'origin/Buick-E5'], text=True).strip()
+          previous_reviewed = 'faf2edb3dc1527cad4e5f17d54ff7c883f73ceb1'
+          prior_expected = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          expected = '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
+          assert base == expected, f'E5 baseline moved; re-review required: {base}'
+          # The sole new stable commit #93 introduced two JUnit fixtures and test CI.
+          stable_93_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', prior_expected, expected], text=True
+          ).splitlines())
+          assert stable_93_delta == {
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unreviewed E5 production drift: {sorted(stable_93_delta)}'
+          # Reviewed stable delta since the original #24 BT-A baseline:
+          # #77 release preflight test, #79 synthetic ACK replay test/CI,
+          # #82 official release trigger guard. No BT/iAP2/AirPlay runtime changed.
+          # Fail closed if future stable changes any file outside this exact set.
+          stable_delta = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', previous_reviewed, expected], text=True
+          ).splitlines())
+          assert stable_delta == {
+              '.github/scripts/test_e5_release_preflight.py',
+              '.github/workflows/build-buick-e5.yml',
+              '.github/workflows/ci-e5-upstream-replay-33.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/replay/B233HandshakeReplayTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+          }, f'Unreviewed E5 stable drift: {sorted(stable_delta)}'
+          client = 'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt'
+          route = 'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt'
+          test = 'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt'
+          workflow = '.github/workflows/ci-e5-bt-a-profile-preserve-24.yml'
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', 'origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          publish = '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'
+          assert changed == {client, route, test, workflow, publish}, f'Unexpected diff: {changed}'
+          release = Path(publish).read_text()
+          assert '  workflow_dispatch:' in release
+          assert release.count('\n  push:') == 1 and '\n  pull_request:' not in release
+          assert '    branches: [work/e5-bt-a-profile-preserve-24-20261030]' in release
+          assert "      - '.github/workflows/publish-e5-bt-a-profile-preserve-24.yml'" in release
+          assert "github.ref == 'refs/heads/work/e5-bt-a-profile-preserve-24-20261030'" in release
+          assert "github.event_name == 'workflow_dispatch'" in release
+          assert "github.event_name == 'push'" in release
+          assert "github.event.head_commit.message == 'BT-A-24-signed-release-request'" in release
+          assert "assert not event.get('forced') and not event.get('deleted')" in release
+          assert "assert modified == {workflow}" in release
+          assert "assert not event.get('head_commit', {}).get('added', [])" in release
+          assert "assert not event.get('head_commit', {}).get('removed', [])" in release
+          assert "reviewed_source = '43860819b15b10b977a451034c49def05b7c4cad'" in release
+          assert "assert actual == expected" in release
+          assert 'group: cardeck-global-signed-release-version' in release
+          assert 'cancel-in-progress: false' in release
+          assert 'python3 tools/release/allocate_version.py' in release
+          assert 'python3 -m unittest tools.release.test_allocate_version' in release
+          assert "test \"$(git rev-parse origin/Buick-E5)\" = \"5e565a08b228d157ff1d739f38b8c09fad80f8a5\"" in release
+          assert 'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt' in release
+          assert 'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt' in release
+          assert '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml' in release
+          assert 'NEW_CERT=' in release and 'OLD_CERT=' in release
+          assert 'versionCode=\'\$CARDECK_BUILD_VERSION_CODE\'' not in release
+          assert "versionCode='$CARDECK_BUILD_VERSION_CODE'" in release
+          assert "versionName='$CARDECK_RELEASE_VERSION_NAME'" in release
+          assert 'test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"' in release
+          # A signed L3 candidate must never be published without an independently
+          # installable, higher-version, same-signed original-E5 recovery APK.
+          assert '  workflow_dispatch:' in release and '  push:' in release.splitlines()
+          assert '    if: ' in release and 'github.ref == ' in release, 'Signed job must be opt-in even on push'
+          assert 'EXP_TAG="exp-buick-e5-bt-a-profile-preserve-24-$EXP_NAME"' in release
+          assert 'REST_TAG="e5-stable-restore-bt-a-24-$CARDECK_RELEASE_VERSION_NAME"' in release
+          assert 'GITHUB_REF_NAME=Buick-E5' in release
+          assert 'GITHUB_SHA=5e565a08b228d157ff1d739f38b8c09fad80f8a5' in release
+          assert 'test "$CARDECK_BUILD_VERSION_CODE" -gt "$EXP_CODE"' in release
+          assert 'test "${REC_CERT,,}" = "${EXP_CERT,,}"' in release
+          assert 'sha256sum CarDeck-Buick-E5-BT-A-Stable-Restore.apk' in release
+          assert release.index('gh release create "$REST_TAG"') < release.index('gh release download "$REST_TAG"') < release.index('gh release create "$EXP_TAG"'), 'Recovery must be remotely downloadable before experiment is published'
+          assert 'sha256sum -c "$REST_APK.sha256"' in release, 'Published recovery SHA256 must be verified'
+          assert 'cmp "$REST_APK" "$verify_dir/$REST_APK"' in release, 'Published recovery must match signed local APK'
+          assert 'recoveryFor=%s' in release and 'recoveryTag=%s' in release
+          assert 'sourceBranch=work/e5-bt-a-profile-preserve-24-20261030' in release
+          assert 'baseBranch=Buick-E5' in release and 'artifactKind=experiment' in release
+          assert 'updaterSchema=2' in release and 'artifactKind=recovery' in release
+          assert '持续采集运行超过4小时' not in release, 'Stale Rescue acceptance copied into BT-A release notes'
+
+          old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:' + client], text=True)
+          new = Path(client).read_text()
+          before = "                if (!t35Buick) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          after = "                // #24 BT-A: keep ordinary HFP/A2DP connected for a narrowly\n                // identified B233 candidate. This does not change RFCOMM,\n                // iAP2 handshakes, retry pacing or other receivers.\n                val selected = selectedForCandidates\n                val protectB233Profiles = BuickB233Route.shouldProtectProfiles(\n                    advertisedName = name,\n                    selectedName = selected?.name,\n                    selectedMatchesDevice = selected != null &&\n                        TargetDevicePrefs.matches(selected, device.address),\n                )\n                if (protectB233Profiles) {\n                    val now = android.os.SystemClock.uptimeMillis()\n                    if (now - lastProfileLogAt > PROFILE_LOG_THROTTLE_MILLIS) {\n                        lastProfileLogAt = now\n                        log(\"BT-C T22: B233 candidate; HFP/A2DP/LE profile disconnect skipped\")\n                    }\n                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          assert old.count(before) == 1
+          # Keep the selection used to enumerate candidate devices identical to
+          # the selection used to decide whether HFP/A2DP may be disconnected.
+          # Otherwise a mid-scan UI target change can expose a previously
+          # selected B233 receiver to the destructive fallback.
+          expected_client = old.replace(before, after)
+          before_candidates = "            val candidates = candidateDevices(adapter)"
+          after_candidates = "            val selectedForCandidates = targetProvider()\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          before_signature = "    private fun candidateDevices(adapter: android.bluetooth.BluetoothAdapter): List<BluetoothDevice> {"
+          after_signature = "    private fun candidateDevices(\n        adapter: android.bluetooth.BluetoothAdapter,\n        selectedTarget: TargetDevicePrefs.Target?,\n    ): List<BluetoothDevice> {"
+          before_target = "        targetProvider()?.let { target ->"
+          after_target = "        selectedTarget?.let { target ->"
+          for before_part, after_part in (
+              (before_candidates, after_candidates),
+              (before_signature, after_signature),
+              (before_target, after_target),
+          ):
+              assert expected_client.count(before_part) == 1, f'Unexpected baseline selection block: {before_part}'
+              expected_client = expected_client.replace(before_part, after_part)
+          # One additional BT-A cancellation fence: a worker retired by stop()
+          # must not begin the destructive profile-disconnect call.
+          before_guard = "                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    val dropped = BtProfiles.disconnect(context, device)"
+          after_guard = "                } else if (BuickB233Route.shouldDisconnectProfiles(t35Buick, protectB233Profiles)) run {\n                    // Stop can retire this worker while candidate selection or policy checks run.\n                    // Do not start a destructive profile disconnect for an already retired worker.\n                    if (!running || generation.get() != myGeneration) return\n                    val dropped = BtProfiles.disconnect(context, device)"
+          assert expected_client.count(before_guard) == 1, 'Unreviewed BT-A disconnect block'
+          expected_client = expected_client.replace(before_guard, after_guard)
+          # The original BT-A source was reviewed on this immutable HEAD.
+          reviewed = subprocess.check_output(
+              ['git', 'show', 'd4c8452e5bd349978090fd871cef8663840a9c93:' + client], text=True
+          )
+          assert expected_client == reviewed, 'Previous BT-A audited source drifted'
+          # Only an extra target-generation snapshot guard is authorized here.
+          scan_before = "        while (running && generation.get() == myGeneration) {"
+          scan_after = "        scan@ while (running && generation.get() == myGeneration) {"
+          assert expected_client.count(scan_before) == 1, 'Reconnect scan loop drifted'
+          expected_client = expected_client.replace(scan_before, scan_after)
+          policy_before = "                if (protectB233Profiles) {\n                    val now"
+          policy_after = "                // The user can switch receivers after candidate enumeration. Do not\n                // disconnect the old candidate's HFP/A2DP or dial a stale target.\n                // A failed selection read must also fail closed before profile actions.\n                if (!runCatching { targetProvider() == selectedForCandidates }.getOrDefault(false)) {\n                    log(\"BT-C: 目标已变更或暂不可读，重新扫描（未断开普通蓝牙）\")\n                    continue@scan\n                }\n                if (protectB233Profiles) {\n                    val now"
+          assert expected_client.count(policy_before) == 1, 'BT-A profile policy block drifted'
+          expected_client = expected_client.replace(policy_before, policy_after)
+          # Preserve the prior reviewed BT-A source before a new, narrow
+          # post-connect target-ownership fence. The socket may block for
+          # seconds; a changed selection must not enter an iAP2 session.
+          baseline_source = subprocess.check_output(
+              ['git', 'show', 'de00527f686e7a063e188863495bb27d91cd2a03:' + client], text=True
+          )
+          assert expected_client == baseline_source, 'Previous signed-source lease drifted'
+          late_before = "                val socket = tryConnect(device)\n                if (socket != null) {\n                    log(\"BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）\")\n                    connected = socket\n                    break\n                } else {"
+          late_after = "                val socket = tryConnect(device)\n                if (socket != null) {\n                    // RFCOMM connect() can block for seconds while the user changes\n                    // the selected receiver. Retire this socket before handing it\n                    // to iAP2; never close a newer worker's socket.\n                    val targetUnchanged = runCatching {\n                        targetProvider() == selectedForCandidates\n                    }.getOrDefault(false)\n                    if (!running || generation.get() != myGeneration || !targetUnchanged) {\n                        currentSocket.compareAndSet(socket, null)\n                        runCatching { socket.close() }\n                        if (!running || generation.get() != myGeneration) return\n                        log(\"BT-C: RFCOMM 就绪时目标已变化，释放过期连接并重新扫描\")\n                        continue@scan\n                    }\n                    log(\"BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）\")\n                    connected = socket\n                    break\n                } else {"
+          assert expected_client.count(late_before) == 1, 'RFComm connect success block ambiguous'
+          expected_client = expected_client.replace(late_before, late_after)
+          # After stop/start, an old worker must never drain a successor's socket.
+          # Replay exactly this one ownership fix onto the prior audited source.
+          retire_before = "            if (generation.get() != myGeneration) {\n                // stop() 与 connect() 成功竞争：本线程已过期，不建会话\n                currentSocket.getAndSet(null)?.let { runCatching { it.close() } }\n                return\n            }"
+          retire_after = "            if (generation.get() != myGeneration) {\n                // stop()/start() can overlap this worker after RFCOMM connect.\n                // Retire only the socket owned by this generation; never drain\n                // a successor worker's currentSocket while it is connecting.\n                currentSocket.compareAndSet(connected, null)\n                runCatching { connected.close() }\n                return\n            }"
+          assert expected_client.count(retire_before) == 1, 'Old generation cleanup not unique'
+          expected_client = expected_client.replace(retire_before, retire_after)
+          # A retired runSession() must never clear a new worker's channel/socket.
+          # Reconstruct only the reviewed ownership changes from the previous
+          # exact HEAD, rather than accepting arbitrary edits in this client.
+          previous_client = expected_client
+          prior_head = subprocess.check_output(
+              ['git', 'show', '08e01669f5670efe5a146d6b927e0f60974e4921:' + client], text=True
+          )
+          assert previous_client == prior_head, 'Prior BT-A reviewed runtime drifted'
+          ownership_edits = (
+              (
+                  '@Volatile\n    private var activeChannel: Iap2LinkChannel? = null',
+                  'private val activeChannel = AtomicReference<Iap2LinkChannel?>(null)',
+              ),
+              (
+                  '        activeChannel = channel\n        try {',
+                  '        activeChannel.set(channel)\n        try {',
+              ),
+              (
+                  '        } finally {\n            activeChannel = null\n'
+                  '            currentSocket.getAndSet(null)?.let { runCatching { it.close() } }\n'
+                  '            runCatching { socket.close() }\n            channel.close()',
+                  '        } finally {\n'
+                  '            // An old RFCOMM session can finish after stop() and a new start().\n'
+                  "            // Retire only this session's channel/socket, never the successor's.\n"
+                  '            activeChannel.compareAndSet(channel, null)\n'
+                  '            currentSocket.compareAndSet(socket, null)\n'
+                  '            runCatching { socket.close() }\n            channel.close()',
+              ),
+              (
+                  '        activeChannel?.let { channel ->\n'
+                  '            activeChannel = null\n            channel.close()',
+                  '        activeChannel.getAndSet(null)?.let { channel ->\n'
+                  '            channel.close()',
+              ),
+              (
+                  '        activeChannel?.let { runCatching { it.close() } }',
+                  '        activeChannel.getAndSet(null)?.let { runCatching { it.close() } }',
+              ),
+          )
+          for before_part, after_part in ownership_edits:
+              assert expected_client.count(before_part) == 1, 'Unexpected channel/socket owner block'
+              expected_client = expected_client.replace(before_part, after_part)
+          # Replay only the newly audited stop/start socket-publication fix.
+          lifecycle_edits = (
+              ("    private var thread: Thread? = null\n", "    private var thread: Thread? = null\n    /** Serialize socket publication with stop()/start() retirement. */\n    private val lifecycleLock = Any()\n"),
+              ("        running = true\n        val myGeneration = generation.incrementAndGet()\n        val target = targetProvider()\n        log(\n            \"BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）\" +\n                if (target != null) {\n                    \"，目标：「${target.name}」${target.address}（只连该设备）\"\n                } else {\n                    \"（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）\"\n                },\n        )\n        Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {\n            isDaemon = true\n            thread = this\n            start()\n        }\n", "        val worker = synchronized(lifecycleLock) {\n            if (running) return true\n            running = true\n            val myGeneration = generation.incrementAndGet()\n            Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {\n                isDaemon = true\n                thread = this\n            }\n        }\n        val target = targetProvider()\n        log(\n            \"BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）\" +\n                if (target != null) {\n                    \"，目标：「${target.name}」${target.address}（只连该设备）\"\n                } else {\n                    \"（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）\"\n                },\n        )\n        worker.start()\n"),
+              ("val socket = tryConnect(device)", "val socket = tryConnect(device, myGeneration)"),
+              ("private fun tryConnect(device: BluetoothDevice): BluetoothSocket? {", "private fun tryConnect(device: BluetoothDevice, myGeneration: Long): BluetoothSocket? {"),
+              ("        currentSocket.set(socket)\n        return try {", "        // A retired worker must never publish a late socket after stop() has\n        // already drained the old connection and a successor start() has begun.\n        val published = synchronized(lifecycleLock) {\n            if (!running || generation.get() != myGeneration) {\n                false\n            } else {\n                currentSocket.set(socket)\n                true\n            }\n        }\n        if (!published) {\n            runCatching { socket.close() }\n            return null\n        }\n        return try {"),
+              ("    fun stop() {\n        running = false\n        // 递增世代：即便有线程卡在 connect()，事后也会因世代不符自杀，不会在下次启动时复活\n        generation.incrementAndGet()\n        currentSocket.getAndSet(null)?.let { runCatching { it.close() } }\n        activeChannel.getAndSet(null)?.let { runCatching { it.close() } }\n        thread?.interrupt()\n        thread = null\n        log(\"BT-C: 已停止\")\n    }\n\n", "    fun stop() {\n        // Retire the generation and detach its resources atomically with\n        // tryConnect() publication. Close outside the lock to avoid blocking start().\n        val (closingSocket, closingChannel, worker) = synchronized(lifecycleLock) {\n            running = false\n            generation.incrementAndGet()\n            Triple(\n                currentSocket.getAndSet(null),\n                activeChannel.getAndSet(null),\n                thread.also { thread = null },\n            )\n        }\n        closingSocket?.let { runCatching { it.close() } }\n        closingChannel?.let { runCatching { it.close() } }\n        worker?.interrupt()\n        log(\"BT-C: 已停止\")\n    }\n\n"),
+          )
+          for before_part, after_part in lifecycle_edits:
+              assert expected_client.count(before_part) == 1, 'Unexpected lifecycle block drift'
+              expected_client = expected_client.replace(before_part, after_part)
+          # Reconstruct only the audited #24 startup ownership correction on top
+          # of the previous exact runtime replay; reject unrelated source changes.
+          startup_before = (
+              "    fun start(): Boolean {\n"
+              "        if (running) return true\n"
+              "        if (!hasPermission()) {\n"
+              "            log(\"BT-C: 缺少 BLUETOOTH_CONNECT 权限\")\n"
+              "            return false\n"
+              "        }\n"
+              "        val adapter =\n"
+              "            try {\n"
+              "                context.getSystemService(BluetoothManager::class.java)?.adapter\n"
+              "            } catch (_: Exception) {\n"
+              "                null\n"
+              "            }\n"
+              "        if (adapter == null || !adapter.isEnabled) {\n"
+              "            log(\"BT-C: 蓝牙不可用或未开启\")\n"
+              "            return false\n"
+              "        }\n"
+              "        val worker = synchronized(lifecycleLock) {\n"
+              "            if (running) return true\n"
+              "            running = true\n"
+              "            val myGeneration = generation.incrementAndGet()\n"
+              "            Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {\n"
+              "                isDaemon = true\n"
+              "                thread = this\n"
+              "            }\n"
+              "        }\n"
+              "        val target = targetProvider()\n"
+              "        log(\n"
+              "            \"BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）\" +\n"
+              "                if (target != null) {\n"
+              "                    \"，目标：「${target.name}」${target.address}（只连该设备）\"\n"
+              "                } else {\n"
+              "                    \"（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）\"\n"
+              "                },\n"
+              "        )\n"
+              "        worker.start()\n"
+              "        return true\n"
+              "    }"
+          )
+          startup_after = (
+              "    fun start(): Boolean {\n"
+              "        // A slow permission/target preflight must not resurrect a client after stop().\n"
+              "        val startLease = synchronized(lifecycleLock) {\n"
+              "            if (running) return true\n"
+              "            generation.get()\n"
+              "        }\n"
+              "        if (!hasPermission()) {\n"
+              "            log(\"BT-C: 缺少 BLUETOOTH_CONNECT 权限\")\n"
+              "            return false\n"
+              "        }\n"
+              "        val adapter =\n"
+              "            try {\n"
+              "                context.getSystemService(BluetoothManager::class.java)?.adapter\n"
+              "            } catch (_: Exception) {\n"
+              "                null\n"
+              "            }\n"
+              "        val enabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }\n"
+              "        if (!enabled) {\n"
+              "            log(\"BT-C: 蓝牙不可用或未开启\")\n"
+              "            return false\n"
+              "        }\n"
+              "        // Resolve the potentially throwing provider and logger before publishing running.\n"
+              "        val target = try {\n"
+              "            targetProvider()\n"
+              "        } catch (error: Exception) {\n"
+              "            runCatching { log(\"BT-C: 读取目标失败（${error.javaClass.simpleName}）\") }\n"
+              "            return false\n"
+              "        }\n"
+              "        log(\n"
+              "            \"BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）\" +\n"
+              "                if (target != null) {\n"
+              "                    \"，目标：「${target.name}」${target.address}（只连该设备）\"\n"
+              "                } else {\n"
+              "                    \"（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）\"\n"
+              "                },\n"
+              "        )\n"
+              "        return synchronized(lifecycleLock) {\n"
+              "            if (running) return@synchronized true\n"
+              "            // stop() invalidated this preflight while it was outside the lock.\n"
+              "            if (generation.get() != startLease) return@synchronized false\n"
+              "            running = true\n"
+              "            val myGeneration = generation.incrementAndGet()\n"
+              "            try {\n"
+              "                // Start while holding the lifecycle lock: stop() cannot retire a\n"
+              "                // not-yet-started worker and allow it to start after its successor.\n"
+              "                Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {\n"
+              "                    isDaemon = true\n"
+              "                    thread = this\n"
+              "                    start()\n"
+              "                }\n"
+              "                true\n"
+              "            } catch (error: Exception) {\n"
+              "                running = false\n"
+              "                generation.incrementAndGet()\n"
+              "                thread = null\n"
+              "                runCatching { log(\"BT-C: 连接线程启动失败（${error.javaClass.simpleName}）\") }\n"
+              "                false\n"
+              "            }\n"
+              "        }\n"
+              "    }"
+          )
+          assert expected_client.count(startup_before) == 1, 'BT-A preflight/startup baseline drifted'
+          expected_client = expected_client.replace(startup_before, startup_after)
+          # A worker can exit before/after Bluetooth adapter or target provider
+          # access fails. It must retire only its own generation/thread and not
+          # leave running=true with a dead Thread or clear successor resources.
+          launch_before = "                Thread({ connectLoop(myGeneration) }, \"iap2-bt-client\").apply {"
+          launch_after = "                Thread({ runConnectWorker(myGeneration) }, \"iap2-bt-client\").apply {"
+          assert expected_client.count(launch_before) == 1, 'BT worker launch anchor drifted'
+          expected_client = expected_client.replace(launch_before, launch_after)
+          connect_before = "    @SuppressLint(\"MissingPermission\")\n    private fun connectLoop(myGeneration: Long) {"
+          connect_after = "    private fun runConnectWorker(myGeneration: Long) {\n        try {\n            connectLoop(myGeneration)\n        } catch (error: Exception) {\n            // Do not leave a dead worker advertised as running. Keep exception\n            // details out of diagnostics; the type is enough to classify failure.\n            runCatching { log(\"BT-C: 连接工作线程异常退出（${error.javaClass.simpleName}）\") }\n        } finally {\n            // A failed worker may finish after stop()/start(). Retire resources\n            // only if this exact generation and Thread still own the lifecycle.\n            val retired = synchronized(lifecycleLock) {\n                if (generation.get() == myGeneration && thread === Thread.currentThread()) {\n                    running = false\n                    thread = null\n                    currentSocket.getAndSet(null) to activeChannel.getAndSet(null)\n                } else {\n                    null\n                }\n            }\n            retired?.first?.let { runCatching { it.close() } }\n            retired?.second?.let { runCatching { it.close() } }\n        }\n    }\n\n    @SuppressLint(\"MissingPermission\")\n    private fun connectLoop(myGeneration: Long) {"
+          assert expected_client.count(connect_before) == 1, 'BT worker body insertion anchor drifted'
+          expected_client = expected_client.replace(connect_before, connect_after)
+          assert 'generation.get() == myGeneration && thread === Thread.currentThread()' in new
+          worker_guard = new.index('private fun runConnectWorker')
+          worker_cleanup = new.index('currentSocket.getAndSet(null) to activeChannel.getAndSet(null)', worker_guard)
+          worker_retire = new.index('generation.get() == myGeneration && thread === Thread.currentThread()', worker_guard)
+          worker_lock_end = new.index('retired?.first?.let', worker_guard)
+          assert worker_guard < worker_retire < worker_cleanup < worker_lock_end
+          assert 'retired?.second?.let { runCatching { it.close() } }' in new
+          assert 'runCatching { log("BT-C: 连接工作线程异常退出（${error.javaClass.simpleName}）") }' in new
+          assert 'Thread({ connectLoop(myGeneration) }' not in new
+          assert 'generation.get() != startLease' in new
+          assert 'runCatching { log("BT-C: 读取目标失败' in new
+          assert 'val enabled = try { adapter?.isEnabled == true } catch (_: SecurityException) { false }' in new
+          assert 'reviewed_source = \'43860819b15b10b977a451034c49def05b7c4cad\'' in release
+          assert 'synchronized(lifecycleLock)' in new
+          # #24: a stopped RFCOMM worker may finish channel creation after the
+          # successor has started. Replay only owner-fenced publication changes
+          # against the immutable, previously audited BT-A source.
+          owner_previous = 'ed0cbe57cfa5f33731a515b4a0531655c829c4cf'
+          assert expected_client == subprocess.check_output(
+              ['git', 'show', owner_previous + ':' + client], text=True
+          ), 'Previous BT-A owner-publication source drifted'
+          owner_edits = [
+              ("                runSession(connected)", "                runSession(connected, myGeneration)"),
+              ("                currentSocket.set(socket)\n                true",
+               "                currentSocket.compareAndSet(null, socket)"),
+              ("    private fun runSession(socket: BluetoothSocket) {",
+               "    private fun runSession(socket: BluetoothSocket, myGeneration: Long) {"),
+              ("        activeChannel.set(channel)\n        try {",
+               "        // stop()/start() can retire this worker while channel construction is in flight.\n"
+               "        // Publish only to the still-owning generation, never over a successor channel.\n"
+               "        val channelPublished = synchronized(lifecycleLock) {\n"
+               "            running && generation.get() == myGeneration &&\n"
+               "                activeChannel.compareAndSet(null, channel)\n"
+               "        }\n"
+               "        if (!channelPublished) {\n"
+               "            currentSocket.compareAndSet(socket, null)\n"
+               "            runCatching { socket.close() }\n"
+               "            runCatching { channel.close() }\n"
+               "            return\n"
+               "        }\n"
+               "        try {"),
+          ]
+          for before_owner, after_owner in owner_edits:
+              assert expected_client.count(before_owner) == 1, 'BT-A owner edit anchor drifted'
+              expected_client = expected_client.replace(before_owner, after_owner)
+          assert 'activeChannel.set(channel)' not in new
+          assert 'currentSocket.set(socket)' not in new
+          assert new.count('activeChannel.compareAndSet(null, channel)') == 1
+          assert 'running && generation.get() == myGeneration &&' in new
+          assert 'runCatching { channel.close() }' in new
+          # A target change must refresh the legacy T35 HFP/A2DP exception
+          # and reset reconnect cooldown for the newly selected receiver.
+          prior_target_policy = subprocess.check_output(
+              ['git', 'show', '1bb5a33ff65b8988652cd54d5953cd9b2c0f0bc5:' + client], text=True
+          )
+          assert expected_client == prior_target_policy, 'Reviewed BT-A target-policy baseline drifted'
+          # Preserve the exact previously-reviewed address without copying any
+          # raw device identifier into CI configuration or public metadata.
+          legacy_address_marker = 'it.address.equals("'
+          assert prior_target_policy.count(legacy_address_marker) == 1, 'T35 address anchor drifted'
+          legacy_address = prior_target_policy.split(legacy_address_marker, 1)[1].split('"', 1)[0]
+          assert legacy_address.count(':') == 5, 'T35 legacy selector format changed'
+          legacy_before = "        val t35Buick = targetProvider()?.let {\n            it.name.contains(\"BUICK\", ignoreCase = true) &&\n                it.address.equals(\"__T35_REVIEWED_ADDRESS__\", ignoreCase = true)\n        } == true\n        var t35Attempts = 0\n        scan@ while (running && generation.get() == myGeneration) {"
+          legacy_after = "        var t35Attempts = 0\n        var previousSelection: TargetDevicePrefs.Target? = null\n        scan@ while (running && generation.get() == myGeneration) {"
+          legacy_before = legacy_before.replace('__T35_REVIEWED_ADDRESS__', legacy_address)
+          legacy_after = legacy_after.replace('__T35_REVIEWED_ADDRESS__', legacy_address)
+          assert expected_client.count(legacy_before) == 1, 'Static T35 exception anchor drifted'
+          expected_client = expected_client.replace(legacy_before, legacy_after)
+          selected_before = "            val selectedForCandidates = targetProvider()\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          selected_after = "            val selectedForCandidates = targetProvider()\n            // Re-evaluate the legacy T35 exception for this scan's target.\n            // A user can change receivers without restarting the worker; do\n            // not keep the previous receiver's HFP/A2DP or cooldown policy.\n            if (selectedForCandidates != previousSelection) {\n                t35Attempts = 0\n                previousSelection = selectedForCandidates\n            }\n            val t35Buick = selectedForCandidates?.let {\n                it.name.contains(\"BUICK\", ignoreCase = true) &&\n                    it.address.equals(\"__T35_REVIEWED_ADDRESS__\", ignoreCase = true)\n            } == true\n            val candidates = candidateDevices(adapter, selectedForCandidates)"
+          selected_after = selected_after.replace('__T35_REVIEWED_ADDRESS__', legacy_address)
+          assert expected_client.count(selected_before) == 1, 'Target selection snapshot anchor drifted'
+          expected_client = expected_client.replace(selected_before, selected_after)
+          assert new == expected_client, 'Unreviewed BT-A runtime delta beyond target-specific policy'
+          assert new.index('val selectedForCandidates = targetProvider()') < new.index('val t35Buick = selectedForCandidates?.let') < new.index('val candidates = candidateDevices')
+          assert new.index('t35Attempts = 0', new.index('val selectedForCandidates = targetProvider()')) < new.index('val t35Buick = selectedForCandidates?.let')
+          assert 'val t35Buick = targetProvider()?.let' not in new
+          assert new.count('activeChannel.compareAndSet(channel, null)') == 1
+          assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
+          assert new.count('currentSocket.compareAndSet(socket, null)') >= 2
+          assert new.index('val targetUnchanged = runCatching') < new.index('connected = socket')
+          assert new.index('currentSocket.compareAndSet(socket, null)', new.index('val targetUnchanged')) < new.index('connected = socket')
+          reviewed_source = subprocess.check_output(
+              ['git', 'show', '22b1a2e7e68830dbd75978eb3c1c740dd5fb07c2:' + client], text=True
+          )
+          assert reviewed_source.count(retire_before) == 1, 'Prior reviewed source changed'
+          assert previous_client == reviewed_source.replace(retire_before, retire_after), 'Prior BT-A signed-source lease changed'
+          assert new.index('currentSocket.compareAndSet(connected, null)') < new.index('runSession(connected, myGeneration)'), 'Old worker may clear a newer socket'
+          assert new.count('continue@scan') == 2
+          assert new.count('targetProvider() == selectedForCandidates') == 2
+          assert new.index('targetProvider() == selectedForCandidates') < new.index('val dropped = BtProfiles.disconnect(context, device)')
+          assert new.count('val selectedForCandidates = targetProvider()') == 1
+          assert 'val selected = selectedForCandidates' in new
+          policy = Path(route).read_text()
+          assert 'BUICK_[0-9]{4}' in policy
+          assert 'selectedMatchesDevice && isKnownReceiver(selectedName)' in policy
+          assert '!legacyT35Buick && !protectB233Profiles' in policy, 'T35 no-disconnect guard missing'
+          assert 'shouldDisconnectProfiles(t35Buick, protectB233Profiles)' in new, 'T35 guard bypassed'
+          assert 'BluetoothDevice.disconnect' not in new.replace(old.replace(before, ''), '')
+          checks = Path(test).read_text()
+          assert 'protectsOnlyB233CandidateOrExplicitlyMatchedSelection' in checks
+          assert 'narrowlyMatchesFourDigitBuickHint' in checks
+          assert 'legacyT35GuardRemainsActiveForAllCandidates' in checks
+          print('Profile-only L3 isolation verified; no other runtime change')
+          PY
+      - name: Verify shared global version allocator regression tests
+        run: python3 -m unittest tools.release.test_allocate_version
+      - name: Run Android unit tests and Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Run full Lint and reject errors on touched files (existing E5 baseline debt)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ./gradlew :app:lintDebug --stacktrace > e5-lint-output.txt 2>&1
+          LINT_EXIT=$?
+          set -e
+          if (( LINT_EXIT != 0 )); then
+            grep -E 'Lint found|First failure:' e5-lint-output.txt | head -n 8 || true
+          fi
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          touched_paths = {
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/Iap2BluetoothClient.kt',
+              'app/src/main/java/io/github/shaonialife/cardeck/bt/BuickB233Route.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/bt/BuickB233ProfilePreserveTest.kt',
+          }
+          report = Path('app/build/reports/lint-results-debug.xml')
+          if not report.is_file():
+              raise SystemExit('Lint XML missing: refusing to waive an unreviewed failure')
+          issues = []
+          for issue in ET.parse(report).getroot().findall('.//issue'):
+              if issue.get('severity', '').lower() not in ('error', 'fatal'):
+                  continue
+              loc = issue.find('location')
+              path = (loc.get('file', '') if loc is not None else '').replace('\\', '/')
+              if '/app/' in path:
+                  path = 'app/' + path.split('/app/', 1)[1]
+              issues.append((issue.get('id'), path))
+          touched = [(i, p) for i, p in issues if p in touched_paths]
+          print(f'Full E5 Lint errors: {len(issues)}; touched-file errors: {len(touched)}')
+          if touched:
+              raise SystemExit(f'Lint errors on BT-A changed files: {touched}')
+          print('Existing unrelated E5 Lint debt remains; no touched-file error introduced')
+          PY
