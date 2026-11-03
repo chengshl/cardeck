@@ -1740,10 +1740,25 @@ object SessionController {
             } else {
                 audioSender = sender
             }
-            // T79: observe only this live sender's successful RTP sequence window.
-            // No media packet retention or retransmission; stale sender -> no snapshot.
-            client.audioRtpSentCountProvider = {
-                if (audioSender === sender) sender.sentPacketCountSnapshot() else null
+            // T79: observe only this sender's RTP sequence window. For B233,
+            // an older start attempt may reach this assignment after a new sender
+            // has published. Keep the provider publication under the same handoff
+            // lock so the old attempt cannot hide the new sender's RTP evidence.
+            if (client.currentEndpoint.isBuickB233) {
+                callbackOwner.publishIfCurrent(
+                    lock = this,
+                    isCurrentSession = { currentClient === client },
+                    activeSender = { audioSender },
+                ) {
+                    client.audioRtpSentCountProvider = {
+                        if (audioSender === sender) sender.sentPacketCountSnapshot() else null
+                    }
+                }
+            } else {
+                // Preserve legacy non-B233 diagnostic assignment semantics.
+                client.audioRtpSentCountProvider = {
+                    if (audioSender === sender) sender.sentPacketCountSnapshot() else null
+                }
             }
             if (!sender.start(projection)) {
                 // A B233 sender can finish its failed start after a replacement
