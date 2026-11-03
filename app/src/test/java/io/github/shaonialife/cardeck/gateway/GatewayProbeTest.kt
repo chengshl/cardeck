@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.gateway
 
+import io.github.shaonialife.cardeck.BuildConfig
 import io.github.shaonialife.cardeck.config.EntryConfig
 import okhttp3.OkHttpClient
 import okhttp3.Response
@@ -134,6 +135,12 @@ class GatewayProbeTest {
         assertEquals("app", appMessage.getString("source"))
         assertFalse(appMessage.getBoolean("user_confirmed"))
         assertFalse(appMessage.getJSONArray("lines").getString(0).contains("192.0.2.2"))
+        assertTrue(
+            (0 until appMessage.getJSONArray("lines").length()).any { index ->
+                appMessage.getJSONArray("lines").getString(index) ==
+                    "APP_BUILD: installedVersionCode=${BuildConfig.VERSION_CODE}"
+            },
+        )
         assertTrue(active.uploadConfirmedSystemLogs(listOf("已预览系统日志")))
         assertEquals(1, awaitLogCount(system = 1).systemLogLines)
         val systemMessage = received.first { it.optString("source") == "system" }
@@ -202,7 +209,7 @@ class GatewayProbeTest {
         server.enqueue(reportingGateway(true, received, logs = true, logAck = false))
         start(replyTimeout = 700, deviceInfo = info, appLogs = buffer)
         assertEquals(GatewayProbe.Failure.LOG_UPLOAD, await(GatewayProbe.State.FAILED).failure)
-        assertEquals(listOf("等待确认的日志"), buffer.take())
+        assertEquals(listOf("等待确认的日志", "APP_BUILD: installedVersionCode=${BuildConfig.VERSION_CODE}"), buffer.take())
     }
 
     @Test
