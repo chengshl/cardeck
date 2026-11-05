@@ -49,6 +49,8 @@ class VirtualIap2Link(
     private val lock = Any()
     private val engine = Iap2LinkEngine()
     private val parser = Iap2Csm.Parser()
+    // T100: diagnostics only; B233 CSM control messages, no raw bodies.
+    private val b233NetworkCsmProbe = B233NetworkCsmProbe()
     private var frameCount = 0
     private var eaCount = 0
     private var started = false
@@ -956,6 +958,13 @@ class VirtualIap2Link(
         frameCount++
         val frames = parser.offer(bytes)
         for (frame in frames) {
+            if (isBuickB233) {
+                // A repeated identification may be skipped by authentication,
+                // but the observation must remain visible on the audio clock.
+                b233NetworkCsmProbe.observe(frame.messageId, nowMillis())?.let { evidence ->
+                    runCatching { onB233NetworkCsmEvent?.invoke(evidence) }
+                }
+            }
             val hex = frame.body.joinToString(" ") { "%02x".format(it) }
             if (frameCount <= 30 || frameCount % 100 == 0) {
                 log(
@@ -980,6 +989,9 @@ class VirtualIap2Link(
      * 只有 iAP2 链路真正建立后才会来（见 [eventLinkArmed]）。
      */
     var onMediaKey: ((Int) -> Unit)? = null
+
+    /** T100: limited numeric Network CSM probe for the current link only. */
+    internal var onB233NetworkCsmEvent: ((B233NetworkCsmProbe.Observation) -> Unit)? = null
 
     /** 车机在 0x6800 StartHID 里给出的 HID 描述符（解析报告用；null = 未提供）。 */
     private var hidDescriptor: ByteArray? = null
