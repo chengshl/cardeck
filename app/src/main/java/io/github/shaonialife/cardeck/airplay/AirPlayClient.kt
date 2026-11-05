@@ -1689,6 +1689,15 @@ class AirPlayClient(
                     isBuickB233 = endpoint.isBuickB233,
                 ).also {
                     it.onMediaKey = { keyCode -> onMediaKey?.invoke(keyCode) }
+                    if (endpoint.isBuickB233) {
+                        // T99: pair virtual Network CSM events with the SAME
+                        // audio trace. Stale links must never tag a replacement.
+                        it.onB233NetworkCsmEvent = { evidence ->
+                            if (iapLink === it) {
+                                audioFailureTrace?.event(evidence.event, evidence.detail)
+                            }
+                        }
+                    }
                     it.begin()
                     iapLink = it
                 }

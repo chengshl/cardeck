@@ -49,6 +49,9 @@ class VirtualIap2Link(
     private val lock = Any()
     private val engine = Iap2LinkEngine()
     private val parser = Iap2Csm.Parser()
+    // B233-only observation of the virtual Network iAP2 CSM epoch.
+    // Never retain CSM bodies or change ACK/auth/retry decisions.
+    private val b233NetworkCsmProbe = B233NetworkCsmProbe()
     private var frameCount = 0
     private var eaCount = 0
     private var started = false
@@ -956,6 +959,13 @@ class VirtualIap2Link(
         frameCount++
         val frames = parser.offer(bytes)
         for (frame in frames) {
+            if (isBuickB233) {
+                // Observe even a repeated 0x1D01 that authentication may ignore.
+                // Diagnostic failures must never interrupt the existing iAP2 path.
+                b233NetworkCsmProbe.observe(frame.messageId, nowMillis())?.let { evidence ->
+                    runCatching { onB233NetworkCsmEvent?.invoke(evidence) }
+                }
+            }
             val hex = frame.body.joinToString(" ") { "%02x".format(it) }
             if (frameCount <= 30 || frameCount % 100 == 0) {
                 log(
@@ -980,6 +990,9 @@ class VirtualIap2Link(
      * 只有 iAP2 链路真正建立后才会来（见 [eventLinkArmed]）。
      */
     var onMediaKey: ((Int) -> Unit)? = null
+
+    /** B233-only diagnostic metadata; consumer must ignore stale links. */
+    internal var onB233NetworkCsmEvent: ((B233NetworkCsmProbe.Observation) -> Unit)? = null
 
     /** 车机在 0x6800 StartHID 里给出的 HID 描述符（解析报告用；null = 未提供）。 */
     private var hidDescriptor: ByteArray? = null
