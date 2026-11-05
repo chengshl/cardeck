@@ -58,8 +58,12 @@ class B233UdpBindPreflightTest {
         val result = B233UdpBindPreflight(
             bindNetwork = {},
             log = {},
-            networkStillValid = { ++checks <= 2 },
-        ).run(25L)
+            // Initial preflight is valid; the first hold-period poll fails.
+            // The extended deadline is a safety bound, not a 10s wait:
+            // this synthetic network loss returns immediately on that poll.
+            networkStillValid = { ++checks == 1 },
+        ).run(10_000L)
+        assertTrue("must observe at least one hold-period network check", checks >= 2)
         assertEquals("network_changed", result.status)
         assertFalse(result.passed)
     }

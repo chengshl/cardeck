@@ -1,0 +1,90 @@
+name: T100 signed-baseline B233 network/audio epoch (offline)
+on:
+  push:
+    branches: [experiment/buick-test-t100-network-audio-epoch]
+  pull_request:
+    branches: [experiment/buick-b233-pcm-partial-read-continuity]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: t100-network-audio-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify exact signed T94 baseline and minimal T100 scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          test "$(gh release view exp-buick-test-t94-20261031175159 --json body --jq '.body' | sed -n 's/^commit=//p' | head -n1)" = "$BASE"
+          test "$(gh release view exp-buick-test-t94-20261031175159 --json body --jq '.body' | sed -n 's/^versionCode=//p' | head -n1)" = 89373119
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            .github/workflows/ci-b233-t100-network-audio-epoch.yml \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbe.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt \
+            | sort > /tmp/expected
+          # Once the exact 5-file offline candidate passes, allow only
+          # its independent signed-publication workflow as an optional 6th file.
+          if test -f .github/workflows/publish-t100-network-audio-epoch.yml; then
+            echo .github/workflows/publish-t100-network-audio-epoch.yml >> /tmp/expected
+            sort -o /tmp/expected /tmp/expected
+          fi
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base='1834fd9a05dfd7d19a29dba641ea38af063d0522'
+          root='app/src/main/java/io/github/shaonialife/cardeck/airplay/'
+          for name in ('VirtualIap2Link.kt','AirPlayClient.kt'):
+              path=root+name
+              diff=subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--',path],text=True)
+              assert not [l for l in diff.splitlines() if l.startswith('-') and not l.startswith('---')], name
+          probe=Path(root+'B233NetworkCsmProbe.kt').read_text()
+          virtual=Path(root+'VirtualIap2Link.kt').read_text()
+          client=Path(root+'AirPlayClient.kt').read_text()
+          tests=Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt').read_text()
+          assert probe.count('if (emitted >= 16) return null')==1
+          assert virtual.count('b233NetworkCsmProbe.observe(frame.messageId, nowMillis())')==1
+          assert 'runCatching { onB233NetworkCsmEvent?.invoke(evidence) }' in virtual
+          assert 'if (iapLink === it)' in client and 'audioFailureTrace?.event(evidence.event, evidence.detail)' in client
+          assert client.count('private var iapLink: VirtualIap2Link? = null')==1
+          assert 'repeatIdentificationAfterStopHidUsesMonotonicClock' in tests
+          assert 'nonControlAndClockRegressionAreFailClosed' in tests
+          assert 'evidenceIsEpochLocalAndBoundedWithoutPayload' in tests
+          preflight=Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt').read_text()
+          assert 'networkStillValid = { ++checks == 1 }' in preflight
+          assert ').run(10_000L)' in preflight
+          assert 'assertEquals("network_changed", result.status)' in preflight
+          assert 'assertFalse(result.passed)' in preflight
+          assert 'io.github.buick.test.cardeck' in Path('app/build.gradle.kts').read_text()
+          assert 'channel.suppressSensitiveRawFrames()' in Path('app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt').read_text()
+          print('PASS: T100 is isolated, unsigned T94 baseline plus passive B233 probe only')
+          PY
+      - name: Android full JUnit, Lint, Debug (NO signing/release)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Before signed release, add a single publication workflow only after CI success.
