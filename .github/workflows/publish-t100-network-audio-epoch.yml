@@ -33,14 +33,14 @@ jobs:
         run: |
           set -euo pipefail
           BASE=1834fd9a05dfd7d19a29dba641ea38af063d0522
-          VALIDATED=5d660974000096327c2f006797b85a961dc2c315
+          VALIDATED=12cdbdbca8a5432680bb5194b364509f9152527c
           test "$GITHUB_REF_NAME" = experiment/buick-test-t100-network-audio-epoch
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git merge-base "$BASE" HEAD)" = "$BASE"
           git merge-base --is-ancestor "$VALIDATED" HEAD
           test "$(gh release view exp-buick-test-t94-20261031175159 --repo "$GITHUB_REPOSITORY" --json body --jq .body | sed -n 's/^commit=//p' | head -n1)" = "$BASE"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/42048459381" --jq .head_sha)" = "$VALIDATED"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/42048459381" --jq .conclusion)" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/42050995520" --jq .head_sha)" = "$VALIDATED"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/42050995520" --jq .conclusion)" = success
           test "$(git diff --name-only "$VALIDATED" HEAD)" = '.github/workflows/publish-t100-network-audio-epoch.yml'
           git diff --name-only "$BASE" HEAD | sort > /tmp/t100-actual
           printf '%s\n' \
@@ -49,14 +49,16 @@ jobs:
             app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
             app/src/main/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbe.kt \
             app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
-            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt | sort > /tmp/t100-expected
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt | sort > /tmp/t100-expected
           diff -u /tmp/t100-expected /tmp/t100-actual
           git diff --check "$BASE" HEAD
           for f in app/build.gradle.kts \
             app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
             app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
             app/src/main/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbe.kt \
-            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt; do
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt; do
             test "$(git rev-parse "$VALIDATED:$f")" = "$(git rev-parse "HEAD:$f")"
           done
           grep -Fq 'channel.suppressSensitiveRawFrames()' app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt
@@ -215,7 +217,7 @@ jobs:
             printf 'recoveryApkZip=%s\nrecoveryVersionCode=%s\n' "$recovery" "$T100_RECOVERY_VERSION_CODE"
             echo
             echo '## T100｜别克B233 Network重新识别与音频20秒EOF时间线取证'
-            echo '基于确切T94已签名源代码，新增仅只读、有限条数的Network 0x1D01/0x6800/0x6803事件标记，并复用相同音频monoMs/sinceFirstRtpMs追踪；没有引入PR #153累计179个未实车提交。与PCM/AAC、RTSP/RTP、认证、资源申请和恢复决策无关。代码和离线CI通过不表示已修复故障。'
+            echo '基于确切T94已签名源代码，新增仅只读、有限条数的Network 0x1D01/0x6800/0x6803事件标记，并复用相同音频monoMs/sinceFirstRtpMs追踪；另修正原T94合成UDP网络保持测试过短25ms引发的CI时间窗不确定性（仅JUnit，不改运行代码）。没有引入PR #153累计179个未实车提交。与PCM/AAC、RTSP/RTP、认证、资源申请和恢复决策无关。代码和离线CI通过不表示已修复故障。'
             echo
             echo '## 安装、安全停车及停止条件'
             echo '此为独立签名预发布，不会自动安装或更换正式Test/E5。现有Test 89373119/T94（或更早同签名Test）可在版本码较高且证书相同的情况下经用户确认覆盖，保留数据；不要卸载、清除数据或强制降级。安装前记下现有版本，车辆停车且确保操作安全，先仅视频确认连接/触控/蓝牙A2DP；再用户主动选开启音频、完成投屏授权，尝试单轮音频并观察是否出现20秒EOF。如出现重复断链立即停止同包继续测试，保留经审核脱敏日志；如无失败才推进3轮各≥3分钟、退出后可靠重连、画面触摸回归。严禁公开未脱敏原始日志。'
