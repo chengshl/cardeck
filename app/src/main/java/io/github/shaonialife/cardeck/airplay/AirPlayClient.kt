@@ -1665,7 +1665,8 @@ class AirPlayClient(
     // 复用 [io.github.shaonialife.cardeck.iap2.Iap2LinkEngine] 完成握手与帧收发。
 
     @Volatile
-    @Volatile private var iapLink: VirtualIap2Link? = null
+    @Volatile
+    private var iapLink: VirtualIap2Link? = null
 
     /**
      * 车机媒体键回调（方向盘/面板的上一曲、下一曲）。
