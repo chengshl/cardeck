@@ -1665,7 +1665,7 @@ class AirPlayClient(
     // 复用 [io.github.shaonialife.cardeck.iap2.Iap2LinkEngine] 完成握手与帧收发。
 
     @Volatile
-    private var iapLink: VirtualIap2Link? = null
+    @Volatile private var iapLink: VirtualIap2Link? = null
 
     /**
      * 车机媒体键回调（方向盘/面板的上一曲、下一曲）。
@@ -1689,6 +1689,15 @@ class AirPlayClient(
                     isBuickB233 = endpoint.isBuickB233,
                 ).also {
                     it.onMediaKey = { keyCode -> onMediaKey?.invoke(keyCode) }
+                    if (endpoint.isBuickB233) {
+                        // T99: pair virtual Network CSM events with the SAME
+                        // audio trace. Stale links must never tag a replacement.
+                        it.onB233NetworkCsmEvent = { evidence ->
+                            if (iapLink === it) {
+                                audioFailureTrace?.event(evidence.event, evidence.detail)
+                            }
+                        }
+                    }
                     it.begin()
                     iapLink = it
                 }
