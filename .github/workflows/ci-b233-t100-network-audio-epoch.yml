@@ -43,6 +43,12 @@ jobs:
             app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
             app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt \
             | sort > /tmp/expected
+          # Once the exact 5-file offline candidate passes, allow only
+          # its independent signed-publication workflow as an optional 6th file.
+          if test -f .github/workflows/publish-t100-network-audio-epoch.yml; then
+            echo .github/workflows/publish-t100-network-audio-epoch.yml >> /tmp/expected
+            sort -o /tmp/expected /tmp/expected
+          fi
           diff -u /tmp/expected /tmp/actual
           git diff --check "$BASE" HEAD
           python3 - <<'PY'
