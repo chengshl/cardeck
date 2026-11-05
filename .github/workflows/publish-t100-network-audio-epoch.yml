@@ -1,0 +1,252 @@
+name: T100 B233 Network/audio probe signed isolated Test experiment
+on:
+  push:
+    branches:
+      - experiment/buick-test-t100-network-audio-epoch
+    paths:
+      - '.github/workflows/publish-t100-network-audio-epoch.yml'
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-buick-test-t100-audio-epoch
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/experiment/buick-test-t100-network-audio-epoch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify signed T94 source, exact validated T100 and publication-only delta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          VALIDATED=5d660974000096327c2f006797b85a961dc2c315
+          test "$GITHUB_REF_NAME" = experiment/buick-test-t100-network-audio-epoch
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          git merge-base --is-ancestor "$VALIDATED" HEAD
+          test "$(gh release view exp-buick-test-t94-20261031175159 --repo "$GITHUB_REPOSITORY" --json body --jq .body | sed -n 's/^commit=//p' | head -n1)" = "$BASE"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/42048459381" --jq .head_sha)" = "$VALIDATED"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/42048459381" --jq .conclusion)" = success
+          test "$(git diff --name-only "$VALIDATED" HEAD)" = '.github/workflows/publish-t100-network-audio-epoch.yml'
+          git diff --name-only "$BASE" HEAD | sort > /tmp/t100-actual
+          printf '%s\n' \
+            .github/workflows/ci-b233-t100-network-audio-epoch.yml \
+            .github/workflows/publish-t100-network-audio-epoch.yml \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbe.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt | sort > /tmp/t100-expected
+          diff -u /tmp/t100-expected /tmp/t100-actual
+          git diff --check "$BASE" HEAD
+          for f in app/build.gradle.kts \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbe.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt; do
+            test "$(git rev-parse "$VALIDATED:$f")" = "$(git rev-parse "HEAD:$f")"
+          done
+          grep -Fq 'channel.suppressSensitiveRawFrames()' app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt
+      - name: Await exact HEAD T100 offline CI green
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 100); do
+            state="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci-b233-t100-network-audio-epoch.yml/runs?head_sha=$GITHUB_SHA&per_page=20" --jq '.workflow_runs | map(select(.head_sha == "'"$GITHUB_SHA"'")) | .[0] | ((.status // "absent") + "/" + (.conclusion // "pending"))')"
+            if [ "$state" = "completed/success" ]; then
+              echo "PASS: exact-HEAD offline CI complete/success"
+              exit 0
+            fi
+            if [[ "$state" == completed/* && "$state" != completed/success ]]; then
+              echo "::error::T100 exact-HEAD CI failure: $state"
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error::T100 exact-HEAD CI absent or pending beyond wait window"
+          exit 1
+      - name: Restore existing Test certificate; fail closed without secrets
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          set +x
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/t100-existing-test.p12"
+          chmod 600 "$RUNNER_TEMP/t100-existing-test.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/t100-existing-test.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Determine strictly greater Test versionCode and unique versionName
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "buick-test-latest" or (.tag_name | startswith("exp-buick-test-"))) | .body' | sed -n 's/^versionCode=//p' | grep -E '^[0-9]+$')"
+          test -n "$existing"
+          max="$(printf '%s\n' "$existing" | sort -nr | head -n1)"
+          test "$max" -ge 89373119
+          prior="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name | startswith("exp-buick-test-t100-")) | .tag_name' | head -n1)"
+          if [ -n "$prior" ]; then
+            echo "::error::T100 already has a signed release: $prior"
+            exit 1
+          fi
+          epoch="$(date -u +%s)"
+          code=$((epoch - 1704067200))
+          recovery_code=$((code + 1))
+          test "$code" -gt "$max"
+          test "$recovery_code" -le 2100000000
+          name="$(TZ=Asia/Shanghai date -d "@$epoch" +%Y%m%d%H%M%S)"
+          {
+            echo "CARDECK_BUILD_VERSION_CODE=$code"
+            echo "CARDECK_RELEASE_VERSION_NAME=$name"
+            echo "T100_RECOVERY_VERSION_CODE=$recovery_code"
+          } >> "$GITHUB_ENV"
+          echo "T100 code=$code recoveryCode=$recovery_code priorMax=$max"
+      - name: Build signed T100 after all JUnit and Lint pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleRelease --stacktrace
+          test -s app/build/outputs/apk/release/app-release.apk
+          cp app/build/outputs/apk/release/app-release.apk CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk
+          sha256sum CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk > CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk.sha256
+      - name: Verify Test package, real certificate and exact installed-version precedence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk=CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk
+          aapt="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
+          sign="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n1)"
+          test -x "$aapt" && test -x "$sign"
+          "$aapt" dump badging "$apk" | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$CARDECK_BUILD_VERSION_CODE'" | grep -F "versionName='$CARDECK_RELEASE_VERSION_NAME'"
+          "$sign" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/t100-cert.txt"
+          ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/t100-cert.txt"
+          mkdir -p "$RUNNER_TEMP/t94-signed-source"
+          gh release download exp-buick-test-t94-20261031175159 --repo "$GITHUB_REPOSITORY" --pattern 'CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk*' --dir "$RUNNER_TEMP/t94-signed-source"
+          (cd "$RUNNER_TEMP/t94-signed-source" && sha256sum -c CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk.sha256)
+          test "$(sha256sum "$RUNNER_TEMP/t94-signed-source/CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk" | awk '{print $1}')" = 25b8be9764e54ef71a848f6c18b7ebf72690a586eb06daf980ef7124c5e17d2b
+          "$sign" verify --verbose --print-certs "$RUNNER_TEMP/t94-signed-source/CarDeck-Buick-Test-T94-PCM-SHORT-READ.apk" > "$RUNNER_TEMP/t94-cert.txt"
+          current="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t100-cert.txt" | head -n1)"
+          previous="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t94-cert.txt" | head -n1)"
+          test -n "$current" && test "$current" = "$previous"
+          echo "PASS: T100 APK signed by existing Test certificate and versionCode increased"
+      - name: Build signed higher-code T94-source recovery and package as ZIP, not updater APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=1834fd9a05dfd7d19a29dba641ea38af063d0522
+          git worktree add --detach "$RUNNER_TEMP/t100-recovery-worktree" "$base"
+          cp keystore.properties "$RUNNER_TEMP/t100-recovery-worktree/keystore.properties"
+          (
+            cd "$RUNNER_TEMP/t100-recovery-worktree"
+            chmod +x gradlew
+            export CARDECK_BUILD_VERSION_CODE="$T100_RECOVERY_VERSION_CODE"
+            export CARDECK_RELEASE_VERSION_NAME="$CARDECK_RELEASE_VERSION_NAME-R94"
+            ./gradlew :app:assembleRelease --stacktrace
+          )
+          test -s "$RUNNER_TEMP/t100-recovery-worktree/app/build/outputs/apk/release/app-release.apk"
+          cp "$RUNNER_TEMP/t100-recovery-worktree/app/build/outputs/apk/release/app-release.apk" CarDeck-Buick-Test-T100-Recovery-T94.apk
+          sha256sum CarDeck-Buick-Test-T100-Recovery-T94.apk > CarDeck-Buick-Test-T100-Recovery-T94.apk.sha256
+          aapt="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
+          sign="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n1)"
+          "$aapt" dump badging CarDeck-Buick-Test-T100-Recovery-T94.apk | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$T100_RECOVERY_VERSION_CODE'"
+          "$sign" verify --verbose --print-certs CarDeck-Buick-Test-T100-Recovery-T94.apk > "$RUNNER_TEMP/t100-recovery-cert.txt"
+          now="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t100-recovery-cert.txt" | head -n1)"
+          old="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t94-cert.txt" | head -n1)"
+          test -n "$now" && test "$now" = "$old"
+          zip -q CarDeck-Buick-Test-T100-Recovery-T94.zip CarDeck-Buick-Test-T100-Recovery-T94.apk CarDeck-Buick-Test-T100-Recovery-T94.apk.sha256
+          sha256sum CarDeck-Buick-Test-T100-Recovery-T94.zip > CarDeck-Buick-Test-T100-Recovery-T94.zip.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: T100-ISOLATED-SIGNED-AND-RECOVERY-${{ github.run_id }}
+          path: |
+            CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk
+            CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk.sha256
+            CarDeck-Buick-Test-T100-Recovery-T94.zip
+            CarDeck-Buick-Test-T100-Recovery-T94.zip.sha256
+          if-no-files-found: error
+      - name: Publish one unique schema2 prerelease; never touch latest channels
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = experiment/buick-test-t100-network-audio-epoch
+          tag="exp-buick-test-t100-$CARDECK_RELEASE_VERSION_NAME"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Refuse to overwrite existing release or tag"
+            exit 1
+          fi
+          apk=CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk
+          recovery=CarDeck-Buick-Test-T100-Recovery-T94.zip
+          test -s "$apk" && test -s "$apk.sha256" && test -s "$recovery" && test -s "$recovery.sha256"
+          sha256sum -c "$apk.sha256"
+          sha256sum -c "$recovery.sha256"
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-Test\nsourceBranch=%s\napplicationId=io.github.buick.test.cardeck\n' "$GITHUB_REF_NAME"
+            printf 'versionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$apk" "$GITHUB_SHA"
+            printf 'recoveryApkZip=%s\nrecoveryVersionCode=%s\n' "$recovery" "$T100_RECOVERY_VERSION_CODE"
+            echo
+            echo '## T100｜别克B233 Network重新识别与音频20秒EOF时间线取证'
+            echo '基于确切T94已签名源代码，新增仅只读、有限条数的Network 0x1D01/0x6800/0x6803事件标记，并复用相同音频monoMs/sinceFirstRtpMs追踪；没有引入PR #153累计179个未实车提交。与PCM/AAC、RTSP/RTP、认证、资源申请和恢复决策无关。代码和离线CI通过不表示已修复故障。'
+            echo
+            echo '## 安装、安全停车及停止条件'
+            echo '此为独立签名预发布，不会自动安装或更换正式Test/E5。现有Test 89373119/T94（或更早同签名Test）可在版本码较高且证书相同的情况下经用户确认覆盖，保留数据；不要卸载、清除数据或强制降级。安装前记下现有版本，车辆停车且确保操作安全，先仅视频确认连接/触控/蓝牙A2DP；再用户主动选开启音频、完成投屏授权，尝试单轮音频并观察是否出现20秒EOF。如出现重复断链立即停止同包继续测试，保留经审核脱敏日志；如无失败才推进3轮各≥3分钟、退出后可靠重连、画面触摸回归。严禁公开未脱敏原始日志。'
+            echo
+            echo '## 可执行同签名恢复'
+            echo '随附Recovery-T94.zip：解压后可得到与T94原始源码等价、但版本码比T100高1的同签名恢复APK和它的SHA256。出现问题先保持手机数据和应用安装，检查ZIP和APK SHA256后使用Android系统安装器覆盖恢复；不要以旧低码T94 APK强行降级、不要卸载清数据。恢复包仍是Test相同包名，不影响独立Buick-E5。恢复后需重启连接并检查视频/触控/A2DP；如系统阻止覆盖，停止并保留错误，不强制绕过。'
+            echo
+            echo '## 隔离与证据'
+            echo '只记录固定事件名与数值，应用已有的原始日志仍需隐私复核。公开仅引用匿名 CD-PRV-20261105-001，不附车机序列号、MAC、IP、抓包或任何私人材料。#11 P0保持开放。独立Test实验，不更新任何*-latest，不合并Buick/Buick-E5/Buick-Test/main。'
+          } > t100-release-notes.txt
+          gh release create "$tag" "$apk" "$apk.sha256" "$recovery" "$recovery.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Buick-Test T100 Network Audio Epoch $CARDECK_RELEASE_VERSION_NAME" \
+            --notes-file t100-release-notes.txt --prerelease --latest=false
+      - name: Verify immutable tagged release assets and metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="exp-buick-test-t100-$CARDECK_RELEASE_VERSION_NAME"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .prerelease)" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)" = "$GITHUB_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .body | grep -Fxq "sourceBranch=$GITHUB_REF_NAME"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .body | grep -Fxq "commit=$GITHUB_SHA"
+          mkdir -p "$RUNNER_TEMP/t100-published"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/t100-published"
+          (
+            cd "$RUNNER_TEMP/t100-published"
+            sha256sum -c CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk.sha256
+            sha256sum -c CarDeck-Buick-Test-T100-Recovery-T94.zip.sha256
+          )
+          echo "PASS: signed T100 and higher-code T94 recovery published as independent prerelease"
+# Never install on user phone or change any stable/latest channel.
