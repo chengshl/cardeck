@@ -42,6 +42,7 @@ jobs:
             app/src/main/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbe.kt \
             app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
             app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt \
             | sort > /tmp/expected
           # Once the exact 5-file offline candidate passes, allow only
           # its independent signed-publication workflow as an optional 6th file.
@@ -72,6 +73,11 @@ jobs:
           assert 'repeatIdentificationAfterStopHidUsesMonotonicClock' in tests
           assert 'nonControlAndClockRegressionAreFailClosed' in tests
           assert 'evidenceIsEpochLocalAndBoundedWithoutPayload' in tests
+          preflight=Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233UdpBindPreflightTest.kt').read_text()
+          assert 'networkStillValid = { ++checks == 1 }' in preflight
+          assert ').run(10_000L)' in preflight
+          assert 'assertEquals("network_changed", result.status)' in preflight
+          assert 'assertFalse(result.passed)' in preflight
           assert 'io.github.buick.test.cardeck' in Path('app/build.gradle.kts').read_text()
           assert 'channel.suppressSensitiveRawFrames()' in Path('app/src/main/java/io/github/shaonialife/cardeck/iap2/Iap2SenderSession.kt').read_text()
           print('PASS: T100 is isolated, unsigned T94 baseline plus passive B233 probe only')
