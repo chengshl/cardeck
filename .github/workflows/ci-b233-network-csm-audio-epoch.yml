@@ -1,0 +1,86 @@
+name: B233 Network CSM/audio epoch correlation (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-b233-network-csm-audio-epoch-11
+  pull_request:
+    branches:
+      - experiment/buick-b233-audio-rtp-provider-owner-11
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-network-audio-epoch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify successful parent, five-file scope and observation-only additions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE=7d41e5da87bce9754acca0937474da507490afcb
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41581139547 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/41581139547 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual-files
+          printf '%s\n' \
+            '.github/workflows/ci-b233-network-csm-audio-epoch.yml' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt' \
+            'app/src/main/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbe.kt' \
+            'app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt' | sort > /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/actual-files
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base='7d41e5da87bce9754acca0937474da507490afcb'
+          root='app/src/main/java/io/github/shaonialife/cardeck/airplay/'
+          for filename in ('VirtualIap2Link.kt','AirPlayClient.kt'):
+              path=root+filename
+              patch=subprocess.check_output(
+                  ['git','diff','--unified=0',base,'HEAD','--',path], text=True)
+              removed=[x for x in patch.splitlines()
+                       if x.startswith('-') and not x.startswith('---')]
+              assert not removed, (filename,'existing production statements removed',removed)
+          virtual=Path(root+'VirtualIap2Link.kt').read_text()
+          client=Path(root+'AirPlayClient.kt').read_text()
+          old_virtual=subprocess.check_output(['git','show',base+':'+root+'VirtualIap2Link.kt'],text=True)
+          old_client=subprocess.check_output(['git','show',base+':'+root+'AirPlayClient.kt'],text=True)
+          assert 'b233NetworkCsmProbe' not in old_virtual
+          assert 'onB233NetworkCsmEvent' not in old_client
+          assert virtual.count('b233NetworkCsmProbe.observe(frame.messageId, nowMillis())')==1
+          assert 'runCatching { onB233NetworkCsmEvent?.invoke(evidence) }' in virtual
+          assert 'if (iapLink === it)' in client
+          assert 'audioFailureTrace?.event(evidence.event, evidence.detail)' in client
+          probe=Path(root+'B233NetworkCsmProbe.kt').read_text()
+          tests=Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt').read_text()
+          assert '0x1D01' in probe and '0x6803' in probe and '0x6800' in probe
+          assert 'if (emitted >= 16) return null' in probe
+          assert 'repeatIdentificationAfterStopHidUsesMonotonicClock' in tests
+          assert 'nonControlAndClockRegressionAreFailClosed' in tests
+          assert 'evidenceIsEpochLocalAndBoundedWithoutPayload' in tests
+          print('PASS: new B233-only timestamp observation, no old production deletions')
+          PY
+      - name: Android JUnit, Lint and Debug build (no signing or release)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only. No signed APK, Release, installation, Bluetooth changes or stable merge.
