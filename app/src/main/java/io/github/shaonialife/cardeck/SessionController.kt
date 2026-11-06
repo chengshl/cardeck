@@ -1546,6 +1546,7 @@ object SessionController {
                     // Other vehicles and B233 PCM keep their prior sync behavior.
                     controlPort = audio.controlPort,
                     sendLegacyAudioSyncPackets = !modernB233Timing,
+                    useNtp1900Epoch = client.currentEndpoint.isBuickB233,
                     deferSyncUntilRecord = client.currentEndpoint.isBuickB233,
                     // T12: keep Sony media volume intact while isolating B233 zero capture.
                     // Other cars retain existing no-local-speaker policy.
