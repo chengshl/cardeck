@@ -732,13 +732,21 @@ class AirPlayClient(
                 ),
             )
         return try {
-            val (statusLine, _) =
+            val (statusLine, replyBody) =
                 request(
                     "POST",
                     "/command",
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
+            // T102: a transport 200 is not a verified ownership grant.
+            // Never expose response bytes, private fields or unknown strings.
+            if (endpoint.isBuickB233) {
+                val evidence = B233ModesReplyEvidence.summarize(replyBody)
+                val summary = "requestedMainAudio=${claimAudioResource} rtspTransport200=${statusLine.contains("200")} ${evidence}"
+                log("AUDIO T102: modesChanged ${summary}")
+                audioFailureTrace?.event("modes_reply_observed", summary)
+            }
             log(
                 "AIRPLAY T26: modesChanged（主屏=CarPlay，主音频=" +
                     (if (claimAudioResource) "CarPlay" else "未声明/保留普通蓝牙 A2DP") +
