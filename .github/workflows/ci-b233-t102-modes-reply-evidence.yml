@@ -1,0 +1,69 @@
+name: T102 B233 modes reply evidence (offline only)
+on:
+  push:
+    branches:
+      - experiment/buick-test-t102-modes-reply-evidence
+  pull_request:
+    branches:
+      - experiment/buick-test-t101-b233-csm-epoch-privacy
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: car-b233-t102-modes-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify immutable signed T101 baseline and exact four-file scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE=b2f311bfd7b07322e70f02001c8242394235c1ee
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/exp-buick-test-t101-20261106144024" --jq .target_commitish)" = "$BASE"
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            .github/workflows/ci-b233-t102-modes-reply-evidence.yml \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ModesReplyEvidence.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ModesReplyEvidenceTest.kt | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          main=Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          helper=Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ModesReplyEvidence.kt').read_text()
+          tests=Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ModesReplyEvidenceTest.kt').read_text()
+          assert 'statusLine.contains("200")' in main
+          assert 'B233ModesReplyEvidence.summarize(replyBody)' in main
+          assert 'if (endpoint.isBuickB233)' in main
+          assert 'audioFailureTrace?.event("modes_reply_observed", summary)' in main
+          assert 'ownership=unverified' in helper
+          assert 'private const val MAX_BODY_BYTES = 4_096' in helper
+          assert 'BinaryPlist.parseRecovered(body).value' in helper
+          assert 'error.message' not in helper and 'hexDump' not in helper
+          assert 'oversizedBodyNeverParsedOrEchoed' in tests
+          assert 'boundedResourceMapRecordsNumbersNotIdentityOrGrant' in tests
+          print('PASS: exact T101 baseline, T102 log redaction, bounded parsing and unchanged transport decision')
+          PY
+      - name: Full Android JUnit, Lint, Debug (no signing, no publication)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only. No stable branch mutation, signed APK or on-car claim.
