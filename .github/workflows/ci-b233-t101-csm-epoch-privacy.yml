@@ -1,0 +1,93 @@
+name: T101 B233 CSM epoch safe evidence (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-test-t101-b233-csm-epoch-privacy
+  pull_request:
+    branches:
+      - experiment/buick-test-t100-network-audio-epoch
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-t101-epoch-privacy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify T100 signed parent, exact eight-file scope and B233-only privacy boundaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=dcd51db102c6806ac3e51b585b5bad1374c19cba
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/42051790425 --jq .head_sha)" = "$BASE"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/42051790425 --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            .github/workflows/ci-b233-t101-csm-epoch-privacy.yml \
+            app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/B233CsmLogRedaction.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbe.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233CsmLogRedactionTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          import pathlib,subprocess
+          root=pathlib.Path('app/src/main/java/io/github/shaonialife/cardeck/airplay')
+          virtual=(root/'VirtualIap2Link.kt').read_text()
+          client=(root/'AirPlayClient.kt').read_text()
+          redactor=(root/'B233CsmLogRedaction.kt').read_text()
+          probe=(root/'B233NetworkCsmProbe.kt').read_text()
+          controller=pathlib.Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          for needle in (
+            'runCatching { onB233NetworkCsmEvent?.invoke(evidence) }',
+            'event=${evidence.event} detail=${evidence.detail}',
+            'internal val b233EvidenceEpoch: Long',
+            'private val nextB233EvidenceEpoch = AtomicLong(0L)',
+            'B233CsmLogRedaction.payload(isBuickB233, frame.body, 160)',
+            'B233CsmLogRedaction.payload(isBuickB233, bytes, 160)',
+            'B233CsmLogRedaction.payload(isBuickB233, bytes, 200)',
+            'B233CsmLogRedaction.payload(isBuickB233, descriptor, 120)',
+            'if (isBuickB233) {\n                    log("IAPLINK: 隧道 rx 0x1d01 接收端身份 [redacted]")',
+            'if (isBuickB233) {\n                        log("IAPLINK: 车机 0x6802 paramsCount=',
+          ):
+            assert needle in virtual, needle
+          assert virtual.count('B233CsmLogRedaction.payload(')>=5
+          assert 'if (isBuickB233) "[redacted]"' in redactor
+          assert 'if (isBuickB233) "[redacted]" else description' in redactor
+          assert 'return observation.copy(monoMs = nowMs)' in probe
+          assert 'if (iapLink === it)' in client
+          assert 'observedMonoMs=${evidence.monoMs}' in client
+          assert 'networkEpoch=${client.b233CsmEpochForAudioTrace()}' in controller
+          assert 'b233EvidenceEpoch?.toString()' not in controller
+          tests=pathlib.Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/B233CsmLogRedactionTest.kt').read_text()
+          assert 'b233DoesNotEchoIdentityBytesEvenWithLargeLimit' in tests
+          assert 'legacyNonB233HexRemainsAvailableWithoutChangingProtocol' in tests
+          assert 'emptyAndBinaryFramesFailClosedForB233' in tests
+          print('PASS: T101 standalone monotonic CSM evidence, raw identity/HID/unknown B233 log redaction')
+          PY
+      - name: Android JUnit, Lint and Debug (no APK signing or release)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# L3 Draft only; published T100 signed prerelease remains immutable.
+# No app upgrade, signing, Release, phone action or stable branch merge.
