@@ -10,6 +10,7 @@ import io.github.shaonialife.cardeck.input.ConsumerKeys
 import java.security.SecureRandom
 import java.util.TimeZone
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 事件通道上的虚拟 iAP2 链路（AirPlay 会话之上的「WiFi 隧道」），一条实现服务三种形态：
@@ -51,6 +52,9 @@ class VirtualIap2Link(
     private val parser = Iap2Csm.Parser()
     // T100: diagnostics only; B233 CSM control messages, no raw bodies.
     private val b233NetworkCsmProbe = B233NetworkCsmProbe()
+    /** Process-local link epoch; no vehicle identity and no persistence. */
+    internal val b233EvidenceEpoch: Long =
+        if (isBuickB233) nextB233EvidenceEpoch.incrementAndGet() else 0L
     private var frameCount = 0
     private var eaCount = 0
     private var started = false
@@ -628,11 +632,15 @@ class VirtualIap2Link(
                     Iap2Csm
                         .parseParams(frame.body)
                         .associateBy { it.id }
-                log(
-                    "IAPLINK: 隧道 rx 0x1d01 接收端身份 " +
-                        "name=${params[0]?.value?.decodeToString()?.trimEnd('\u0000')} " +
-                        "model=${params[1]?.value?.decodeToString()?.trimEnd('\u0000')}",
-                )
+                if (isBuickB233) {
+                    log("IAPLINK: 隧道 rx 0x1d01 接收端身份 [redacted]")
+                } else {
+                    log(
+                        "IAPLINK: 隧道 rx 0x1d01 接收端身份 " +
+                            "name=${params[0]?.value?.decodeToString()?.trimEnd('\u0000')} " +
+                            "model=${params[1]?.value?.decodeToString()?.trimEnd('\u0000')}",
+                    )
+                }
                 // 参 6/7 = 车机声明「它会发 / 它可收」的消息清单。媒体键排查就靠这两行：
                 // 若 0x6800/0x6802 不在发送清单里，说明这台车机根本不用 iAP2 HID 送按键，
                 // 不必再在这条通路上耗（改查蓝牙/AVRCP 侧）。
@@ -800,7 +808,7 @@ class VirtualIap2Link(
                     hidDescriptor = descriptor
                     log(
                         "IAPLINK: 车机 0x6800 StartHID 描述符 ${descriptor.size}B hex=" +
-                            descriptor.joinToString(" ") { "%02x".format(it) }.take(120),
+                            B233CsmLogRedaction.payload(isBuickB233, descriptor, 120),
                     )
                 } else {
                     log("IAPLINK: 车机 0x6800 StartHID（无描述符）参数=${params.map { it.id }}")
@@ -828,12 +836,16 @@ class VirtualIap2Link(
                     }
                 if (hidReportFrames < HID_REPORT_VERBOSE_FRAMES) {
                     hidReportFrames++
-                    log(
-                        "IAPLINK: 车机 0x6802 params=" +
-                            params.joinToString(",") { "${it.id}=" + it.value.joinToString("") { b -> "%02x".format(b) } } +
-                            " 报告=" + (report?.joinToString(" ") { "%02x".format(it) } ?: "空") +
-                            " 位图=" + (keyMap?.isArray?.let { if (it) "Array" else "Variable" } ?: "无描述符"),
-                    )
+                    if (isBuickB233) {
+                        log("IAPLINK: 车机 0x6802 paramsCount=${params.size} reportBytes=${report?.size ?: 0} payload=[redacted]")
+                    } else {
+                        log(
+                            "IAPLINK: 车机 0x6802 params=" +
+                                params.joinToString(",") { "${it.id}=" + it.value.joinToString("") { b -> "%02x".format(b) } } +
+                                " 报告=" + (report?.joinToString(" ") { "%02x".format(it) } ?: "空") +
+                                " 位图=" + (keyMap?.isArray?.let { if (it) "Array" else "Variable" } ?: "无描述符"),
+                        )
+                    }
                 }
                 fireHidKeysLocked(usages)
             }
@@ -848,7 +860,7 @@ class VirtualIap2Link(
                     log(
                         "IAPLINK: 未处理的 CSM 0x${frame.messageId.toString(16)} " +
                             "(${Iap2MessageIds.nameOf(frame.messageId)}) ${frame.body.size}B hex=" +
-                            frame.body.joinToString(" ") { "%02x".format(it) },
+                            B233CsmLogRedaction.payload(isBuickB233, frame.body, 160),
                     )
                 }
             }
@@ -962,20 +974,28 @@ class VirtualIap2Link(
                 // A repeated identification may be skipped by authentication,
                 // but the observation must remain visible on the audio clock.
                 b233NetworkCsmProbe.observe(frame.messageId, nowMillis())?.let { evidence ->
+                    // Always emit safe metadata, even BEFORE the audio trace exists.
+                    // Both clocks use System.nanoTime; this link epoch is local
+                    // only and cannot identify a phone or receiver.
+                    runCatching {
+                        log("IAPLINK T101: epoch=$b233EvidenceEpoch monoMs=${evidence.monoMs} " +
+                            "event=${evidence.event} detail=${evidence.detail}")
+                    }
                     runCatching { onB233NetworkCsmEvent?.invoke(evidence) }
                 }
             }
-            val hex = frame.body.joinToString(" ") { "%02x".format(it) }
             if (frameCount <= 30 || frameCount % 100 == 0) {
                 log(
                     "IAPLINK: rx 0x${frame.messageId.toString(16)} " +
-                        "(${Iap2MessageIds.nameOf(frame.messageId)}) ${frame.body.size}B hex=${hex.take(160)}",
+                        "(${Iap2MessageIds.nameOf(frame.messageId)}) ${frame.body.size}B hex=" +
+                        B233CsmLogRedaction.payload(isBuickB233, frame.body, 160),
                 )
             }
             maybeRespondControlCsmLocked(frame)
         }
         if (frames.isEmpty() && frameCount <= 10) {
-            log("IAPLINK: rx ${bytes.size}B（非 CSM）hex=" + bytes.joinToString(" ") { "%02x".format(it) }.take(160))
+            log("IAPLINK: rx ${bytes.size}B（非 CSM）hex=" +
+                B233CsmLogRedaction.payload(isBuickB233, bytes, 160))
         }
     }
 
@@ -998,14 +1018,15 @@ class VirtualIap2Link(
 
     fun handleEaData(bytes: ByteArray) {
         eaCount++
-        val hex = bytes.joinToString(" ") { "%02x".format(it) }
         if (eaCount <= 30 || eaCount % 100 == 0) {
-            log("IAPLINK: EA 数据 #$eaCount ${bytes.size}B hex=${hex.take(200)}")
+            log("IAPLINK: EA 数据 #$eaCount ${bytes.size}B hex=" +
+                B233CsmLogRedaction.payload(isBuickB233, bytes, 200))
         }
         onEaData?.invoke(bytes)
     }
 
     companion object {
+        private val nextB233EvidenceEpoch = AtomicLong(0L)
         /** T23: only B233's optional 0x5001 / 0x4171 notifications are best-effort. */
         internal fun shouldAwaitCsmAck(buickB233: Boolean, messageId: Int): Boolean =
             !buickB233 || (messageId != 0x5001 && messageId != 0x4171)

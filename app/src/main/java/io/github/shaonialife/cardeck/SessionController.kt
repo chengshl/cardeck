@@ -1346,7 +1346,10 @@ object SessionController {
         }
         if (client.currentEndpoint.isBuickB233 && client.audioFailureTrace == null) {
             client.audioFailureTrace = AudioFailureTrace(::appendLog)
-            client.audioFailureTrace?.event("audio_attempt_begin")
+            client.audioFailureTrace?.event(
+                "audio_attempt_begin",
+                "networkEpoch=${client.b233CsmEpochForAudioTrace()}",
+            )
         }
         return try {
             // 车机身份 → 只用于「本车机哪些音频档位踩过雷」的持久化记忆。

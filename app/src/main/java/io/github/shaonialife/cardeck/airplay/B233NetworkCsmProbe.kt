@@ -8,7 +8,7 @@ package io.github.shaonialife.cardeck.airplay
  * An identification repeat is not evidence of a new RTSP session or audio EOF.
  */
 internal class B233NetworkCsmProbe {
-    data class Observation(val event: String, val detail: String)
+    data class Observation(val event: String, val detail: String, val monoMs: Long = -1L)
 
     private var identificationCount = 0
     private var lastIdentificationMs = -1L
@@ -49,6 +49,8 @@ internal class B233NetworkCsmProbe {
         } ?: return null
         if (emitted >= 16) return null
         emitted++
-        return observation
+        // The monotonic instant is recorded at CSM receipt, not at a later
+        // AudioFailureTrace creation/flush. Never use Gateway arrival time.
+        return observation.copy(monoMs = nowMs)
     }
 }
