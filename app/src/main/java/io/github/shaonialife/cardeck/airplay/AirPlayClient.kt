@@ -111,7 +111,7 @@ class AirPlayClient(
      * 计时服务（初始 SETUP 通告端口；车机 NTP ping 它同步媒体时钟）。
      * 懒启动、跨重试常驻（close() 不停它——UDP socket 无会话状态）。
      */
-    private val timingServer = TimingServer(log, vehicleNetwork)
+    private val timingServer = TimingServer(log, vehicleNetwork, useNtp1900Epoch = endpoint.isBuickB233)
 
     /**
      * T73: a PHONE-local reverse RTCP listener, advertised in type=102/media

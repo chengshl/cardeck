@@ -1,0 +1,92 @@
+name: T103 B233 NTP epoch source alignment (offline)
+on:
+  push:
+    branches:
+      - experiment/buick-test-t103-ntp-epoch-alignment
+  pull_request:
+    branches:
+      - experiment/buick-test-t102-modes-reply-evidence
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: b233-t103-ntp-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Exact T102 parent, B233-only NTP epoch and six-file boundary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=f869029037a30a1596d60038c2c6cff99d7e09f4
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/42193449961" --jq .head_sha)" = "$BASE"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/42193449961" --jq .conclusion)" = success
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            .github/workflows/ci-b233-t103-ntp-epoch.yml \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingServer.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/TimingServerTest.kt | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          git diff --check "$BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingServer.kt').read_text()
+          t=Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/TimingServerTest.kt').read_text()
+          air=Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          sender=Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt').read_text()
+          ctrl=Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
+          old=__import__('subprocess').check_output(['git','show','f869029037a30a1596d60038c2c6cff99d7e09f4:app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingServer.kt'],text=True)
+          assert 'val secs = Math.floorDiv(nanos, 1_000_000_000L)' in old
+          assert 'NTP_UNIX_EPOCH_OFFSET_SECONDS' not in old
+          assert '2_208_988_800L' in s
+          assert 'Math.floorDiv(nanos, 1_000_000_000L) +' in s
+          assert '(if (useNtp1900Epoch) NTP_UNIX_EPOCH_OFFSET_SECONDS else 0L)' in s
+          assert s.count('NTP_UNIX_EPOCH_OFFSET_SECONDS') == 2
+          assert 'System.arraycopy(request, 24, response, 8, 8)' in s
+          assert 'val now = ntpFromNanos(nowNanos, useNtp1900Epoch)' in s
+          assert 'val response = buildResponse(request, System.nanoTime(), useNtp1900Epoch)' in s
+          assert 'useNtp1900Epoch: Boolean = false' in s
+          assert 'TimingServer(log, vehicleNetwork, useNtp1900Epoch = endpoint.isBuickB233)' in air
+          assert 'TimingServer.ntpFromNanos(System.nanoTime(), useNtp1900Epoch)' in sender
+          assert 'private val useNtp1900Epoch: Boolean = false' in sender
+          assert 'useNtp1900Epoch = client.currentEndpoint.isBuickB233,' in ctrl
+          assert 'ntpSecondsHaveExplicit1900EpochAndFraction' in t
+          assert 'audioSyncPacketEmbedsExactSameNtpTimeBase' in t
+          assert 'respondsToTimesyncRequestEchoingT3' in t
+          assert 'ntpEncodingRoundTrips' in t
+          assert 'legacyReceiversKeepUnchangedMonotonicNtpBytes' in t
+          assert 'timingResponseAndAudioSyncShareEachReceiversChosenNtpPolicy' in t
+          assert 'val returned = socketSendReturned {' in s
+          assert s.index('s.send(DatagramPacket(') < s.index('log(safeSendOutcomeLine(')
+          assert 'peerDelivery=unknown' in s
+          assert 'hostAddress' not in s and '.message' not in s
+          assert 'TIMING: timesync 应答 #' not in s
+          assert 'socketSendAuditReportsOnlyLocalReturnAndRedactsReceiver' in t
+          assert 'socketSendAuditFirstThreeAndThirtySecondHeartbeatAreBounded' in t
+          print('PASS: 6-file B233-only NTP, legacy wire compatibility, post-send local audit, redacted logs')
+          PY
+      - name: Full Android unit tests lint and debug build, unsigned only
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+# Draft-only L3 hypothesis: no signed APK, Release, E5/Test/main mutation or car test.

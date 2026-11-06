@@ -18,6 +18,8 @@ class TimingServer(
     private val log: (String) -> Unit = {},
     /** T24: B233 CarPlay WiFi route, independent of Android/VPN default. */
     private val vehicleNetwork: android.net.Network? = null,
+    /** T103 is B233-only; other receivers must keep their pre-T103 clock bytes. */
+    private val useNtp1900Epoch: Boolean = false,
 ) {
     private var socket: DatagramSocket? = null
 
@@ -27,6 +29,10 @@ class TimingServer(
     /** 收到的 timesync 请求计数（诊断：车机是否真的来同步媒体时钟）。 */
     private var syncRequests = 0L
     private var lastSyncLogAt = 0L
+
+    /** socket.send() returned normally; this does NOT mean receiver delivery. */
+    private var localSendReturned = 0L
+    private var localSendFailures = 0L
 
     /** 非 timesync 包计数（诊断：有没有别的 UDP 报文打到这个端口）。 */
     private var unexpected = 0L
@@ -39,8 +45,8 @@ class TimingServer(
             val s = DatagramSocket()
             vehicleNetwork?.let { network ->
                 runCatching { network.bindSocket(s) }
-                    .onSuccess { log("TIMING T24: UDP socket 指定车机 WiFi Network=$network") }
-                    .onFailure { log("TIMING T24: 无法固定 UDP 到车机 WiFi - ${it.message}") }
+                    .onSuccess { log("TIMING T24: UDP 车机WiFi绑定=success") }
+                    .onFailure { log("TIMING T24: UDP 车机WiFi绑定=failed") }
             }
             s.reuseAddress = true
             socket = s
@@ -51,7 +57,7 @@ class TimingServer(
             }
             true
         } catch (error: Exception) {
-            log("TIMING: 启动失败 - ${error.message}")
+            log("TIMING: 启动失败（socket_init_exception）")
             false
         }
     }
@@ -72,7 +78,7 @@ class TimingServer(
                 return // socket closed
             }
             val request = buffer.copyOfRange(0, packet.length)
-            val response = buildResponse(request, System.nanoTime())
+            val response = buildResponse(request, System.nanoTime(), useNtp1900Epoch)
             if (response == null) {
                 unexpected++
                 if (unexpected <= 5) {
@@ -81,14 +87,16 @@ class TimingServer(
                 continue
             }
             syncRequests++
-            val now = System.currentTimeMillis()
-            if (syncRequests <= 3 || now - lastSyncLogAt >= 30_000L) {
-                lastSyncLogAt = now
-                log("TIMING: timesync 应答 #$syncRequests → ${packet.address.hostAddress}:${packet.port}")
-            }
-            try {
+            // B233 evidence: audit AFTER the local socket send attempt.
+            // A normal return is NOT proof that the head unit received/accepted it.
+            val returned = socketSendReturned {
                 s.send(DatagramPacket(response, response.size, packet.address, packet.port))
-            } catch (_: Exception) {
+            }
+            if (returned) localSendReturned++ else localSendFailures++
+            val now = System.currentTimeMillis()
+            if (shouldLogSendOutcome(returned, localSendReturned, localSendFailures, now, lastSyncLogAt)) {
+                lastSyncLogAt = now
+                log(safeSendOutcomeLine(syncRequests, localSendReturned, localSendFailures, returned, useNtp1900Epoch))
             }
         }
     }
@@ -97,6 +105,49 @@ class TimingServer(
         private const val PT_TIMESYNC_REQUEST: Byte = 0xD2.toByte()
         private const val PT_TIMESYNC_RESPONSE: Byte = 0xD3.toByte()
         private const val PACKET_BYTES = 32
+        /**
+         * NTP epoch begins in 1900. A monotonic nano clock alone starts at an
+         * arbitrary boot origin; the matching modern CarPlay timing reference
+         * adds the 1900→1970 epoch offset before serializing NTP seconds.
+         * CarDeck uses Android boot-monotonic time; catplay uses elapsed time
+         * since its media clock initialized, so this does NOT produce bytewise
+         * identical timestamps. It is an unverified B233-only experiment.
+         */
+        internal const val NTP_UNIX_EPOCH_OFFSET_SECONDS = 2_208_988_800L
+
+        /** Mirrors the former catch-and-continue behavior, but exposes the send result. */
+        internal fun socketSendReturned(send: () -> Unit): Boolean =
+            try {
+                send()
+                true
+            } catch (_: Exception) {
+                false
+            }
+
+        /** Bounded first successes/failures, then at most one audit per 30 seconds. */
+        internal fun shouldLogSendOutcome(
+            returned: Boolean,
+            successes: Long,
+            failures: Long,
+            nowMs: Long,
+            lastLogMs: Long,
+        ): Boolean =
+            (returned && successes <= 3L) ||
+                (!returned && failures <= 3L) ||
+                nowMs - lastLogMs >= 30_000L
+
+        /** No peer address/port, exception message or NTP payload may reach logs. */
+        internal fun safeSendOutcomeLine(
+            requests: Long,
+            successes: Long,
+            failures: Long,
+            returned: Boolean,
+            ntp1900: Boolean,
+        ): String =
+            "TIMING T103: requests=$requests socketSendReturned=$successes " +
+                "socketSendFailed=$failures lastSocketSend=${if (returned) "returned" else "exception"} " +
+                "ntpEpoch=${if (ntp1900) "1900" else "legacy"} peerDelivery=unknown"
+
 
         /**
          * 构造 timesync 应答；非 timesync 请求返回 null。
@@ -105,6 +156,7 @@ class TimingServer(
         fun buildResponse(
             request: ByteArray,
             nowNanos: Long,
+            useNtp1900Epoch: Boolean = false,
         ): ByteArray? {
             if (request.size < PACKET_BYTES) return null
             val version = (request[0].toInt() and 0xFF) shr 6
@@ -120,15 +172,19 @@ class TimingServer(
             response[3] = (PACKET_BYTES / 4 - 1).toByte()
             // rtp_ts(4..8) = 0
             System.arraycopy(request, 24, response, 8, 8) // t1 = 请求的 t3（ntp_xmit 回显）
-            val now = ntpFromNanos(nowNanos)
+            val now = ntpFromNanos(nowNanos, useNtp1900Epoch)
             System.arraycopy(now, 0, response, 16, 8) // t2 = 接收时刻
             System.arraycopy(now, 0, response, 24, 8) // t3 = 发送时刻
             return response
         }
 
-        /** 单调纳秒 → NTP 64 位（秒<<32 | (纳秒分数 * 2^32 / 1e9)），大端 8 字节。 */
-        fun ntpFromNanos(nanos: Long): ByteArray {
-            val secs = Math.floorDiv(nanos, 1_000_000_000L)
+        /**
+         * T103 仅 B233 的秒域加入 NTP1900 纪元偏移；其他接收端保持旧字节。
+         * TimingServer 与音频同步包必须对同一会话采用相同开关。
+         */
+        fun ntpFromNanos(nanos: Long, useNtp1900Epoch: Boolean = false): ByteArray {
+            val secs = Math.floorDiv(nanos, 1_000_000_000L) +
+                (if (useNtp1900Epoch) NTP_UNIX_EPOCH_OFFSET_SECONDS else 0L)
             val fracNanos = Math.floorMod(nanos, 1_000_000_000L)
             val frac = (fracNanos.toLong() shl 32) / 1_000_000_000L
             val packed = (secs shl 32) or (frac and 0xFFFF_FFFFL)
