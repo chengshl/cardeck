@@ -18,6 +18,8 @@ class TimingServer(
     private val log: (String) -> Unit = {},
     /** T24: B233 CarPlay WiFi route, independent of Android/VPN default. */
     private val vehicleNetwork: android.net.Network? = null,
+    /** T103 is B233-only; other receivers must keep their pre-T103 clock bytes. */
+    private val useNtp1900Epoch: Boolean = false,
 ) {
     private var socket: DatagramSocket? = null
 
@@ -72,7 +74,7 @@ class TimingServer(
                 return // socket closed
             }
             val request = buffer.copyOfRange(0, packet.length)
-            val response = buildResponse(request, System.nanoTime())
+            val response = buildResponse(request, System.nanoTime(), useNtp1900Epoch)
             if (response == null) {
                 unexpected++
                 if (unexpected <= 5) {
@@ -101,9 +103,9 @@ class TimingServer(
          * NTP epoch begins in 1900. A monotonic nano clock alone starts at an
          * arbitrary boot origin; the matching modern CarPlay timing reference
          * adds the 1900→1970 epoch offset before serializing NTP seconds.
-         *
-         * This is an isolated protocol-alignment hypothesis, NOT proof that
-         * missing offset causes B233's 20-second RTSP EOF.
+         * CarDeck uses Android boot-monotonic time; catplay uses elapsed time
+         * since its media clock initialized, so this does NOT produce bytewise
+         * identical timestamps. It is an unverified B233-only experiment.
          */
         internal const val NTP_UNIX_EPOCH_OFFSET_SECONDS = 2_208_988_800L
 
@@ -114,6 +116,7 @@ class TimingServer(
         fun buildResponse(
             request: ByteArray,
             nowNanos: Long,
+            useNtp1900Epoch: Boolean = false,
         ): ByteArray? {
             if (request.size < PACKET_BYTES) return null
             val version = (request[0].toInt() and 0xFF) shr 6
@@ -129,19 +132,19 @@ class TimingServer(
             response[3] = (PACKET_BYTES / 4 - 1).toByte()
             // rtp_ts(4..8) = 0
             System.arraycopy(request, 24, response, 8, 8) // t1 = 请求的 t3（ntp_xmit 回显）
-            val now = ntpFromNanos(nowNanos)
+            val now = ntpFromNanos(nowNanos, useNtp1900Epoch)
             System.arraycopy(now, 0, response, 16, 8) // t2 = 接收时刻
             System.arraycopy(now, 0, response, 24, 8) // t3 = 发送时刻
             return response
         }
 
         /**
-         * 单调纳秒 → NTP 64 位；秒域使用 1900 纪元，纳秒分数仍为32位定点。
-         * 只改变 NTP 字节编码：计时服务回包和 AudioSyncPacket 共用此函数，
-         * 保证同一时基，不改请求回显、RTP采样时钟或任何传输顺序。
+         * T103 仅 B233 的秒域加入 NTP1900 纪元偏移；其他接收端保持旧字节。
+         * TimingServer 与音频同步包必须对同一会话采用相同开关。
          */
-        fun ntpFromNanos(nanos: Long): ByteArray {
-            val secs = Math.floorDiv(nanos, 1_000_000_000L) + NTP_UNIX_EPOCH_OFFSET_SECONDS
+        fun ntpFromNanos(nanos: Long, useNtp1900Epoch: Boolean = false): ByteArray {
+            val secs = Math.floorDiv(nanos, 1_000_000_000L) +
+                (if (useNtp1900Epoch) NTP_UNIX_EPOCH_OFFSET_SECONDS else 0L)
             val fracNanos = Math.floorMod(nanos, 1_000_000_000L)
             val frac = (fracNanos.toLong() shl 32) / 1_000_000_000L
             val packed = (secs shl 32) or (frac and 0xFFFF_FFFFL)
