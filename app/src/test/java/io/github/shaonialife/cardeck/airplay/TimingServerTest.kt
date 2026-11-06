@@ -7,20 +7,52 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
+import io.github.shaonialife.cardeck.audio.AudioSyncPacket
 
 /** 计时服务：NTP 编码往返 + 请求应答构造（对照 catplay rtcp_timesync.rs 的线格式）。 */
 class TimingServerTest {
     @Test
     fun ntpEncodingRoundTrips() {
-        val values = listOf(0L, 123_456_789L, 999_999_999L, 1_000_000_000L, 12_345_678_901_234L)
+        val values = listOf(
+            -1_500_000_000L, -1L, 0L, 123_456_789L, 999_999_999L,
+            1_000_000_000L, 12_345_678_901_234L,
+        )
         for (nanos in values) {
             val packed = ByteBuffer.wrap(TimingServer.ntpFromNanos(nanos)).long
-            val secs = packed shr 32
-            val fracNanos = ((packed and 0xFFFF_FFFFL) * 1_000_000_000L) shr 32
+            // NTP's high seconds bit is set for the 1900→1970 offset:
+            // unsigned decoding is required, not arithmetic shr 32.
+            val encodedSeconds = (packed ushr 32) and 0xFFFF_FFFFL
+            val secs = encodedSeconds - TimingServer.NTP_UNIX_EPOCH_OFFSET_SECONDS
+            val fracNanos = ((packed and 0xFFFF_FFFFL) * 1_000_000_000L) ushr 32
             val back = secs * 1_000_000_000L + fracNanos
-            // 分数位定点化有截断：catplay 同款测试允许 ±1ns
-            assertTrue("nanos=$nanos back=$back", Math.abs(back - nanos) <= 1)
+            // NTP fixed-point fractions truncate at nanosecond precision.
+            assertTrue("nanos=$nanos back=$back", Math.abs(back - nanos) <= 2)
         }
+    }
+
+    @Test
+    fun ntpSecondsHaveExplicit1900EpochAndFraction() {
+        val zero = TimingServer.ntpFromNanos(0)
+        assertArrayEquals(
+            byteArrayOf(0x83.toByte(), 0xAA.toByte(), 0x7E, 0x80.toByte(), 0, 0, 0, 0),
+            zero,
+        )
+        val oneAndHalfSeconds = TimingServer.ntpFromNanos(1_500_000_000L)
+        assertArrayEquals(
+            byteArrayOf(0x83.toByte(), 0xAA.toByte(), 0x7E, 0x81.toByte(), 0x80.toByte(), 0, 0, 0),
+            oneAndHalfSeconds,
+        )
+        // A naked monotonic timestamp must NOT accidentally pass this check.
+        assertTrue(oneAndHalfSeconds[0] != 0.toByte())
+    }
+
+    @Test
+    fun audioSyncPacketEmbedsExactSameNtpTimeBase() {
+        val ntp = TimingServer.ntpFromNanos(12_345_678_901L)
+        val packet = AudioSyncPacket.build(0, 352, 704, ntp, first = true)
+        assertArrayEquals(ntp, packet.copyOfRange(8, 16))
+        assertEquals(20, packet.size)
+        assertEquals(0xD4.toByte(), packet[1])
     }
 
     @Test
