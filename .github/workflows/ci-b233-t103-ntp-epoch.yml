@@ -27,7 +27,7 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Exact T102 parent, byte-level NTP offset and three-file boundary
+      - name: Exact T102 parent, B233-only NTP epoch and six-file boundary
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -41,6 +41,9 @@ jobs:
           printf '%s\n' \
             .github/workflows/ci-b233-t103-ntp-epoch.yml \
             app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingServer.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt \
             app/src/test/java/io/github/shaonialife/cardeck/airplay/TimingServerTest.kt | sort > /tmp/expected
           diff -u /tmp/expected /tmp/actual
           git diff --check "$BASE" HEAD
@@ -48,19 +51,31 @@ jobs:
           from pathlib import Path
           s=Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingServer.kt').read_text()
           t=Path('app/src/test/java/io/github/shaonialife/cardeck/airplay/TimingServerTest.kt').read_text()
+          air=Path('app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt').read_text()
+          sender=Path('app/src/main/java/io/github/shaonialife/cardeck/audio/AudioSender.kt').read_text()
+          ctrl=Path('app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt').read_text()
           old=__import__('subprocess').check_output(['git','show','f869029037a30a1596d60038c2c6cff99d7e09f4:app/src/main/java/io/github/shaonialife/cardeck/airplay/TimingServer.kt'],text=True)
           assert 'val secs = Math.floorDiv(nanos, 1_000_000_000L)' in old
           assert 'NTP_UNIX_EPOCH_OFFSET_SECONDS' not in old
           assert '2_208_988_800L' in s
-          assert 'Math.floorDiv(nanos, 1_000_000_000L) + NTP_UNIX_EPOCH_OFFSET_SECONDS' in s
+          assert 'Math.floorDiv(nanos, 1_000_000_000L) +' in s
+          assert '(if (useNtp1900Epoch) NTP_UNIX_EPOCH_OFFSET_SECONDS else 0L)' in s
           assert s.count('NTP_UNIX_EPOCH_OFFSET_SECONDS') == 2
           assert 'System.arraycopy(request, 24, response, 8, 8)' in s
-          assert 'val now = ntpFromNanos(nowNanos)' in s
+          assert 'val now = ntpFromNanos(nowNanos, useNtp1900Epoch)' in s
+          assert 'val response = buildResponse(request, System.nanoTime(), useNtp1900Epoch)' in s
+          assert 'useNtp1900Epoch: Boolean = false' in s
+          assert 'TimingServer(log, vehicleNetwork, useNtp1900Epoch = endpoint.isBuickB233)' in air
+          assert 'TimingServer.ntpFromNanos(System.nanoTime(), useNtp1900Epoch)' in sender
+          assert 'private val useNtp1900Epoch: Boolean = false' in sender
+          assert 'useNtp1900Epoch = client.currentEndpoint.isBuickB233,' in ctrl
           assert 'ntpSecondsHaveExplicit1900EpochAndFraction' in t
           assert 'audioSyncPacketEmbedsExactSameNtpTimeBase' in t
           assert 'respondsToTimesyncRequestEchoingT3' in t
           assert 'ntpEncodingRoundTrips' in t
-          print('PASS: NTP1900 wire field delta and old direct-monotonic negative control')
+          assert 'legacyReceiversKeepUnchangedMonotonicNtpBytes' in t
+          assert 'timingResponseAndAudioSyncShareEachReceiversChosenNtpPolicy' in t
+          print('PASS: source-confirmed T102 parent, strict six-file scope, B233-only NTP1900 and legacy unchanged')
           PY
       - name: Full Android unit tests lint and debug build, unsigned only
         run: |
