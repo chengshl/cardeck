@@ -18,7 +18,7 @@ class TimingServerTest {
             1_000_000_000L, 12_345_678_901_234L,
         )
         for (nanos in values) {
-            val packed = ByteBuffer.wrap(TimingServer.ntpFromNanos(nanos)).long
+            val packed = ByteBuffer.wrap(TimingServer.ntpFromNanos(nanos, useNtp1900Epoch = true)).long
             // NTP's high seconds bit is set for the 1900→1970 offset:
             // unsigned decoding is required, not arithmetic shr 32.
             val encodedSeconds = (packed ushr 32) and 0xFFFF_FFFFL
@@ -32,12 +32,12 @@ class TimingServerTest {
 
     @Test
     fun ntpSecondsHaveExplicit1900EpochAndFraction() {
-        val zero = TimingServer.ntpFromNanos(0)
+        val zero = TimingServer.ntpFromNanos(0, useNtp1900Epoch = true)
         assertArrayEquals(
             byteArrayOf(0x83.toByte(), 0xAA.toByte(), 0x7E, 0x80.toByte(), 0, 0, 0, 0),
             zero,
         )
-        val oneAndHalfSeconds = TimingServer.ntpFromNanos(1_500_000_000L)
+        val oneAndHalfSeconds = TimingServer.ntpFromNanos(1_500_000_000L, useNtp1900Epoch = true)
         assertArrayEquals(
             byteArrayOf(0x83.toByte(), 0xAA.toByte(), 0x7E, 0x81.toByte(), 0x80.toByte(), 0, 0, 0),
             oneAndHalfSeconds,
@@ -48,7 +48,7 @@ class TimingServerTest {
 
     @Test
     fun audioSyncPacketEmbedsExactSameNtpTimeBase() {
-        val ntp = TimingServer.ntpFromNanos(12_345_678_901L)
+        val ntp = TimingServer.ntpFromNanos(12_345_678_901L, useNtp1900Epoch = true)
         val packet = AudioSyncPacket.build(0, 352, 704, ntp, first = true)
         assertArrayEquals(ntp, packet.copyOfRange(8, 16))
         assertEquals(20, packet.size)
@@ -68,7 +68,7 @@ class TimingServerTest {
             request[24 + index] = (packed ushr (8 * (7 - index))).toByte()
         }
 
-        val response = TimingServer.buildResponse(request, nowNanos = 5_000_000_000L)
+        val response = TimingServer.buildResponse(request, nowNanos = 5_000_000_000L, useNtp1900Epoch = true)
         assertNotNull(response)
         response!!
         assertEquals(32, response.size)
@@ -78,9 +78,44 @@ class TimingServerTest {
         // t1 = 回显请求的 t3
         assertArrayEquals(request.copyOfRange(24, 32), response.copyOfRange(8, 16))
         // t2 = t3 = 本地 5s 的 NTP 编码
-        val expected = TimingServer.ntpFromNanos(5_000_000_000L)
+        val expected = TimingServer.ntpFromNanos(5_000_000_000L, useNtp1900Epoch = true)
         assertArrayEquals(expected, response.copyOfRange(16, 24))
         assertArrayEquals(expected, response.copyOfRange(24, 32))
+    }
+
+    @Test
+    fun legacyReceiversKeepUnchangedMonotonicNtpBytes() {
+        val oldZero = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0)
+        assertArrayEquals(oldZero, TimingServer.ntpFromNanos(0))
+        assertArrayEquals(
+            byteArrayOf(0, 0, 0, 1, 0x80.toByte(), 0, 0, 0),
+            TimingServer.ntpFromNanos(1_500_000_000L),
+        )
+        assertArrayEquals(
+            oldZero,
+            TimingServer.ntpFromNanos(0, useNtp1900Epoch = false),
+        )
+        // T103 B233 opt-in must change the same input wire bytes.
+        assertTrue(!TimingServer.ntpFromNanos(0, useNtp1900Epoch = true)
+            .contentEquals(TimingServer.ntpFromNanos(0)))
+    }
+
+    @Test
+    fun timingResponseAndAudioSyncShareEachReceiversChosenNtpPolicy() {
+        val request = ByteArray(32).apply {
+            this[0] = (2 shl 6).toByte()
+            this[1] = 0xD2.toByte()
+            this[3] = 7
+        }
+        for (b233 in listOf(false, true)) {
+            val encoded = TimingServer.ntpFromNanos(2_500_000_000L, useNtp1900Epoch = b233)
+            val timing = TimingServer.buildResponse(request, 2_500_000_000L, useNtp1900Epoch = b233)!!
+            val sync = AudioSyncPacket.build(1, 352, 704, encoded, first = true)
+            assertArrayEquals(encoded, timing.copyOfRange(16, 24))
+            assertArrayEquals(encoded, timing.copyOfRange(24, 32))
+            assertArrayEquals(encoded, sync.copyOfRange(8, 16))
+            assertArrayEquals(request.copyOfRange(24, 32), timing.copyOfRange(8, 16))
+        }
     }
 
     @Test
