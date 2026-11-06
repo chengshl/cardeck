@@ -12,19 +12,19 @@ internal object B233ModesReplyEvidence {
 
     fun summarize(body: ByteArray): String {
         val prefix = "bodyBytes=${body.size}"
-        if (body.isEmpty()) return "$" + "{prefix} format=empty ownership=unverified"
-        if (body.size > MAX_BODY_BYTES) return "$" + "{prefix} format=oversize ownership=unverified"
+        if (body.isEmpty()) return "${prefix} format=empty ownership=unverified"
+        if (body.size > MAX_BODY_BYTES) return "${prefix} format=oversize ownership=unverified"
         if (body.size < BPLIST_MAGIC.size ||
             !body.copyOfRange(0, BPLIST_MAGIC.size).contentEquals(BPLIST_MAGIC)
-        ) return "$" + "{prefix} format=non_bplist ownership=unverified"
+        ) return "${prefix} format=non_bplist ownership=unverified"
 
         val decoded = try {
             BinaryPlist.parseRecovered(body).value
         } catch (_: Exception) {
-            return "$" + "{prefix} format=bplist_invalid ownership=unverified"
+            return "${prefix} format=bplist_invalid ownership=unverified"
         }
         val root = decoded as? Map<*, *>
-            ?: return "$" + "{prefix} format=bplist_non_map ownership=unverified"
+            ?: return "${prefix} format=bplist_non_map ownership=unverified"
         val params = root["params"] as? Map<*, *> ?: root
         val resources = params["resources"] as? List<*>
         val status = (params["status"] ?: root["status"]) as? Number
@@ -40,6 +40,6 @@ internal object B233ModesReplyEvidence {
             }
         }?.distinct()?.joinToString(",")?.ifEmpty { "none" } ?: "absent"
         // Even an apparent resourceID=2 is only a parsed field, not a grant.
-        return "$" + "{prefix} format=bplist_map resources=$" + "{count} resourceIds=$" + "{ids} statusNumber=$" + "{statusTag} ownership=unverified"
+        return "${prefix} format=bplist_map resources=${count} resourceIds=${ids} statusNumber=${statusTag} ownership=unverified"
     }
 }
