@@ -97,6 +97,15 @@ class TimingServer(
         private const val PT_TIMESYNC_REQUEST: Byte = 0xD2.toByte()
         private const val PT_TIMESYNC_RESPONSE: Byte = 0xD3.toByte()
         private const val PACKET_BYTES = 32
+        /**
+         * NTP epoch begins in 1900. A monotonic nano clock alone starts at an
+         * arbitrary boot origin; the matching modern CarPlay timing reference
+         * adds the 1900→1970 epoch offset before serializing NTP seconds.
+         *
+         * This is an isolated protocol-alignment hypothesis, NOT proof that
+         * missing offset causes B233's 20-second RTSP EOF.
+         */
+        internal const val NTP_UNIX_EPOCH_OFFSET_SECONDS = 2_208_988_800L
 
         /**
          * 构造 timesync 应答；非 timesync 请求返回 null。
@@ -126,9 +135,13 @@ class TimingServer(
             return response
         }
 
-        /** 单调纳秒 → NTP 64 位（秒<<32 | (纳秒分数 * 2^32 / 1e9)），大端 8 字节。 */
+        /**
+         * 单调纳秒 → NTP 64 位；秒域使用 1900 纪元，纳秒分数仍为32位定点。
+         * 只改变 NTP 字节编码：计时服务回包和 AudioSyncPacket 共用此函数，
+         * 保证同一时基，不改请求回显、RTP采样时钟或任何传输顺序。
+         */
         fun ntpFromNanos(nanos: Long): ByteArray {
-            val secs = Math.floorDiv(nanos, 1_000_000_000L)
+            val secs = Math.floorDiv(nanos, 1_000_000_000L) + NTP_UNIX_EPOCH_OFFSET_SECONDS
             val fracNanos = Math.floorMod(nanos, 1_000_000_000L)
             val frac = (fracNanos.toLong() shl 32) / 1_000_000_000L
             val packed = (secs shl 32) or (frac and 0xFFFF_FFFFL)
