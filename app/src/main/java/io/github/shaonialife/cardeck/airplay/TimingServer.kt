@@ -30,6 +30,10 @@ class TimingServer(
     private var syncRequests = 0L
     private var lastSyncLogAt = 0L
 
+    /** socket.send() returned normally; this does NOT mean receiver delivery. */
+    private var localSendReturned = 0L
+    private var localSendFailures = 0L
+
     /** 非 timesync 包计数（诊断：有没有别的 UDP 报文打到这个端口）。 */
     private var unexpected = 0L
 
@@ -41,8 +45,8 @@ class TimingServer(
             val s = DatagramSocket()
             vehicleNetwork?.let { network ->
                 runCatching { network.bindSocket(s) }
-                    .onSuccess { log("TIMING T24: UDP socket 指定车机 WiFi Network=$network") }
-                    .onFailure { log("TIMING T24: 无法固定 UDP 到车机 WiFi - ${it.message}") }
+                    .onSuccess { log("TIMING T24: UDP 车机WiFi绑定=success") }
+                    .onFailure { log("TIMING T24: UDP 车机WiFi绑定=failed") }
             }
             s.reuseAddress = true
             socket = s
@@ -53,7 +57,7 @@ class TimingServer(
             }
             true
         } catch (error: Exception) {
-            log("TIMING: 启动失败 - ${error.message}")
+            log("TIMING: 启动失败（socket_init_exception）")
             false
         }
     }
@@ -83,14 +87,16 @@ class TimingServer(
                 continue
             }
             syncRequests++
-            val now = System.currentTimeMillis()
-            if (syncRequests <= 3 || now - lastSyncLogAt >= 30_000L) {
-                lastSyncLogAt = now
-                log("TIMING: timesync 应答 #$syncRequests → ${packet.address.hostAddress}:${packet.port}")
-            }
-            try {
+            // B233 evidence: audit AFTER the local socket send attempt.
+            // A normal return is NOT proof that the head unit received/accepted it.
+            val returned = socketSendReturned {
                 s.send(DatagramPacket(response, response.size, packet.address, packet.port))
-            } catch (_: Exception) {
+            }
+            if (returned) localSendReturned++ else localSendFailures++
+            val now = System.currentTimeMillis()
+            if (shouldLogSendOutcome(returned, localSendReturned, localSendFailures, now, lastSyncLogAt)) {
+                lastSyncLogAt = now
+                log(safeSendOutcomeLine(syncRequests, localSendReturned, localSendFailures, returned, useNtp1900Epoch))
             }
         }
     }
@@ -108,6 +114,40 @@ class TimingServer(
          * identical timestamps. It is an unverified B233-only experiment.
          */
         internal const val NTP_UNIX_EPOCH_OFFSET_SECONDS = 2_208_988_800L
+
+        /** Mirrors the former catch-and-continue behavior, but exposes the send result. */
+        internal fun socketSendReturned(send: () -> Unit): Boolean =
+            try {
+                send()
+                true
+            } catch (_: Exception) {
+                false
+            }
+
+        /** Bounded first successes/failures, then at most one audit per 30 seconds. */
+        internal fun shouldLogSendOutcome(
+            returned: Boolean,
+            successes: Long,
+            failures: Long,
+            nowMs: Long,
+            lastLogMs: Long,
+        ): Boolean =
+            (returned && successes <= 3L) ||
+                (!returned && failures <= 3L) ||
+                nowMs - lastLogMs >= 30_000L
+
+        /** No peer address/port, exception message or NTP payload may reach logs. */
+        internal fun safeSendOutcomeLine(
+            requests: Long,
+            successes: Long,
+            failures: Long,
+            returned: Boolean,
+            ntp1900: Boolean,
+        ): String =
+            "TIMING T103: requests=$requests socketSendReturned=$successes " +
+                "socketSendFailed=$failures lastSocketSend=${if (returned) "returned" else "exception"} " +
+                "ntpEpoch=${if (ntp1900) "1900" else "legacy"} peerDelivery=unknown"
+
 
         /**
          * 构造 timesync 应答；非 timesync 请求返回 null。
