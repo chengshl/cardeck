@@ -47,6 +47,12 @@ jobs:
             app/src/main/java/io/github/shaonialife/cardeck/airplay/VirtualIap2Link.kt \
             app/src/test/java/io/github/shaonialife/cardeck/airplay/B233CsmLogRedactionTest.kt \
             app/src/test/java/io/github/shaonialife/cardeck/airplay/B233NetworkCsmProbeTest.kt | sort > /tmp/expected
+          # Allow exactly one independent publisher only after the same
+          # application source has passed this restricted offline CI.
+          if test -f .github/workflows/publish-t101-csm-epoch.yml; then
+            echo .github/workflows/publish-t101-csm-epoch.yml >> /tmp/expected
+            sort -o /tmp/expected /tmp/expected
+          fi
           diff -u /tmp/expected /tmp/actual
           git diff --check "$BASE" HEAD
           python3 - <<'PY'
