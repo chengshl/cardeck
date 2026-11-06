@@ -2,6 +2,7 @@ package io.github.shaonialife.cardeck.airplay
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -118,6 +119,43 @@ class TimingServerTest {
         }
     }
 
+    @Test
+    fun socketSendAuditReportsOnlyLocalReturnAndRedactsReceiver() {
+        var attempts = 0
+        assertTrue(TimingServer.socketSendReturned { attempts++ })
+        assertFalse(TimingServer.socketSendReturned {
+            attempts++
+            throw java.net.SocketException("private-address-should-never-be-logged")
+        })
+        assertEquals(2, attempts)
+
+        val ok = TimingServer.safeSendOutcomeLine(1, 1, 0, returned = true, ntp1900 = true)
+        assertTrue(ok.contains("socketSendReturned=1"))
+        assertTrue(ok.contains("lastSocketSend=returned"))
+        assertTrue(ok.contains("ntpEpoch=1900"))
+        assertTrue(ok.contains("peerDelivery=unknown"))
+        val failed = TimingServer.safeSendOutcomeLine(2, 1, 1, returned = false, ntp1900 = false)
+        assertTrue(failed.contains("socketSendFailed=1"))
+        assertTrue(failed.contains("lastSocketSend=exception"))
+        assertTrue(failed.contains("ntpEpoch=legacy"))
+        assertTrue(failed.contains("peerDelivery=unknown"))
+        for (msg in listOf(ok, failed)) {
+            assertFalse(msg.contains("private-address"))
+            assertFalse(msg.contains("192.168."))
+            assertFalse(msg.contains("hostAddress"))
+        }
+    }
+
+    @Test
+    fun socketSendAuditFirstThreeAndThirtySecondHeartbeatAreBounded() {
+        assertTrue(TimingServer.shouldLogSendOutcome(true, 1, 0, 100, 100))
+        assertTrue(TimingServer.shouldLogSendOutcome(true, 3, 0, 200, 100))
+        assertFalse(TimingServer.shouldLogSendOutcome(true, 4, 0, 400, 100))
+        assertTrue(TimingServer.shouldLogSendOutcome(false, 4, 1, 400, 100))
+        assertTrue(TimingServer.shouldLogSendOutcome(false, 4, 3, 500, 100))
+        assertFalse(TimingServer.shouldLogSendOutcome(false, 4, 4, 600, 100))
+        assertTrue(TimingServer.shouldLogSendOutcome(false, 4, 4, 30_100, 100))
+    }
     @Test
     fun rejectsNonTimesyncPackets() {
         assertNull(TimingServer.buildResponse(ByteArray(8), 0))
