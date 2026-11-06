@@ -75,7 +75,14 @@ jobs:
           assert 'ntpEncodingRoundTrips' in t
           assert 'legacyReceiversKeepUnchangedMonotonicNtpBytes' in t
           assert 'timingResponseAndAudioSyncShareEachReceiversChosenNtpPolicy' in t
-          print('PASS: source-confirmed T102 parent, strict six-file scope, B233-only NTP1900 and legacy unchanged')
+          assert 'val returned = socketSendReturned {' in s
+          assert s.index('s.send(DatagramPacket(') < s.index('log(safeSendOutcomeLine(')
+          assert 'peerDelivery=unknown' in s
+          assert 'hostAddress' not in s and '.message' not in s
+          assert 'TIMING: timesync 应答 #' not in s
+          assert 'socketSendAuditReportsOnlyLocalReturnAndRedactsReceiver' in t
+          assert 'socketSendAuditFirstThreeAndThirtySecondHeartbeatAreBounded' in t
+          print('PASS: 6-file B233-only NTP, legacy wire compatibility, post-send local audit, redacted logs')
           PY
       - name: Full Android unit tests lint and debug build, unsigned only
         run: |
