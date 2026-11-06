@@ -63,6 +63,8 @@ class AudioSender(
     private val controlPort: Int = 0,
     /** T71 B233 type=102: remote controlPort is reported but no classic 0xD4 is sent. */
     private val sendLegacyAudioSyncPackets: Boolean = true,
+    /** T103: opt-in B233 NTP1900 epoch; must match its TimingServer setting. */
+    private val useNtp1900Epoch: Boolean = false,
     /** B233 only: do not send RTCP before the late-joined audio RECORD succeeds. */
     private val deferSyncUntilRecord: Boolean = false,
     /** B233 only: detect rejected audio control endpoint and leave the video session alive. */
@@ -486,7 +488,7 @@ class AudioSender(
                             }
                             val next = timestamp
                             val current = (next - samplesPerPacket).coerceAtLeast(0L)
-                            val ntp = TimingServer.ntpFromNanos(System.nanoTime())
+                            val ntp = TimingServer.ntpFromNanos(System.nanoTime(), useNtp1900Epoch)
                             val packet = AudioSyncPacket.build(syncSequence, current, next, ntp, first)
                             client.send(DatagramPacket(packet, packet.size))
                             syncSequence = (syncSequence + 1) and 0xFFFF
