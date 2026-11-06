@@ -157,7 +157,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/t100-signed-source"
           gh release download exp-buick-test-t100-20261105231111 --repo "$GITHUB_REPOSITORY" --pattern 'CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk*' --dir "$RUNNER_TEMP/t100-signed-source"
           (cd "$RUNNER_TEMP/t100-signed-source" && sha256sum -c CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk.sha256)
-          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/exp-buick-test-t100-20261105231111" --jq .target_commitish)" = "$BASE"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/exp-buick-test-t100-20261105231111" --jq .target_commitish)" = dcd51db102c6806ac3e51b585b5bad1374c19cba
           test -s "$RUNNER_TEMP/t100-signed-source/CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk"
           "$sign" verify --verbose --print-certs "$RUNNER_TEMP/t100-signed-source/CarDeck-Buick-Test-T100-NETWORK-AUDIO.apk" > "$RUNNER_TEMP/t100-base-cert.txt"
           current="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t101-cert.txt" | head -n1)"
@@ -175,7 +175,7 @@ jobs:
             cd "$RUNNER_TEMP/t101-recovery-worktree"
             chmod +x gradlew
             export CARDECK_BUILD_VERSION_CODE="$T101_RECOVERY_VERSION_CODE"
-            export CARDECK_RELEASE_VERSION_NAME="$CARDECK_RELEASE_VERSION_NAME-R94"
+            export CARDECK_RELEASE_VERSION_NAME="$CARDECK_RELEASE_VERSION_NAME-R100"
             ./gradlew :app:assembleRelease --stacktrace
           )
           test -s "$RUNNER_TEMP/t101-recovery-worktree/app/build/outputs/apk/release/app-release.apk"
@@ -183,7 +183,7 @@ jobs:
           sha256sum CarDeck-Buick-Test-T101-Recovery-T100.apk > CarDeck-Buick-Test-T101-Recovery-T100.apk.sha256
           aapt="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
           sign="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n1)"
-          "$aapt" dump badging CarDeck-Buick-Test-T101-Recovery-T100.apk | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$T101_RECOVERY_VERSION_CODE'"
+          "$aapt" dump badging CarDeck-Buick-Test-T101-Recovery-T100.apk | grep -F "package: name='io.github.buick.test.cardeck'" | grep -F "versionCode='$T101_RECOVERY_VERSION_CODE'" | grep -F "versionName='$CARDECK_RELEASE_VERSION_NAME-R100'"
           "$sign" verify --verbose --print-certs CarDeck-Buick-Test-T101-Recovery-T100.apk > "$RUNNER_TEMP/t101-recovery-cert.txt"
           now="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t101-recovery-cert.txt" | head -n1)"
           old="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/t100-base-cert.txt" | head -n1)"
