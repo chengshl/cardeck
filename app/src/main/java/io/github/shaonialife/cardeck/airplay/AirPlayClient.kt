@@ -1437,6 +1437,10 @@ class AirPlayClient(
     @Volatile
     private var iapLink: VirtualIap2Link? = null
 
+    /** Process-local, non-identifying virtual Network epoch for the audio trace. */
+    internal fun b233CsmEpochForAudioTrace(): String =
+        iapLink?.b233EvidenceEpoch?.toString() ?: "not_started"
+
     /**
      * 车机媒体键回调（方向盘/面板的上一曲、下一曲）。
      *
@@ -1464,7 +1468,10 @@ class AirPlayClient(
                         // audio trace; same monotonic clock as first RTP/EOF.
                         it.onB233NetworkCsmEvent = { evidence ->
                             if (iapLink === it) {
-                                audioFailureTrace?.event(evidence.event, evidence.detail)
+                                audioFailureTrace?.event(
+                                    evidence.event,
+                                    "epoch=${it.b233EvidenceEpoch} observedMonoMs=${evidence.monoMs} ${evidence.detail}",
+                                )
                             }
                         }
                     }
