@@ -1,0 +1,72 @@
+name: T104 B233 GitHub Android compile smoke (unsigned)
+on:
+  push:
+    branches:
+      - experiment/buick-test-t104-github-ci-smoke-20261108
+permissions:
+  contents: read
+concurrency:
+  group: t104-gh-compile-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  android-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+      - name: Verify exact T101 parent and 9-file T104 source scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=b2f311bfd7b07322e70f02001c8242394235c1ee
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          git diff --name-only "$BASE" HEAD | sort > /tmp/actual.txt
+          printf '%s\n' \
+            .github/workflows/ci-t104-github-compile-smoke.yml \
+            app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/AirPlayClient.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ResourceSessionFence.kt \
+            app/src/main/java/io/github/shaonialife/cardeck/airplay/B233ResourceState.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233AudioConfirmationGateTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ResourceIntegrationTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ResourceSessionFenceTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233ResourceStateTest.kt \
+            app/src/test/java/io/github/shaonialife/cardeck/airplay/B233SocketOwnershipTest.kt | sort > /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/actual.txt
+          git diff --check "$BASE" HEAD
+          echo 'T104_EXACT_SOURCE_BOUNDARY=PASS'
+      - name: Full Android JUnit Lint Debug (no Release or signing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          for task in :app:testDebugUnitTest :app:lintDebug :app:assembleDebug; do
+            ./gradlew --no-daemon --max-workers=1 --console=plain \
+              -Dkotlin.compiler.execution.strategy=in-process \
+              '-Dorg.gradle.jvmargs=-Xmx1600m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8' \
+              "$task" --stacktrace
+          done
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
+          echo 'T104_GITHUB_ANDROID_COMPILE=PASS'
+      - name: Preserve debug-only compile evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cardeck-t104-github-unsigned-debug
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/test-results/testDebugUnitTest/
+            app/build/reports/lint-results-debug.html
+          if-no-files-found: error
+          retention-days: 3
+# Compile-only. No secrets, signed Release, GitHub prerelease, or car test.

@@ -1290,6 +1290,7 @@ object SessionController {
         if (!eligible) return
         // T85: disarm per-client mainAudio before switching back to video-only.
         client.b233AudioClaimPrepared = false
+        client.revokeB233ExplicitAudioClaim()
         // Mark video-only intent first: concurrent incoming changeModes must not
         // reassert main audio just because the user initially enabled audio.
         audioEnabledForSession = false
@@ -1460,6 +1461,7 @@ object SessionController {
             // and initial visual mode are unchanged, as are PCM/AAC and RTP/RTCP.
             // This is an unverified L3 timing hypothesis, not a protocol fix.
             if (client.currentEndpoint.isBuickB233) {
+                client.revokeB233ExplicitAudioClaim()
                 client.b233AudioClaimPrepared = true
                 val transportOk = client.assertModes(claimAudioResource = true)
                 appendLog(
@@ -1471,9 +1473,13 @@ object SessionController {
                     // audio stream; retain established video without retrying
                     // or sending a compensating modesChanged on this path.
                     client.b233AudioClaimPrepared = false
+                    client.revokeB233ExplicitAudioClaim()
                     appendLog("AUDIO T85: mainAudio declaration unconfirmed; skip audio SETUP, keep video")
                     return false
                 }
+                // Mark only the existing, explicitly successful audio claim;
+                // do not let generic changeModes events reclaim mainAudio.
+                client.noteB233ExplicitAudioClaim()
             }
             // SETUP 失败不会扰动会话（车机只是不接这条流的请求），所以本会话内就把候选
             // 试完，不必等下一次连接。这一点对当前场景很关键：102/AAC-LC 与 100/PCM 是
@@ -1597,6 +1603,7 @@ object SessionController {
                                                 // ownership while keeping Bluetooth A2DP.
                                                 audioEnabledForSession = false
                                                 audioAutoDowngradedForSession = true
+                                                client.revokeB233ExplicitAudioClaim()
                                                 val videoOnlyClaimed =
                                                     client.assertModes(claimAudioResource = false)
                                                 appendLog(
@@ -2320,7 +2327,15 @@ object SessionController {
                             val eventTypeCounts = hashMapOf<String, Int>()
                             var lastEventTypeSummaryAt = android.os.SystemClock.elapsedRealtime()
                             var hidReceivedCount = 0
-                            client.connectEventChannel(sessionKey, setup) { command ->
+                            // T104 B233 resource state is bound to this *actual* AirPlayClient.
+                            val eventOwner = client
+                            eventOwner.connectEventChannel(sessionKey, setup, b233ClaimAudio = {
+                                io.github.shaonialife.cardeck.airplay.AirPlayModeClaims.claimAudio(
+                                    eventOwner.currentEndpoint.isBuickB233,
+                                    audioEnabledForSession,
+                                    b233AudioClaimPrepared = eventOwner.b233AudioClaimPrepared,
+                                ) && eventOwner.hasB233ConfirmedAudioClaim()
+                            }) { command ->
                                 val incomingType = command["type"]?.toString() ?: "missing"
                                 val summaryKey = when (incomingType) {
                                     "hidSendReport", "iAPSendMessage", "changeModes" -> incomingType
@@ -2456,6 +2471,9 @@ object SessionController {
                                     }
 
                                     "changeModes" -> {
+                                        // B233 is handled asynchronously by AirPlayClient with
+                                        // the original event Socket + generation. Legacy unchanged.
+                                        if (!client.currentEndpoint.isBuickB233) {
                                         // T84 numeric-only, bounded evidence before existing T26 behavior.
                                         // No change to event ACK, resource decision, or modesChanged.
                                         if (client.currentEndpoint.isBuickB233) client.auditB233ModeRequest(command)
@@ -2472,6 +2490,7 @@ object SessionController {
                                                 if (claimAudio) "主屏+CarPlay音频" else "仅主屏，保留蓝牙A2DP"
                                         )
                                         client.assertModes(claimAudioResource = claimAudio)
+                                        }
                                     }
 
                                     else ->
@@ -2716,6 +2735,7 @@ object SessionController {
                                                         // Explicit user audio selection can retry.
                                                         audioEnabledForSession = false
                                                         audioAutoDowngradedForSession = true
+                                                        client.revokeB233ExplicitAudioClaim()
                                                         appendLog(
                                                             "AUDIO T64: 音频异常拆链；自动恢复" +
                                                                 "降级为仅视频，不再次协商 AAC",

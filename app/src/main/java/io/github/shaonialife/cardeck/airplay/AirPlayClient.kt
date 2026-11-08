@@ -136,6 +136,90 @@ class AirPlayClient(
     // with that same decision (rather than the user's initial audio preference).
     @Volatile internal var b233AudioClaimPrepared: Boolean = false
 
+    /** T104: one resource owner per B233 control + event Socket pair. */
+    private data class B233ResourceBinding(
+        val generation: Long,
+        val controlSocket: Socket,
+        val eventSocket: Socket,
+    )
+
+    private val b233ResourceFence = B233ResourceSessionFence()
+    // Bounded: a nonresponsive receiver cannot allocate unbounded queued events.
+    private val b233ResourceTx = java.util.concurrent.ThreadPoolExecutor(
+        1, 1, 15L, java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.ArrayBlockingQueue<Runnable>(16),
+        java.util.concurrent.ThreadFactory { task ->
+            Thread(task, "b233-resource-tx").apply { isDaemon = true }
+        },
+        java.util.concurrent.ThreadPoolExecutor.AbortPolicy(),
+    ).apply { allowCoreThreadTimeOut(true) }
+    @Volatile private var b233ResourceBinding: B233ResourceBinding? = null
+
+    /** A B233 event may only reassert mainAudio after this session confirmed T85's POST. */
+    internal fun hasB233ConfirmedAudioClaim(): Boolean {
+        if (!endpoint.isBuickB233) return false
+        val binding = b233ResourceBinding ?: return false
+        return b233ResourceFence.hasConfirmedAudioClaim(
+            binding.generation, binding.controlSocket, binding.eventSocket,
+        )
+    }
+
+    /** Invalidate queued modes replies before a new claim or video-only downgrade. */
+    internal fun revokeB233ExplicitAudioClaim(): Boolean {
+        if (!endpoint.isBuickB233) return false
+        val binding = b233ResourceBinding ?: return false
+        return b233ResourceFence.revokeLocalAudioClaim(
+            binding.generation, binding.controlSocket, binding.eventSocket,
+        )
+    }
+
+    /** Called only after the existing T85 mainAudio POST succeeded at transport level. */
+    internal fun noteB233ExplicitAudioClaim(): Boolean {
+        if (!endpoint.isBuickB233) return false
+        val binding = b233ResourceBinding ?: return false
+        return b233ResourceFence.noteLocalAudioClaim(
+            binding.generation, binding.controlSocket, binding.eventSocket,
+        )
+    }
+
+    /** Serialize a bounded resource snapshot to the captured control Socket only. */
+    private fun sendB233ResourceSnapshot(
+        snapshot: B233ResourceSessionFence.Snapshot,
+        currentAudioClaim: () -> Boolean,
+    ) {
+        if (!b233ResourceFence.isLatest(snapshot)) return
+        // An audio toggle while queued must not replay the old audio resource set.
+        val containsAudio = snapshot.resources.any { it["resourceID"] == 2L }
+        if (containsAudio != currentAudioClaim()) return
+        val expected = snapshot.controlIdentity as? Socket ?: return
+        val payload = BinaryPlist.encode(
+            linkedMapOf(
+                "type" to "modesChanged",
+                "params" to linkedMapOf(
+                    "appStates" to listOf(
+                        linkedMapOf<String, Any?>("appStateID" to 2L, "entity" to 0L),
+                        linkedMapOf<String, Any?>("appStateID" to 3L, "entity" to 0L),
+                        linkedMapOf<String, Any?>("appStateID" to 1L, "entity" to 0L, "speechMode" to -1L),
+                    ),
+                    "resources" to snapshot.resources,
+                ),
+            ),
+        )
+        try {
+            val (status, response) = request(
+                "POST", "/command", payload,
+                contentType = "application/x-apple-binary-plist",
+                expectedSocket = expected,
+            )
+            // A 200 confirms only RTSP transport, not receiver resource acceptance.
+            val transportOk = Regex("^(?:RTSP|HTTP)/[0-9.]+\\s+200(?:\\s|$)").containsMatchIn(status)
+            log("AUDIO T104: B233 resource response transport200=$transportOk " +
+                "bodyBytes=${response.size} businessAcceptance=unknown")
+        } catch (error: IOException) {
+            log("AUDIO T104: B233 resource command not sent/completed; type=${error.javaClass.simpleName}")
+        }
+    }
+
     fun auditB233ModeRequest(command: Map<*, *>) {
         if (!endpoint.isBuickB233) return
         val ordinal = synchronized(this) {
@@ -560,6 +644,17 @@ class AirPlayClient(
     fun close() {
         audioFailureTrace?.event("airplay_close_requested", "caller=${Thread.currentThread().stackTrace.getOrNull(3)?.methodName ?: "unknown"}")
         closeReverseAudioControlPort()
+        if (endpoint.isBuickB233) {
+            val retiredEvent = synchronized(eventCommandLock) {
+                val active = b233ResourceBinding
+                active?.let { b233ResourceFence.close(it.generation, it.controlSocket, it.eventSocket) }
+                b233ResourceBinding = null
+                eventCommandSocket = null
+                eventCommandCipher = null
+                active?.eventSocket
+            }
+            runCatching { retiredEvent?.close() }
+        }
         runCatching { socket?.close() }
         socket = null
         activeHost = null
@@ -649,9 +744,32 @@ class AirPlayClient(
     private fun registerEventCommandChannel(
         socket: Socket,
         cipher: ControlCipher?,
-    ) {
-        eventCommandSocket = socket
-        eventCommandCipher = cipher
+    ): B233ResourceBinding? {
+        if (!endpoint.isBuickB233) {
+            eventCommandSocket = socket
+            eventCommandCipher = cipher
+            return null
+        }
+        val (previous, binding) = synchronized(eventCommandLock) {
+            val old = b233ResourceBinding
+            old?.let { b233ResourceFence.close(it.generation, it.controlSocket, it.eventSocket) }
+            eventCommandSocket = socket
+            eventCommandCipher = cipher
+            val controlSocket = this.socket
+            val next = if (controlSocket != null) {
+                val initialModes = negotiatedInfo?.get("modes") as? Map<*, *>
+                B233ResourceBinding(
+                    b233ResourceFence.begin(controlSocket, socket, initialModes), controlSocket, socket,
+                )
+            } else null
+            b233ResourceBinding = next
+            old to next
+        }
+        // Retire a replaced event reader, without holding the command write lock.
+        if (previous != null && previous.eventSocket !== socket) {
+            runCatching { previous.eventSocket.close() }
+        }
+        return binding
     }
 
     /** 在事件通道上发 POST /command（通道加密时加密）。通道未就绪时返回 false。 */
@@ -660,6 +778,9 @@ class AirPlayClient(
         val cipher = eventCommandCipher
         return try {
             synchronized(eventCommandLock) {
+                // B233 must use a consistent Socket/cipher pair after replacement.
+                val outgoingSocket = if (endpoint.isBuickB233) eventCommandSocket ?: return false else socket
+                val outgoingCipher = if (endpoint.isBuickB233) eventCommandCipher else cipher
                 eventCseq++
                 val body = BinaryPlist.encode(command)
                 val head =
@@ -668,8 +789,8 @@ class AirPlayClient(
                         "Content-Length: ${body.size}\r\n" +
                         "CSeq: $eventCseq\r\n\r\n"
                 val plaintext = head.toByteArray(Charsets.US_ASCII) + body
-                val bytes = cipher?.encrypt(plaintext) ?: plaintext
-                socket.getOutputStream().apply {
+                val bytes = outgoingCipher?.encrypt(plaintext) ?: plaintext
+                outgoingSocket.getOutputStream().apply {
                     write(bytes)
                     flush()
                 }
@@ -689,11 +810,14 @@ class AirPlayClient(
      * 回出畸形行 "OK 200 OK"；我们再回 → 无限回声，日志雪崩且空耗加密通道。
      * 通道写与 postEventCommand 共用一把锁，避免两线程加密帧交叉。
      */
-    private fun respondEventRequest(cseq: String?): Boolean {
+    private fun respondEventRequest(cseq: String?, originatingSocket: Socket? = null): Boolean {
         val socket = eventCommandSocket ?: return false
-        val cipher = eventCommandCipher
         try {
             synchronized(eventCommandLock) {
+                // T104: a retired B233 event reader must never ACK on a replacement
+                // event connection (nor consume its new encryption nonce).
+                if (originatingSocket != null && eventCommandSocket !== originatingSocket) return false
+                val cipher = eventCommandCipher
                 val head =
                     "RTSP/1.0 200 OK\r\nContent-Length: 0\r\n" +
                         (cseq?.let { "CSeq: $it\r\n" } ?: "") + "\r\n"
@@ -2317,6 +2441,7 @@ class AirPlayClient(
     fun connectEventChannel(
         sessionKey: ByteArray?,
         setup: SetupInfo,
+        b233ClaimAudio: (() -> Boolean)? = null,
         onCommand: (Map<*, *>) -> Unit = {},
     ) {
         if (setup.eventPort == 0) {
@@ -2346,7 +2471,12 @@ class AirPlayClient(
                         )
                     ControlCipher(phoneReadKey, phoneWriteKey)
                 }
-            registerEventCommandChannel(socket, cipher)
+            val b233Binding = registerEventCommandChannel(socket, cipher)
+            val b233Driver = if (endpoint.isBuickB233 && b233Binding != null && b233ClaimAudio != null) {
+                B233ResourceEventDriver(b233ResourceFence, b233ResourceTx) { snapshot ->
+                    sendB233ResourceSnapshot(snapshot, b233ClaimAudio)
+                }
+            } else null
             Thread({
                 val input = socket.getInputStream()
                 val accumulator = RtspAccumulator()
@@ -2395,7 +2525,7 @@ class AirPlayClient(
                             // 车机请求：立即回 200（echo 请求 CSeq）；/command 走分发，其余节流留痕
                             val cseq = CSEQ_REGEX.find(message.head)?.groupValues?.get(1)
                             if (endpoint.isBuickB233) audioControlLiveness.onEventRequest()
-                            val acked = respondEventRequest(cseq)
+                            val acked = respondEventRequest(cseq, if (endpoint.isBuickB233) socket else null)
                             if (endpoint.isBuickB233) audioControlLiveness.onEventAck(acked)
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
@@ -2439,6 +2569,24 @@ class AirPlayClient(
                                 if (badEventCommands % 120 == 0) {
                                     log("EVENT: 累计 $badEventCommands 条 /command 解析失败（已静默，仅计数）")
                                 }
+                                continue
+                            }
+                            val resourceType = command["type"] as? String
+                            if (endpoint.isBuickB233 && b233Binding != null && b233Driver != null &&
+                                (resourceType == "changeModes" || resourceType == "requestUI")
+                            ) {
+                                if (resourceType == "changeModes") auditB233ModeRequest(command)
+                                if (acked) {
+                                    val claimAudio = runCatching { b233ClaimAudio?.invoke() == true }.getOrDefault(false)
+                                    val enqueued = b233Driver.onEvent(
+                                        b233Binding.generation, b233Binding.controlSocket,
+                                        socket, command, claimAudio,
+                                    )
+                                    if (!enqueued) log("AUDIO T104: resource plan skipped or queue rejected")
+                                } else {
+                                    log("AUDIO T104: resource request skipped after failed event ACK")
+                                }
+                                // No synchronous assertModes on the event reader for B233.
                                 continue
                             }
                             try {
@@ -2665,13 +2813,20 @@ class AirPlayClient(
         timeoutMillis: Int = 10_000,
         contentType: String = "application/octet-stream",
         extraHeaders: List<Pair<String, String>> = emptyList(),
+        expectedSocket: Socket? = null,
     ): Pair<String, ByteArray> {
         val client = socket ?: throw IOException("未连接")
+        // T104: a queued B233 resource command may not attach to a replacement.
+        // Existing callers leave this null and keep original wire behaviour.
+        if (expectedSocket != null && client !== expectedSocket) throw IOException("RTSP 会话已更换")
         val startedAt = SystemClock.uptimeMillis()
-        startReader(client)
+        startReader(client, expectedSocket)
         val queue = java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>(1)
         val cseq: Int
         synchronized(rtspWriteLock) {
+            // Double-check at the actual write boundary. A pre-queue test alone
+            // cannot prevent a reconnect between planning and socket capture.
+            if (expectedSocket != null && socket !== expectedSocket) throw IOException("RTSP 会话已更换")
             cseq = ++cSeq
             // 先登记再写：响应可能在 write 返回前就到达
             pendingResponses[cseq] = queue
@@ -2901,9 +3056,13 @@ class AirPlayClient(
         waiting.forEach { it.offer(RTSP_CLOSED_MARK to ByteArray(0)) }
     }
 
-    private fun startReader(client: Socket) {
+    private fun startReader(client: Socket, expectedSocket: Socket? = null) {
         val previous: Socket?
         synchronized(rtspWriteLock) {
+            // Check before swapping readers or closing the previous Socket.
+            if (expectedSocket != null &&
+                (client !== expectedSocket || socket !== expectedSocket)
+            ) throw IOException("RTSP reader session changed")
             if (readerSocket === client && readerThread?.isAlive == true) return
             previous = readerSocket
             readerSocket = client
