@@ -1,6 +1,6 @@
 # CarDeck 项目统一开发与协作规则
 
-> **统一规范版本：2026-10-29 / v2.2**  
+> **统一规范版本：2026-11-08 / v2.3**  
 > **唯一权威来源**：`Buick:docs/PROJECT-GOVERNANCE.md`。本文件在 `Buick-E5`、`Buick-Test` 是完全一致的只读同步副本，不允许各分支单独改写规则。与历史 `AGENTS.md`、旧版分支文档、Issue 快照冲突时，按本规则及用户最新明确决定执行。
 
 ## 一、仓库与分支边界
@@ -168,6 +168,15 @@
 4. **采集与访问**：只处理用户已提供或授权的日志；现有 Gateway 只读查询与用户手动确认上传边界不变。高敏感数据应按最小权限、SHA256、保留期和可回溯脱敏审核管理；对于可识别个人或身份凭据的原始包，优先使用受控加密存储。Git 私有可见性不代替加密，删除文件也不代表清除了 Git 历史/CI artifact/备份。
 5. **操作护栏**：不要自动镜像 GitHub/GitLab 或互相同步源码分支、CI secrets 与大型日志；不因本决定新建持续采集或车机控制能力。新增/修改私有证据时仅向 GitHub 追加最低必要的脱敏关联。若私有仓库改成 public、权限不明、文件来源不明或检测到明文凭据，立即停止上传并调查，不越权继续。
 6. **只改文档，不触发版本发布**：本规则是 L1 资料治理，不更改 CarPlay 音视频/触摸/蓝牙/iAP2 运行代码，不交付新的 APK 或修改正式下载通道。按统一规范同步到 `Buick`、`Buick-E5`、`Buick-Test` 三条规则副本，**绝不写入 GitHub `main`**。
+
+### GitHub 默认构建与 GitLab 拒绝场景备用（2026-11-08，v2.3 新决定）
+
+1. **唯一日常构建入口：GitHub Actions**。公开 GitHub `chengshl/cardeck` 的对应功能线/隔离分支承担 Gradle Android 单测、Lint、Debug APK 与无签名 Release 编译的常规 CI。提交、PR、状态检查与构建证据均以 GitHub 的准确源码 SHA 和 Actions Run 为准；已经在 GitLab 构建成功的 APK 不能冒充同 SHA 的 GitHub Actions 成功。纯文档/规则变更不得触发软件发版。
+2. **签名 Release 仍是独立门禁**。需要安装/更新时，先按专项 L2/L3 要求核对功能风险与已验证源码，保持原有包名、同一证书、严格递增的 versionCode、正确版本名、精确来源 SHA、单测/Lint 及完整回退包。只允许受控签名工作流读取已配置的 GitHub Actions Secrets；无签名 Release、Debug APK 或 GitLab 产生的已签名 APK 不得混称。真实发布必须生成不可覆盖的独立 prerelease、匹配 APK/SHA256 与 schema2 元数据；不得自动修改 `*-latest` 或绕过用户手机/实车验收。
+3. **GitLab 只在 GitHub 平台拒绝执行时临时备用**。仅当 GitHub Actions 因限额、Runner 不分配、服务不可用、权限或其他平台级阻断导致**无法正常执行构建**，且常规自检/有限重试仍不能恢复时，才由执行者主动选择受限私有 GitLab Runner 临时构建并留审计记录；**普通源码编译失败、单测/Lint 失败、签名校验失败和安全门禁拒绝，均不是切换 GitLab 绕过检查的理由**。不得仅因每次 GitHub CI 非绿就自动触发 GitLab、创建无上限双重构建或使 GitLab 成为持续默认主线。
+4. **备用构建必须保持同源与安全边界**。GitLab 备用只允许读取已确认 GitHub 源分支的**精确提交 SHA**、固定文件差异与受控缓存，在同等测试/Lint/源码范围/签名要求下交付构建证据；不得向私有库镜像完整开发仓库、自动复制密钥、绕过受保护分支或签名发布授权。原先私有证据及项目访问边界不变。GitHub 公开 Issue **不得泄露私有 GitLab URL、项目 ID、内网地址、凭据或未脱敏日志**。
+5. **恢复与验证**。GitHub Actions 能在相同源码 SHA 上重新完成所需构建后，立刻恢复它作为唯一常规执行入口；GitLab 停止该轮临时构建，不删除已有审计记录与产物。每次汇报区分：GitHub Debug/JUnit/Lint PASS、无签名 Release PASS、固定签名 Release PASS、GitHub Prerelease 已发布、手机/实车已验收五种不同状态，禁止越级宣称。
+6. **现有隔离验收起点**。T104 的 GitHub 测试代码仅驻留 `experiment/buick-test-t104-github-ci-smoke-20261108` 等专用实验分支；音频 #11 P0 在用户负向反馈后仍 Open。构建迁回 GitHub **不意味着**自动迁入正式 `Buick`、稳定 `Buick-E5`、冻结 `Buick-Test`，也不自动使用 GitHub 对失败的 T104 重新签名发布。逐次源码、CI 和专项测试继续按既有门禁验证。
 
 ## 七、历史决策引用
 
