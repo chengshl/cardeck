@@ -73,10 +73,35 @@ jobs:
           git -C "$SRC" diff --check
           echo "T106_SOURCE=$SRC" >> "$GITHUB_ENV"
           echo 'T106_FULL_SOURCE_PATCH=PASS'
+      - name: Prefetch official SHA-pinned Gradle 8.10.2 (avoid GitHub download redirect 504)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/gradle-8.10.2-bin.zip"
+          curl --fail --location --silent --show-error --retry 7 --retry-all-errors \
+            --retry-delay 4 --connect-timeout 20 --max-time 480 \
+            'https://downloads.gradle.org/distributions/gradle-8.10.2-bin.zip' -o "$dist"
+          echo "31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26  $dist" | sha256sum -c -
+          echo "PINNED_GRADLE_PACKAGE=$dist" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/t106-gradle-prepare.py" <<'PY'
+          from pathlib import Path
+          import sys
+          checkout=Path(sys.argv[1]); distribution=Path(sys.argv[2])
+          p=checkout/'gradle/wrapper/gradle-wrapper.properties'
+          old='distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-bin.zip'
+          original=p.read_text()
+          if original.count(old)!=1 or 'distributionSha256Sum=' in original:
+              raise SystemExit('STOP_GRADLE_WRAPPER_SOURCE_DRIFT')
+          actual=original.replace(old,'distributionUrl='+distribution.as_uri())
+          actual+='distributionSha256Sum=31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26\n'
+          p.write_text(actual)
+          print('PINNED_GRADLE_WRAPPER_LOCAL_DISTRIBUTION=PASS')
+          PY
       - name: Full Android JUnit and Lint (without any signing credentials)
         shell: bash
         run: |
           set -euo pipefail
+          python3 "$RUNNER_TEMP/t106-gradle-prepare.py" "$T106_SOURCE" "$PINNED_GRADLE_PACKAGE"
           cd "$T106_SOURCE"
           chmod +x gradlew
           ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest --stacktrace
@@ -136,6 +161,7 @@ jobs:
           test "$(git -C "$REC" rev-parse HEAD)" = "$BASE"
           test -z "$(git -C "$REC" status --porcelain)"
           test ! -e "$REC/keystore.properties"
+          python3 "$RUNNER_TEMP/t106-gradle-prepare.py" "$REC" "$PINNED_GRADLE_PACKAGE"
           make_unsigned "$REC"
           (cd "$REC" && chmod +x gradlew && CARDECK_BUILD_VERSION_CODE="$T106_RECOVERY_CODE" \
             CARDECK_RELEASE_VERSION_NAME="$T106_VERSION_NAME-R101" \
