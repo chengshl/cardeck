@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - experiment/buick-test-t104-github-ci-smoke-20261108
+      - experiment/buick-test-t104-b233-resource-p0
     paths-ignore:
       - 'docs/**'
       - 'AGENTS.md'
