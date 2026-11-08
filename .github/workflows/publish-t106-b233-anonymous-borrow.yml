@@ -97,6 +97,22 @@ jobs:
           p.write_text(actual)
           print('PINNED_GRADLE_WRAPPER_LOCAL_DISTRIBUTION=PASS')
           PY
+      - name: Use Google-hosted Maven Central mirror for this ephemeral checkout only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/t106-gradle-repositories.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])/'settings.gradle.kts'
+          s=p.read_text()
+          old='        mavenCentral()'
+          if s.count(old)!=2: raise SystemExit('STOP_MAVEN_REPO_SETTINGS_DRIFT')
+          mirror='        maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }'
+          p.write_text(s.replace(old,mirror+'\n'+old))
+          print('T106_MAVEN_CENTRAL_MIRROR_FIRST=PASS')
+          PY
+          python3 "$RUNNER_TEMP/t106-gradle-repositories.py" "$T106_SOURCE"
       - name: Full Android JUnit and Lint (without any signing credentials)
         shell: bash
         run: |
@@ -162,6 +178,7 @@ jobs:
           test -z "$(git -C "$REC" status --porcelain)"
           test ! -e "$REC/keystore.properties"
           python3 "$RUNNER_TEMP/t106-gradle-prepare.py" "$REC" "$PINNED_GRADLE_PACKAGE"
+          python3 "$RUNNER_TEMP/t106-gradle-repositories.py" "$REC"
           make_unsigned "$REC"
           (cd "$REC" && chmod +x gradlew && CARDECK_BUILD_VERSION_CODE="$T106_RECOVERY_CODE" \
             CARDECK_RELEASE_VERSION_NAME="$T106_VERSION_NAME-R101" \
