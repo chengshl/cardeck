@@ -78,10 +78,22 @@ jobs:
         run: |
           set -euo pipefail
           dist="$RUNNER_TEMP/gradle-8.10.2-bin.zip"
-          curl --fail --location --silent --show-error --retry 7 --retry-all-errors \
-            --retry-delay 4 --connect-timeout 20 --max-time 480 \
-            'https://downloads.gradle.org/distributions/gradle-8.10.2-bin.zip' -o "$dist"
-          echo "31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26  $dist" | sha256sum -c -
+          # Two independent archived mirrors and official origin, all checked
+          # against Gradle's published SHA256. Never run an unverified ZIP.
+          verified=0
+          for origin in \
+            'https://repo.huaweicloud.com/gradle/gradle-8.10.2-bin.zip' \
+            'https://mirrors.aliyun.com/gradle/distributions/v8.10.2/gradle-8.10.2-bin.zip' \
+            'https://downloads.gradle.org/distributions/gradle-8.10.2-bin.zip'; do
+            rm -f "$dist"
+            if curl --fail --location --silent --show-error --retry 2 --retry-all-errors \
+              --retry-delay 3 --connect-timeout 20 --max-time 360 "$origin" -o "$dist" \
+              && echo "31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26  $dist" | sha256sum -c -; then
+              verified=1
+              break
+            fi
+          done
+          test "$verified" = 1 || { echo 'STOP=NO_VERIFIED_GRADLE_DISTRIBUTION'; exit 2; }
           echo "PINNED_GRADLE_PACKAGE=$dist" >> "$GITHUB_ENV"
           cat > "$RUNNER_TEMP/t106-gradle-prepare.py" <<'PY'
           from pathlib import Path
