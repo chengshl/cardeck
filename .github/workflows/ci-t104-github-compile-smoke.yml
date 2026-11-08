@@ -1,8 +1,12 @@
-name: T104 B233 GitHub Android compile smoke (unsigned)
+name: CarDeck T104 GitHub primary Android CI (debug and unsigned Release)
 on:
   push:
     branches:
       - experiment/buick-test-t104-github-ci-smoke-20261108
+    paths-ignore:
+      - 'docs/**'
+      - 'AGENTS.md'
+      - 'README.md'
 permissions:
   contents: read
 concurrency:
@@ -23,7 +27,8 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: true
+          # GitHub Push warms this branch's cache; no cache writes from PR contexts.
+          cache-read-only: ${{ github.event_name != 'push' }}
       - name: Verify exact T101 parent and 9-file T104 source scope
         shell: bash
         run: |
@@ -54,7 +59,7 @@ jobs:
             ./gradlew --no-daemon --max-workers=1 --console=plain \
               -Dkotlin.compiler.execution.strategy=in-process \
               '-Dorg.gradle.jvmargs=-Xmx1600m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8' \
-              "$task" --stacktrace
+              "$task" --stacktrace --build-cache
           done
           test -s app/build/outputs/apk/debug/app-debug.apk
           sha256sum app/build/outputs/apk/debug/app-debug.apk
@@ -68,5 +73,45 @@ jobs:
             app/build/test-results/testDebugUnitTest/
             app/build/reports/lint-results-debug.html
           if-no-files-found: error
-          retention-days: 3
-# Compile-only. No secrets, signed Release, GitHub prerelease, or car test.
+          retention-days: 7
+      - name: Build keyless unsigned Release; reject accidental Debug signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e keystore.properties || { echo "STOP=SIGNING_KEY_IN_SOURCE"; exit 2; }
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/build.gradle.kts")
+          source = p.read_text()
+          old = 'signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")'
+          assert source.count(old) == 1, "STOP=SIGNING_ANCHOR_DRIFT"
+          p.write_text(source.replace(old, "signingConfig = null"))
+          print("GITHUB_UNSIGNED_RELEASE_SIGNING_CONFIG=PASS")
+          PY
+          test "$(git diff --name-only)" = app/build.gradle.kts
+          git diff --check
+          ./gradlew --no-daemon --max-workers=1 --console=plain \
+            -Dkotlin.compiler.execution.strategy=in-process \
+            '-Dorg.gradle.jvmargs=-Xmx1152m -XX:MaxMetaspaceSize=384m -XX:+UseSerialGC -Dfile.encoding=UTF-8' \
+            :app:assembleRelease --stacktrace --build-cache
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$APK" || { echo "STOP=UNSIGNED_RELEASE_MISSING"; exit 2; }
+          SIGN="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
+          test -x "$SIGN" && test -x "$AAPT"
+          if "$SIGN" verify "$APK" >/dev/null 2>&1; then
+            echo "STOP=RELEASE_WAS_SIGNED_UNEXPECTEDLY"
+            exit 2
+          fi
+          "$AAPT" dump badging "$APK" | grep -F "package: name='io.github.buick.test.cardeck'"
+          sha256sum "$APK" | tee "$RUNNER_TEMP/cardeck-t104-release.sha256"
+          echo "T104_GITHUB_UNSIGNED_RELEASE=PASS"
+      - name: Preserve unsigned Release only for review (not installable)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cardeck-t104-github-keyless-release
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 7
+# Default GitHub primary CI. No signing credentials, no public Release and no latest-channel mutation.
+# GitLab is an explicit, exceptional fallback only for GitHub platform/build-execution refusal.
