@@ -1,0 +1,361 @@
+name: T107 Buick Link+ early mainAudio claim - isolated signed Test experiment
+
+on:
+  push:
+    branches:
+      - experiment/buick-test-t107-linkplus-early-audio
+    paths:
+      - '.github/workflows/publish-t107-linkplus-early-audio.yml'
+      - 'ci/t107/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cardeck-t107-github-experiment
+  cancel-in-progress: false
+
+jobs:
+  verify-build:
+    if: github.ref == 'refs/heads/experiment/buick-test-t107-linkplus-early-audio'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Confirm exact pinned source and patch input scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'chengshl/cardeck'
+          test "$GITHUB_REF_NAME" = 'experiment/buick-test-t107-linkplus-early-audio'
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          BASE=b2f311bfd7b07322e70f02001c8242394235c1ee
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --name-only "$BASE" HEAD | sort > "$RUNNER_TEMP/actual-t107-scope"
+          printf '%s\n' \
+            '.github/workflows/publish-t106-b233-anonymous-borrow.yml' \
+            '.github/workflows/publish-t107-linkplus-early-audio.yml' \
+            'ci/t106/CarDeck-T104-v6-b233-audio-claim-confirmation.zip' \
+            'ci/t106/t105_fix.py' \
+            'ci/t106/t106_borrow_fix.py' \
+            'ci/t107/apply_t107.py' | sort > "$RUNNER_TEMP/expected-t107-scope"
+          diff -u "$RUNNER_TEMP/expected-t107-scope" "$RUNNER_TEMP/actual-t107-scope"
+          test -z "$(git status --porcelain)"
+          echo '887e523706681ee1b4c546c47a1f6a954f69c4d3faf9570139e48d91bca4263e  ci/t106/CarDeck-T104-v6-b233-audio-claim-confirmation.zip' | sha256sum -c -
+          git diff --check "$BASE" HEAD
+          echo 'T107_GITHUB_EXACT_SOURCE_SCOPE=PASS'
+      - name: Materialize exact T101 plus T104/T105/T106/T107, with fail-closed anchors
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=b2f311bfd7b07322e70f02001c8242394235c1ee
+          SRC="$RUNNER_TEMP/cardeck-t107-src"
+          BUNDLE="$RUNNER_TEMP/cardeck-t104-v6"
+          git worktree add --detach "$SRC" "$BASE"
+          test "$(git -C "$SRC" rev-parse HEAD)" = "$BASE"
+          test -z "$(git -C "$SRC" status --porcelain)"
+          mkdir -p "$BUNDLE"
+          unzip -q ci/t106/CarDeck-T104-v6-b233-audio-claim-confirmation.zip -d "$BUNDLE"
+          PACK="$BUNDLE/CarDeck-T104-v6"
+          (cd "$PACK" && sha256sum -c SHA256SUMS.txt)
+          python3 "$PACK/apply_t104_integration.py" "$SRC" --diff-out "$RUNNER_TEMP/t104-preview.diff"
+          python3 "$PACK/apply_t104_integration.py" "$SRC" --apply --diff-out "$RUNNER_TEMP/t104-applied.diff"
+          python3 ci/t106/t105_fix.py "$SRC"
+          python3 ci/t106/t105_fix.py "$SRC" --apply
+          python3 ci/t106/t106_borrow_fix.py "$SRC"
+          python3 ci/t106/t106_borrow_fix.py "$SRC" --apply
+          python3 ci/t107/apply_t107.py "$SRC" --diff "$RUNNER_TEMP/t107-preview.diff"
+          python3 ci/t107/apply_t107.py "$SRC" --apply
+          grep -Fq 'AUDIO T107: initial claim RTSP ACK' "$SRC/app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt"
+          ! grep -Fq 'AUDIO T85: delayed_mainAudio_claim' "$SRC/app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt"
+          git -C "$SRC" diff --check
+          echo "T107_SOURCE=$SRC" >> "$GITHUB_ENV"
+          echo 'T107_FULL_SOURCE_PATCH=PASS'
+      - name: Prefetch official SHA-pinned Gradle 8.10.2 (avoid GitHub download redirect 504)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/gradle-8.10.2-bin.zip"
+          # Two independent archived mirrors and official origin, all checked
+          # against Gradle's published SHA256. Never run an unverified ZIP.
+          verified=0
+          for origin in \
+            'https://repo.huaweicloud.com/gradle/gradle-8.10.2-bin.zip' \
+            'https://mirrors.aliyun.com/gradle/distributions/v8.10.2/gradle-8.10.2-bin.zip' \
+            'https://downloads.gradle.org/distributions/gradle-8.10.2-bin.zip'; do
+            rm -f "$dist"
+            if curl --fail --location --silent --show-error --retry 2 --retry-all-errors \
+              --retry-delay 3 --connect-timeout 20 --max-time 360 "$origin" -o "$dist" \
+              && echo "31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26  $dist" | sha256sum -c -; then
+              verified=1
+              break
+            fi
+          done
+          test "$verified" = 1 || { echo 'STOP=NO_VERIFIED_GRADLE_DISTRIBUTION'; exit 2; }
+          echo "PINNED_GRADLE_PACKAGE=$dist" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/t107-gradle-prepare.py" <<'PY'
+          from pathlib import Path
+          import sys
+          checkout=Path(sys.argv[1]); distribution=Path(sys.argv[2])
+          p=checkout/'gradle/wrapper/gradle-wrapper.properties'
+          old='distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-bin.zip'
+          original=p.read_text()
+          if original.count(old)!=1 or 'distributionSha256Sum=' in original:
+              raise SystemExit('STOP_GRADLE_WRAPPER_SOURCE_DRIFT')
+          actual=original.replace(old,'distributionUrl='+distribution.as_uri())
+          actual+='distributionSha256Sum=31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26\n'
+          p.write_text(actual)
+          print('PINNED_GRADLE_WRAPPER_LOCAL_DISTRIBUTION=PASS')
+          PY
+      - name: Use Google-hosted Maven Central mirror for this ephemeral checkout only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/t107-gradle-repositories.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])/'settings.gradle.kts'
+          s=p.read_text()
+          old='        mavenCentral()'
+          if s.count(old)!=2: raise SystemExit('STOP_MAVEN_REPO_SETTINGS_DRIFT')
+          mirror='        maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }'
+          p.write_text(s.replace(old,mirror+'\n'+old))
+          print('T107_MAVEN_CENTRAL_MIRROR_FIRST=PASS')
+          PY
+          python3 "$RUNNER_TEMP/t107-gradle-repositories.py" "$T107_SOURCE"
+      - name: Full Android JUnit and Lint (without any signing credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/t107-gradle-prepare.py" "$T107_SOURCE" "$PINNED_GRADLE_PACKAGE"
+          cd "$T107_SOURCE"
+          chmod +x gradlew
+          ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest --stacktrace
+          ./gradlew --no-daemon --max-workers=2 :app:lintDebug --stacktrace
+          echo 'T107_ANDROID_JUNIT_LINT=PASS'
+      - name: Allocate unique higher Test and recovery versionCodes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_codes="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.tag_name == "buick-test-latest" or (.tag_name | startswith("exp-buick-test-"))) | .body' \
+            | grep -E '^(versionCode|recoveryVersionCode)=[0-9]+$' | cut -d= -f2)"
+          test -n "$release_codes"
+          published_max="$(printf '%s\n' "$release_codes" | sort -nr | head -n1)"
+          test "$published_max" -ge 89880027
+          code=$(( published_max + 1 ))
+          recovery=$(( code + 1 ))
+          test "$recovery" -le 2100000000
+          stamp="$(TZ=Asia/Shanghai date '+%Y%m%d%H%M%S')"
+          test "${#stamp}" -eq 14
+          {
+            echo "T107_VERSION_CODE=$code"
+            echo "T107_RECOVERY_CODE=$recovery"
+            echo "T107_VERSION_NAME=$stamp"
+          } >> "$GITHUB_ENV"
+          echo "versionCode=$code recoveryVersionCode=$recovery priorMax=$published_max"
+      - name: Assemble unsigned T107 and exact T101 behavior recovery on GitHub runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset CARDECK_KEYSTORE_BASE64 CARDECK_KEYSTORE_PASSWORD CARDECK_KEY_ALIAS || true
+          BASE=b2f311bfd7b07322e70f02001c8242394235c1ee
+          OUT="$GITHUB_WORKSPACE/t107-unsigned"
+          mkdir -p "$OUT"
+          # Fail closed: original release variant falls back to debug signing.
+          make_unsigned() {
+            python3 - "$1/app/build.gradle.kts" <<'PY'
+          from pathlib import Path
+          import sys
+          path=Path(sys.argv[1]); s=path.read_text()
+          old='signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")'
+          if s.count(old)!=1: raise SystemExit('STOP_UNSIGNED_SIGNING_CONFIG_DRIFT')
+          path.write_text(s.replace(old, 'signingConfig = null'))
+          print('UNSIGNED_RELEASE_CONFIG=PASS')
+          PY
+          }
+          test ! -e "$T107_SOURCE/keystore.properties"
+          make_unsigned "$T107_SOURCE"
+          (cd "$T107_SOURCE" && CARDECK_BUILD_VERSION_CODE="$T107_VERSION_CODE" \
+            CARDECK_RELEASE_VERSION_NAME="$T107_VERSION_NAME" \
+            ./gradlew --no-daemon --max-workers=2 :app:assembleRelease --stacktrace)
+          cp "$T107_SOURCE/app/build/outputs/apk/release/app-release-unsigned.apk" "$OUT/T107-UNSIGNED.apk"
+          REC="$RUNNER_TEMP/cardeck-t101-recovery"
+          git worktree add --detach "$REC" "$BASE"
+          test "$(git -C "$REC" rev-parse HEAD)" = "$BASE"
+          test -z "$(git -C "$REC" status --porcelain)"
+          test ! -e "$REC/keystore.properties"
+          python3 "$RUNNER_TEMP/t107-gradle-prepare.py" "$REC" "$PINNED_GRADLE_PACKAGE"
+          python3 "$RUNNER_TEMP/t107-gradle-repositories.py" "$REC"
+          make_unsigned "$REC"
+          (cd "$REC" && chmod +x gradlew && CARDECK_BUILD_VERSION_CODE="$T107_RECOVERY_CODE" \
+            CARDECK_RELEASE_VERSION_NAME="$T107_VERSION_NAME-R101" \
+            ./gradlew --no-daemon --max-workers=2 :app:assembleRelease --stacktrace)
+          cp "$REC/app/build/outputs/apk/release/app-release-unsigned.apk" "$OUT/T107-RECOVERY-T101-UNSIGNED.apk"
+          (cd "$OUT" && sha256sum T107-UNSIGNED.apk T107-RECOVERY-T101-UNSIGNED.apk > unsigned-sha256.txt)
+          {
+            echo "T107_VERSION_CODE=$T107_VERSION_CODE"
+            echo "T107_RECOVERY_CODE=$T107_RECOVERY_CODE"
+            echo "T107_VERSION_NAME=$T107_VERSION_NAME"
+          } > "$OUT/release.env"
+          echo 'T107_BOTH_UNSIGNED_RELEASES=PASS'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: T107-unsigned-${{ github.run_id }}
+          path: t107-unsigned/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: verify-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: T107-unsigned-${{ github.run_id }}
+          path: t107-unsigned
+      - name: Verify T101 Test certificate, unsigned inputs and version precedence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd t107-unsigned && sha256sum -c unsigned-sha256.txt)
+          test -s t107-unsigned/release.env
+          source t107-unsigned/release.env
+          [[ "$T107_VERSION_CODE" =~ ^[0-9]+$ && "$T107_RECOVERY_CODE" =~ ^[0-9]+$ ]]
+          [[ "$T107_VERSION_NAME" =~ ^[0-9]{14}$ ]]
+          test "$T107_RECOVERY_CODE" -eq "$((T107_VERSION_CODE+1))"
+          test "$T107_VERSION_CODE" -gt 89880027
+          aapt="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n1)"
+          test -x "$aapt" && test -x "$apksigner"
+          "$aapt" dump badging t107-unsigned/T107-UNSIGNED.apk | grep -F "name='io.github.buick.test.cardeck'" | grep -F "versionCode='$T107_VERSION_CODE'"
+          "$aapt" dump badging t107-unsigned/T107-RECOVERY-T101-UNSIGNED.apk | grep -F "name='io.github.buick.test.cardeck'" | grep -F "versionCode='$T107_RECOVERY_CODE'"
+          mkdir -p "$RUNNER_TEMP/t101-release"
+          gh release download exp-buick-test-t101-20261106144024 --repo "$GITHUB_REPOSITORY" \
+            --pattern 'CarDeck-Buick-Test-T101-NETWORK-AUDIO.apk*' --dir "$RUNNER_TEMP/t101-release"
+          (cd "$RUNNER_TEMP/t101-release" && sha256sum -c CarDeck-Buick-Test-T101-NETWORK-AUDIO.apk.sha256)
+          "$apksigner" verify --verbose --print-certs "$RUNNER_TEMP/t101-release/CarDeck-Buick-Test-T101-NETWORK-AUDIO.apk" > "$RUNNER_TEMP/t101.cert"
+          grep -Fqi 'certificate SHA-256 digest: e51e87cd83353f400d2f1b4349c7c8d214064216c149b83c2dec67a17be8f940' "$RUNNER_TEMP/t101.cert"
+          echo 'T107_INPUT_AND_CERTIFICATE_BASELINE=PASS'
+      - name: Sign both APKs using existing Test certificate (no Gradle in this job)
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          source t107-unsigned/release.env
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/t107-key.p12"
+          chmod 600 "$RUNNER_TEMP/t107-key.p12"
+          aapt="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n1)"
+          zipalign="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name zipalign | sort -V | tail -n1)"
+          test -x "$aapt" && test -x "$apksigner" && test -x "$zipalign"
+          mkdir -p t107-signed
+          sign_one() {
+            local input="$1" target="$2" code="$3" version="$4"
+            "$zipalign" -f -p 4 "$input" "$RUNNER_TEMP/aligned.apk"
+            "$apksigner" sign --ks "$RUNNER_TEMP/t107-key.p12" --ks-type PKCS12 \
+              --ks-key-alias "$KEY_ALIAS" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD \
+              --out "$target" "$RUNNER_TEMP/aligned.apk"
+            "$apksigner" verify --verbose --print-certs "$target" > "$RUNNER_TEMP/current.cert"
+            grep -Fqi 'certificate SHA-256 digest: e51e87cd83353f400d2f1b4349c7c8d214064216c149b83c2dec67a17be8f940' "$RUNNER_TEMP/current.cert"
+            ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/current.cert"
+            "$aapt" dump badging "$target" | grep -F "name='io.github.buick.test.cardeck'" | grep -F "versionCode='$code'" | grep -F "versionName='$version'"
+            (cd "$(dirname "$target")" && sha256sum "$(basename "$target")" > "$(basename "$target").sha256")
+          }
+          sign_one t107-unsigned/T107-UNSIGNED.apk t107-signed/CarDeck-Buick-Test-T107.apk "$T107_VERSION_CODE" "$T107_VERSION_NAME"
+          sign_one t107-unsigned/T107-RECOVERY-T101-UNSIGNED.apk t107-signed/CarDeck-Buick-Test-T107-Recovery-T101.apk "$T107_RECOVERY_CODE" "$T107_VERSION_NAME-R101"
+          (cd t107-signed && zip -q T107-Recovery-T101.zip CarDeck-Buick-Test-T107-Recovery-T101.apk CarDeck-Buick-Test-T107-Recovery-T101.apk.sha256)
+          (cd t107-signed && sha256sum T107-Recovery-T101.zip > T107-Recovery-T101.zip.sha256)
+          cp t107-unsigned/release.env t107-signed/release.env
+          echo 'T107_SAME_T101_CERTIFICATE=PASS'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: T107-signed-${{ github.run_id }}
+          path: t107-signed/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-experiment:
+    needs: sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: T107-signed-${{ github.run_id }}
+          path: t107-signed
+      - name: Publish unique T107 schema2 prerelease, never latest/stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'experiment/buick-test-t107-linkplus-early-audio'
+          cd t107-signed
+          (sha256sum -c CarDeck-Buick-Test-T107.apk.sha256 && sha256sum -c T107-Recovery-T101.zip.sha256)
+          source release.env
+          [[ "$T107_VERSION_NAME" =~ ^[0-9]{14}$ && "$T107_VERSION_CODE" =~ ^[0-9]+$ ]]
+          tag="exp-buick-test-t107-$T107_VERSION_NAME"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'STOP=RELEASE_ALREADY_EXISTS'; exit 2
+          fi
+          {
+            echo 'artifactKind=experiment'
+            echo 'updaterSchema=2'
+            echo 'baseBranch=Buick-Test'
+            echo "sourceBranch=$GITHUB_REF_NAME"
+            echo 'applicationId=io.github.buick.test.cardeck'
+            echo "versionName=$T107_VERSION_NAME"
+            echo "versionCode=$T107_VERSION_CODE"
+            echo "builtAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo 'apkName=CarDeck-Buick-Test-T107.apk'
+            echo "commit=$GITHUB_SHA"
+            echo 'recoveryApkZip=T107-Recovery-T101.zip'
+            echo "recoveryVersionCode=$T107_RECOVERY_CODE"
+            echo
+            echo '## T107｜Buick Link+ 初始主音频声明时序单变量实验'
+            echo '以已签名 T101 源码为固定基线，依次应用固定 T104-v6、T105、T106 与本轮 T107 补丁。T106 实车仍断连，是明确失败基线。'
+            echo 'T107 仅在别克 B233 启用 CarPlay 音频时，参考 Buick Link+ 公开源的初始 mainAudio 声明时序，将原延迟声明提前至屏幕 SETUP 前；只在必要响应和会话校验通过后开始音频 SETUP。'
+            echo 'GitHub 分支保存固定输入补丁及流水线，实际 Kotlin 源码在工作流隔离 worktree 中按固定基线展开。视频-only/A2DP 不提前声明 mainAudio；不改 RTP、RTCP、配对或更新渠道。'
+            echo 'Android JUnit、Lint、Release 和原 Test 证书校验通过才能发布；并不意味着约20秒音频断连已经过实车验证。#11 保持 P0 开放。'
+            echo
+            echo '## 停车测试与撤回'
+            echo '先下载并保存 Recovery-T101 ZIP；验证签名和版本号后，用户主动用系统安装器覆盖，不卸载、不清除数据。'
+            echo '先视频/触控/蓝牙，后单轮音频。若发生连接断开或约20秒 EOF，立即停止重复试验并保留脱敏诊断日志。'
+            echo '恢复 ZIP 中为按 T101 精确源码重建、同证书、高于本试验版 versionCode 的安装包，只能恢复运行行为，不代表修复音频 P0。'
+            echo '未改变 Buick/Buick-E5/Buick-Test/main 或 *-latest 正式更新频道。'
+          } > t107-release-notes.txt
+          gh release create "$tag" \
+            CarDeck-Buick-Test-T107.apk CarDeck-Buick-Test-T107.apk.sha256 \
+            T107-Recovery-T101.zip T107-Recovery-T101.zip.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Buick-Test T107 early mainAudio claim $T107_VERSION_NAME" \
+            --notes-file t107-release-notes.txt --prerelease --latest=false
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .draft)" = false
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .prerelease)" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)" = "$GITHUB_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .body | grep -Fxq "sourceBranch=$GITHUB_REF_NAME"
+          echo "T107_GITHUB_EXPERIMENT_PUBLISHED=PASS tag=$tag"
