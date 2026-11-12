@@ -26,6 +26,7 @@ internal object ExperimentProjectCatalog {
     fun name(sourceBranch: String): String {
         val slug = sourceBranch.substringAfterLast('/')
         return when (sourceBranch) {
+            "experiment/buick-e5-window-fullscreen-toggle" -> "E5 窗口全屏切换"
             "experiment/buick-e5-bluetooth-a2dp-preserve" -> "蓝牙音源保护（A2DP/HFP）"
             "experiment/buick-e5-detailed-diagnostics" -> "详细故障诊断与日志"
             "experiment/buick-e5-iap2-stop-safety" -> "iAP2 安全退出"
