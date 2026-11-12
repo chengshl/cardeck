@@ -1192,10 +1192,9 @@ object VirtualLauncher {
             Bg.run("dashboard-enter") {
                 if (!dashboardMode) return@run
                 ensureMapTask()
-                if (mapFullscreen) setMapFullscreen(false)
-                // 期间用户可能已点开普通应用（launchApp 会置 HIDDEN 并退出仪表盘）：
-                // 复查模式，别把地图层又盖回去
-                if (dashboardMode) {
+                if (mapFullscreen && !windowMapExpanded) setMapFullscreen(false)
+                // A pending dashboard task must not shrink a newly maximized map.
+                if (dashboardMode && !windowMapExpanded) {
                     resizeMapDisplay(fullscreen = false)
                     composer?.setTileLayout(DualDisplayComposer.TileLayout.SPLIT)
                 }
