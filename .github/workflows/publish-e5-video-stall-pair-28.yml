@@ -1,4 +1,4 @@
-name: E5 #28 signed video write-stall repair and stable recovery
+name: "E5 #28 signed video write-stall repair and stable recovery"
 on:
   push:
     branches: [experiment/buick-e5-video-write-stall-delivery-28-20261112]
@@ -20,7 +20,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-video-write-stall-delivery-28-20261112"
-          test "$(git rev-parse HEAD^)" = "814c279906bee68645238bbdb10e862431125c95"
+          test "$(git rev-parse HEAD^)" = "a4c45d0a088d83663ecd6156822ffe8a1224f890"
           test "$(git rev-parse origin/Buick-E5)" = "550f30272f3545f76650478788155ba1374fdc5e"
           python3 - <<'PY'
           import subprocess
@@ -30,7 +30,7 @@ jobs:
           source='814c279906bee68645238bbdb10e862431125c95'
           publish='.github/workflows/publish-e5-video-stall-pair-28.yml'
           assert changed(source,'HEAD') == {publish}, 'Only one delivery workflow may be added'
-          assert int(subprocess.check_output(['git','rev-list','--count',source+'..HEAD'],text=True)) == 1
+          assert int(subprocess.check_output(['git','rev-list','--count',source+'..HEAD'],text=True)) == 2
           video='app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
           ci='.github/workflows/ci-e5-video-write-stall-28.yml'
           expected={publish,video,ci}
