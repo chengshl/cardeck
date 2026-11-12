@@ -685,6 +685,9 @@ class GridActivity : AppCompatActivity() {
             finish()
             return
         }
+        // Android Back can reveal this launcher without going through goGrid().
+        // Never leave a full-screen app texture/button over the desktop.
+        VirtualLauncher.onGridResumed()
         // 也覆盖从设置页返回：勾选变化即时反映
         computeCellMetrics()
         reload()

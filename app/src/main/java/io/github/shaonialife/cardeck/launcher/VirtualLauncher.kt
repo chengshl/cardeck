@@ -1162,6 +1162,15 @@ object VirtualLauncher {
         return result.ok && result.output.contains("Starting:", ignoreCase = true)
     }
 
+    /** Exit third-party fullscreen when Android itself returns to the car desktop. */
+    fun onGridResumed() {
+        if (!standaloneAppVisible && !windowAppExpanded) return
+        standaloneAppVisible = false
+        windowAppExpanded = false
+        composer?.appCoversCanvas = false
+        refreshWindowToggle()
+    }
+
     /** 回桌面：保持 Buick B233 会话保护，避免在 UI 主线程同步执行 Shell。 */
     fun goGrid() {
         if (!sessionAttached) return

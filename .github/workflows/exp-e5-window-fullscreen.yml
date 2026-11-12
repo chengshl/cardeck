@@ -28,7 +28,7 @@ jobs:
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-window-fullscreen-toggle"
           test "$GITHUB_REPOSITORY" = "chengshl/cardeck"
-          echo 'EXPERIMENT_TAG=exp-buick-e5-window-fullscreen-v3' >> "$GITHUB_ENV"
+          echo 'EXPERIMENT_TAG=exp-buick-e5-window-fullscreen-v4' >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -105,7 +105,7 @@ jobs:
             echo "Experiment tag already exists; refusing to overwrite"
             exit 0
           fi
-          APK=CarDeck-Buick-E5-Window-Fullscreen-v3.apk
+          APK=CarDeck-Buick-E5-Window-Fullscreen-v4.apk
           cp app/build/outputs/apk/release/app-release.apk "$APK"
           sha256sum "$APK" > "$APK.sha256"
           {
@@ -131,5 +131,5 @@ jobs:
           } > release-notes.txt
           gh release create "$EXPERIMENT_TAG" "$APK" "$APK.sha256" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "E5 全应用窗口全屏切换 · 实验 v3" \
+            --title "E5 全应用窗口全屏切换 · 实验 v4" \
             --notes-file release-notes.txt --prerelease --latest=false
