@@ -1,0 +1,189 @@
+name: E5 video write-stall P0 test and single signed experiment (#28)
+on:
+  push:
+    branches: [experiment/buick-e5-video-write-stall-28-20261112]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - '.github/workflows/ci-e5-video-write-stall-28.yml'
+  pull_request:
+    branches: [experiment/buick-e5-window-fullscreen-toggle]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: e5-video-write-stall-28-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Build exact reviewed PR head rather than a synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify current installed-v4 provenance and video-only candidate scope
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          base = '8fb35af2923eea6b0db68ca02cfd5aeca42a63f4'
+          source = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+          ci = '.github/workflows/ci-e5-video-write-stall-28.yml'
+          candidate = git('rev-parse', 'HEAD')
+          assert git('merge-base', base, candidate) == base, 'Not derived from signed v4 source'
+          changed = set(git('diff', '--name-only', base, candidate).splitlines())
+          assert changed == {source, ci}, f'Unreviewed L3 candidate scope: {sorted(changed)}'
+          assert git('rev-parse', base + ':' + source) == 'e64348da3c3a97c90802c133389c191b63a0f3bd'
+          assert git('rev-parse', candidate + ':' + source) == '021c55cb28da0be35a049b76414b42889aca2b05'
+          text = git('show', candidate + ':' + source)
+          assert 'VIDEO_WRITE_STALL_MS = 8_000L' in text
+          assert 'val ownedSocket = socket ?: return' in text
+          assert 'streamEpoch.get() != epoch || socket !== ownedSocket' in text
+          assert 'ownedSocket.close()' in text
+          assert text.count('lastCompletedWriteAt.set(android.os.SystemClock.uptimeMillis())') == 4
+          assert text.index('retiredSocket?.close()') < text.index('encoder?.stop()')
+          assert 'onEnded?.invoke()' in text
+          assert 'Thread({ watchVideoWriteProgress(currentEpoch) }' in text
+          print('PASS: exactly two files, immutable v4 source and bounded write-stall retirement')
+          PY
+      - name: Full Android JUnit and unsigned Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Full Android Lint; reject errors in modified video source
+        run: |
+          set -e
+          ./gradlew :app:lintDebug --continue || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path=Path('app/build/reports/lint-results-debug.xml')
+          assert path.is_file(), 'Missing lint XML report'
+          root=ET.parse(path).getroot()
+          errors=[]
+          total=0
+          for issue in root.findall('issue'):
+              if issue.attrib.get('severity') != 'Error': continue
+              total += 1
+              for loc in issue.findall('location'):
+                  if loc.attrib.get('file','').endswith('/video/VideoSender.kt'):
+                      errors.append(issue.attrib.get('id','unknown'))
+          print(f'Lint errors across repository: {total}; changed VideoSender: {len(errors)}')
+          assert not errors, f'New modified video source lint errors: {errors}'
+          PY
+      - name: Restore existing E5 signing key for single APK
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 160 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'experiment/buick-e5-video-write-stall-28-20261112'
+        env:
+          SOURCE_REF: ${{ github.event.pull_request.head.ref }}
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$SOURCE_REF" = "experiment/buick-e5-video-write-stall-28-20261112"
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/e5-video.p12"
+          chmod 600 "$RUNNER_TEMP/e5-video.p12"
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/e5-video.p12"
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Allocate one globally increasing E5 experiment version
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 160 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'experiment/buick-e5-video-write-stall-28-20261112'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ github.event.pull_request.head.ref }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 -m unittest tools.release.test_allocate_version
+          # On PR events GITHUB_REF_NAME is 160/merge, not the APK branch.
+          GITHUB_REF_NAME="$SOURCE_REF" GITHUB_SHA="$SOURCE_SHA" python3 tools/release/allocate_version.py
+      - name: Assemble exactly one signed experimental APK
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 160 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'experiment/buick-e5-video-write-stall-28-20261112'
+        env:
+          SOURCE_BRANCH: experiment/buick-e5-video-write-stall-28-20261112
+        run: |
+          set -euo pipefail
+          test "$CARDECK_RELEASE_BRANCH" = "$SOURCE_BRANCH"
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+      - name: Verify APK package, version, and official E5 certificate
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 160 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'experiment/buick-e5-video-write-stall-28-20261112'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_BRANCH: experiment/buick-e5-video-write-stall-28-20261112
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          SIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$AAPT" && test -x "$SIGNER"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          "$SIGNER" verify --print-certs "$APK" > "$RUNNER_TEMP/video-cert.txt"
+          ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/video-cert.txt"
+          CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/video-cert.txt" | head -n 1)"
+          test -n "$CERT"
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \
+            --pattern CarDeck-Buick-E5.apk --dir "$RUNNER_TEMP"
+          "$SIGNER" verify --print-certs "$RUNNER_TEMP/CarDeck-Buick-E5.apk" > "$RUNNER_TEMP/e5-cert.txt"
+          OFFICIAL="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/e5-cert.txt" | head -n 1)"
+          test -n "$OFFICIAL" && test "${CERT,,}" = "${OFFICIAL,,}"
+          RESOURCES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'cardeck_installed_build_origin' <<< "$RESOURCES"
+          grep -Fq "$SOURCE_BRANCH" <<< "$RESOURCES"
+      - name: Publish one isolated E5 video fix APK (no recovery build)
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 160 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'experiment/buick-e5-video-write-stall-28-20261112'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ github.event.pull_request.head.ref }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$SOURCE_REF" = "experiment/buick-e5-video-write-stall-28-20261112"
+          TAG="exp-buick-e5-video-stall-28-$CARDECK_RELEASE_VERSION_NAME"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Experiment tag already exists; refusing overwrite"
+            exit 1
+          fi
+          APK=CarDeck-E5-Video-Stall-28.apk
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          sha256sum "$APK" > "$APK.sha256"
+          {
+            echo 'artifactKind=experiment'
+            echo 'updaterSchema=2'
+            echo 'baseBranch=Buick-E5'
+            echo "sourceBranch=$SOURCE_REF"
+            echo "commit=$SOURCE_SHA"
+            echo "versionName=$CARDECK_RELEASE_VERSION_NAME"
+            echo "versionCode=$CARDECK_BUILD_VERSION_CODE"
+            echo "apkName=$APK"
+            echo "builtAt=$(date -u +%FT%TZ)"
+            echo
+            echo 'P0 video TCP write-progress stall retirement; based on the working v4 fullscreen source.'
+            echo 'Single experimental APK; no recovery APK is built or published by default.'
+            echo 'CarPlay/AV and full-screen real-vehicle acceptance is pending. Do not merge into stable before verification.'
+          } > release-notes.txt
+          gh release create "$TAG" "$APK" "$APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
+            --title "E5 视频推流停滞保护 · 单 APK 实验" \
+            --notes-file release-notes.txt --prerelease --latest=false
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
