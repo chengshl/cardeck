@@ -114,6 +114,8 @@ jobs:
             echo "branch=Buick-E5"
             echo "baseBranch=Buick-E5"
             echo "sourceBranch=$GITHUB_REF_NAME"
+            echo "artifactKind=experiment"
+            echo "apkName=$APK"
             echo "updaterSchema=2"
             echo "commit=$GITHUB_SHA"
             echo "builtAt=$(date -u +%FT%TZ)"
