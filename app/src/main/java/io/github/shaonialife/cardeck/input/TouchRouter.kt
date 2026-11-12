@@ -40,6 +40,9 @@ object TouchRouter {
     /** 叠加卡片手势状态（卡片命中后独占触摸，不再注入应用）。 */
     private var overlayPressed = false
 
+    /** The maximize/restore control owns its full gesture; no underlying app tap leaks. */
+    private var windowTogglePressed = false
+
     /** 分屏把手粘性路由状态（命中把手条后整条触摸流固定路由应用屏）。 */
     private var splitHandlePressed = false
 
@@ -124,6 +127,24 @@ object TouchRouter {
 
         val launcher = VirtualLauncher
         val dockW = launcher.dockWidthPx
+        val hitWindowToggle = launcher.windowToggleHit(px.toFloat(), py.toFloat())
+        when (resolveCardGesture(
+            launcher.windowToggleVisible(), windowTogglePressed, contact.down,
+            hitWindowToggle, appGestureActive = pressed,
+        )) {
+            CardGesture.NOT_HANDLED -> windowTogglePressed = false
+            CardGesture.CONSUME -> {
+                windowTogglePressed = contact.down
+                return
+            }
+            CardGesture.TAP -> {
+                windowTogglePressed = false
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    launcher.toggleWindowMapFullscreen()
+                }
+                return
+            }
+        }
         if (dockW <= 0 || launcher.appDisplayId < 0 || launcher.dockDisplayId < 0) return
         var svc = CarInputClient.service
         if (svc == null) {
@@ -157,7 +178,19 @@ object TouchRouter {
         val handlePin =
             splitHandlePressed ||
                 (contact.down && !pressed && launcher.dashHandleHit(px.toFloat(), py.toFloat()))
-        if (handlePin) {
+        if (launcher.windowMapExpanded && launcher.mapFullscreen && launcher.mapDisplayId >= 0) {
+            // The map covers the entire encoded canvas. Map display stays at its
+            // existing app-area dimensions, so inverse-scale all touch coordinates.
+            inDock = false
+            targetDisplay = launcher.mapDisplayId
+            val (mapW, mapH) = launcher.hintDisplaySize(targetDisplay)
+                ?: (launcher.appAreaWidth to launcher.appAreaHeight)
+            localX = (px.toLong() * mapW / launcher.streamWidthPx.coerceAtLeast(1))
+                .toInt().coerceIn(0, (mapW - 1).coerceAtLeast(0))
+            localY = (py.toLong() * mapH / launcher.streamHeightPx.coerceAtLeast(1))
+                .toInt().coerceIn(0, (mapH - 1).coerceAtLeast(0))
+            routedToMap = true
+        } else if (handlePin) {
             splitHandlePressed = contact.down
             inDock = false
             targetDisplay =
@@ -233,7 +266,8 @@ object TouchRouter {
         // T37: inverse-transform only the fullscreen standalone application.
         // Dashboard split-map/home/Dock keep their existing 1:1 routing.
         val fitted = launcher.standaloneFit
-        val fittingMap = launcher.mapFullscreen && targetDisplay == launcher.mapDisplayId
+        val fittingMap = launcher.mapFullscreen && !launcher.windowMapExpanded &&
+            targetDisplay == launcher.mapDisplayId
         val fittingApp = targetDisplay == launcher.activeAppDisplayId() && !launcher.dashboardMode
         if (fitted != null && !inDock && (fittingMap || fittingApp)) {
             if (!fitted.contains(px, py) && !pressed) {
@@ -349,6 +383,7 @@ object TouchRouter {
         pressed = false
         pressedDisplay = -1
         overlayPressed = false
+        windowTogglePressed = false
         splitHandlePressed = false
         cancelMapTileTap()
         tapDragSlot = -1
