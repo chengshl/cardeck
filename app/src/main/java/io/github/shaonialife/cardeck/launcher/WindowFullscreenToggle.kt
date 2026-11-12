@@ -47,6 +47,28 @@ internal object WindowFullscreenToggle {
         return WindowButtonBounds(left, top, left + size, bottom)
     }
 
+    /** For third-party apps, use actual visible content bounds (including optional safe fit). */
+    fun appBounds(
+        streamW: Int,
+        streamH: Int,
+        windowLeft: Int,
+        windowTop: Int,
+        windowW: Int,
+        windowH: Int,
+        maximized: Boolean,
+    ): WindowButtonBounds? {
+        if (streamW <= 0 || streamH <= 0 || windowW <= 0 || windowH <= 0) return null
+        val shorter = minOf(streamW, streamH).toFloat()
+        val size = (shorter * 0.105f).coerceIn(48f, 84f)
+        val inset = (shorter * 0.02f).coerceIn(8f, 20f)
+        if (!maximized && (windowW < size + inset * 2 || windowH < size + inset * 2)) return null
+        val left = if (maximized) inset else windowLeft + inset
+        val bottom = if (maximized) streamH - inset else windowTop + windowH - inset
+        val top = bottom - size
+        if (left < 0f || top < 0f || left + size > streamW || bottom > streamH) return null
+        return WindowButtonBounds(left, top, left + size, bottom)
+    }
+
     fun paint(bounds: WindowButtonBounds, maximized: Boolean): OverlayCard {
         val edge = (bounds.right - bounds.left).toInt().coerceAtLeast(1)
         val bitmap = Bitmap.createBitmap(edge, edge, Bitmap.Config.ARGB_8888)

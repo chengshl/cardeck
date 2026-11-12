@@ -140,7 +140,7 @@ object TouchRouter {
             CardGesture.TAP -> {
                 windowTogglePressed = false
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    launcher.toggleWindowMapFullscreen()
+                    launcher.toggleWindowFullscreen()
                 }
                 return
             }
@@ -178,7 +178,19 @@ object TouchRouter {
         val handlePin =
             splitHandlePressed ||
                 (contact.down && !pressed && launcher.dashHandleHit(px.toFloat(), py.toFloat()))
-        if (launcher.windowMapExpanded && launcher.mapFullscreen && launcher.mapDisplayId >= 0) {
+        if (launcher.windowAppExpanded && launcher.standaloneAppVisible) {
+            // Rendered app input now fills the entire stream. Invert that scale to
+            // the active native/supersampled virtual display (no task recreation).
+            inDock = false
+            targetDisplay = launcher.activeAppDisplayId()
+            val scale = launcher.activeAppScale().coerceAtLeast(1f)
+            val (appW, appH) = launcher.hintDisplaySize(targetDisplay)
+                ?: ((launcher.appAreaWidth * scale).toInt() to (launcher.appAreaHeight * scale).toInt())
+            localX = (px.toLong() * appW / launcher.streamWidthPx.coerceAtLeast(1))
+                .toInt().coerceIn(0, (appW - 1).coerceAtLeast(0))
+            localY = (py.toLong() * appH / launcher.streamHeightPx.coerceAtLeast(1))
+                .toInt().coerceIn(0, (appH - 1).coerceAtLeast(0))
+        } else if (launcher.windowMapExpanded && launcher.mapFullscreen && launcher.mapDisplayId >= 0) {
             // The map covers the entire encoded canvas. Map display stays at its
             // existing app-area dimensions, so inverse-scale all touch coordinates.
             inDock = false
@@ -268,7 +280,8 @@ object TouchRouter {
         val fitted = launcher.standaloneFit
         val fittingMap = launcher.mapFullscreen && !launcher.windowMapExpanded &&
             targetDisplay == launcher.mapDisplayId
-        val fittingApp = targetDisplay == launcher.activeAppDisplayId() && !launcher.dashboardMode
+        val fittingApp = targetDisplay == launcher.activeAppDisplayId() &&
+            !launcher.dashboardMode && !launcher.windowAppExpanded
         if (fitted != null && !inDock && (fittingMap || fittingApp)) {
             if (!fitted.contains(px, py) && !pressed) {
                 // A fresh touch on a wallpaper safety band is not an app touch.

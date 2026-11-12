@@ -28,7 +28,7 @@ jobs:
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-window-fullscreen-toggle"
           test "$GITHUB_REPOSITORY" = "chengshl/cardeck"
-          echo 'EXPERIMENT_TAG=exp-buick-e5-window-fullscreen-v2' >> "$GITHUB_ENV"
+          echo 'EXPERIMENT_TAG=exp-buick-e5-window-fullscreen-v3' >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -105,7 +105,7 @@ jobs:
             echo "Experiment tag already exists; refusing to overwrite"
             exit 0
           fi
-          APK=CarDeck-Buick-E5-Window-Fullscreen-v2.apk
+          APK=CarDeck-Buick-E5-Window-Fullscreen-v3.apk
           cp app/build/outputs/apk/release/app-release.apk "$APK"
           sha256sum "$APK" > "$APK.sha256"
           {
@@ -122,12 +122,14 @@ jobs:
             echo "timezone=Asia/Shanghai"
             echo
             echo "## 更新说明"
-            echo "- 新增仪表盘地图窗口左下角半透明最大化/还原按钮。"
+            echo "- 地图窗口已通过实车验证，保留原有放大和还原逻辑。"
+            echo "- 将左下角半透明按钮扩展到普通第三方 App，整屏覆盖 Dock，触摸同步映射。"
+            echo "- 普通应用还原后保留原虚拟屏任务、窗口布局与应用状态。"
             echo "- 最大化覆盖整幅车机画面（包括 Dock），再次点击回到原窗口。"
             echo "- 实验版本列表显示中文名称：E5 窗口全屏切换。"
             echo "- 仅 E5 隔离试验，未合入稳定分支；安装前确认签名和版本。"
           } > release-notes.txt
           gh release create "$EXPERIMENT_TAG" "$APK" "$APK.sha256" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "E5 窗口全屏切换 · 实验 v2" \
+            --title "E5 全应用窗口全屏切换 · 实验 v3" \
             --notes-file release-notes.txt --prerelease --latest=false

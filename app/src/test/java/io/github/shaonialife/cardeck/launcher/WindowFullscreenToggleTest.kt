@@ -27,6 +27,25 @@ class WindowFullscreenToggleTest {
         assertTrue(bounds.bottom < 16f + 472f)
     }
 
+    @Test fun standaloneLandscapeWindowAndFullscreenUseCorrectAnchors() {
+        val original = WindowFullscreenToggle.appBounds(1160, 540, 126, 0, 1034, 540, false)!!
+        assertTrue(original.left > 126f)
+        assertTrue(original.bottom <= 540f)
+        val expanded = WindowFullscreenToggle.appBounds(1160, 540, 126, 0, 1034, 540, true)!!
+        assertTrue(expanded.left < 126f)
+        assertTrue(expanded.bottom <= 540f)
+    }
+
+    @Test fun standaloneSafeFitAndPortraitDockAreSupported() {
+        val safe = WindowFullscreenToggle.appBounds(1160, 540, 170, 24, 850, 450, false)!!
+        assertTrue(safe.left >= 170f)
+        assertTrue(safe.bottom < 474f)
+        val portrait = WindowFullscreenToggle.appBounds(540, 1160, 0, 0, 540, 1040, false)!!
+        assertTrue(portrait.left > 0f)
+        assertTrue(portrait.bottom < 1040f)
+        assertTrue(portrait.top > 0f)
+    }
+
     @Test fun unavailableDisplayHidesControl() {
         assertNull(WindowFullscreenToggle.bounds(0, 540, 126, false, 463, 488, 16, 16, false))
     }

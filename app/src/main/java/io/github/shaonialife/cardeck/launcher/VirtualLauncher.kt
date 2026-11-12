@@ -345,6 +345,15 @@ object VirtualLauncher {
     var windowMapExpanded: Boolean = false
         private set
 
+    /** A successful third-party launch owns the app display until Home/Desktop/Map. */
+    @Volatile
+    var standaloneAppVisible: Boolean = false
+        private set
+
+    @Volatile
+    var windowAppExpanded: Boolean = false
+        private set
+
     @Volatile
     private var windowToggleBounds: WindowButtonBounds? = null
 
@@ -480,20 +489,46 @@ object VirtualLauncher {
         composer?.overlayCard = card
     }
 
-    /** A small, separately composited control: it is never injected into the map app. */
+    /** The same screen-space button supports map tiles and standalone third-party apps. */
     private fun refreshWindowToggle() {
-        val visible = sessionAttached && mapDisplayId >= 0 &&
+        val mapWindow = sessionAttached && mapDisplayId >= 0 &&
             (windowMapExpanded || (dashboardMode && !mapFullscreen))
-        val bounds = if (visible) {
-            WindowFullscreenToggle.bounds(
+        val appWindow = sessionAttached && standaloneAppVisible &&
+            !dashboardMode && !mapFullscreen
+        val bounds = when {
+            mapWindow -> WindowFullscreenToggle.bounds(
                 streamWidthPx, streamHeightPx, dockWidthPx, dockAtBottom,
                 mapTileWidth, mapTileHeight, mapTileTopPx, mapTileBottomPx,
                 windowMapExpanded,
             )
-        } else null
+            appWindow -> {
+                val fit = standaloneFit
+                val left = fit?.left ?: if (dockAtBottom) 0 else dockWidthPx
+                val top = fit?.top ?: 0
+                val width = fit?.width ?: appAreaWidth
+                val height = fit?.height ?: appAreaHeight
+                WindowFullscreenToggle.appBounds(
+                    streamWidthPx, streamHeightPx, left, top, width, height,
+                    windowAppExpanded,
+                )
+            }
+            else -> null
+        }
         windowToggleBounds = bounds
         composer?.toggleOverlayCard = bounds?.let {
-            WindowFullscreenToggle.paint(it, windowMapExpanded)
+            WindowFullscreenToggle.paint(it, windowMapExpanded || windowAppExpanded)
+        }
+    }
+
+    /** Called only after the gesture is consumed, never forwarded to the third-party app. */
+    fun toggleWindowFullscreen() {
+        if (standaloneAppVisible && !dashboardMode && !mapFullscreen) {
+            windowAppExpanded = !windowAppExpanded
+            composer?.appCoversCanvas = windowAppExpanded
+            refreshWindowToggle()
+            logSink?.invoke("LAUNCHER: 普通应用 ${if (windowAppExpanded) "整屏覆盖" else "恢复窗口"}")
+        } else {
+            toggleWindowMapFullscreen()
         }
     }
 
@@ -1096,6 +1131,8 @@ object VirtualLauncher {
         appAreaHeight = 0
         mapFullscreen = false
         windowMapExpanded = false
+        standaloneAppVisible = false
+        windowAppExpanded = false
         windowToggleBounds = null
         // 提示卡片属于会话状态：拆屏时一并清掉（合成器已停，卡片纹理随 GL 上下文销毁）
         LetterboxHintController.clear()
@@ -1128,7 +1165,11 @@ object VirtualLauncher {
     /** 回桌面：保持 Buick B233 会话保护，避免在 UI 主线程同步执行 Shell。 */
     fun goGrid() {
         if (!sessionAttached) return
+        standaloneAppVisible = false
+        windowAppExpanded = false
+        composer?.appCoversCanvas = false
         resetStandaloneFit()
+        refreshWindowToggle()
         val grid = if (gridDisplayId >= 0) gridDisplayId else appDisplayId
         val pkg = appContextRef?.packageName ?: return
         Bg.run("go-grid") {
@@ -1189,6 +1230,9 @@ object VirtualLauncher {
             composer?.mapCoversCanvas = false
         }
         if (dashboard) {
+            standaloneAppVisible = false
+            windowAppExpanded = false
+            composer?.appCoversCanvas = false
             Bg.run("dashboard-enter") {
                 if (!dashboardMode) return@run
                 ensureMapTask()
@@ -1413,6 +1457,9 @@ object VirtualLauncher {
      * 地图应用之间的切换（高德 ↔ 百度）也在同一块屏上进行，旧任务被清（互斥）。
      */
     private fun launchMapOnMapDisplay(component: ComponentName): Boolean {
+        standaloneAppVisible = false
+        windowAppExpanded = false
+        composer?.appCoversCanvas = false
         windowMapExpanded = false
         composer?.mapCoversCanvas = false
         dashboardMode = false
@@ -1608,6 +1655,9 @@ object VirtualLauncher {
                 "out=${result.output.take(80)}",
         )
         if (ok) {
+            standaloneAppVisible = true
+            windowAppExpanded = false
+            composer?.appCoversCanvas = false
             launchedAppTargets[component.packageName] = targetDisplay
             synchronized(runningApps) { runningApps.add(component) }
             notifyRunningAppsChanged()
@@ -1626,6 +1676,7 @@ object VirtualLauncher {
             // 合成器切到目标屏（超采样屏等其出帧再切；原生屏即时切换）
             composer?.requestActiveApp(targetDisplay == appHiDisplayId)
             selectStandaloneFit(component.packageName)
+            refreshWindowToggle()
             // 应用已在运行、被系统按旧配置带回前台的情况：启动后探测一次是否仍
             // letterbox（提示卡只对「应用横屏」名单内的应用生效，其它应用不计）
             val ctx = appContextRef

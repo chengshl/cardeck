@@ -91,6 +91,9 @@ class DualDisplayComposer(
     /** True only for the user-requested window maximization, not normal map fullscreen. */
     @Volatile var mapCoversCanvas: Boolean = false
 
+    /** Enlarged third-party app covers the complete canvas, including Dock. */
+    @Volatile var appCoversCanvas: Boolean = false
+
     @Volatile
     var toggleOverlayCard: OverlayCard? = null
         set(value) {
@@ -793,6 +796,9 @@ class DualDisplayComposer(
             // virtual display is created and the map task remains on its original screen.
             if (mapCoversCanvas && tileLayout == TileLayout.FULLSCREEN && map?.hasContent == true) {
                 drawInputUV(map!!, 0f, outWidth.toFloat(), 0f, outHeight.toFloat(), cornerRadius = 0f)
+            }
+            if (appCoversCanvas && activeInput?.hasContent == true) {
+                drawInputUV(activeInput, 0f, outWidth.toFloat(), 0f, outHeight.toFloat(), cornerRadius = 0f)
             }
             syncOverlayTexture()?.let { card ->
                 drawOverlay(card, card.left, card.top, card.right, card.bottom)
