@@ -1,0 +1,130 @@
+name: E5 window fullscreen - isolated signed experiment
+
+on:
+  push:
+    branches:
+      - experiment/buick-e5-window-fullscreen-toggle
+    paths:
+      - 'app/src/main/**'
+      - 'app/src/test/**'
+      - '.github/workflows/exp-e5-window-fullscreen.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify isolated branch and release destination
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-window-fullscreen-toggle"
+          test "$GITHUB_REPOSITORY" = "chengshl/cardeck"
+          echo 'EXPERIMENT_TAG=exp-buick-e5-window-fullscreen-v1' >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Restore existing E5 signing certificate
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-upload.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-upload.p12"
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/cardeck-upload.p12"
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: Verify JVM tests and compile
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Allocate version above all published CarDeck APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/release/allocate_version.py
+      - name: Build signed experiment APK
+        env:
+          SOURCE_BRANCH: experiment/buick-e5-window-fullscreen-toggle
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify package, version, certificate parity and fingerprint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          SIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$AAPT" && test -x "$SIGNER"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          "$SIGNER" verify --print-certs "$APK" > "$RUNNER_TEMP/exp-cert.txt"
+          ! grep -qi 'CN=Android Debug' "$RUNNER_TEMP/exp-cert.txt"
+          NEW="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/exp-cert.txt" | head -n 1)"
+          test -n "$NEW"
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" \
+            --pattern CarDeck-Buick-E5.apk --dir "$RUNNER_TEMP"
+          "$SIGNER" verify --print-certs "$RUNNER_TEMP/CarDeck-Buick-E5.apk" > "$RUNNER_TEMP/e5-cert.txt"
+          OLD="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' "$RUNNER_TEMP/e5-cert.txt" | head -n 1)"
+          test -n "$OLD" && test "${NEW,,}" = "${OLD,,}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: E5-window-fullscreen-${{ github.run_id }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+      - name: Publish isolated prerelease (never touch E5 latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-window-fullscreen-toggle"
+          if gh release view "$EXPERIMENT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Experiment tag already exists; refusing to overwrite"
+            exit 0
+          fi
+          APK=CarDeck-Buick-E5-Window-Fullscreen-v1.apk
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          sha256sum "$APK" > "$APK.sha256"
+          {
+            echo "versionName=$CARDECK_RELEASE_VERSION_NAME"
+            echo "versionCode=$CARDECK_BUILD_VERSION_CODE"
+            echo "branch=Buick-E5"
+            echo "baseBranch=Buick-E5"
+            echo "sourceBranch=$GITHUB_REF_NAME"
+            echo "updaterSchema=2"
+            echo "commit=$GITHUB_SHA"
+            echo "builtAt=$(date -u +%FT%TZ)"
+            echo "timezone=Asia/Shanghai"
+            echo
+            echo "## 更新说明"
+            echo "- 新增仪表盘地图窗口左下角半透明最大化/还原按钮。"
+            echo "- 最大化覆盖整幅车机画面（包括 Dock），再次点击回到原窗口。"
+            echo "- 仅 E5 隔离试验，未合入稳定分支；安装前确认签名和版本。"
+          } > release-notes.txt
+          gh release create "$EXPERIMENT_TAG" "$APK" "$APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "E5 窗口整屏切换 · 实验 v1" \
+            --notes-file release-notes.txt --prerelease --latest=false
