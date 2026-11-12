@@ -88,6 +88,19 @@ class DualDisplayComposer(
     @Volatile var standaloneFit: io.github.shaonialife.cardeck.buick.BuickViewport? = null
     @Volatile var safeBackgroundBitmap: android.graphics.Bitmap? = null
 
+    /** True only for the user-requested window maximization, not normal map fullscreen. */
+    @Volatile var mapCoversCanvas: Boolean = false
+
+    /** Enlarged third-party app covers the complete canvas, including Dock. */
+    @Volatile var appCoversCanvas: Boolean = false
+
+    @Volatile
+    var toggleOverlayCard: OverlayCard? = null
+        set(value) {
+            field = value
+            overlayDirty = true
+        }
+
     companion object {
         private const val TAG = "DualComposer"
         private const val EGL_RECORDABLE_ANDROID = 0x3142
@@ -167,6 +180,9 @@ class DualDisplayComposer(
 
     /** 叠加卡片纹理（0 = 尚未创建，仅 GL 线程访问）。 */
     private var overlayTexture = 0
+
+    private var uploadedToggle: OverlayCard? = null
+    private var toggleTexture = 0
 
     /** 超采样输入（GL 线程创建；start() 返回后对其他线程安全可读）。 */
     @Volatile
@@ -428,6 +444,28 @@ class DualDisplayComposer(
             GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
             android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, card.bitmap, 0)
             uploadedOverlay = card
+            return card
+        }
+
+        /** Separate texture so the new control never hides the existing letterbox hint. */
+        fun syncToggleTexture(): OverlayCard? {
+            val card = toggleOverlayCard ?: run {
+                uploadedToggle = null
+                return null
+            }
+            if (card === uploadedToggle && toggleTexture != 0) return card
+            if (toggleTexture == 0) {
+                val tex = IntArray(1)
+                GLES20.glGenTextures(1, tex, 0)
+                toggleTexture = tex[0]
+            }
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, toggleTexture)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, card.bitmap, 0)
+            uploadedToggle = card
             return card
         }
 
@@ -754,9 +792,19 @@ class DualDisplayComposer(
                 // dock 最后绘制（最上层）：tile 滑动经过 dock 区域时从其下方穿过
                 if (dock.hasContent) drawInput(dock, 0f, dockW.toFloat(), 0f, outHeight.toFloat())
             }
-            // 叠加卡片最后绘制（最上层，不受分支影响）：卡片坐标为输出画面坐标（顶部原点）
+            // The map fully covers the Dock (including its menu/home rail). No new
+            // virtual display is created and the map task remains on its original screen.
+            if (mapCoversCanvas && tileLayout == TileLayout.FULLSCREEN && map?.hasContent == true) {
+                drawInputUV(map!!, 0f, outWidth.toFloat(), 0f, outHeight.toFloat(), cornerRadius = 0f)
+            }
+            if (appCoversCanvas && activeInput?.hasContent == true) {
+                drawInputUV(activeInput, 0f, outWidth.toFloat(), 0f, outHeight.toFloat(), cornerRadius = 0f)
+            }
             syncOverlayTexture()?.let { card ->
                 drawOverlay(card, card.left, card.top, card.right, card.bottom)
+            }
+            syncToggleTexture()?.let { card ->
+                drawOverlay(card, card.left, card.top, card.right, card.bottom, toggleTexture)
             }
             if (fullRedraw ||
                 overlayDirty ||
@@ -812,6 +860,10 @@ class DualDisplayComposer(
             if (overlayTexture != 0) {
                 runCatching { GLES20.glDeleteTextures(1, intArrayOf(overlayTexture), 0) }
                 overlayTexture = 0
+            }
+            if (toggleTexture != 0) {
+                runCatching { GLES20.glDeleteTextures(1, intArrayOf(toggleTexture), 0) }
+                toggleTexture = 0
             }
             if (fittedWallpaperTexture != 0) {
                 runCatching { GLES20.glDeleteTextures(1, intArrayOf(fittedWallpaperTexture), 0) }

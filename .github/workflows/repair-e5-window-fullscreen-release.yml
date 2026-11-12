@@ -1,0 +1,47 @@
+name: Repair E5 window fullscreen experiment catalog metadata
+
+on:
+  push:
+    branches: [experiment/buick-e5-window-fullscreen-toggle]
+    paths:
+      - '.github/workflows/repair-e5-window-fullscreen-release.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair-existing-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Correct missing catalog metadata on the existing signed experiment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "chengshl/cardeck"
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-window-fullscreen-toggle"
+          TAG="exp-buick-e5-window-fullscreen-v1"
+          APK="CarDeck-Buick-E5-Window-Fullscreen-v1.apk"
+          EXPECTED_SHA="76ea4980b8a9b83f2f403a45496edc13da61352c"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body' > release-notes.txt
+          grep -Fxq "sourceBranch=$GITHUB_REF_NAME" release-notes.txt
+          grep -Fxq "baseBranch=Buick-E5" release-notes.txt
+          grep -Fxq "updaterSchema=2" release-notes.txt
+          grep -Fxq "commit=$EXPECTED_SHA" release-notes.txt
+          grep -Fxq "versionCode=90389046" release-notes.txt
+          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')" = "true"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > asset-list.txt
+          grep -Fxq "$APK" asset-list.txt
+          grep -Fxq "$APK.sha256" asset-list.txt
+          if ! grep -Fxq "artifactKind=experiment" release-notes.txt; then
+            printf '\nartifactKind=experiment\n' >> release-notes.txt
+          fi
+          if ! grep -Fxq "apkName=$APK" release-notes.txt; then
+            printf 'apkName=%s\n' "$APK" >> release-notes.txt
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.txt
+          VERIFIED="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body')"
+          grep -Fxq "artifactKind=experiment" <<< "$VERIFIED"
+          grep -Fxq "apkName=$APK" <<< "$VERIFIED"
+          echo "RELEASE_METADATA_REPAIRED=$TAG; APK assets unchanged"
