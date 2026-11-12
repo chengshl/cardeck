@@ -176,6 +176,7 @@ jobs:
             echo "versionName=$CARDECK_RELEASE_VERSION_NAME"
             echo "versionCode=$CARDECK_BUILD_VERSION_CODE"
             echo "apkName=$APK"
+            echo "builtAt=$(date -u +%FT%TZ)"
             echo
             echo 'P0 video TCP write-progress stall retirement; based on the working v4 fullscreen source.'
             echo 'Single experimental APK; no recovery APK is built or published by default.'
