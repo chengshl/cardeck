@@ -1,0 +1,80 @@
+name: E5 video write-stall P0 isolated regression (#28)
+on:
+  push:
+    branches: [experiment/buick-e5-video-write-stall-28-20261112]
+    paths:
+      - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - '.github/workflows/ci-e5-video-write-stall-28.yml'
+  pull_request:
+    branches: [experiment/buick-e5-window-fullscreen-toggle]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: e5-video-write-stall-28-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify current installed-v4 provenance and video-only candidate scope
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          base = '8fb35af2923eea6b0db68ca02cfd5aeca42a63f4'
+          source = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+          ci = '.github/workflows/ci-e5-video-write-stall-28.yml'
+          candidate = git('rev-parse', 'HEAD^2' if os.getenv('GITHUB_EVENT_NAME') == 'pull_request' else 'HEAD')
+          assert git('merge-base', base, candidate) == base, 'Not derived from signed v4 source'
+          changed = set(git('diff', '--name-only', base, candidate).splitlines())
+          assert changed == {source, ci}, f'Unreviewed L3 candidate scope: {sorted(changed)}'
+          assert git('rev-parse', base + ':' + source) == 'e64348da3c3a97c90802c133389c191b63a0f3bd'
+          assert git('rev-parse', candidate + ':' + source) == '021c55cb28da0be35a049b76414b42889aca2b05'
+          text = git('show', candidate + ':' + source)
+          assert 'VIDEO_WRITE_STALL_MS = 8_000L' in text
+          assert 'val ownedSocket = socket ?: return' in text
+          assert 'streamEpoch.get() != epoch || socket !== ownedSocket' in text
+          assert 'ownedSocket.close()' in text
+          assert text.count('lastCompletedWriteAt.set(android.os.SystemClock.uptimeMillis())') == 4
+          assert text.index('retiredSocket?.close()') < text.index('encoder?.stop()')
+          assert 'onEnded?.invoke()' in text
+          assert 'Thread({ watchVideoWriteProgress(currentEpoch) }' in text
+          print('PASS: exactly two files, immutable v4 source and bounded write-stall retirement')
+          PY
+      - name: Full Android JUnit and unsigned Debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Full Android Lint; reject errors in modified video source
+        run: |
+          set -e
+          ./gradlew :app:lintDebug --continue || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path=Path('app/build/reports/lint-results-debug.xml')
+          assert path.is_file(), 'Missing lint XML report'
+          root=ET.parse(path).getroot()
+          errors=[]
+          total=0
+          for issue in root.findall('issue'):
+              if issue.attrib.get('severity') != 'Error': continue
+              total += 1
+              for loc in issue.findall('location'):
+                  if loc.attrib.get('file','').endswith('/video/VideoSender.kt'):
+                      errors.append(issue.attrib.get('id','unknown'))
+          print(f'Lint errors across repository: {total}; changed VideoSender: {len(errors)}')
+          assert not errors, f'New modified video source lint errors: {errors}'
+          PY
