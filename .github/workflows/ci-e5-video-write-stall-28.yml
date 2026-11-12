@@ -12,7 +12,7 @@ permissions:
   contents: write
 concurrency:
   group: e5-video-write-stall-28-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   android:
     runs-on: ubuntu-latest
