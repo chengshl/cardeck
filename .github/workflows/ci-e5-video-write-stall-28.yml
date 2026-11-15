@@ -4,6 +4,7 @@ on:
     branches: [experiment/buick-e5-video-write-stall-28-20261112]
     paths:
       - 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+      - 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
       - '.github/workflows/ci-e5-video-write-stall-28.yml'
   pull_request:
     branches: [experiment/buick-e5-window-fullscreen-toggle]
@@ -37,6 +38,7 @@ jobs:
               return subprocess.check_output(['git', *args], text=True).strip()
           base = '8fb35af2923eea6b0db68ca02cfd5aeca42a63f4'
           source = 'app/src/main/java/io/github/shaonialife/cardeck/video/VideoSender.kt'
+          session = 'app/src/main/java/io/github/shaonialife/cardeck/SessionController.kt'
           ci = '.github/workflows/ci-e5-video-write-stall-28.yml'
           candidate = git('rev-parse', 'HEAD')
           assert git('merge-base', base, candidate) == base, 'Not derived from signed v4 source'
@@ -44,7 +46,7 @@ jobs:
           catalog = 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt'
           catalog_test = 'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt'
           update_ui = 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt'
-          assert changed == {source, ci, catalog, catalog_test, update_ui}, f'Unreviewed L3 candidate scope: {sorted(changed)}'
+          assert changed == {source, session, ci, catalog, catalog_test, update_ui}, f'Unreviewed L3 candidate scope: {sorted(changed)}'
           assert 'E5 视频推流停滞保护（#28）' in git('show', candidate + ':' + catalog)
           assert '其他实验（项目编号 ' in git('show', candidate + ':' + catalog)
           assert '"版本号：${it.newest.versionCode}"' in git('show', candidate + ':' + update_ui)
@@ -60,7 +62,11 @@ jobs:
           assert text.index('retiredSocket?.close()') < text.index('encoder?.stop()')
           assert 'onEnded?.invoke()' in text
           assert 'Thread({ watchVideoWriteProgress(currentEpoch) }' in text
-          print('PASS: exactly two files, immutable v4 source and bounded write-stall retirement')
+          session_text = git('show', candidate + ':' + session)
+          port_guard = session_text.index('if (!createdSender.openDataPort())')
+          assert port_guard < session_text.index('client.record()', port_guard)
+          assert 'VIDEO P0: 数据端口不可用，结束本轮无画面会话' in session_text
+          print('PASS: immutable v4 video write guard plus port-refusal fail-closed and exact scope')
           PY
       - name: Full Android JUnit and unsigned Debug build
         run: |
