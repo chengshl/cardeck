@@ -37,6 +37,7 @@ class ExperimentProjectCatalogTest {
 
     @Test fun knownE5ExperimentsDisplayChineseWithoutChangingExactSubscriptionKeys() {
         val expected = mapOf(
+            "experiment/buick-e5-video-write-stall-28-20261112" to "E5 视频推流停滞保护（#28）",
             "experiment/buick-e5-bluetooth-a2dp-preserve" to "蓝牙音源保护（A2DP/HFP）",
             "experiment/buick-e5-detailed-diagnostics" to "详细故障诊断与日志",
             "experiment/buick-e5-iap2-stop-safety" to "iAP2 安全退出",
@@ -59,12 +60,17 @@ class ExperimentProjectCatalogTest {
     }
 
     @Test fun unfamiliarAndForeignProjectsCannotPretendToBeTrustedE5DisplayNames() {
-        assertEquals("其他实验 · buick e5 unknown feature",
-            ExperimentProjectCatalog.name("experiment/buick-e5-unknown-feature"))
-        assertEquals("其他实验 · buick e5 session teardown extra",
-            ExperimentProjectCatalog.name("experiment/buick-e5-session-teardown-extra"))
-        assertEquals("其他实验 · buick test t76 aac causality observe",
-            ExperimentProjectCatalog.name("experiment/buick-test-t76-aac-causality-observe"))
+        val unknown = listOf(
+            "experiment/buick-e5-unknown-feature",
+            "experiment/buick-e5-session-teardown-extra",
+            "experiment/buick-test-t76-aac-causality-observe",
+        )
+        val labels = unknown.map(ExperimentProjectCatalog::name)
+        labels.forEach { label ->
+            assertTrue(label.matches(Regex("其他实验（项目编号 [0-9]{8}）")))
+        }
+        assertEquals(3, labels.toSet().size)
+        assertEquals(labels.first(), ExperimentProjectCatalog.name(unknown.first()))
         assertEquals("任务隔离实验",
             ExperimentProjectCatalog.name("experiment/buick-e5-e5-task-isolation"))
     }
@@ -85,8 +91,8 @@ class ExperimentProjectCatalogTest {
         assertEquals(source, ExperimentProjectCatalog.group(listOf(candidate)).single().sourceBranch)
         assertEquals(candidate, ExperimentProjectCatalog.latest(listOf(unrelated, candidate), source))
         assertNull(ExperimentProjectCatalog.latest(listOf(candidate), source + "-extra"))
-        assertEquals("其他实验 · buick e5 iap2 stale ack guard 33 extra",
-            ExperimentProjectCatalog.name(source + "-extra"))
+        assertTrue(ExperimentProjectCatalog.name(source + "-extra")
+            .matches(Regex("其他实验（项目编号 [0-9]{8}）")))
     }
 
     @Test fun officialE5VideoObservationReleaseDisplaysChineseButRetainsExactSource() {
@@ -96,7 +102,7 @@ class ExperimentProjectCatalogTest {
         assertEquals(source, ExperimentProjectCatalog.group(listOf(released)).single().sourceBranch)
         assertEquals(released, ExperimentProjectCatalog.latest(listOf(released), source))
         assertNull(ExperimentProjectCatalog.latest(listOf(released), "experiment/buick-e5-session-teardown"))
-        assertEquals("其他实验 · buick e5 video firstframe observability extra",
-            ExperimentProjectCatalog.name(source + "-extra"))
+        assertTrue(ExperimentProjectCatalog.name(source + "-extra")
+            .matches(Regex("其他实验（项目编号 [0-9]{8}）")))
     }
 }

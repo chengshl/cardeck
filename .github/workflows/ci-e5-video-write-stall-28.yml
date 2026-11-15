@@ -41,7 +41,14 @@ jobs:
           candidate = git('rev-parse', 'HEAD')
           assert git('merge-base', base, candidate) == base, 'Not derived from signed v4 source'
           changed = set(git('diff', '--name-only', base, candidate).splitlines())
-          assert changed == {source, ci}, f'Unreviewed L3 candidate scope: {sorted(changed)}'
+          catalog = 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalog.kt'
+          catalog_test = 'app/src/test/java/io/github/shaonialife/cardeck/update/ExperimentProjectCatalogTest.kt'
+          update_ui = 'app/src/main/java/io/github/shaonialife/cardeck/update/ExperimentalUpdates.kt'
+          assert changed == {source, ci, catalog, catalog_test, update_ui}, f'Unreviewed L3 candidate scope: {sorted(changed)}'
+          assert 'E5 视频推流停滞保护（#28）' in git('show', candidate + ':' + catalog)
+          assert '其他实验（项目编号 ' in git('show', candidate + ':' + catalog)
+          assert '"版本号：${it.newest.versionCode}"' in git('show', candidate + ':' + update_ui)
+          assert 'knownE5ExperimentsDisplayChineseWithoutChangingExactSubscriptionKeys' in git('show', candidate + ':' + catalog_test)
           assert git('rev-parse', base + ':' + source) == 'e64348da3c3a97c90802c133389c191b63a0f3bd'
           assert git('rev-parse', candidate + ':' + source) == '021c55cb28da0be35a049b76414b42889aca2b05'
           text = git('show', candidate + ':' + source)

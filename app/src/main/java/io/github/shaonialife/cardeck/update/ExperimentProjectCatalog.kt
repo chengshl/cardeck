@@ -27,6 +27,7 @@ internal object ExperimentProjectCatalog {
         val slug = sourceBranch.substringAfterLast('/')
         return when (sourceBranch) {
             "experiment/buick-e5-window-fullscreen-toggle" -> "E5 窗口全屏切换"
+            "experiment/buick-e5-video-write-stall-28-20261112" -> "E5 视频推流停滞保护（#28）"
             "experiment/buick-e5-bluetooth-a2dp-preserve" -> "蓝牙音源保护（A2DP/HFP）"
             "experiment/buick-e5-detailed-diagnostics" -> "详细故障诊断与日志"
             "experiment/buick-e5-iap2-stop-safety" -> "iAP2 安全退出"
@@ -43,7 +44,9 @@ internal object ExperimentProjectCatalog {
                 slug.contains("task-isolation") -> "任务隔离实验"
                 slug.contains("touch") -> "触摸恢复实验"
                 slug.contains("updater-b") -> "更新器方案 B · 功能验证"
-                else -> "其他实验 · " + slug.replace('-', ' ')
+                else -> "其他实验（项目编号 " +
+                    "%08d".format(java.util.Locale.ROOT,
+                        (sourceBranch.hashCode().toLong() and 0xffffffffL) % 100000000L) + "）"
             }
         }
     }

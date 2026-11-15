@@ -138,7 +138,7 @@ internal object ExperimentalUpdates {
                     val items = listOf(ExperimentPickerDialog.Item(
                         "停止关注实验项目", "保留试验频道，不自动检查具体项目", old == null)) +
                         projects.map { ExperimentPickerDialog.Item(
-                            ExperimentProjectCatalog.name(it.sourceBranch), it.newest.versionName,
+                            ExperimentProjectCatalog.name(it.sourceBranch), "版本号：${it.newest.versionCode}",
                             it.sourceBranch == old) }
                     ExperimentPickerDialog.show(activity, "选择实验项目",
                         "自动检查仅限所选项目；手动浏览仍可查看全部实验。", items) { index ->
@@ -227,7 +227,7 @@ internal object ExperimentalUpdates {
                                 ExperimentInstallPolicy.Mode.UPGRADE) "可升级" else "仅下载"
                             UpdateDialogUi.Choice(
                                 title = ExperimentProjectCatalog.name(candidate.sourceBranch),
-                                detail = candidate.versionName + "\n" +
+                                detail = "版本号：${candidate.versionCode}" + "\n" +
                                     ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName),
                                 status = status,
                                 selected = { confirm(activity, candidate) },
@@ -263,9 +263,9 @@ internal object ExperimentalUpdates {
             subtitle = if (saveOnly) "版本较旧 · 只提供 APK 下载" else "可覆盖升级 · 安装前会断开车机连接",
             fields = listOf(
                 "所属分支" to candidate.baseBranch,
-                "实验来源" to candidate.sourceBranch,
+                "实验项目" to ExperimentProjectCatalog.name(candidate.sourceBranch),
                 "当前版本" to (pkg.versionName ?: installed.toString()),
-                "目标版本" to candidate.versionName,
+                "目标版本号" to candidate.versionCode.toString(),
                 "构建完成" to ReleaseBuildTime.label("builtAt=${candidate.builtAt}", candidate.versionName),
                 "校验方式" to "官方预发布 · SHA-256 · APK 包名/版本 · 系统签名",
             ),
