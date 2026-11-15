@@ -93,6 +93,8 @@ android {
 
     buildFeatures {
         aidl = true
+        // Required for GatewayProbe's installed APK integer version diagnostics.
+        buildConfig = true
     }
 
     lint {
