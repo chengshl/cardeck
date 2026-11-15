@@ -145,7 +145,7 @@ class GatewayProbe(
                         reportsSupported = deviceInfo != null && capabilities != null &&
                             (0 until capabilities.length()).any { capabilities.optString(it) == "device_status_v1" }
                         logsSupported = reportsSupported && appLogs != null &&
-                            (0 until capabilities!!.length()).any { capabilities.optString(it) == "logs_v1" }
+                            (0 until capabilities!!.length()).any { capabilities.optString(it) == "logs_v2" }
                         vehicleSupported = logsSupported &&
                             (0 until capabilities.length()).any { capabilities.optString(it) == "vehicle_scope_v1" }
                         if (reportsSupported) {
@@ -197,7 +197,8 @@ class GatewayProbe(
                     "logs_ack" -> {
                         val pending = pendingLog
                         if (pending == null || message.optString("batch_id") != pending.id ||
-                            message.optString("source") != pending.source || message.optInt("accepted_lines", -1) != pending.lines.size) {
+                            message.optString("source") != pending.source || message.optInt("schema_version", -1) != 2 ||
+                            message.optInt("accepted_lines", -1) != pending.lines.size) {
                             fail(Failure.PROTOCOL)
                             return
                         }
@@ -250,12 +251,13 @@ class GatewayProbe(
         if (stopped || !registered || !logsSupported || heartbeatCount == 0 ||
             systemBatches.isNotEmpty() || pendingLog?.source == "system") return false
         val limit = if (detailed) DetailedDiagnosticSelector.MAX_LINES else 256
-        if (preview.isEmpty() || preview.size > limit ||
-            preview.any { it.isBlank() || it.length > 256 }) return false
+        if (preview.isEmpty() || preview.size > limit) return false
+        val confirmedVehicle = vehicleProvider()
+        val planned = runCatching { GatewayLogProtocol.plan(preview, "system", confirmedVehicle) }.getOrNull()
+            ?: return false // Preserve the preview for local export; nothing was enqueued or sent.
         systemUploadTotal = preview.size
         systemUploadAcknowledged = 0
-        val confirmedVehicle = vehicleProvider()
-        preview.chunked(8).forEach { systemBatches.addLast(LogBatch("system", it.toList(), vehicleId = confirmedVehicle)) }
+        planned.forEach { systemBatches.addLast(LogBatch("system", it.toList(), vehicleId = confirmedVehicle)) }
         publishHealthy()
         return true
     }
@@ -264,13 +266,16 @@ class GatewayProbe(
     private fun pumpLogs() {
         if (stopped || !registered || !logsSupported || pendingLog != null) return
         val batch = systemBatches.pollFirst() ?: appLogs?.takeTagged()?.takeIf { it.isNotEmpty() }?.let {
-            LogBatch("app", it.map { line -> line.text }, vehicleId = it.first().vehicleId, taggedLines = it)
+            LogBatch("app", it.map { line -> line.text }, id = it.first().batchId ?: UUID.randomUUID().toString(),
+                vehicleId = it.first().vehicleId, taggedLines = it)
         } ?: return
         pendingLog = batch
-        val message = JSONObject().put("type", "logs").put("source", batch.source).put("batch_id", batch.id)
-            .put("user_confirmed", batch.source == "system").put("lines", JSONArray(batch.lines))
-        if (vehicleSupported) batch.vehicleId?.let { message.put("vehicle_id", it) }
-        if (socket?.send(message.toString()) != true) { fail(Failure.NETWORK); return }
+        val message = GatewayLogProtocol.message(batch.lines, batch.source,
+            if (vehicleSupported) batch.vehicleId else null, batch.id)
+        if (message.toByteArray(Charsets.UTF_8).size > GatewayLogProtocol.MAX_FRAME_BYTES) {
+            fail(Failure.LOG_UPLOAD); return
+        }
+        if (socket?.send(message) != true) { fail(Failure.NETWORK); return }
         logDeadline = timer.schedule({ fail(Failure.LOG_UPLOAD) }, replyTimeoutMs, TimeUnit.MILLISECONDS)
     }
 
@@ -311,7 +316,9 @@ class GatewayProbe(
         nextHeartbeat?.cancel(false)
         logPump?.cancel(false)
         logDeadline?.cancel(false)
-        pendingLog?.takeIf { it.source == "app" }?.let { appLogs?.retryTagged(it.taggedLines) }
+        pendingLog?.takeIf { it.source == "app" }?.let { pending ->
+            appLogs?.retryTagged(pending.taggedLines.map { it.copy(batchId = pending.id) })
+        }
         pendingLog = null
         systemBatches.clear() // A new connection always requires a fresh system-log preview and confirmation.
         socket?.cancel()

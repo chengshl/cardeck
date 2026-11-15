@@ -76,7 +76,7 @@ internal object CrashEvidenceSelector {
             if (output.size >= MAX_LINES) return
             val sanitized = redactor.line("[$source] " + line.trim())
             if (sanitized.isNotBlank() && sanitized != "[已隐藏含凭证或密钥的日志行]") {
-                output.add(sanitized.take(256))
+                output.add(sanitized)
             }
         }
 

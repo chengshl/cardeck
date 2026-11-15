@@ -7,6 +7,7 @@ on:
     paths:
       - 'app/src/main/**'
       - 'app/src/test/**'
+      - 'tools/gateway/**'
       - 'app/build.gradle.kts'
       - '.github/workflows/ci-e5-detailed-diagnostics.yml'
       - '.github/workflows/publish-e5-detailed-diagnostics.yml'
@@ -58,58 +59,37 @@ jobs:
           assert blob == 'eec664befa9a2efd5a030d7ae49fc69096c4a452', blob
           print('Manual-only, global allocator, official E5 certificate, provenance and release tag gates passed')
           PY
-      - name: Enforce automatic installed-version diagnostic provenance
+      - name: Enforce scoped long-log delta and E5 source lease
         run: |
           python3 - <<'PY'
-          import os
-          import subprocess
-
-          def git(*args):
-              return subprocess.check_output(['git', *args], text=True).strip()
-
-          reviewed = 'c276cc69b2eacf2c9dc2be35c31f2827748b6484'
-          runtime = 'app/src/main/java/io/github/shaonialife/cardeck/gateway/GatewayProbe.kt'
-          test = 'app/src/test/java/io/github/shaonialife/cardeck/gateway/GatewayProbeTest.kt'
-          workflow = '.github/workflows/ci-e5-detailed-diagnostics.yml'
-          candidate = git('rev-parse', 'HEAD^2' if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request' else 'HEAD')
-          assert git('rev-parse', 'origin/Buick-E5') == '5e565a08b228d157ff1d739f38b8c09fad80f8a5'
-          changed = set(git('diff', '--name-only', reviewed, candidate).splitlines())
-          assert changed == {runtime, test, workflow}, f'Unreviewed #30 files: {sorted(changed)}'
-
-          baseline = git('show', f'{reviewed}:{runtime}')
-          actual = git('show', f'{candidate}:{runtime}')
-          before_import = 'import io.github.shaonialife.cardeck.config.EntryAddress'
-          after_import = 'import io.github.shaonialife.cardeck.BuildConfig\\n' + before_import
-          before_start = '        if (started || stopped) return\\n        started = true\\n        val request = runCatching {'
-          after_start = (
-              '        if (started || stopped) return\\n'
-              '        started = true\\n'
-              '        // The Gateway registration already reports VERSION_NAME; the app log\\n'
-              "        // includes the installed APK's integer code without changing the wire\\n"
-              '        // schema or requiring the user to run ADB for routine diagnostics.\\n'
-              '        if (deviceInfo != null) {\\n'
-              '            appLogs?.offer("APP_BUILD: installedVersionCode=${BuildConfig.VERSION_CODE}")\\n'
-              '        }\\n'
-              '        val request = runCatching {'
-          )
-          # Decode the explicit source newlines and keep Kotlin interpolation literal.
-          after_import = after_import.replace('\\n', chr(10))
-          before_start = before_start.replace('\\n', chr(10))
-          after_start = after_start.replace('\\n', chr(10))
-          assert baseline.count(before_import) == 1 and baseline.count(before_start) == 1
-          expected = baseline.replace(before_import, after_import).replace(before_start, after_start)
-          assert actual == expected, 'Unreviewed Gateway transport / authentication behavior changed'
-          assert 'sendReportMessage(deviceInfo!!.registration())' in actual
-          assert 'if (logsSupported) logPump =' in actual
-          assert 'appLogs?.offer("APP_BUILD: installedVersionCode=' in actual
-
-          reviewed_test = git('show', 'f133ed995a6b1216d47c7d86f0bc280e93aa69d3:' + test)
-          assert git('show', f'{candidate}:{test}') == reviewed_test, 'Gateway version assertion tests drifted'
-          print('Gateway registration unchanged; installed build version logged via existing app-log channel')
+          import os,subprocess
+          def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
+          baseline='d0831ea8ec11c3ad50df7a3d273e6d5881f1b132'
+          candidate=git('rev-parse','HEAD^2' if os.environ.get('GITHUB_EVENT_NAME')=='pull_request' else 'HEAD')
+          assert git('rev-parse','origin/Buick-E5')=='550f30272f3545f76650478788155ba1374fdc5e'
+          subprocess.run(['git','merge-base','--is-ancestor',baseline,candidate],check=True)
+          changed=set(git('diff','--name-only',baseline,candidate).splitlines())
+          allowed={'app/src/test/java/io/github/shaonialife/cardeck/gateway/ForensicRedactionTest.kt', 'tools/gateway/test_long_logs.py', '.github/workflows/ci-e5-detailed-diagnostics.yml', 'tools/gateway/gateway.py', 'app/src/test/java/io/github/shaonialife/cardeck/gateway/LogRedactorTest.kt', 'app/src/test/java/io/github/shaonialife/cardeck/gateway/CrashEvidenceSelectorTest.kt', 'app/src/test/java/io/github/shaonialife/cardeck/gateway/GatewayProbeTest.kt', 'app/src/main/java/io/github/shaonialife/cardeck/gateway/LogRedactor.kt', 'app/src/main/java/io/github/shaonialife/cardeck/gateway/GatewayLogProtocol.kt', 'app/src/test/java/io/github/shaonialife/cardeck/gateway/GatewayLongLogTest.kt', 'docs/UNIFIED-LONG-LOGS.md', 'app/src/main/java/io/github/shaonialife/cardeck/gateway/GatewayLogBuffer.kt', 'app/src/main/java/io/github/shaonialife/cardeck/gateway/RebootEvidenceCapture.kt', 'app/src/main/java/io/github/shaonialife/cardeck/gateway/DetailedDiagnosticSelector.kt', 'app/src/main/java/io/github/shaonialife/cardeck/gateway/CrashEvidenceSelector.kt', 'tools/gateway/log_archive.py', 'app/src/main/java/io/github/shaonialife/cardeck/gateway/GatewayProbe.kt', 'app/src/main/java/io/github/shaonialife/cardeck/gateway/CombinedDiagnosticSelector.kt'}
+          assert changed==allowed, f'Unreviewed long-log delta: {sorted(changed ^ allowed)}'
+          subprocess.run(['git','checkout','--detach',candidate],check=True)
+          print('Exact diagnostics candidate; no CarPlay, signing or stable-source changes')
           PY
       - name: Global version allocator regression tests
         run: python3 -m unittest discover -s tools/release -p 'test_allocate_version.py' -v
       - name: Unit tests and debug compilation
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug --stacktrace
+      - name: Long-log transport and durable archive regression
+        run: |
+          python3 -m pip install --disable-pip-version-check -r tools/gateway/requirements.txt
+          python3 -m unittest discover -s tools/gateway -p 'test_log_archive.py' -v
+          python3 tools/gateway/test_gateway.py
+          python3 tools/gateway/test_long_logs.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e5-long-log-debug-and-test-results
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/test-results/
+          retention-days: 7

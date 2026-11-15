@@ -7,6 +7,9 @@ import stat
 import time
 import uuid
 import heapq
+import base64
+import hashlib
+import hmac
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +21,35 @@ REWRITE = re.compile(r"\.rewrite-[0-9a-f-]{36}\.tmp")
 
 class ArchiveBusy(OSError):
     pass
+
+
+class CursorExpired(ValueError):
+    """Retention changed a snapshot; callers must start a new history query."""
+
+
+MAX_TIMESTAMP_MS = 253402300799999
+
+
+def validate_history_query(device, source, limit, vehicle_id, start_ms, end_ms,
+                           keyword, time_field):
+    canonical_device(device)
+    if source not in (None, "app", "system") or type(limit) is not int or not 1 <= limit <= 200:
+        raise ValueError("Invalid query")
+    if vehicle_id is not None:
+        canonical_device(vehicle_id)
+        if uuid.UUID(vehicle_id).version != 4:
+            raise ValueError("Invalid vehicle")
+    for value in (start_ms, end_ms):
+        if value is not None and (type(value) is not int or not 0 <= value <= MAX_TIMESTAMP_MS):
+            raise ValueError("Invalid time range")
+    if start_ms is not None and end_ms is not None and start_ms > end_ms:
+        raise ValueError("Invalid time range")
+    if keyword is not None and (not isinstance(keyword, str) or not 1 <= len(keyword) <= 128
+                                or any(ord(c) < 32 or 127 <= ord(c) <= 159
+                                       or 0xD800 <= ord(c) <= 0xDFFF for c in keyword)):
+        raise ValueError("Invalid keyword")
+    if time_field not in ("received_ms", "occurred_ms"):
+        raise ValueError("Invalid time field")
 
 
 def canonical_device(value):
@@ -106,6 +138,7 @@ class LogArchive:
         self.compacted_files = 0
         self.last_cleanup_ms = None
         self.lock = None
+        self._query_key = os.urandom(32)
         try:
             path = self.root / ".writer.lock"
             if path.is_symlink():
@@ -200,12 +233,16 @@ class LogArchive:
         self.current[(device, source)] = segment
         return segment
 
-    def append(self, device, source, lines, batch_id, vehicle_id=None):
+    def append(self, device, source, lines, batch_id, vehicle_id=None, line_times_ms=None):
         canonical_device(device)
         if source not in ("app", "system") or not lines or len(lines) > 8:
             raise ValueError("Invalid log batch")
         if any(not isinstance(line, str) or not 1 <= len(line) <= 256 for line in lines):
             raise ValueError("Invalid log line")
+        if line_times_ms is not None and (not isinstance(line_times_ms, list)
+                or len(line_times_ms) != len(lines)
+                or any(type(value) is not int or not 0 <= value <= MAX_TIMESTAMP_MS for value in line_times_ms)):
+            raise ValueError("Invalid log timestamps")
         canonical_device(batch_id)
         if vehicle_id is not None:
             canonical_device(vehicle_id)
@@ -214,8 +251,9 @@ class LogArchive:
         self.cleanup()
         now_ms = int(self.clock() * 1000)
         rows = [dict(source=source, received_ms=now_ms, batch_id=batch_id, text=line,
-                     **({"vehicle_id": vehicle_id} if vehicle_id is not None else {}))
-                for line in lines]
+                     **({"vehicle_id": vehicle_id} if vehicle_id is not None else {}),
+                     **({"occurred_ms": line_times_ms[index]} if line_times_ms is not None else {}))
+                for index, line in enumerate(lines)]
         encoded = [(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8") for row in rows]
         if any(len(row) > self.max_file_bytes for row in encoded):
             raise ValueError("A record exceeds the segment limit")
@@ -250,6 +288,71 @@ class LogArchive:
         finally:
             if fd is not None:
                 os.close(fd)
+        return rows
+
+    def append_v2(self, device, source, lines, batch_id, vehicle_id, digest, line_times_ms=None):
+        canonical_device(device); canonical_device(batch_id)
+        if vehicle_id is not None: canonical_device(vehicle_id)
+        if (source not in ("app", "system") or not 1 <= len(lines) <= 8
+                or any(not isinstance(line, str) or not line or len(line.encode("utf-8")) > 12288 for line in lines)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            raise ValueError("Invalid v2 batch")
+        if line_times_ms is not None and (not isinstance(line_times_ms, list)
+                or len(line_times_ms) != len(lines)
+                or any(type(t) is not int or not 0 <= t <= MAX_TIMESTAMP_MS for t in line_times_ms)):
+            raise ValueError("Invalid occurred timestamps")
+        self.cleanup()
+        matches = [s for s in self.segments.values() if s.device == device
+                   and s.path.name.endswith("-" + batch_id + ".jsonl")]
+        if matches:
+            if len(matches) != 1: raise ValueError("Ambiguous durable receipt")
+            path = self._inside(matches[0].path)
+            with path.open("rb") as handle: raw = handle.read(200000)
+            rows = [json.loads(line) for line in raw.splitlines()]
+            if (not raw.endswith(b"\n") or len(rows) != len(lines)
+                    or any(r.get("batch_digest") != digest or r.get("schema_version") != 2
+                        or r.get("ordinal") != i or r.get("text") != lines[i]
+                        or r.get("source") != source or r.get("vehicle_id") != vehicle_id
+                        or r.get("batch_id") != batch_id
+                        or r.get("occurred_ms") != (line_times_ms[i] if line_times_ms is not None else None)
+                        for i, r in enumerate(rows))):
+                raise ValueError("Conflicting durable batch identity")
+            # Complete an uncertain prior commit before acknowledging a retry.
+            with path.open("rb") as handle: os.fsync(handle.fileno())
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try: os.fsync(directory)
+            finally: os.close(directory)
+            return rows
+        now_ms = int(self.clock() * 1000)
+        rows = [dict(source=source, received_ms=now_ms, batch_id=batch_id, text=line,
+                     schema_version=2, batch_digest=digest, ordinal=i,
+                     **({"vehicle_id": vehicle_id} if vehicle_id is not None else {}),
+                     **({"occurred_ms": line_times_ms[i]} if line_times_ms is not None else {}))
+                for i, line in enumerate(lines)]
+        data = ("\n".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) for r in rows) + "\n").encode()
+        if len(data) > self.max_file_bytes: raise ValueError("Batch exceeds segment limit")
+        day = datetime.fromtimestamp(now_ms / 1000, self.zone).strftime("%Y-%m-%d")
+        parent = self.base / device / day / source
+        self._inside(parent); parent.mkdir(parents=True, exist_ok=True)
+        self.sequence += 1
+        target = parent / f"{now_ms:013d}-{self.sequence:020d}-{batch_id}.jsonl"
+        temp = parent / f".rewrite-{uuid.uuid4()}.tmp"
+        self._inside(target); self._inside(temp)
+        # A failed fsync/rename returns no ACK; an interrupted temp is never queried.
+        # Request a private creation mode without chmod: CIFS ACLs may disallow
+        # changing mode after creation even when file creation/write is authorized.
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(temp, flags, 0o600), "wb") as handle:
+            handle.write(data); handle.flush(); os.fsync(handle.fileno())
+        os.replace(temp, target)
+        # Track the committed name even if the directory flush returns an error.
+        # A retry must find this batch, rather than creating a second segment.
+        segment = Segment(target, device, source, now_ms, self.sequence, len(data))
+        self.segments[target] = segment
+        heapq.heappush(self.expiry, (now_ms, self.sequence, target))
+        directory = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try: os.fsync(directory)
+        finally: os.close(directory)
         return rows
 
     def cleanup(self):
@@ -333,6 +436,127 @@ class LogArchive:
                 self._inside(temp)
                 temp.unlink()
 
+    def query(self, device, source=None, limit=200, vehicle_id=None, start_ms=None,
+              end_ms=None, keyword=None, cursor=None, cursor_key=None,
+              time_field="received_ms", scan_budget_bytes=4 * 1024 * 1024):
+        """Bounded forward scan of a signed archive snapshot, without exposing paths.
+
+        A cursor points after the last inspected record, including nonmatches.
+        Retention rewrites invalidate it explicitly rather than shifting offsets.
+        Empty nonterminal pages are possible for sparse searches.
+        """
+        validate_history_query(device, source, limit, vehicle_id, start_ms, end_ms, keyword, time_field)
+        if type(scan_budget_bytes) is not int or not 1 <= scan_budget_bytes <= 16 * 1024 * 1024:
+            raise ValueError("Invalid scan budget")
+        key = self._query_key if cursor_key is None else cursor_key
+        if not isinstance(key, bytes) or not key:
+            raise ValueError("Invalid cursor key")
+        filters = [device, source, limit, vehicle_id, start_ms, end_ms, keyword, time_field]
+        fingerprint = hashlib.sha256(json.dumps(filters, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        now_ms = int(self.clock() * 1000)
+        state = None
+        if cursor is not None:
+            try:
+                if not isinstance(cursor, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,4096}", cursor):
+                    raise ValueError()
+                packed = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
+                body, signature = packed[:-32], packed[-32:]
+                if not hmac.compare_digest(signature, hmac.digest(key, body, "sha256")):
+                    raise ValueError()
+                state = json.loads(body)
+                if (not isinstance(state, dict) or set(state) != {"v", "q", "seq", "manifest", "caps", "last", "snapshot_ms", "cutoff_ms"}
+                        or state["v"] != 1 or state["q"] != fingerprint
+                        or type(state["seq"]) is not int or not 0 <= state["seq"] < 2 ** 63
+                        or not isinstance(state["manifest"], str) or not re.fullmatch(r"[0-9a-f]{64}", state["manifest"])
+                        or not isinstance(state["last"], list) or len(state["last"]) != 2
+                        or any(type(n) is not int or n < 0 for n in state["last"])
+                        or state["last"][0] > state["seq"]
+                        or not isinstance(state["caps"], dict) or len(state["caps"]) > 2
+                        or any(not re.fullmatch(r"[0-9]+", s) or int(s) > state["seq"]
+                               or type(n) is not int or not 0 <= n <= self.max_file_bytes
+                               for s, n in state["caps"].items())
+                        or any(type(state[s]) is not int or not 0 <= state[s] <= MAX_TIMESTAMP_MS
+                               for s in ("snapshot_ms", "cutoff_ms"))):
+                    raise ValueError()
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                raise ValueError("Invalid history cursor") from None
+        max_sequence = state["seq"] if state is not None else self.sequence
+        segments = sorted((s for s in self.segments.values() if s.device == device
+                           and (source is None or s.source == source) and s.sequence <= max_sequence),
+                          key=lambda s: s.sequence)
+        manifest = hashlib.sha256(json.dumps([(s.sequence, s.source, s.path.name) for s in segments],
+                                             separators=(",", ":")).encode()).hexdigest()
+        if state is not None and state["manifest"] != manifest:
+            raise CursorExpired("History snapshot expired; restart the query")
+        if state is None:
+            active = {s.sequence for (dev, kind), s in self.current.items()
+                      if dev == device and (source is None or source == kind)}
+            state = {"v": 1, "q": fingerprint, "seq": max_sequence, "manifest": manifest,
+                     "caps": {str(s.sequence): s.size for s in segments if s.sequence in active},
+                     "last": [0, 0], "snapshot_ms": now_ms,
+                     "cutoff_ms": max(0, now_ms - int(self.retention_seconds * 1000))}
+        cutoff = max(state["cutoff_ms"], now_ms - int(self.retention_seconds * 1000))
+        needle = keyword.casefold() if keyword is not None else None
+        rows, scanned, scanned_lines = [], 0, 0
+        limited, has_more = False, False
+        for index, segment in enumerate(segments):
+            cap = state["caps"].get(str(segment.sequence), segment.size)
+            if segment.sequence < state["last"][0] or cap == 0:
+                continue
+            offset = state["last"][1] if segment.sequence == state["last"][0] else 0
+            if offset > cap:
+                raise CursorExpired("History snapshot expired; restart the query")
+            self._inside(segment.path)
+            with segment.path.open("rb") as handle:
+                continuation = False
+                if offset:
+                    handle.seek(offset - 1)
+                    continuation = handle.read(1) != b"\n"
+                handle.seek(offset)
+                while handle.tell() < cap:
+                    raw = handle.readline(min(25000, cap - handle.tell()))
+                    if not raw:
+                        raise CursorExpired("History snapshot expired; restart the query")
+                    scanned += len(raw)
+                    position = handle.tell()
+                    state["last"] = [segment.sequence, position]
+                    complete = raw.endswith(b"\n")
+                    was_continuation, continuation = continuation, not complete
+                    if complete:
+                        scanned_lines += 1
+                    if complete and not was_continuation:
+                        try:
+                            row = json.loads(raw)
+                        except (ValueError, UnicodeError):
+                            row = None
+                        if (isinstance(row, dict) and type(row.get("received_ms")) is int
+                                and state["cutoff_ms"] < row["received_ms"] <= state["snapshot_ms"]
+                                and row.get("source") == segment.source and isinstance(row.get("text"), str)
+                                and (vehicle_id is None or row.get("vehicle_id") == vehicle_id)):
+                            stamp = row.get(time_field)
+                            if (type(stamp) is int and (start_ms is None or stamp >= start_ms)
+                                    and (end_ms is None or stamp <= end_ms)
+                                    and (needle is None or needle in row["text"].casefold())):
+                                if row["received_ms"] <= cutoff:
+                                    # Cleanup can lag by a minute. Never silently
+                                    # skip a snapshot match that aged out mid-query.
+                                    raise CursorExpired("History snapshot expired; restart the query")
+                                rows.append(row)
+                    if len(rows) >= limit or scanned >= scan_budget_bytes:
+                        has_more = position < cap or any(
+                            state["caps"].get(str(s.sequence), s.size) > 0 for s in segments[index + 1:])
+                        limited = has_more and scanned >= scan_budget_bytes and len(rows) < limit
+                        break
+                if len(rows) >= limit or scanned >= scan_budget_bytes:
+                    break
+        next_cursor = None
+        if has_more:
+            body = json.dumps(state, separators=(",", ":")).encode()
+            next_cursor = base64.urlsafe_b64encode(body + hmac.digest(key, body, "sha256")).decode().rstrip("=")
+        return {"logs": rows, "has_more": has_more, "next_cursor": next_cursor,
+                "mode": "history", "order": "archive", "time_field": time_field,
+                "snapshot_ms": state["snapshot_ms"], "scan_limited": limited, "scanned_lines": scanned_lines}
+
     def tail(self, device, source=None, limit=200, vehicle_id=None):
         canonical_device(device)
         if source not in (None, "app", "system") or not 1 <= limit <= 200:
@@ -356,9 +580,9 @@ class LogArchive:
                         # vehicle B uploads a large volume of newer logs.
                         parts = handle.read().splitlines()
                     else:
-                        offset = max(0, segment.size - limit * 4096)
+                        offset = max(0, segment.size - limit * 25000)
                         handle.seek(offset)
-                        data = handle.read(limit * 4096)
+                        data = handle.read(limit * 25000)
                         parts = data.splitlines()
                         if offset:
                             parts = parts[1:]

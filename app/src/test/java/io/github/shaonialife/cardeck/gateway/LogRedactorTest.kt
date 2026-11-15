@@ -55,7 +55,8 @@ class LogRedactorTest {
         listOf("old", "new1", "new2", "new3").forEach(buffer::offer)
         assertEquals(1L, buffer.dropped)
         assertEquals(listOf("new1", "new2", "new3"), buffer.take())
-        buffer.offer("x".repeat(9000))
-        assertEquals(listOf("[超长日志已省略]"), buffer.take())
+        val longLine = "长日志;".repeat(900)
+        buffer.offer(longLine)
+        assertEquals(listOf(longLine), buffer.take())
     }
 }

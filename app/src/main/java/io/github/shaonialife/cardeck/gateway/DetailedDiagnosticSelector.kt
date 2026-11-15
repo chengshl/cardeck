@@ -18,7 +18,7 @@ internal object DetailedDiagnosticSelector {
     ): List<String> {
         fun List<String>.clean(limit: Int): List<String> =
             asSequence().filter { it.isNotBlank() && it != "[已隐藏含凭证或密钥的日志行]" }
-                .map { it.take(256) }.take(limit).toList()
+                .take(limit).toList()
 
         // Filter before adding source labels: a prefixed blank/secret placeholder
         // is no longer equal to the original marker and must not use upload slots.
@@ -26,14 +26,14 @@ internal object DetailedDiagnosticSelector {
         fun List<String>.cleanLatest(limit: Int): List<String> =
             asReversed().asSequence()
                 .filter { it.isNotBlank() && it != "[已隐藏含凭证或密钥的日志行]" }
-                .take(limit).map { it.take(256) }.toList().asReversed()
+                .take(limit).toList().asReversed()
 
         val important = crashEvidence.clean(256)
-        val stages = stageEvidence.cleanLatest(50).map { ("[阶段事件] " + it).take(256) }
-        val app = appHistory.cleanLatest(350).map { ("[App历史] " + it).take(256) }
+        val stages = stageEvidence.cleanLatest(50).map { ("[阶段事件] " + it) }
+        val app = appHistory.cleanLatest(350).map { ("[App历史] " + it) }
         val remaining = MAX_LINES - important.size - stages.size - app.size
         val system = if (shizukuReady) {
-            systemLines.cleanLatest(remaining).map { ("[当前系统] " + it).take(256) }
+            systemLines.cleanLatest(remaining).map { ("[当前系统] " + it) }
         } else {
             emptyList()
         }

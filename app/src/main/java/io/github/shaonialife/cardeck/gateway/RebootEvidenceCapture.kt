@@ -60,7 +60,7 @@ internal object RebootEvidenceCapture {
             evidence += "[重启取证] $label 有记录:"
             raw.lineSequence().take(120).forEach { line ->
                 redactor.forensicChunks(line).forEach { chunk ->
-                    if (evidence.size < 750) evidence += "[重启/$label] $chunk".take(256)
+                    if (evidence.size < 750) evidence += "[重启/$label] $chunk"
                 }
             }
         }

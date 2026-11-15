@@ -64,14 +64,14 @@ class GatewayProbeTest {
 
     private fun reportingGateway(
         acknowledge: Boolean, received: LinkedBlockingQueue<JSONObject>,
-        logs: Boolean = false, logAck: Boolean = true, vehicleScope: Boolean = false,
+        logs: Boolean = false, logAck: Boolean = true, vehicleScope: Boolean = false, ackSchema: Int = 2,
     ) =
         MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
             private var reports = 0
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val capabilities = when {
-                    logs && vehicleScope -> "[\"device_status_v1\",\"logs_v1\",\"vehicle_scope_v1\"]"
-                    logs -> "[\"device_status_v1\",\"logs_v1\"]"
+                    logs && vehicleScope -> "[\"device_status_v1\",\"logs_v2\",\"vehicle_scope_v1\"]"
+                    logs -> "[\"device_status_v1\",\"logs_v2\"]"
                     else -> "[\"device_status_v1\"]"
                 }
                 webSocket.send("""{"type":"hello","mode":"transport-test","capabilities":$capabilities}""")
@@ -87,6 +87,7 @@ class GatewayProbeTest {
                         webSocket.send(JSONObject().put("type", "status_ack").put("report_count", reports).toString())
                     }
                     "logs" -> if (logAck) webSocket.send(JSONObject().put("type", "logs_ack")
+                        .put("schema_version", ackSchema)
                         .put("source", message.getString("source")).put("batch_id", message.getString("batch_id"))
                         .put("accepted_lines", message.getJSONArray("lines").length()).toString())
                 }
@@ -183,7 +184,7 @@ class GatewayProbeTest {
         buffer.offer("legacy still uploads without new fields")
         server.enqueue(reportingGateway(true, received, logs = true))
         start(deviceInfo = info, appLogs = buffer, vehicleProvider = { vehicle })
-        assertEquals(1, awaitLogCount(app = 1).appLogLines)
+        assertEquals(2, awaitLogCount(app = 2).appLogLines)
         assertFalse(received.first { it.optString("type") == "logs" }.has("vehicle_id"))
         assertFalse(received.first { it.optString("type") == "status" }.has("vehicle_id"))
     }
@@ -196,7 +197,7 @@ class GatewayProbeTest {
         buffer.offer("modern labelled log")
         server.enqueue(reportingGateway(true, received, logs = true, vehicleScope = true))
         start(deviceInfo = info, appLogs = buffer, vehicleProvider = { vehicle })
-        assertEquals(1, awaitLogCount(app = 1).appLogLines)
+        assertEquals(2, awaitLogCount(app = 2).appLogLines)
         assertEquals(vehicle, received.first { it.optString("type") == "logs" }.getString("vehicle_id"))
         assertEquals(vehicle, received.first { it.optString("type") == "status" }.getString("vehicle_id"))
     }
@@ -210,6 +211,45 @@ class GatewayProbeTest {
         start(replyTimeout = 700, deviceInfo = info, appLogs = buffer)
         assertEquals(GatewayProbe.Failure.LOG_UPLOAD, await(GatewayProbe.State.FAILED).failure)
         assertEquals(listOf("等待确认的日志", "APP_BUILD: installedVersionCode=${BuildConfig.VERSION_CODE}"), buffer.take())
+    }
+
+    @Test
+    fun longSystemRowsAreSentWholeInByteBoundedV2Frames() {
+        val received = LinkedBlockingQueue<JSONObject>()
+        server.enqueue(reportingGateway(true, received, logs = true))
+        val active = start(deviceInfo = info, appLogs = GatewayLogBuffer(LogRedactor()))
+        await(GatewayProbe.State.HEALTHY)
+        val rows = listOf("完整原行;".repeat(700), "😀中文;".repeat(700))
+        assertTrue(active.uploadConfirmedSystemLogs(rows))
+        assertEquals(2, awaitLogCount(system = 2).systemUploadAcknowledged)
+        val batches = received.filter { it.optString("source") == "system" }
+        assertEquals(2, batches.size)
+        assertEquals(rows, batches.map { it.getJSONArray("lines").getString(0) })
+        assertTrue(batches.all { it.getInt("schema_version") == 2 &&
+            it.toString().toByteArray(Charsets.UTF_8).size <= 16384 })
+    }
+
+    @Test
+    fun wrongSchemaAckPreservesOriginalBatchIdentityForReconnect() {
+        val first = LinkedBlockingQueue<JSONObject>()
+        val buffer = GatewayLogBuffer(LogRedactor())
+        buffer.offer("长日志;".repeat(900))
+        server.enqueue(reportingGateway(true, first, logs = true, ackSchema = 1))
+        start(deviceInfo = info, appLogs = buffer)
+        assertEquals(GatewayProbe.Failure.PROTOCOL, await(GatewayProbe.State.FAILED).failure)
+        val pending = first.first { it.optString("type") == "logs" }
+        events.clear()
+        val retry = LinkedBlockingQueue<JSONObject>()
+        server.enqueue(reportingGateway(true, retry, logs = true))
+        // Each production probe owns its client lifecycle; use fresh resources
+        // after the first probe has closed its dispatcher and connection pool.
+        client = client.newBuilder().dispatcher(okhttp3.Dispatcher())
+            .connectionPool(okhttp3.ConnectionPool()).build()
+        start(deviceInfo = info, appLogs = buffer)
+        awaitLogCount(app = 2)
+        val resent = retry.first { it.optString("type") == "logs" }
+        assertEquals(pending.getString("batch_id"), resent.getString("batch_id"))
+        assertEquals(pending.getJSONArray("lines").toString(), resent.getJSONArray("lines").toString())
     }
 
     @Test

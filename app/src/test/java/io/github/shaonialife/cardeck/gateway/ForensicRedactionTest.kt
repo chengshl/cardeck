@@ -19,16 +19,16 @@ class ForensicRedactionTest {
         assertFalse(output.contains("abc123"))
         assertFalse(output.contains("FORBIDDEN_VALUE"))
         assertFalse(output.contains("LOCAL_TEST_CREDENTIAL"))
-        assertTrue(lines.all { it.length <= 256 })
+        assertTrue(lines.all { it.toByteArray(Charsets.UTF_8).size <= GatewayLogProtocol.MAX_LINE_BYTES })
     }
 
-    @Test fun longStackTraceKeepsBothHeadAndTailInBoundedChunks() {
+    @Test fun longStackTraceKeepsOneCompleteLine() {
         val raw = "Start trace " + "at VendorService.dispatch(Event.java:231); ".repeat(24) + " End cause"
         val chunks = redactor.forensicChunks(raw)
-        assertTrue(chunks.size >= 3)
+        assertEquals(listOf(raw), chunks)
         assertTrue(chunks.first().contains("Start trace"))
         assertTrue(chunks.last().contains("End cause"))
-        assertTrue(chunks.all { it.length <= 256 })
+        assertTrue(chunks.all { it.toByteArray(Charsets.UTF_8).size <= GatewayLogProtocol.MAX_LINE_BYTES })
     }
 
     @Test fun rawProtocolIsNeverSentInDeepMode() {

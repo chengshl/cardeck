@@ -23,11 +23,10 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
     /**
      * Deep forensic mode keeps useful AVC/SELinux/stack context while
      * excluding credentials and raw protocol data. It never uploads raw.
-     * Output remains compatible with 256-character logs_v1 lines.
+     * Length is preserved; the v2 batch planner enforces transport bounds explicitly.
      */
     fun forensicChunks(raw: String): List<String> {
         if (raw.isBlank()) return emptyList()
-        if (raw.length > 8192) return listOf("[取证行超过8KB，已省略]")
         if (Regex("""(?:^|\]\s*)RAW\s+(?:tx|rx):|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY""",
                 RegexOption.IGNORE_CASE).containsMatchIn(raw)) {
             return listOf("[原始协议数据或密钥内容已省略]")
@@ -60,13 +59,10 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         safe = Regex("""\b(ssid|serial|device.?id|vin|latitude|longitude)(?:"|')?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""", RegexOption.IGNORE_CASE)
             .replace(safe) { it.groupValues[1] + "=[已隐藏]" }
         safe = safe.map { if (it.code < 32 || it.code == 127) ' ' else it }.joinToString("")
-        return safe.chunked(200).take(42).mapIndexed { i, chunk ->
-            "[取证" + (i + 1) + "] " + chunk
-        }
+        return listOf(safe)
     }
 
     fun line(raw: String): String {
-        if (raw.length > 8192) return "[超长日志已省略]"
         var text = raw
         for (secret in secrets.filter { it.isNotEmpty() }) text = text.replace(secret, "[已隐藏凭证]")
         if (sensitive.containsMatchIn(text)) return "[已隐藏含凭证或密钥的日志行]"
@@ -80,6 +76,6 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
         for ((index, value) in times.withIndex()) text = text.replace("~CARDECK_TIME_" + index + "~", value)
         text = Regex("""\b(ssid|serial|device.?id|vin|latitude|longitude)(?:"|')?\s*[:=].*""", RegexOption.IGNORE_CASE)
             .replace(text) { "${it.groupValues[1]}=[已隐藏]" }
-        return text.map { if (it.code < 32 || it.code == 127) ' ' else it }.joinToString("").take(256)
+        return text.map { if (it.code < 32 || it.code == 127) ' ' else it }.joinToString("")
     }
 }
