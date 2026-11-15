@@ -1404,7 +1404,17 @@ object SessionController {
                                     owningSender = createdSender
                                     videoSender = createdSender
                                     // 先连端口（车机看门狗），编码器等 RECORD 后再启动
-                                    videoSender?.openDataPort()
+                                    if (!createdSender.openDataPort()) {
+                                        // TCP screen data must exist before RECORD. A refused port
+                                        // otherwise leaves CONTROL 200 OK with no video or recovery.
+                                        appendLog("VIDEO P0: 数据端口不可用，结束本轮无画面会话")
+                                        if (videoSender === createdSender && currentClient === client) {
+                                            runCatching { client.tryTeardownBuickScreen(setup.displayUuid) }
+                                            retireSession()
+                                            phaseHint = "视频连接失败，等待车机重新握手…"
+                                        }
+                                        return@run
+                                    }
                                 }
                                 // 先 RECORD 激活会话并起视频，再协商音频（2026-10-17 奥迪定谳）：
                                 // 车机在「屏幕流 SETUP 之后」有约 2s 看门狗，等不到 RECORD/数据流即

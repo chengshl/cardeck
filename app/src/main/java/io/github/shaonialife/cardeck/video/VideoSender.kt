@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream
 import java.net.InetAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * CarPlay 主屏视频发送端（Phase 2-C2）。
@@ -57,10 +58,12 @@ class VideoSender(
 ) {
     private val width: Int = (width / 2) * 2
     private val height: Int = (height / 2) * 2
-    private var socket: Socket? = null
+    @Volatile private var socket: Socket? = null
     private var encoder: MediaCodec? = null
     private var inputSurface: Surface? = null
     private val running = AtomicBoolean(false)
+    private val streamEpoch = AtomicLong(0L)
+    private val lastCompletedWriteAt = AtomicLong(0L)
     private var frameCounter = 0L
     private var configSent = false
 
@@ -146,11 +149,17 @@ class VideoSender(
             encoder = codec
             inputSurface = surface
             running.set(true)
+            val currentEpoch = streamEpoch.incrementAndGet()
+            lastCompletedWriteAt.set(android.os.SystemClock.uptimeMillis())
             lastKeepAliveAt = android.os.SystemClock.uptimeMillis()
 
             onSurfaceReady(surface)
 
             Thread({ drainEncoder() }, "video-drain").apply {
+                isDaemon = true
+                start()
+            }
+            Thread({ watchVideoWriteProgress(currentEpoch) }, "video-write-watchdog").apply {
                 isDaemon = true
                 start()
             }
@@ -164,13 +173,41 @@ class VideoSender(
 
     fun stop() {
         running.set(false)
+        // Close TCP before codec teardown: this also unblocks a concurrent
+        // video-drain write/flush when the receiver stops reading the stream.
+        val retiredSocket = socket
+        socket = null
+        runCatching { retiredSocket?.close() }
         runCatching { encoder?.stop() }
         runCatching { encoder?.release() }
         encoder = null
         runCatching { inputSurface?.release() }
         inputSurface = null
-        runCatching { socket?.close() }
-        socket = null
+    }
+
+    /**
+     * RTSP CONTROL feedback may stay 200 OK after screen-data TCP stalls.
+     * Video keepAlive uses this writer, so GL frame starvation alone should
+     * not trip the no-successful-write limit.
+     */
+    private fun watchVideoWriteProgress(epoch: Long) {
+        val ownedSocket = socket ?: return
+        while (running.get() && streamEpoch.get() == epoch) {
+            try {
+                Thread.sleep(1_000)
+            } catch (_: InterruptedException) {
+                return
+            }
+            if (!running.get() || streamEpoch.get() != epoch || socket !== ownedSocket) return
+            val silentMs = android.os.SystemClock.uptimeMillis() - lastCompletedWriteAt.get()
+            if (silentMs >= VIDEO_WRITE_STALL_MS) {
+                log("VIDEO P0: 数据流连续${silentMs}ms无成功写入，关闭停滞Socket以触发原有会话收尾")
+                if (running.get() && streamEpoch.get() == epoch && socket === ownedSocket) {
+                    runCatching { ownedSocket.close() }
+                }
+                return
+            }
+        }
     }
 
     // ---- 编码输出 → 协议封装发送 ----
@@ -245,6 +282,7 @@ class VideoSender(
         val frame = buildKeepAliveFrame(keepAliveWithStats, frames, bytesPerSecond, framesPerSecond)
         output.write(frame)
         output.flush()
+        lastCompletedWriteAt.set(android.os.SystemClock.uptimeMillis())
         if (keepAliveCount <= 3 || keepAliveCount % 30 == 0L) {
             log(
                 "VIDEO: keepAlive #$keepAliveCount " +
@@ -294,6 +332,7 @@ class VideoSender(
         output.write(header)
         output.write(body)
         output.flush()
+        lastCompletedWriteAt.set(android.os.SystemClock.uptimeMillis())
         configSent = true
         log(
             "VIDEO: ✓ VideoConfig 已发送 avcC=${body.size}B（SPS ${sps.size}B/PPS ${pps.size}B，" +
@@ -352,6 +391,7 @@ class VideoSender(
         output.write(header)
         output.write(sealed)
         output.flush()
+        lastCompletedWriteAt.set(android.os.SystemClock.uptimeMillis())
         framesSent++
         framesSinceKeepAlive++
         bytesSinceKeepAlive += plain.size.toLong()
@@ -433,6 +473,7 @@ class VideoSender(
         private const val OP_KEEP_ALIVE = 2
         private const val OP_KEEP_ALIVE_WITH_BODY = 5
         private const val TAG_SIZE = 16
+        private const val VIDEO_WRITE_STALL_MS = 8_000L
 
         /**
          * 头部位标志（catplay `ScreenFlag`）：写进 `small_param[1]`（头部偏移 6）。
