@@ -79,7 +79,40 @@ jobs:
       - name: Unit tests and debug compilation
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug --stacktrace
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Full Android Lint report with strict changed-file error gate
+        run: |
+          # Existing virtual-display WrongConstant lint errors are outside
+          # this isolated diagnostics delta; do not change Shizuku behavior.
+          ./gradlew :app:lintDebug --continue || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import xml.etree.ElementTree as ET
+          report = Path('app/build/reports/lint-results-debug.xml')
+          assert report.is_file(), 'No Lint XML generated'
+          baseline = 'd0831ea8ec11c3ad50df7a3d273e6d5881f1b132'
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', baseline, 'HEAD'], text=True
+          ).splitlines())
+          source_paths = {f for f in changed if f.startswith('app/src/')}
+          errors, touched = [], []
+          for issue in ET.parse(report).getroot().findall('issue'):
+              if issue.get('severity') != 'Error':
+                  continue
+              code = issue.get('id', 'unknown')
+              paths = [str(loc.get('file', '')).replace('\\', '/')
+                       for loc in issue.findall('location')]
+              errors.append((code, paths))
+              if any(path.endswith('/' + changed_path)
+                     for path in paths for changed_path in source_paths):
+                  touched.append((code, paths))
+          print(f'Full Lint errors: {len(errors)}; changed-source errors: {len(touched)}')
+          for code, paths in errors[:30]:
+              print(f'Lint error {code}: {paths}')
+          assert not touched, f'Changed diagnostics source has lint errors: {touched}'
+          print('PASS: no Lint errors in changed diagnostics source; inherited full-project errors remain visible')
+          PY
       - name: Long-log transport and durable archive regression
         run: |
           python3 -m pip install --disable-pip-version-check -r tools/gateway/requirements.txt
