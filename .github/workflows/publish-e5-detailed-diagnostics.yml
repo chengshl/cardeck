@@ -1,12 +1,8 @@
 name: E5 detailed diagnostic - signed isolated experiment
-# Source-locked single signed raw-log HTTP v2 experimental APK delivery.
-# Subsequent pushes cannot pass the exact parent/message/source guards.
-# No production latest, recovery APK or extra ZIP. Manual path remains gated.
+# This L3 draft remains manual-only until an installable, data-preserving
+# recovery path and device acceptance plan are approved. Source changes alone
+# must never mint a higher-version APK.
 on:
-  push:
-    branches: [experiment/buick-e5-detailed-diagnostics]
-    paths:
-      - '.github/workflows/publish-e5-detailed-diagnostics.yml'
   workflow_dispatch:
 concurrency:
   # Serialize signed version allocation with official E5 and other channels.
@@ -20,30 +16,11 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Verify isolated source and E5 identity
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-detailed-diagnostics"
-          # Never release a runtime delta relative to the independently green CI source.
-          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            test "$(git rev-parse HEAD^)" = "649996a27e051b9d3242938dbc01aab547fb4cf6"
-            test "$(git log -1 --format=%s)" = "release(e5): unified-http-v2-single-apk"
-            test "$(git diff --name-only 649996a27e051b9d3242938dbc01aab547fb4cf6 HEAD)" = ".github/workflows/ci-e5-detailed-diagnostics.yml
-.github/workflows/publish-e5-detailed-diagnostics.yml"
-            test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/44458686268 --jq .conclusion)" = success
-            test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/44458686268 --jq .head_sha)" = "649996a27e051b9d3242938dbc01aab547fb4cf6"
-            if gh release view "exp-buick-e5-detailed-diagnostics-http-v2-20261119" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "::error::Unique logs-v2 experiment already published; refuse repeat"
-              exit 1
-            fi
-          fi
-          test "$(git rev-parse origin/Buick-E5)" = "550f30272f3545f76650478788155ba1374fdc5e"
-          git merge-base --is-ancestor 550f30272f3545f76650478788155ba1374fdc5e HEAD
           grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
           grep -Fq 'private const val RELEASE_TAG = "buick-e5-latest"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
       - uses: actions/setup-java@v4
@@ -52,11 +29,11 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - name: Verify required Android unit tests without making a second APK
+      - name: Verify all Android tests and debug build
         shell: bash
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --stacktrace
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
       - name: Lint report and changed diagnostic-file error gate
         shell: bash
         run: |
@@ -213,22 +190,15 @@ jobs:
           APK=CarDeck-Buick-E5-Diagnostics.apk
           test -s "$APK" && test -s "$APK.sha256"
           TAG="exp-buick-e5-detailed-diagnostics-$CARDECK_RELEASE_VERSION_NAME"
-          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            TAG="exp-buick-e5-detailed-diagnostics-http-v2-20261119"
-          fi
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::Release already exists: refusing replace or re-sign"
-            exit 1
-          fi
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           {
             printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=%s\ncommit=%s\n' \
               "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$BUILT_AT" "$APK" "$GITHUB_SHA"
             printf '\n## 更新说明\n'
-            printf '统一日志服务 HTTPS POST /logs/v1/logs/batches，schema_version=2；单行最大12KiB UTF-8、整包最大16KiB、每包最多8行。用户启用后软件日志完全原文上传：不脱敏IP、口令、协议字段、时间戳或其他原文；系统日志仍须主动预览确认。固定 client_id 绑定独立 CarDeck writer Token，旧 WebSocket Token 不会自动迁移；ACK 必须严格匹配版本、批次ID及行数，失败进程内使用同批次重试。重启前本地留存不自动上传。实验未改CarPlay音视频、触控和蓝牙源码。\n'
-            printf '\n## 尚未验收\n这是单APK L3实验，不是正式E5；必须先为手机的随机安装client_id单独登记writer身份。原文可能包含敏感信息，请仅在本人受控环境开启。需要验收：新HTTPS v2 ACK与原文回读、断网同ID重发、错误鉴权拒绝、手动系统日志确认及手机现有视频触控A2DP。旧已脱敏历史无法恢复原文。本包可能替换当前安装的其它视频实验逻辑，需停车确认再覆盖；更高versionCode不能直接降级，不要卸载清数据。尚未证实端到端手机/实车通过。\n'
+            printf 'E5详细故障取证与重启前连续留存：保留原256行快速精选和最多3000行详细故障模式，用户确认后才经Gateway逐批8行ACK上传。更多选项中可经Shizuku手动开启本地连续系统异常取证，取消原4小时自动停止，采用specialUse前台服务；筛选脱敏后仅保存在手机，最多2MB滚动覆盖，可手动停止与导出，不自动上传或重启后自行恢复。系统/Shizuku仍可能中断取证。本实验不改CarPlay连接、音视频、蓝牙和虚拟屏。实验PR#30。\n'
+            printf '\n## 尚未验收\n本实验APK不是正式E5；需手机检查：Shizuku授权、常驻通知、持续采集运行超过4小时不主动停止、手动停止和离线导出、2MB上限/脱敏、异常后留存、E5视频触控A2DP及普通/详细日志上传ACK均正常。升级将保留已存应用数据但替换运行程序，建议先导出旧取证文件；同包更高versionCode无法无损降级，不要卸载来回退。\n'
           } > release-notes.txt
           gh release create "$TAG" "$APK" "$APK.sha256" --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "别克 E5 · 统一 HTTPS v2 原文日志 $CARDECK_RELEASE_VERSION_NAME（实验）" \
+            --title "Buick-E5 详细故障日志 $CARDECK_RELEASE_VERSION_NAME（实验）" \
             --notes-file release-notes.txt --prerelease --latest=false

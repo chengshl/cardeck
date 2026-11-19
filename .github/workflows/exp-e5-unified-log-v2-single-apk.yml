@@ -1,0 +1,124 @@
+name: E5 unified raw logs v2 - one signed experiment APK
+on:
+  push:
+    branches:
+      - experiment/buick-e5-detailed-diagnostics
+    paths:
+      - '.github/workflows/exp-e5-unified-log-v2-single-apk.yml'
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: cardeck-global-signed-release-version
+  cancel-in-progress: false
+jobs:
+  signed-http-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 校验唯一来源和现有 E5 稳定代码
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/buick-e5-detailed-diagnostics"
+          test "$(git rev-parse HEAD^)" = "61bddb1befc9444d99327c97b8d91f5aa92c73ce"
+          test "$(git log -1 --format=%s)" = "release(e5): signed-http-v2-from-green-ci"
+          test "$(git rev-parse origin/Buick-E5)" = "550f30272f3545f76650478788155ba1374fdc5e"
+          git merge-base --is-ancestor 550f30272f3545f76650478788155ba1374fdc5e HEAD
+          test "$(git diff --name-only 649996a27e051b9d3242938dbc01aab547fb4cf6 HEAD)" = ".github/workflows/ci-e5-detailed-diagnostics.yml
+.github/workflows/exp-e5-unified-log-v2-single-apk.yml
+.github/workflows/publish-e5-detailed-diagnostics.yml"
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/44458686268 --jq .conclusion)" = success
+          test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/44458686268 --jq .head_sha)" = "649996a27e051b9d3242938dbc01aab547fb4cf6"
+          if gh release view "exp-buick-e5-detailed-diagnostics-http-v2-20261119" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::本次签名实验已存在，不允许重复构建或覆盖"
+            exit 1
+          fi
+          grep -Fq 'applicationId = "io.github.buick.e5.cardeck"' app/build.gradle.kts
+          grep -Fq 'private const val RELEASE_TAG = "buick-e5-latest"' app/src/main/java/io/github/shaonialife/cardeck/update/BuickUpdater.kt
+          grep -Fq 'https://once.wiki:8443/logs/v1/logs/batches' app/src/main/java/io/github/shaonialife/cardeck/config/EntryConfig.kt
+          grep -Fq 'verbatim = true' app/src/main/java/io/github/shaonialife/cardeck/service/GatewayLogService.kt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Android 单元测试（不额外生成 Debug APK）
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+      - name: 载入既有 E5 签名凭证
+        env:
+          KEYSTORE_B64: ${{ secrets.CARDECK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CARDECK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARDECK_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/cardeck-e5.p12"
+          chmod 600 "$RUNNER_TEMP/cardeck-e5.p12"
+          {
+            echo "storeFile=$RUNNER_TEMP/cardeck-e5.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+      - name: 分配跨分支严格递增版本
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/release/allocate_version.py
+      - name: 只构建一个签名 Release APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: 核对包名、版本、签名证书及原始来源
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -s "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -1)"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='io.github.buick.e5.cardeck'" <<< "$BADGING"
+          grep -Fq "versionCode='$CARDECK_BUILD_VERSION_CODE'" <<< "$BADGING"
+          grep -Fq "versionName='$CARDECK_RELEASE_VERSION_NAME'" <<< "$BADGING"
+          "$APKSIGNER" verify "$APK"
+          CERT_DETAILS="$("$APKSIGNER" verify --print-certs "$APK")"
+          NEW_CERT="$(sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' <<< "$CERT_DETAILS" | head -1)"
+          test -n "$NEW_CERT"
+          if grep -qi 'CN=Android Debug' <<< "$CERT_DETAILS"; then exit 1; fi
+          mkdir -p "$RUNNER_TEMP/e5-official"
+          gh release download buick-e5-latest --repo "$GITHUB_REPOSITORY" --pattern CarDeck-Buick-E5.apk --dir "$RUNNER_TEMP/e5-official"
+          OLD_CERT="$("$APKSIGNER" verify --print-certs "$RUNNER_TEMP/e5-official/CarDeck-Buick-E5.apk" | sed -nE 's/.*[Cc]ertificate SHA-256 digest: *([[:xdigit:]]+).*/\1/p' | head -1)"
+          test -n "$OLD_CERT" && test "${NEW_CERT,,}" = "${OLD_CERT,,}"
+          AAPT_RES="$("$AAPT" dump --values resources "$APK")"
+          grep -Fq 'experiment/buick-e5-detailed-diagnostics' <<< "$AAPT_RES"
+          cp "$APK" CarDeck-Buick-E5-Diagnostics.apk
+          sha256sum CarDeck-Buick-E5-Diagnostics.apk > CarDeck-Buick-E5-Diagnostics.apk.sha256
+      - name: 独立发布一个实验 APK，不更改 latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CARDECK_RELEASE_BRANCH" = "$GITHUB_REF_NAME"
+          TAG="exp-buick-e5-detailed-diagnostics-http-v2-20261119"
+          ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
+          {
+            printf 'artifactKind=experiment\nupdaterSchema=2\nbaseBranch=Buick-E5\nsourceBranch=%s\nversionName=%s\nversionCode=%s\nbuiltAt=%s\napkName=CarDeck-Buick-E5-Diagnostics.apk\ncommit=%s\n' "$GITHUB_REF_NAME" "$CARDECK_RELEASE_VERSION_NAME" "$CARDECK_BUILD_VERSION_CODE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SHA"
+            printf '\n## 更新说明\n统一日志 HTTPS POST v2：单行 12 KiB、每批最多8行、完整JSON最多16 KiB。软件和手动确认的系统日志均保持原文，不对IP、密码、凭证、协议字段、时间戳做脱敏或省略；不自动开启系统日志采集。HTTP ACK 严格按 schema/batch_id/行数确认，错误与断网后仅当前进程内按原批次重试。\n'
+            printf '\n## 安装前注意\n这是单 APK 隔离实验，并非正式 E5。请为本机 client_id 登记专用 CarDeck writer Token，旧 WebSocket Token 不直接复用。原文可能包含敏感信息，仅在自己控制的服务上启用；原本已脱敏的历史日志不能还原。覆盖安装会替换当前视频实验逻辑，需停车单轮回归。versionCode 递增，旧版本无法直接无损降级，不要卸载清数据；手机/实车以及生产端原文回读仍未验收。\n'
+          } > release-notes.txt
+          gh release create "$TAG" CarDeck-Buick-E5-Diagnostics.apk CarDeck-Buick-E5-Diagnostics.apk.sha256 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "别克E5 统一日志 HTTP v2 · 原文实验 $CARDECK_RELEASE_VERSION_NAME" --notes-file release-notes.txt --prerelease --latest=false

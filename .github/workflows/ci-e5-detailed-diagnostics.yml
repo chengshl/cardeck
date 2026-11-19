@@ -40,12 +40,9 @@ jobs:
           from pathlib import Path
           import subprocess
           content = Path('.github/workflows/publish-e5-detailed-diagnostics.yml').read_text()
-          # One and only one push may sign the fixed, already validated source.
-          assert 'on:\n  push:\n' in content and '  workflow_dispatch:\n' in content
-          assert 'paths:\n      - '.replace('PLACEHOLDER', 'PLACEHOLDER') in content
-          assert "test \"$(git rev-parse HEAD^)\" = \"649996a27e051b9d3242938dbc01aab547fb4cf6\"" in content
-          assert "release(e5): unified-http-v2-single-apk" in content
-          assert "exp-buick-e5-detailed-diagnostics-http-v2-20261119" in content
+          # This L3 Draft may never auto-publish on a source or test push.
+          assert 'on:\n  workflow_dispatch:\n' in content
+          assert '\n  push:\n' not in content
           assert 'group: cardeck-global-signed-release-version' in content
           assert 'cancel-in-progress: false' in content
           assert 'python3 tools/release/allocate_version.py' in content
@@ -60,7 +57,7 @@ jobs:
           blob = subprocess.check_output(
               ['git', 'hash-object', 'tools/release/allocate_version.py'], text=True).strip()
           assert blob == 'eec664befa9a2efd5a030d7ae49fc69096c4a452', blob
-          print('One signed HTTP v2 candidate fenced to green E5 exact source, global allocator/cert/provenance gated')
+          print('Manual-only, global allocator, official E5 certificate, provenance and release tag gates passed')
           PY
       - name: Enforce scoped long-log delta and E5 source lease
         run: |
@@ -78,6 +75,7 @@ jobs:
           expected.update(["app/src/main/java/io/github/shaonialife/cardeck/gateway/OfflineLogFormatter.kt","app/src/main/java/io/github/shaonialife/cardeck/service/RescueTraceService.kt","app/src/test/java/io/github/shaonialife/cardeck/gateway/ForensicRedactionTest.kt"])
           expected.update(["app/src/main/res/values/entry_config_strings.xml"])
           expected.update(["app/src/test/java/io/github/shaonialife/cardeck/gateway/GatewayUnifiedHttpTest.kt"])
+          expected.update([".github/workflows/exp-e5-unified-log-v2-single-apk.yml"])
           changed=set(git('diff','--name-only',stable,candidate).splitlines())
           assert changed==expected, f'Unexpected E5 runtime delta: {sorted(changed ^ expected)}'
           assert git('rev-parse',candidate+':tools/release/allocate_version.py') == git('rev-parse',stable+':tools/release/allocate_version.py')
