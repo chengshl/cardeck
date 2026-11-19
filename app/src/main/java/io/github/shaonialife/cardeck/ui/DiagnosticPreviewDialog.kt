@@ -17,7 +17,7 @@ import io.github.shaonialife.cardeck.gateway.DiagnosticPreviewSummary
 
 /**
  * 高对比度系统取证弹层：默认摘要，按需查看精选日志；滚动区与按钮分离。
- * 由EntryConfigActivity提供已脱敏行及确认回调，本类不采集、不上传、不留存日志。
+ * 由EntryConfigActivity提供完整原文行及用户确认回调，本类不采集、不上传、不留存日志。
  */
 internal object DiagnosticPreviewDialog {
     data class Model(
@@ -80,7 +80,7 @@ internal object DiagnosticPreviewDialog {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        header.addView(text((model.diagnosticType ?: "快速诊断") + " · 安全预览", 19f, foreground, true),
+        header.addView(text((model.diagnosticType ?: "快速诊断") + " · 原文预览（不脱敏）", 19f, foreground, true),
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         val dialog = Dialog(activity)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -162,9 +162,9 @@ internal object DiagnosticPreviewDialog {
 
         val note = text(
             if (model.detailedCount != null) {
-                "保存详细文件只在本地；上传需手动确认，诊断发送可能较长，不会自动重传。"
+                "本次是完整原文，可能含敏感数据；保存仅本地，上传需确认，超长诊断按批 ACK 发送。"
             } else {
-                "保存只在本地；在线上传必须手动确认，分批上报不包含完整2MB历史。"
+                "完整原文不脱敏；本地保存不联网，线上只上传主动确认的本次快照。"
             },
             11.5f, secondary,
         )

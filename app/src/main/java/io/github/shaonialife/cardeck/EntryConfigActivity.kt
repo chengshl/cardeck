@@ -12,6 +12,7 @@ import io.github.shaonialife.cardeck.config.EntryAddress
 import io.github.shaonialife.cardeck.config.EntryConfig
 import io.github.shaonialife.cardeck.config.EntryConfigStore
 import io.github.shaonialife.cardeck.gateway.GatewayProbe
+import io.github.shaonialife.cardeck.gateway.GatewayIdentity
 import io.github.shaonialife.cardeck.gateway.GatewayLogRuntime
 import io.github.shaonialife.cardeck.gateway.LogRedactor
 import io.github.shaonialife.cardeck.gateway.SystemLogCapture
@@ -99,7 +100,7 @@ class EntryConfigActivity : AppCompatActivity() {
             updateRescueTraceStatus()
         }
         findViewById<Button>(R.id.exportRescueTrace).setOnClickListener {
-            findViewById<TextView>(R.id.rescueTraceStatus).text = "正在复制已脱敏日志到 下载/CarDeck…"
+            findViewById<TextView>(R.id.rescueTraceStatus).text = "正在复制原文日志到 下载/CarDeck…"
             val app = applicationContext
             Bg.run("rescue-trace-export") {
                 val result = runCatching { RescueTraceStore.export(app) }.getOrNull()
@@ -133,9 +134,17 @@ class EntryConfigActivity : AppCompatActivity() {
                 result.onSuccess {
                     configLoaded = true
                     stored = it
-                    address.setText(draft ?: it?.gatewayUrl.orEmpty())
+                    address.setText(draft ?: it?.gatewayUrl ?: EntryAddress.UNIFIED_ENDPOINT)
                     credential.hint = getString(if (it == null) R.string.entry_token_hint else R.string.entry_token_kept)
-                    status.setText(if (it == null) R.string.entry_unconfigured else R.string.entry_configured)
+                    val installation = runCatching { GatewayIdentity.load(appContext).deviceId }.getOrNull()
+                    val message = when {
+                        it == null -> getString(R.string.entry_unconfigured)
+                        !EntryAddress.isUnified(it.gatewayUrl) -> getString(R.string.entry_legacy_endpoint)
+                        else -> getString(R.string.entry_configured)
+                    }
+                    status.text = message + (installation?.let { id ->
+                        "\n本机 client_id：$id（需登记 CarDeck writer 身份）"
+                    } ?: "")
                     refreshControls()
                 }.onFailure {
                     save.isEnabled = false
@@ -186,6 +195,10 @@ class EntryConfigActivity : AppCompatActivity() {
 
     private fun saveConfig() {
         val gatewayUrl = runCatching { EntryAddress.normalize(address.text.toString()) }.getOrElse {
+            address.error = getString(R.string.entry_invalid_address)
+            return
+        }
+        if (!EntryAddress.isUnified(gatewayUrl)) {
             address.error = getString(R.string.entry_invalid_address)
             return
         }
@@ -319,7 +332,7 @@ class EntryConfigActivity : AppCompatActivity() {
         val appContext = applicationContext
         Bg.run("system-log-preview") {
             val result = runCatching {
-                val redactor = LogRedactor(listOf(token))
+                val redactor = LogRedactor(listOf(token), verbatim = true)
                 // Both sources are sampled only after this user action. A system-log
                 // failure must not discard the app's persisted crash breadcrumbs.
                 val crash = runCatching {
@@ -384,7 +397,7 @@ class EntryConfigActivity : AppCompatActivity() {
                     crashSignature == fingerprints.getString("last_submitted_crash_signature_v2", null)
                 val expires = SystemClock.elapsedRealtime() + 120_000
                 // 诊断UI由独立深色弹层承载，先看摘要再按需展开精选日志。
-                // 保持既有256行脱敏边界、确认上传、120秒快照有效期与签名指纹判断。
+                // 保持既有256行采样范围、原文不脱敏、确认上传、120秒快照有效期与签名指纹判断。
                 val uploadReady = target != null && stored != null && GatewayLogRuntime.running &&
                     GatewayLogRuntime.snapshot?.state == GatewayProbe.State.HEALTHY &&
                     GatewayLogRuntime.snapshot?.logsSupported == true &&
@@ -436,7 +449,7 @@ class EntryConfigActivity : AppCompatActivity() {
         val token = stored?.token.orEmpty()
         Bg.run("offline-diagnostic-bundle") {
             val app = applicationContext
-            val redactor = LogRedactor(listOf(token))
+            val redactor = LogRedactor(listOf(token), verbatim = true)
             val hasShizuku = ShizukuGate.state(app) == ShizukuGate.State.READY
             val crash = runCatching {
                 SystemLogCapture.recoveryPreview(app, redactor)
@@ -460,11 +473,11 @@ class EntryConfigActivity : AppCompatActivity() {
         if (captureBusy) return
         captureBusy = true
         refreshControls()
-        logStatus.text = "正在整理本地 App 历史日志（脱敏，不上传）…"
+        logStatus.text = "正在整理本地 App 历史日志（原文不脱敏，不上传）…"
         val token = stored?.token.orEmpty()
         Bg.run("offline-app-export") {
             val result = runCatching {
-                OfflineDiagnosticExporter.exportApp(applicationContext, LogRedactor(listOf(token)))
+                OfflineDiagnosticExporter.exportApp(applicationContext, LogRedactor(listOf(token), verbatim = true))
             }.getOrNull()
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
