@@ -6,6 +6,15 @@ import org.junit.Test
 class ForensicRedactionTest {
     private val redactor = LogRedactor(listOf("LOCAL_TEST_CREDENTIAL"))
 
+    @Test fun verbatimModeDoesNotRedactCredentialsIpsOrRawProtocol() {
+        val raw = "2026-11-19 12:31:07.123 RAW tx: Authorization Bearer SECRET " +
+            "192.168.10.20 email=a@example.com vin=12345678901234567 😀"
+        val noMask = LogRedactor(listOf("SECRET"), verbatim = true)
+        assertEquals(raw, noMask.line(raw))
+        assertEquals(listOf(raw), noMask.forensicChunks(raw))
+        assertEquals(listOf(raw), OfflineLogFormatter.appLines(raw, noMask))
+    }
+
     @Test fun preservesSystemExceptionContextWithoutExposingCredentials() {
         val source = "10-26 21:02:24.098 E SettingsProvider: SELinux denied " +
             "signature mismatch; token=SHOULD_NEVER_LEAK password:abc123 " +

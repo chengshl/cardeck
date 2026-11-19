@@ -1,7 +1,10 @@
 package io.github.shaonialife.cardeck.gateway
 
 /** Both preview and transmission use this exact bounded representation. */
-class LogRedactor(private val secrets: List<String> = emptyList()) {
+class LogRedactor(
+    private val secrets: List<String> = emptyList(),
+    val verbatim: Boolean = false,
+) {
     private val sensitive = Regex("authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|write.?key|read.?key|credential|nonce|salt|signature|密码|凭证", RegexOption.IGNORE_CASE)
     private val replacements = listOf(
         Regex("\\b[a-z][a-z0-9+.-]*://\\S+", RegexOption.IGNORE_CASE) to "[地址]",
@@ -26,6 +29,8 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
      * Length is preserved; the v2 batch planner enforces transport bounds explicitly.
      */
     fun forensicChunks(raw: String): List<String> {
+        // Explicit operator-selected raw mode: NO content sanitization whatsoever.
+        if (verbatim) return if (raw.isEmpty()) emptyList() else listOf(raw)
         if (raw.isBlank()) return emptyList()
         if (Regex("""(?:^|\]\s*)RAW\s+(?:tx|rx):|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY""",
                 RegexOption.IGNORE_CASE).containsMatchIn(raw)) {
@@ -63,6 +68,7 @@ class LogRedactor(private val secrets: List<String> = emptyList()) {
     }
 
     fun line(raw: String): String {
+        if (verbatim) return raw
         var text = raw
         for (secret in secrets.filter { it.isNotEmpty() }) text = text.replace(secret, "[已隐藏凭证]")
         if (sensitive.containsMatchIn(text)) return "[已隐藏含凭证或密钥的日志行]"

@@ -71,7 +71,7 @@ class RescueTraceService : Service() {
         if (!started) {
             started = true
             running = true
-            description = "采集中 · 不限时、仅本机、脱敏、不上传"
+            description = "采集中 · 不限时、仅本机、原文不脱敏、不上传"
             executor.execute { record() }
         }
         return START_NOT_STICKY
@@ -79,7 +79,7 @@ class RescueTraceService : Service() {
 
     private fun record() {
         val store = RescueTraceStore.forApp(this)
-        val redactor = LogRedactor()
+        val redactor = LogRedactor(verbatim = true)
         try {
             check(ShizukuGate.state(this) == ShizukuGate.State.READY) { "Shizuku未就绪" }
             val binder = rikka.shizuku.Shizuku.getBinder() ?: error("Shizuku已断开")
@@ -99,7 +99,7 @@ class RescueTraceService : Service() {
                 return
             }
             val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
-            store.append("[采集会话] 开始于 $stamp；无应用时长限制；只保留筛选/脱敏记录；重启后需重新手动启动")
+            store.append("[采集会话] 开始于 $stamp；无应用时长限制；只保留筛选范围内原文，不做脱敏；重启后需重新手动启动")
             // Drain stderr in a separate daemon; never let the pipe block logcat.
             Thread({
                 runCatching {

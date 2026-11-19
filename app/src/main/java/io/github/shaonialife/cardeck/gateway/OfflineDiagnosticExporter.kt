@@ -31,7 +31,7 @@ internal object OfflineDiagnosticExporter {
     fun exportPreview(context: Context, kind: Kind, redactedLines: List<String>): Result? {
         val limit = if (kind == Kind.DETAILED || kind == Kind.REBOOT) DetailedDiagnosticSelector.MAX_LINES else 256
         if (kind == Kind.APP || kind == Kind.BUNDLE || redactedLines.isEmpty() ||
-            redactedLines.size > limit || redactedLines.any { it.isBlank() || it.length > 256 }) return null
+            redactedLines.size > limit || redactedLines.any { it.isBlank() }) return null
         return save(context, kind, redactedLines)
     }
 

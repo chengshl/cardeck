@@ -13,7 +13,7 @@ import java.util.Locale
 
 /**
  * App-private bounded log ring. Survives a device reboot; uninstall or clear-data deletes it.
- * All lines MUST already be filtered and redacted before append(). No network access.
+ * Appends selected logcat lines verbatim; ring bounds bytes only. No network access.
  */
 internal class RescueTraceStore(private val directory: File) {
     companion object {
@@ -73,9 +73,8 @@ internal class RescueTraceStore(private val directory: File) {
 
     @Synchronized
     fun append(safeLine: String, critical: Boolean = false) {
-        require(safeLine.length <= 256) { "unbounded capture" }
         val bytes = (safeLine + "\n").toByteArray(Charsets.UTF_8)
-        if (bytes.size > 1024) return
+        require(bytes.size <= SLOT_BYTES) { "完整原文超出单日志文件容量，拒绝截断" }
         if (!directory.exists() && !directory.mkdirs()) error("failed to create evidence directory")
         var current = slot(0)
         if (current.length() + bytes.size > SLOT_BYTES) {

@@ -30,7 +30,8 @@ class GatewayProbe(
     private val appLogs: GatewayLogBuffer? = null,
     private val vehicleProvider: () -> String? = { null },
 ) : AutoCloseable {
-    private val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+    private val client = client.newBuilder().followRedirects(false).followSslRedirects(false)
+        .callTimeout(replyTimeoutMs, TimeUnit.MILLISECONDS).build()
     enum class State { CONNECTING, CONNECTED, HEALTHY, AUTH_FAILED, DISCONNECTED, FAILED }
     enum class Failure { NETWORK, TLS, HANDSHAKE, PROTOCOL, HEARTBEAT, CONFIGURATION, LOG_UPLOAD }
 
