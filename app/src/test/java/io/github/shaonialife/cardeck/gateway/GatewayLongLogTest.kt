@@ -19,6 +19,22 @@ class GatewayLongLogTest {
         assertFalse(GatewayLogProtocol.fits(listOf("\"".repeat(12288)), "system", null))
     }
 
+    @Test fun unifiedHttpV2PreservesRawStringsAndFixedContract() {
+        val id = "00000000-0000-4000-8000-000000000000"
+        val raw = listOf("token=very-sensitive-value", "192.168.10.20 password=hello",
+            "2026-11-19 12:34:56.780 😀 \"quoted\" and slash\\")
+        val json = JSONObject(GatewayLogProtocol.httpMessage(raw, "system", id, id))
+        assertEquals(setOf("schema_version", "batch_id", "client_id", "source",
+            "user_confirmed", "lines"), json.keys().asSequence().toSet())
+        assertEquals(2, json.getInt("schema_version"))
+        assertEquals(true, json.getBoolean("user_confirmed"))
+        assertEquals(raw, (0 until json.getJSONArray("lines").length()).map {
+            json.getJSONArray("lines").getString(it)
+        })
+        assertEquals(raw, GatewayLogProtocol.planHttp(raw, "system").flatten())
+        assertFalse(GatewayLogProtocol.fitsHttp(listOf("😀".repeat(3073)), "app"))
+    }
+
     @Test fun lineAndForensicPathsKeepLongContextWithoutTruncation() {
         val text = "[12:34:56.789] context;" + "长栈信息;".repeat(600)
         assertEquals(text, LogRedactor().line(text))

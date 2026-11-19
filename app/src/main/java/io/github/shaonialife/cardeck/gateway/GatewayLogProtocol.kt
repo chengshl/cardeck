@@ -16,6 +16,35 @@ object GatewayLogProtocol {
                 vehicle?.let { put("vehicle_id", it) }
             }.toString()
 
+    // Once unified ingestion derives project from the writer credential, not the body.
+    // clientId must be the installation UUIDv4 registered for that credential.
+    fun httpMessage(lines: List<String>, source: String, clientId: String, id: String): String =
+        JSONObject().put("schema_version", 2).put("batch_id", id)
+            .put("client_id", clientId).put("source", source)
+            .put("user_confirmed", source == "system").put("lines", JSONArray(lines)).toString()
+
+    fun fitsHttp(lines: List<String>, source: String): Boolean =
+        lines.size in 1..8 && source in setOf("app", "system") && lines.all {
+            it.isNotEmpty() && it.toByteArray(Charsets.UTF_8).size <= MAX_LINE_BYTES
+        } && httpMessage(lines, source, BATCH_ID_SAMPLE, BATCH_ID_SAMPLE)
+            .toByteArray(Charsets.UTF_8).size <= MAX_FRAME_BYTES
+
+    fun planHttp(lines: List<String>, source: String): List<List<String>> {
+        val groups = mutableListOf<List<String>>()
+        var pending = mutableListOf<String>()
+        for (line in lines) {
+            require(fitsHttp(listOf(line), source)) {
+                "单行或完整 JSON 超过统一日志合同上限；原文不截断，请本地导出"
+            }
+            if (pending.isNotEmpty() && !fitsHttp(pending + line, source)) {
+                groups.add(pending.toList()); pending = mutableListOf()
+            }
+            pending.add(line)
+        }
+        if (pending.isNotEmpty()) groups.add(pending.toList())
+        return groups
+    }
+
     fun fits(lines: List<String>, source: String, vehicle: String?): Boolean =
         lines.size in 1..8 && lines.all {
             it.isNotBlank() && it.toByteArray(Charsets.UTF_8).size <= MAX_LINE_BYTES

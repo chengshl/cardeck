@@ -5,6 +5,8 @@ import io.github.shaonialife.cardeck.config.EntryAddress
 import io.github.shaonialife.cardeck.config.EntryConfig
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -53,6 +55,9 @@ class GatewayProbe(
         Thread(task, "gateway-probe-heartbeat").apply { isDaemon = true }
     }
     private var socket: WebSocket? = null
+    private var httpMode = false
+    private var httpEndpoint: String? = null
+    private var httpToken: String? = null
     private var deadline: ScheduledFuture<*>? = null
     private var nextHeartbeat: ScheduledFuture<*>? = null
     private var started = false
@@ -103,6 +108,22 @@ class GatewayProbe(
             return
         }
         observer(Snapshot(State.CONNECTING))
+        if (EntryAddress.isUnified(config.gatewayUrl)) {
+            // A writer identity is bound on the server to this installation UUID,
+            // and old WebSocket credentials are NEVER auto-migrated.
+            if (deviceInfo == null || appLogs == null ||
+                !Regex("[A-Za-z0-9._~-]{32,128}").matches(config.token)) {
+                finish(Snapshot(State.FAILED, Failure.CONFIGURATION))
+                return
+            }
+            httpMode = true
+            httpEndpoint = config.gatewayUrl
+            httpToken = config.token
+            logPump = timer.scheduleWithFixedDelay({ pumpHttp() }, 0, 750, TimeUnit.MILLISECONDS)
+            return
+        }
+        // Legacy WebSocket mode stays for existing isolated tests only;
+        // GatewayLogService refuses to start the retired endpoint.
         deadline = timer.schedule({ fail(Failure.NETWORK) }, replyTimeoutMs * 2, TimeUnit.MILLISECONDS)
         socket = client.newWebSocket(request, listener)
     }
@@ -253,7 +274,10 @@ class GatewayProbe(
         val limit = if (detailed) DetailedDiagnosticSelector.MAX_LINES else 256
         if (preview.isEmpty() || preview.size > limit) return false
         val confirmedVehicle = vehicleProvider()
-        val planned = runCatching { GatewayLogProtocol.plan(preview, "system", confirmedVehicle) }.getOrNull()
+        val planned = runCatching {
+            if (httpMode) GatewayLogProtocol.planHttp(preview, "system")
+            else GatewayLogProtocol.plan(preview, "system", confirmedVehicle)
+        }.getOrNull()
             ?: return false // Preserve the preview for local export; nothing was enqueued or sent.
         systemUploadTotal = preview.size
         systemUploadAcknowledged = 0
@@ -277,6 +301,80 @@ class GatewayProbe(
         }
         if (socket?.send(message) != true) { fail(Failure.NETWORK); return }
         logDeadline = timer.schedule({ fail(Failure.LOG_UPLOAD) }, replyTimeoutMs, TimeUnit.MILLISECONDS)
+    }
+
+    /**
+     * A single background HTTP worker performs one POST at a time.
+     * Success is counted ONLY after a durable, strictly matching v2 ACK.
+     * The body is never printed, normalized, shortened, or redirected.
+     */
+    private fun pumpHttp() {
+        val batch = synchronized(this) {
+            if (stopped || !httpMode) return
+            val next = pendingLog ?: (
+                systemBatches.pollFirst() ?: appLogs?.takeTagged()
+                    ?.takeIf { it.isNotEmpty() }?.let {
+                        LogBatch("app", it.map { line -> line.text },
+                            id = it.first().batchId ?: UUID.randomUUID().toString(),
+                            vehicleId = it.first().vehicleId, taggedLines = it)
+                    } ?: return)
+            pendingLog = next
+            next
+        }
+        val device = deviceInfo ?: return fail(Failure.CONFIGURATION)
+        val address = httpEndpoint ?: return fail(Failure.CONFIGURATION)
+        val token = httpToken ?: return fail(Failure.CONFIGURATION)
+        val body = GatewayLogProtocol.httpMessage(batch.lines, batch.source, device.deviceId, batch.id)
+        if (body.toByteArray(Charsets.UTF_8).size > GatewayLogProtocol.MAX_FRAME_BYTES) {
+            fail(Failure.LOG_UPLOAD)
+            return
+        }
+        val request = Request.Builder().url(address)
+            .header("Authorization", "Bearer $token")
+            .header("Content-Type", "application/json")
+            .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        val sent = System.nanoTime()
+        try {
+            client.newCall(request).execute().use { reply ->
+                if (!reply.isSuccessful) {
+                    when (reply.code) {
+                        401, 403 -> finish(Snapshot(State.AUTH_FAILED, httpCode = reply.code))
+                        409 -> fail(Failure.PROTOCOL)
+                        else -> finish(Snapshot(State.FAILED, Failure.LOG_UPLOAD, httpCode = reply.code))
+                    }
+                    return
+                }
+                // The ACK is small; never log or surface a response body containing data.
+                val ack = runCatching { JSONObject(reply.peekBody(4096).string()) }.getOrNull()
+                if (ack == null || ack.optInt("schema_version", -1) != 2 ||
+                    ack.optString("batch_id") != batch.id ||
+                    ack.optInt("accepted_lines", -1) != batch.lines.size ||
+                    !ack.has("duplicate") || ack.opt("duplicate") !is Boolean) {
+                    fail(Failure.PROTOCOL)
+                    return
+                }
+                synchronized(this) {
+                    if (stopped || pendingLog !== batch) return
+                    pendingLog = null
+                    registered = true
+                    logsSupported = true
+                    reportsSupported = true
+                    heartbeatCount++
+                    reportCount++
+                    latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - sent)
+                    if (batch.source == "app") appLogLines += batch.lines.size
+                    else {
+                        systemLogLines += batch.lines.size
+                        systemUploadAcknowledged += batch.lines.size
+                    }
+                    publishHealthy()
+                }
+            }
+        } catch (error: Exception) {
+            if (generateSequence(error) { it.cause }.any { it is SSLException }) fail(Failure.TLS)
+            else fail(Failure.NETWORK)
+        }
     }
 
     private fun scheduleHeartbeat() {

@@ -20,7 +20,7 @@ class GatewayLogBuffer(
         val associatedVehicle = vehicleProvider()
         for (line in raw.lineSequence().map(redactor::line).filter { it.isNotBlank() }) {
             // An unsendable row is counted explicitly; never upload a truncated substitute.
-            if (!GatewayLogProtocol.fits(listOf(line), "app", associatedVehicle)) { dropped++; continue }
+            if (!GatewayLogProtocol.fitsHttp(listOf(line), "app")) { dropped++; continue }
             if (lines.size >= capacity) { lines.removeFirst(); dropped++ }
             lines.addLast(TaggedLine(line, associatedVehicle))
         }
@@ -34,7 +34,7 @@ class GatewayLogBuffer(
         while (size < 8 && lines.isNotEmpty() && lines.peekFirst().vehicleId == first &&
             lines.peekFirst().batchId == pendingBatch) {
             val candidate = map { it.text } + lines.peekFirst().text
-            if (!GatewayLogProtocol.fits(candidate, "app", first)) break
+            if (!GatewayLogProtocol.fitsHttp(candidate, "app")) break
             add(lines.removeFirst())
         }
     }

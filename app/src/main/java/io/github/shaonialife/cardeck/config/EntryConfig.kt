@@ -11,15 +11,19 @@ class EntryConfig(
 }
 
 object EntryAddress {
+    const val UNIFIED_ENDPOINT = "https://once.wiki:8443/logs/v1/logs/batches"
+    fun isUnified(value: String): Boolean = value == UNIFIED_ENDPOINT
+
     fun normalize(value: String): String {
         val address = value.trim()
         val uri = runCatching { URI(address) }.getOrNull()
         require(
-            uri != null && uri.scheme.equals("wss", ignoreCase = true) &&
+            address == UNIFIED_ENDPOINT ||
+                (uri != null && uri.scheme.equals("wss", ignoreCase = true) &&
                 !uri.host.isNullOrBlank() && uri.rawUserInfo == null &&
                 uri.rawQuery == null && uri.rawFragment == null &&
-                (uri.port == -1 || uri.port in 1..65535) && !uri.rawPath.isNullOrEmpty(),
-        ) { "请填写完整的 wss:// 地址，包含服务路径；不要在地址中填写凭证或查询参数。" }
+                (uri.port == -1 || uri.port in 1..65535) && !uri.rawPath.isNullOrEmpty()),
+        ) { "请使用统一日志 HTTPS 地址；旧 wss:// 配置仅用于历史读取。" }
         return address
     }
 }
