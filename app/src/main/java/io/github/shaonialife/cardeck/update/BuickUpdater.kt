@@ -129,7 +129,7 @@ object BuickUpdater {
         activity.getSharedPreferences(PREF, 0).edit().putBoolean(KEY_AUTO, enabled).apply()
     }
 
-    /** 前台自动检查与软件更新页手动检查共用用户所选渠道；不会自动下载安装。 */
+    /** 进入别克设置时的自动检查与软件更新页手动检查必须使用同一选定渠道。 */
     fun checkSelected(activity: Activity, silent: Boolean = false) {
         when (UpdatePreference.selected(activity)) {
             UpdatePreference.Channel.FORMAL -> check(activity, silent)
@@ -166,14 +166,10 @@ object BuickUpdater {
                     .firstOrNull { it.startsWith("versionCode=") }
                     ?.substringAfter("=")?.trim()?.toLongOrNull()
                     ?: throw IllegalStateException("Release 缺少 versionCode")
-                val versionName = release.optString("body").lineSequence()
-                    .firstOrNull { it.startsWith("versionName=") }
-                    ?.substringAfter("=")?.trim()
-                    ?.takeIf { it.matches(Regex("[0-9]{14}")) }
-                    ?: code.toString()
                 val branch = release.optString("body").lineSequence()
                     .firstOrNull { it.startsWith("branch=") }
                     ?.substringAfter("=")?.trim().orEmpty()
+                val versionName = ReleaseVersionName.display(release.optString("body"), branch, code)
                 val changeNotes = UpdateNotes.extract(release.optString("body"))
                 val buildTimeLabel = ReleaseBuildTime.label(release.optString("body"), versionName)
                 require(branch == SOURCE_BRANCH) {

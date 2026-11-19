@@ -1,0 +1,68 @@
+name: E5 Test-to-E5 parser and diagnostic regression migration (#27)
+on:
+  push:
+    branches:
+      - experiment/buick-e5-test-migration-parser-diagnostics-27
+  pull_request:
+    branches:
+      - Buick-E5
+    paths:
+      - 'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt'
+      - 'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt'
+      - '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-only-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fail closed on E5 baseline and exact Test-to-E5 test-only diff
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          base = '6dff31cac9a4a6f1945b787ba01eea577761d0eb'
+          actual = subprocess.check_output(['git','rev-parse','origin/Buick-E5'], text=True).strip()
+          assert actual == base, f'E5 stable changed: {actual}'
+          paths = {
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt',
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt',
+              '.github/workflows/ci-e5-test-migration-parser-diagnostics-27.yml',
+          }
+          changed = set(subprocess.check_output(
+              ['git','diff','--name-only','origin/Buick-E5...HEAD'], text=True
+          ).splitlines())
+          assert changed == paths, f'Unexpected production changes: {changed}'
+          fixtures = {
+              'app/src/test/java/io/github/shaonialife/cardeck/airplay/BplistExtendedLengthTest.kt':
+                  ['extendedDataLengthAbove127Parses', 'extendedAsciiStringLengthAbove127Parses',
+                   'extendedData200BytesRoundTrips', 'extendedAscii150CharactersRoundTrips'],
+              'app/src/test/java/io/github/shaonialife/cardeck/gateway/DiagnosticPreviewSummaryTest.kt':
+                  ['appStagesOnlyAreNotCountedAsNewSystemCrash',
+                   'duplicatedDatedTombstoneIsNeverLabeledNew',
+                   'missingDatedCrashDoesNotClaimNoCrashOrNewCrash'],
+          }
+          for path, cases in fixtures.items():
+              old = subprocess.check_output(['git', 'show', 'origin/Buick-E5:'+path], text=True)
+              new = Path(path).read_text()
+              assert new.startswith(old.rsplit('\n}', 1)[0]), f'Baseline tests changed: {path}'
+              for case in cases:
+                  assert new.count('fun '+case+'(') == 1, f'Missing or duplicate fixture: {case}'
+          print('Exact three-file test-only migration and preserved E5 baseline verified')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Execute all Android unit regressions and Debug compile
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace

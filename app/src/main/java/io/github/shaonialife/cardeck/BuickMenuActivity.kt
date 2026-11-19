@@ -9,6 +9,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import io.github.shaonialife.cardeck.update.BuickUpdater
 
 /** Buick-only menu. Keep diagnostics and updates out of upstream SettingsMenus. */
 class BuickMenuActivity : AppCompatActivity() {
@@ -50,7 +51,7 @@ class BuickMenuActivity : AppCompatActivity() {
                 2 -> {
                     holder.icon.setImageResource(android.R.drawable.stat_sys_download)
                     holder.title.text = "软件更新"
-                    holder.desc.text = "正式 / 试验分支 · 自动检查 · 构建时间"
+                    holder.desc.text = "正式版启动时检查 · 实验版手动检查 · 构建时间"
                     holder.itemView.setOnClickListener {
                         startActivity(Intent(this@BuickMenuActivity, UpdateCenterActivity::class.java))
                     }

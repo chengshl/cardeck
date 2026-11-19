@@ -1,6 +1,6 @@
 # CarDeck 项目统一开发与协作规则
 
-> **统一规范版本：2026-10-26 / v1.7**  
+> **统一规范版本：2026-11-08 / v2.3**  
 > **唯一权威来源**：`Buick:docs/PROJECT-GOVERNANCE.md`。本文件在 `Buick-E5`、`Buick-Test` 是完全一致的只读同步副本，不允许各分支单独改写规则。与历史 `AGENTS.md`、旧版分支文档、Issue 快照冲突时，按本规则及用户最新明确决定执行。
 
 ## 一、仓库与分支边界
@@ -37,6 +37,49 @@
 3. **默认不改变车机运行行为**：诊断开销须限定在用户主动操作和受控后台任务内；原有256行精选、脱敏、敏感凭据过滤、用户主动确认、分批回执和本地导出继续可用；不得悄悄持续抓取或上传系统日志，不得把远程诊断变成控制能力。
 4. **交付与验收**：每轮按专项 Issue 记录差异、性能/大小限制、时间窗口、是否截断、实际批次确认/失败和错误恢复。实验 APK 独立签名发布、版本码可安装性和回退限制必须交代；必要手机验证通过后才选择性合入 E5。只改规范文档不触发 APK 构建。
 5. **本次执行对象**：#28 的可选详细故障诊断上传（保留256行快速预览，独立增强详细模式）按本条准许优先启动；不能据此把 #28 会话卡死根因认作已修好。
+
+### Xperia 1 V RescueParty 系统重启独立观察与非阻断决定（v1.8，2026-10-26 用户最新决定）
+
+**[设备偶发事件 #31](https://github.com/chengshl/cardeck/issues/31) 的现行归类：疑似 Sony Xperia 1 V / Android 15 固件或系统框架问题，作为独立设备稳定性观察保留，不再与 CarDeck 项目故障强行关联，也不再构成其他功能验证、选择性合并或发布的自动阻断条件。** 本决定以用户明确认可的研发/验收范围为准，优先于此前 Issue 或本规范中“未排除 #31 便禁止合并”的旧表述。
+
+1. **证据与推测分离**：#31 已有 `reboot,rescueparty`、System UID 1000 / SettingsProvider 异常、Sony/Android 系统级恢复记录；存在未连接 CarPlay 时同样发生重启的实证。可合理列为**疑似固件/系统独立偶发**，但未获直接根因证实，**不得把“固件导致”写成事实，也不得宣称已彻底排除 CarDeck/Shizuku 间接影响**。保留全部时间线、bugreport 脱敏摘要及历史记录。
+2. **不阻断其他项目**：#31 不再作为 #30 自用详细诊断、#27 / PR #29 Test→E5 功能迁移、以及其他独立功能的**额外**合并/实测阻断；不能继续仅凭“#31 尚未根治”要求暂停上述任务。它们仍须分别完成原有的 L2/L3 代码隔离、CI、签名/版本/回退核对、用户手机或实车验收、回归及选择性合并。
+3. **其他故障独立处理**：#28 RECORD 后无视频、#11 AAC 音频断连、#24 蓝牙干扰属于不同 CarDeck 功能问题，**其各自适用的限制仍有效**，不得以 #31 降级为由自动判定这些功能已经修复，或绕过它们自己的合并风险门槛。
+4. **观察而非封案**：#31 保留独立开放状态，按设备观察事件而非 CarDeck P0 全局阻断；暂不要求用户为此反复强制复现/重启或暂停全部验证。未来若在清晰受控对照中得到 CarDeck 导致系统重启的直接证据，立即重新评估风险和相应功能的隔离门禁；此前不把时间接近视作确定因果。
+5. **记录统一**：#31、#30、#27、#12 和相关 PR 的现行状态须统一注明本决定；**旧评论保存历史、不删除/篡改当时证据**。仅修订项目治理和任务记录，本决定本身不改变 APK 功能或触发发布。
+
+### Test 包名专职系统日志采集例外（v1.9，2026-10-27 用户明确批准）
+
+**新决定：将当前 E5 实验已经在手机验证可采集/本地导出的“重启前系统日志留存”独立出来，形成一套使用 Test Android 包名的专职取证实验 App，长期运行而不承担 CarPlay 连接。E5 继续作为唯一非音频功能融合和车机测试基准。** 本条仅限下面这套受控取证程序，优先于 v1.6/v1.7 的“Test 不再承接任何非音频”一般限制；其它禁令不变。
+
+1. **分支与来源**：单独的 `experiment/buick-test-rescue-collector` 源自 `experiment/buick-e5-detailed-diagnostics` 可用的日志模块，构建 Android 包名为 `io.github.buick.test.cardeck`。**不对冻结中的 `Buick-Test` 主分支做程序功能修改**，不把 E5 或 Test 整条功能分支强行合并，也不恢复 Test 其它非音频实验。此例外只为个人长期取证，不代表 Test 退役战略取消。
+2. **双 App 并存**：E5 包名 `io.github.buick.e5.cardeck` 保持独立，专门推进 T22/T26/#28 和后续合规融合；取证包使用 Test 包名，因此与 E5 同机并存。但如果手机已有 Test 原包，此取证 APK **是覆盖升级而非第四套并存**；须核对同签名及高 `versionCode`、维护旧 Test 数据/回滚限制。#11 音频实验的 Test APK 不能与取证包同时作为同包名应用运行，应改换环境或将来经授权改为真正专用包名。
+3. **禁止车机自动行为**：取证变体的 Manifest 仅启用专用 `ForensicOnlyActivity`、用户主动启停的 `RescueTraceService` 与所需 Shizuku provider；不暴露/自动启动 `CarPlayService`、主连接界面、蓝牙/HFP/A2DP、Wi-Fi、虚拟显示、Gateway 网络服务、通知监听或声音录制能力。源代码里若保留未引用连接实现，不代表可在该包运行；打包校验必须检查 Manifest 权限与组件边界。
+4. **取证生命周期与隐私**：Shizuku 必须按 Test Android 包名单独授权；用户手动启动 `specialUse` 常驻通知取证，无应用层4小时时限，脱敏后只保存本机 4×512 KiB 滚动文件，不暗中网络上传；手动停止/导出到下载目录。系统杀进程、Shizuku断开或整机重启仍会停止采集，已同步落盘的文件跨系统重启保留，但**默认不自启动**。清除Test数据/卸载前先导出旧记录。
+5. **研发与发布边界**：本辅助工具改动风险 **L3**，单独 CI/签名/预发布 tag，不覆盖 Buick 正式 `latest` 或 E5 包名；须验收“可与 E5 并存、Shizuku授权、通知、采集/脱敏/停止/导出、E5覆盖升级期间不被触发断开、原有 Test 音频版本覆盖风险”，再标记手机验收通过。版本元数据必须真实记载源码实验分支、构建SHA与 Test applicationId，不因直接构建成功就当作长期稳定。
+6. **维护归属**：设备 RescueParty 证据继续汇总 #31，取证代码与交付在 #30 及 #12 登记，Test→E5迁移关系只在 #27 留简明记录。E5 后续正常功能融合按原 v1.8 L2/L3 验收，不必等这套自用采集工具查明 #31 的固件根因。
+
+### 第三个独立包名取证助手（v2.0，2026-10-28 用户明确要求推进，覆盖 v1.9 包名安排）
+
+**现行决定：取证助手自 Test Android applicationId 迁往第三个独立 Android 包名，与 Buick-E5 和 Buick-Test 音频试验可同时安装。** 上一节 v1.9 的 Test 同包名取证方案作为历史阶段保留；凡包名归属、更新源、安装互相覆盖等与本节冲突的条款，一律按本节执行。无需撤销 Test 音频 P0 许可，也不取消 E5 单一非音频验证主线。
+
+1. **唯一新取证开发目标**：从已签名发布的旧取证实验 `experiment/buick-test-rescue-collector@c399a6cbb6f3f8a98abe390ca3c5bb192464153b` 派生 `experiment/cardeck-rescue-standalone`；新 Android `applicationId=io.github.cardeck.rescue.collector`。旧分支、旧 Release、旧包名 `io.github.buick.test.cardeck` 保留追溯，不再承接新版取证功能开发；原冻结 `Buick-Test` 不作非音频功能修改。
+2. **三 App 共存**：E5 `io.github.buick.e5.cardeck` 负责稳定连接/视频/触摸，Test `io.github.buick.test.cardeck` 只保留音频 #11 研究，Standalone 独立包仅用于系统取证。新 APK **不是旧 Test 取证版的覆盖升级**，安装不会搬运私有数据、通知授权、Shizuku 授权、自动更新偏好。用户先在旧取证 App 导出到下载目录并停止旧采集，待新包实机验收后自行决定停用/卸载旧包；**不能在未验收前主动卸载旧包或清除旧数据**。
+3. **运行权限与隐私**：沿用 v1.9 的取证组件白名单，仅 `ForensicOnlyActivity`、`RescueTraceService`、Shizuku provider 和用于前台自更新的 FileProvider；不对外启用车机、蓝牙、Wi-Fi、麦克风、录音、视频、投屏、Gateway 自动采集/上传。用户主动开启、常驻 specialUse 通知、普通 2 MiB 加关键 512 KiB 本地轮转；只允许前台检查本程序的预发布，更新须用户同意。杀进程/重启不自动重启日志采集，已落盘证据留存。
+4. **独立发布闭环**：风险 **L3**，工作流 `.github/workflows/publish-rescue-standalone.yml` 只能在该实验分支执行，验证 `applicationId`、编译、JUnit、lint、禁用连接组件、非Debug签名、独立来源和 SHA256。APK 名 `CarDeck-Rescue-Standalone.apk`，独立 prerelease tag `exp-cardeck-rescue-standalone-YYYYMMDDHHmmss`；自动更新只接受此来源、标签、APK、摘要；不得误选旧 Test 取证版、Test 音频版、E5 或 Buick 正式版本。版本来源 `sourceBranch` 写真实分支，`baseBranch=Buick-E5` 表示最早诊断能力来源。
+5. **手机迁移验收门禁**：旧日志已导出、新旧包不互相覆盖、新 Shizuku 授权及通知、开始/停止/导出与脱敏、关键事件保存及心跳、恢复后持续、独立更新选择/包签名、E5和Test音频并存且正常；不可主动制造系统重启。构建/Release 成功不等于手机验收；只有用户完成手机验收后才视为可替换日用旧取证 App。
+6. **维护记录**：#30 记录取证代码/构建/手机验收，#11 继续音频独立实验，#27 只记迁移归属，#12 进度索引，#31 保留系统事件证据。原 Test 取证历史是追溯而非最新安装推荐；不因取证独立化推迟 #11 音频修复。
+
+### 废弃预发布通道退役与历史保留（v2.1，2026-10-28 用户明确要求）
+
+**用户批准清理不再使用的预发布通道。执行策略为「停止自动发版、退出手机内实验订阅、保留历史APK/校验文件/标签/日志证据」，而不是删除已引用的源代码与Release。** 不影响在用正式渠道、P0音频、E5稳定性试验和已签名独立取证版本。
+
+1. **允许在旧版本元数据执行受控归档**：仅对已确认替代或停用、不会再用作当前升级/重连排障测试入口的版本，将其GitHub Release正文机器字段 `artifactKind=experiment` 调整为 `artifactKind=historical`，补 `originalArtifactKind=experiment` / `retiredChannel=true` / 日期说明。更新器只接受 `artifactKind=experiment`，故无需修改线上APK即可阻止这些旧版本重新出现在实验安装列表。**不更改APK、SHA256、tag、源码SHA、原发布内容其他字段和资源可下载性**。此标记是2026-10-28的当前归档状态，原曾作为实验交付的事实仍然成立。
+2. **本次已归档六个签名预发布**：旧 Test 包名取证 `exp-buick-test-rescue-collector-20261027150931`、`exp-buick-test-rescue-collector-20261027200625`（由第三独立包名 `experiment/cardeck-rescue-standalone` 替代）；Test Updater-B `exp-buick-test-updater-b-20261026170331`、`...180307`、`...180738`（功能向 E5 集中）；Test任务隔离 `exp-buick-test-task-20261026144650`（Test非音频功能已冻结/迁往E5）。独立一次性归档工作流 `maintenance/archive-unused-prereleases-20261028`，Actions run `40611787076` completed/success；六份APK和SHA256资源已复核存在。对应三个过时签名发布工作流已从其原试验分支移除，但不删除历史提交。
+3. **继续保留可用渠道**：正式 `buick-latest`、`buick-e5-latest`、`buick-test-latest`；E5 #24 蓝牙、#34 iAP2 stop、安全/诊断与Test→E5迁移试验按专项门禁继续；音频 #11 的 T75历史有效schema2版本在 T76获得签名可试验版本前不归档；第三独立取证唯一 `exp-cardeck-rescue-standalone-*` 继续签名发行。旧schema1 T75本已因不满足schema2而从现行选择器隐藏，保留其原始Release不重复变更。
+4. **不触碰的历史固定标签**：`buick-main-latest`、`main-latest`、`cardeck-latest` 可能仍被旧客户端或上游代码引用；本轮仅分类为历史/兼容，不删除 Release/tag，也不通过改写其版本元数据制造安装失败。上游 `main` 不参与改动；`Buick-main` 分支已退役，不重启构建。
+5. **发布权限与重复清理安全**：旧发布工作流只删除现行分支中的workflow文件，Git历史可追溯；独立取证工作流只由其应用代码、Gradle和自身workflow改变触发，不因旧workflow/docs删除产生新包。归档仅限精确列表且要求原sourceBranch/schema、prerelease、APK及SHA256匹配，支持再次运行时识别已归档。**若将来恢复某专项，必须明确取消归档决策、重新做L2/L3验证并提供新独立签名版本，不简单恢复过期安装源。**
+6. **记录**：更新专项 #17、迁移 #27、取证 #30、总索引 #12。CI/Release归档不是用户手机新版本验收，也不解决 T76 AAC约20秒断连；仍禁止无验收合并运行代码。
 
 ## 二、规则更新：一个权威版本、立即同步
 
@@ -115,7 +158,27 @@
 5. **同步动作**：每次 `main` 代码同步后、每次处理上游技术问题或从上游引入/借鉴功能时，立即更新 #23 台账（重要结果同步 #12）；不因每次上游提交自动产生测试 APK。**文档/规则提交不得触发软件更新**；真正功能移植按第三、四节的风险分级、隔离试验、CI 和手机/实车验收逐项执行。
 6. **多分支采纳状态分开写**：即使 Test 已接入，也不能默认 E5、Buick 已接入；自研 E5 → Test 的移植同样记录借鉴与验收链，来源标识明确，不能冒充 `main` 上游贡献。
 
-## 六、历史决策引用
+## 六、公开 GitHub 与私有 GitLab 的资料路由（v2.2，2026-10-29 用户新决定）
+
+**职责分离**：`chengshl/cardeck` 公开 GitHub 仍是唯一研发源代码、功能 Issue/PR、CI、签名 Release、验收和统一治理主账；已建立的独立私有 GitLab CarDeck 项目只承载经授权的**受限证据、匿名化协议事务、私有问题分析和归档索引**，不设第二条源码发布主线，也不改 GitHub `main` 上游同步。GitLab 的 `main` 与 GitHub 的 `main` **完全不是一回事**。私有库存在不等于原始日志已经迁移。
+
+1. **资料分级**：公开 GitHub 只能存匿名化的事实摘要、可公开的代码/提交、关联 Issue 与验收记录。原生 iPhone/Android 系统日志、未脱敏 sysdiagnose、抓包、网络环境和设备唯一标识，默认走私有证据审核流程；若无法彻底脱敏，须先加密并限权，不能直接上传未加密的原文。任何配对密钥、API token、签名密钥、密码、Keystore 等**不应以明文存入任何 Git 仓库**（包括私有 GitLab），由安全凭据存储体系管理。
+2. **仅不透明ID公开关联**：受限证据统一使用 `CD-PRV-YYYYMMDD-NNN` 编号。GitHub 专项 Issue 可以写此编号及是否“待迁入/已校验入库/仅有脱敏摘要”，**不得公开私有 GitLab 域名、项目 URL、内部文件路径、人员名单或设备地址/标识**。私有 GitLab 文档可以单向链接到公开 GitHub Issue/Commit/CI/Release，但不反向泄露存储入口。
+3. **双账边界**：GitHub #12 仍是公开任务索引，#11 等专项 Issue 仍是源码、实验及实车验收的事实主账。GitLab 仅记录证据文件/权限/哈希/采集时间与真实事件时间/脱敏范围/关联公开Issue；二者不得互相冒充“已验收”“已备份”。实际资料迁入前明确标为“待迁入”；不能仅因 Gateway 有七天归档就认定私有持久备份已完成。
+4. **采集与访问**：只处理用户已提供或授权的日志；现有 Gateway 只读查询与用户手动确认上传边界不变。高敏感数据应按最小权限、SHA256、保留期和可回溯脱敏审核管理；对于可识别个人或身份凭据的原始包，优先使用受控加密存储。Git 私有可见性不代替加密，删除文件也不代表清除了 Git 历史/CI artifact/备份。
+5. **操作护栏**：不要自动镜像 GitHub/GitLab 或互相同步源码分支、CI secrets 与大型日志；不因本决定新建持续采集或车机控制能力。新增/修改私有证据时仅向 GitHub 追加最低必要的脱敏关联。若私有仓库改成 public、权限不明、文件来源不明或检测到明文凭据，立即停止上传并调查，不越权继续。
+6. **只改文档，不触发版本发布**：本规则是 L1 资料治理，不更改 CarPlay 音视频/触摸/蓝牙/iAP2 运行代码，不交付新的 APK 或修改正式下载通道。按统一规范同步到 `Buick`、`Buick-E5`、`Buick-Test` 三条规则副本，**绝不写入 GitHub `main`**。
+
+### GitHub 默认构建与 GitLab 拒绝场景备用（2026-11-08，v2.3 新决定）
+
+1. **唯一日常构建入口：GitHub Actions**。公开 GitHub `chengshl/cardeck` 的对应功能线/隔离分支承担 Gradle Android 单测、Lint、Debug APK 与无签名 Release 编译的常规 CI。提交、PR、状态检查与构建证据均以 GitHub 的准确源码 SHA 和 Actions Run 为准；已经在 GitLab 构建成功的 APK 不能冒充同 SHA 的 GitHub Actions 成功。纯文档/规则变更不得触发软件发版。
+2. **签名 Release 仍是独立门禁**。需要安装/更新时，先按专项 L2/L3 要求核对功能风险与已验证源码，保持原有包名、同一证书、严格递增的 versionCode、正确版本名、精确来源 SHA、单测/Lint 及完整回退包。只允许受控签名工作流读取已配置的 GitHub Actions Secrets；无签名 Release、Debug APK 或 GitLab 产生的已签名 APK 不得混称。真实发布必须生成不可覆盖的独立 prerelease、匹配 APK/SHA256 与 schema2 元数据；不得自动修改 `*-latest` 或绕过用户手机/实车验收。
+3. **GitLab 只在 GitHub 平台拒绝执行时临时备用**。仅当 GitHub Actions 因限额、Runner 不分配、服务不可用、权限或其他平台级阻断导致**无法正常执行构建**，且常规自检/有限重试仍不能恢复时，才由执行者主动选择受限私有 GitLab Runner 临时构建并留审计记录；**普通源码编译失败、单测/Lint 失败、签名校验失败和安全门禁拒绝，均不是切换 GitLab 绕过检查的理由**。不得仅因每次 GitHub CI 非绿就自动触发 GitLab、创建无上限双重构建或使 GitLab 成为持续默认主线。
+4. **备用构建必须保持同源与安全边界**。GitLab 备用只允许读取已确认 GitHub 源分支的**精确提交 SHA**、固定文件差异与受控缓存，在同等测试/Lint/源码范围/签名要求下交付构建证据；不得向私有库镜像完整开发仓库、自动复制密钥、绕过受保护分支或签名发布授权。原先私有证据及项目访问边界不变。GitHub 公开 Issue **不得泄露私有 GitLab URL、项目 ID、内网地址、凭据或未脱敏日志**。
+5. **恢复与验证**。GitHub Actions 能在相同源码 SHA 上重新完成所需构建后，立刻恢复它作为唯一常规执行入口；GitLab 停止该轮临时构建，不删除已有审计记录与产物。每次汇报区分：GitHub Debug/JUnit/Lint PASS、无签名 Release PASS、固定签名 Release PASS、GitHub Prerelease 已发布、手机/实车已验收五种不同状态，禁止越级宣称。
+6. **现有隔离验收起点**。T104 的 GitHub 测试代码仅驻留 `experiment/buick-test-t104-github-ci-smoke-20261108` 等专用实验分支；音频 #11 P0 在用户负向反馈后仍 Open。构建迁回 GitHub **不意味着**自动迁入正式 `Buick`、稳定 `Buick-E5`、冻结 `Buick-Test`，也不自动使用 GitHub 对失败的 T104 重新签名发布。逐次源码、CI 和专项测试继续按既有门禁验证。
+
+## 七、历史决策引用
 
 - [项目总清单 #12](https://github.com/chengshl/cardeck/issues/12)
 - [软件更新与实验安装 #17](https://github.com/chengshl/cardeck/issues/17)

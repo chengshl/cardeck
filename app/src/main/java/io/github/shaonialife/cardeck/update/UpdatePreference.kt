@@ -11,6 +11,7 @@ import android.content.Context
 internal object UpdatePreference {
     private const val PREFS = "car_deck_update_channel"
     private const val KEY = "selected_channel"
+    private const val KEY_PROJECT = "selected_experiment_source"
 
     enum class Channel(val key: String) {
         FORMAL("formal"),
@@ -25,19 +26,21 @@ internal object UpdatePreference {
      * A signed experiment APK follows its own release track on first use.
      * A user's explicit Formal or Experiment selection ALWAYS wins.
      */
-    internal fun defaultForOrigin(origin: String): Channel =
-        if (InstalledBuildIdentity.track(origin) == InstalledBuildIdentity.Track.EXPERIMENT) {
-            Channel.EXPERIMENT
-        } else {
-            Channel.FORMAL
-        }
+    fun selected(context: Context): Channel =
+        Channel.parse(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null))
 
-    fun selected(context: Context): Channel {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (prefs.contains(KEY)) return Channel.parse(prefs.getString(KEY, null))
-        return defaultForOrigin(
-            context.getString(io.github.shaonialife.cardeck.R.string.cardeck_installed_build_origin)
-        )
+    /** 只跟踪用户选定的具体实验分支，避免其他实验的更高版本抢占。 */
+    fun selectedProject(context: Context): String? =
+        validProjectSource(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PROJECT, null))
+
+    internal fun validProjectSource(value: String?): String? =
+        value?.takeIf { it.matches(Regex("experiment/[a-z0-9_-]{3,100}")) }
+
+    fun selectProject(context: Context, sourceBranch: String?) {
+        require(sourceBranch == null || validProjectSource(sourceBranch) == sourceBranch) { "非法实验项目" }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply {
+            if (sourceBranch == null) remove(KEY_PROJECT) else putString(KEY_PROJECT, sourceBranch)
+        }.apply()
     }
 
     fun select(context: Context, channel: Channel) {
