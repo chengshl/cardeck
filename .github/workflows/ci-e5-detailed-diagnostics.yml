@@ -74,6 +74,7 @@ jobs:
           expected.update(["app/src/main/java/io/github/shaonialife/cardeck/config/EntryConfig.kt","app/src/main/java/io/github/shaonialife/cardeck/service/GatewayLogService.kt","app/src/test/java/io/github/shaonialife/cardeck/config/EntryAddressTest.kt"])
           expected.update(["app/src/main/java/io/github/shaonialife/cardeck/gateway/OfflineLogFormatter.kt","app/src/main/java/io/github/shaonialife/cardeck/service/RescueTraceService.kt","app/src/test/java/io/github/shaonialife/cardeck/gateway/ForensicRedactionTest.kt"])
           expected.update(["app/src/main/res/values/entry_config_strings.xml"])
+          expected.update(["app/src/test/java/io/github/shaonialife/cardeck/gateway/GatewayUnifiedHttpTest.kt"])
           changed=set(git('diff','--name-only',stable,candidate).splitlines())
           assert changed==expected, f'Unexpected E5 runtime delta: {sorted(changed ^ expected)}'
           assert git('rev-parse',candidate+':tools/release/allocate_version.py') == git('rev-parse',stable+':tools/release/allocate_version.py')
