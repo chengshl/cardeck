@@ -26,13 +26,19 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-detailed-diagnostics"
-          test "$(git rev-parse HEAD^)" = "556bb9909ded176ce49b4e9466cd418f216c7965"
+          test "$(git rev-parse HEAD^)" = "d5984d9065029212e59658797f61f31bc2677370"
           test "$(git log -1 --format=%s)" = "release(e5): signed-http-v2-from-green-ci"
           test "$(git rev-parse origin/Buick-E5)" = "550f30272f3545f76650478788155ba1374fdc5e"
           git merge-base --is-ancestor 550f30272f3545f76650478788155ba1374fdc5e HEAD
+          # Fail closed on exact two workflow changes since the independently green source.
           CHANGED="$(git diff --name-only 649996a27e051b9d3242938dbc01aab547fb4cf6 HEAD)"
-          EXPECTED="$(printf '%s\\n' '.github/workflows/ci-e5-detailed-diagnostics.yml' '.github/workflows/exp-e5-unified-log-v2-single-apk.yml' '.github/workflows/publish-e5-detailed-diagnostics.yml')"
-          test "$CHANGED" = "$EXPECTED"
+          COUNT="$(git diff --name-only 649996a27e051b9d3242938dbc01aab547fb4cf6 HEAD | wc -l | tr -d '[:space:]')"
+          if [[ "$COUNT" != 2 ]] ||
+             ! grep -Fxq '.github/workflows/ci-e5-detailed-diagnostics.yml' <<< "$CHANGED" ||
+             ! grep -Fxq '.github/workflows/exp-e5-unified-log-v2-single-apk.yml' <<< "$CHANGED"; then
+            echo "::error::源码变更范围不符：仅允许两份发布门禁工作流与已验收 SHA 有差异"
+            exit 1
+          fi
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/44458686268 --jq .conclusion)" = success
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/44458686268 --jq .head_sha)" = "649996a27e051b9d3242938dbc01aab547fb4cf6"
           if gh release view "exp-buick-e5-detailed-diagnostics-http-v2-20261119" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
