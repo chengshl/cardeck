@@ -21,7 +21,7 @@ class GatewayLongLogTest {
 
     @Test fun unifiedHttpV2PreservesRawStringsAndFixedContract() {
         val id = "00000000-0000-4000-8000-000000000000"
-        val raw = listOf("token=very-sensitive-value", "192.168.10.20 password=hello",
+        val raw = listOf("token=very-sensitive-value", "192.0.2.20 password=hello",
             "2026-11-19 12:34:56.780 😀 \"quoted\" and slash\\")
         val json = JSONObject(GatewayLogProtocol.httpMessage(raw, "system", id, id))
         assertEquals(setOf("schema_version", "batch_id", "client_id", "source",

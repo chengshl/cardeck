@@ -373,7 +373,7 @@ class GatewayProbe(
                 }
             }
         } catch (error: Exception) {
-            if (generateSequence(error) { it.cause }.any { it is SSLException }) fail(Failure.TLS)
+            if (generateSequence<Throwable>(error) { it.cause }.any { it is SSLException }) fail(Failure.TLS)
             else fail(Failure.NETWORK)
         }
     }

@@ -8,7 +8,7 @@ class ForensicRedactionTest {
 
     @Test fun verbatimModeDoesNotRedactCredentialsIpsOrRawProtocol() {
         val raw = "2026-11-19 12:31:07.123 RAW tx: Authorization Bearer SECRET " +
-            "192.168.10.20 email=a@example.com vin=12345678901234567 😀"
+            "192.0.2.20 email=a@example.com vin=12345678901234567 😀"
         val noMask = LogRedactor(listOf("SECRET"), verbatim = true)
         assertEquals(raw, noMask.line(raw))
         assertEquals(listOf(raw), noMask.forensicChunks(raw))
