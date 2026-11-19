@@ -26,7 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-detailed-diagnostics"
-          test "$(git rev-parse HEAD^)" = "d5984d9065029212e59658797f61f31bc2677370"
+          test "$(git rev-parse HEAD^)" = "9e34a8f359638b757d4cc25b5f053a41bce7e184"
           test "$(git log -1 --format=%s)" = "release(e5): signed-http-v2-from-green-ci"
           test "$(git rev-parse origin/Buick-E5)" = "550f30272f3545f76650478788155ba1374fdc5e"
           git merge-base --is-ancestor 550f30272f3545f76650478788155ba1374fdc5e HEAD
@@ -85,6 +85,8 @@ jobs:
           set -euo pipefail
           python3 tools/release/allocate_version.py
       - name: 只构建一个签名 Release APK
+        env:
+          SOURCE_BRANCH: experiment/buick-e5-detailed-diagnostics
         run: ./gradlew :app:assembleRelease --stacktrace
       - name: 核对包名、版本、签名证书及原始来源
         env:
