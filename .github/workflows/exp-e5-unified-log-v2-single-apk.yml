@@ -26,7 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = "experiment/buick-e5-detailed-diagnostics"
-          test "$(git rev-parse HEAD^)" = "9e34a8f359638b757d4cc25b5f053a41bce7e184"
+          test "$(git rev-parse HEAD^)" = "601b90718456c170157a487a468f7df18a3d1a3a"
           test "$(git log -1 --format=%s)" = "release(e5): signed-http-v2-from-green-ci"
           test "$(git rev-parse origin/Buick-E5)" = "550f30272f3545f76650478788155ba1374fdc5e"
           git merge-base --is-ancestor 550f30272f3545f76650478788155ba1374fdc5e HEAD
