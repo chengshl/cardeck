@@ -12,10 +12,20 @@ class EntryAddressTest {
     }
 
     @Test
+    fun acceptsOnlyOfficialUnifiedHttpsEndpoint() {
+        assertEquals(EntryAddress.UNIFIED_ENDPOINT,
+            EntryAddress.normalize(" " + EntryAddress.UNIFIED_ENDPOINT + " "))
+        assertEquals(true, EntryAddress.isUnified(EntryAddress.UNIFIED_ENDPOINT))
+    }
+
+    @Test
     fun rejectsInsecureOrCredentialBearingAddresses() {
         listOf(
             "ws://gateway.example/ws/device",
             "https://gateway.example/ws/device",
+            "https://once.wiki:8443/logs/v1/logs/batches?token=not-allowed",
+            "https://once.wiki:8443/logs/v1/logs/batches#fragment",
+            "http://once.wiki:8443/logs/v1/logs/batches",
             "wss://user:password@gateway.example/ws/device",
             "wss://gateway.example/ws/device?token=secret",
             "wss://gateway.example/ws/device#secret",

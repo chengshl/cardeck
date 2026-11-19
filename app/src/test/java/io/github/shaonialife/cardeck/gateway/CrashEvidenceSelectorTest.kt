@@ -124,7 +124,7 @@ class CrashEvidenceSelectorTest {
         })
         val result = CrashEvidenceSelector.select(previous, "FATAL ".repeat(100), drop, true, redact)
         assertTrue(result.size <= 64)
-        assertTrue(result.all { it.length <= 256 })
+        assertTrue(result.all { it.toByteArray(Charsets.UTF_8).size <= GatewayLogProtocol.MAX_LINE_BYTES })
         assertTrue(result.none { it.contains("private.example") || it.contains("password=123") })
     }
 }

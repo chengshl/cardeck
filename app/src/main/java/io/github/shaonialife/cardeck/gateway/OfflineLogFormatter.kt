@@ -11,6 +11,8 @@ internal object OfflineLogFormatter {
 
     fun appLines(raw: String, redactor: LogRedactor): List<String> =
         raw.lineSequence().filter { it.isNotBlank() }.map { line ->
+            if (redactor.verbatim) line
+            else
             if (rawProtocol.containsMatchIn(line)) {
                 val time = logTime.find(line)?.value.orEmpty()
                 redactor.line("$time [原始协议数据已省略]")
@@ -21,7 +23,7 @@ internal object OfflineLogFormatter {
 
     fun format(title: String, version: String, device: String, lines: List<String>, time: String): String =
         buildString {
-            appendLine("CarDeck 本地诊断日志（已脱敏）")
+            appendLine("CarDeck 本地诊断日志（原文未经脱敏，请自行保护）")
             appendLine("类型: $title")
             appendLine("导出时间: $time")
             appendLine("应用版本: $version")

@@ -1,5 +1,6 @@
 """CarDeck transport test gateway; no vehicle operations or tunnel coupling."""
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -8,13 +9,15 @@ import signal
 import time
 import uuid
 import re
+import ipaddress
+from datetime import datetime
 from collections import deque
 from urllib.parse import parse_qs, urlsplit
 from http import HTTPStatus
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
-from log_archive import LogArchive
+from log_archive import LogArchive, CursorExpired, MAX_TIMESTAMP_MS, validate_history_query
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
@@ -69,22 +72,77 @@ async def maintain_archive(interval):
             storage_failure("cleanup_failed")
 
 
+def _redact_ipv6(match):
+    # A clock value has colons too; only redact a parsed IPv6 address.
+    candidate = match.group(0)
+    address = candidate.rstrip('.')
+    try:
+        ipaddress.IPv6Address(address)
+    except ValueError:
+        return candidate
+    return '[IPv6]' + candidate[len(address):]
+
+
+def _redact_identifiers(text):
+    # Preserve only explicitly labelled epoch values; unrelated long numbers
+    # still follow the identifier rules. One pass avoids re-redacting the time.
+    time_field = (r'(?P<time>(?<![\w])(?P<field>received_ms|occurred_ms|captured_at_ms|'
+                  r'timestamp(?:_(?:ms|us|ns))?|time_(?:ms|us|ns)|'
+                  r'event_time(?:_(?:ms|us|ns))?|ts(?:_(?:ms|us|ns))?)'
+                  r'[\"\x27]?\s*[:=]\s*[\"\x27]?(?P<epoch>\d{10,19})(?!\d))')
+    identifiers = (r'(?P<long>[A-Za-z0-9_+/=-]{32,})|'
+                   r'(?P<number>\b\d{11,18}\b)|(?P<vin>\b[A-HJ-NPR-Z0-9]{17}\b)')
+
+    def replacement(match):
+        if match.group('time'):
+            field = match.group('field').lower()
+            value = match.group('epoch')
+            unit = field.rsplit('_', 1)[-1]
+            divisor = {'ms': 1000, 'us': 1000000, 'ns': 1000000000}.get(unit)
+            if divisor is None:
+                divisor = {10: 1, 13: 1000, 16: 1000000, 19: 1000000000}.get(len(value))
+            if (divisor and 0 <= int(value) // divisor <= 253402300799
+                    and (match.end() == len(text) or not (text[match.end()].isalnum() or text[match.end()] == '_'))):
+                return match.group(0)
+            prefix = match.group(0)[:match.start('epoch') - match.start()]
+            return prefix + '[数字标识]'
+        return '[长标识]' if match.group('long') else '[数字标识]' if match.group('number') else '[车辆标识]'
+
+    return re.sub('(?i:' + time_field + ')|' + identifiers, replacement, text)
+
+
+def _redacted_log_line(text):
+    # Keep a validated leading clock/date even when the sensitive body is dropped.
+    match = re.match(r'^(\[?(?:(?:\d{4}-\d{2}-\d{2}|\d{2}-\d{2})[T ])?'
+                     r'\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:\d{2})?\]?)(?=\s|$)', text)
+    if match:
+        stamp = match.group(1).strip('[]').replace(',', '.')
+        try:
+            if re.match(r'^\d{2}-\d{2} ', stamp):
+                stamp = '2000-' + stamp
+            if re.match(r'^\d{2}:', stamp):
+                stamp = '2000-01-01T' + stamp
+            datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+            return match.group(1) + ' [已隐藏含凭证或密钥的日志行]'
+        except ValueError:
+            pass
+    return '[已隐藏含凭证或密钥的日志行]'
+
+
 def redact(text):
     for secret in (TOKEN, READ_TOKEN):
         text = text.replace(secret, "[已隐藏凭证]")
-    if re.search(r"(?i)authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|write.?key|read.?key|credential|nonce|salt|signature|密码|凭证", text):
-        return "[已隐藏含凭证或密钥的日志行]"
-    text = re.sub(r"(?i)\b[a-z][a-z0-9+.-]*://\S+", "[地址]", text)
-    text = re.sub(r"(?i)\b(?:BUICK|CHEVROLET|CADILLAC)[_-][0-9]{3,}\b", "[车机蓝牙名]", text)
-    text = re.sub(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", "[MAC]", text)
-    text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[IP]", text)
-    text = re.sub(r"(?i)(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]+", "[IPv6]", text)
-    text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}\b", "[邮箱]", text)
-    text = re.sub(r"[A-Za-z0-9_+/=-]{32,}", "[长标识]", text)
-    text = re.sub(r"\b\d{11,18}\b", "[数字标识]", text)
-    text = re.sub(r"\b[A-HJ-NPR-Z0-9]{17}\b", "[车辆标识]", text)
-    text = re.sub(r"(?i)(ssid|serial|device.?id|vin|latitude|longitude)\s*[:=].*", r"\1=[已隐藏]", text)
-    return ''.join(c if ord(c) >= 32 and ord(c) != 127 else ' ' for c in text)[:256]
+    if re.search('(?i)authorization|bearer|password|passwd|token|secret|private.?key|pairing.?key|session.?key|write.?key|read.?key|credential|nonce|salt|signature|密码|凭证', text):
+        return _redacted_log_line(text)
+    text = re.sub(r'(?i)\b[a-z][a-z0-9+.-]*://\S+', '[地址]', text)
+    text = re.sub(r'(?i)\b(?:BUICK|CHEVROLET|CADILLAC)[_-][0-9]{3,}\b', '[车机蓝牙名]', text)
+    text = re.sub(r'(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b', '[MAC]', text)
+    text = re.sub(r'(?i)(?<![\w:])(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]*(?:%[\w.-]+)?(?![\w:])', _redact_ipv6, text)
+    text = re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', '[IP]', text)
+    text = re.sub(r'\b[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}\b', '[邮箱]', text)
+    text = _redact_identifiers(text)
+    text = re.sub(r'(?i)(ssid|serial|device.?id|vin|latitude|longitude)\s*[:=].*', r'\1=[已隐藏]', text)
+    return ''.join(c if ord(c) >= 32 and ord(c) != 127 else ' ' for c in text)
 
 
 def authorized(request, token):
@@ -105,6 +163,17 @@ def valid_vehicle_id(value):
 
 def integer(value, maximum):
     return type(value) is int and 0 <= value <= maximum
+
+
+LOG_QUEUE_FIELDS = {"pending_lines", "pending_bytes", "dropped_lines", "overflow_dropped_lines",
+                    "write_failures", "write_failed_lines", "corrupt_dropped_lines"}
+OPTIONAL_LOG_QUEUE_FIELDS = {"scope_changed_dropped_lines", "recovery_failures"}
+
+
+def valid_log_queue(value):
+    return (isinstance(value, dict) and LOG_QUEUE_FIELDS <= set(value)
+            and set(value) <= LOG_QUEUE_FIELDS | OPTIONAL_LOG_QUEUE_FIELDS
+            and all(integer(n, 9007199254740991) for n in value.values()))
 
 
 def registration(payload):
@@ -155,27 +224,54 @@ async def process_request(connection, request):
     if urlsplit(request.path).path == "/api/logs":
         if not authorized(request, READ_TOKEN):
             return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
-        query = parse_qs(urlsplit(request.path).query)
-        if (not set(query) <= {"device_id", "source", "vehicle_id"} or "device_id" not in query
+        query = parse_qs(urlsplit(request.path).query, keep_blank_values=True)
+        if (len(request.path) > 8192 or not set(query) <= {
+                "device_id", "source", "vehicle_id", "limit", "start_ms", "end_ms",
+                "keyword", "cursor", "mode", "time_field"} or "device_id" not in query
                 or any(len(value) != 1 for value in query.values())):
             return connection.respond(HTTPStatus.BAD_REQUEST, "device_id required\n")
         device_id = query["device_id"][0]
         source = query.get("source", [None])[0]
         vehicle_id = query.get("vehicle_id", [None])[0]
         try:
-            if (str(uuid.UUID(device_id)) != device_id or source not in (None, "app", "system")
-                    or vehicle_id is not None and not valid_vehicle_id(vehicle_id)):
+            def numeric(name, default=None):
+                if name not in query:
+                    return default
+                raw = query[name][0]
+                if not re.fullmatch(r"0|[1-9][0-9]{0,14}", raw):
+                    raise ValueError()
+                return int(raw)
+            limit = numeric("limit", 200)
+            start_ms, end_ms = numeric("start_ms"), numeric("end_ms")
+            keyword = query.get("keyword", [None])[0]
+            cursor = query.get("cursor", [None])[0]
+            time_field = query.get("time_field", ["received_ms"])[0]
+            mode = query.get("mode", [None])[0]
+            history_args = bool(set(query) & {"start_ms", "end_ms", "keyword", "cursor", "time_field"})
+            if mode not in (None, "tail", "history") or mode == "tail" and history_args:
+                raise ValueError()
+            history = mode == "history" or history_args
+            validate_history_query(device_id, source, limit, vehicle_id, start_ms, end_ms, keyword, time_field)
+            if cursor is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,4096}", cursor):
                 raise ValueError()
         except (ValueError, TypeError, AttributeError):
             return connection.respond(HTTPStatus.BAD_REQUEST, "invalid query\n")
         try:
-            entries = await storage_call("tail", device_id, source, 200, vehicle_id)
+            if history:
+                page = await storage_call("query", device_id, source, limit, vehicle_id,
+                    start_ms, end_ms, keyword, cursor, READ_TOKEN.encode(), time_field)
+            else:
+                page = {"logs": await storage_call("tail", device_id, source, limit, vehicle_id)}
+        except CursorExpired:
+            return connection.respond(HTTPStatus.CONFLICT, "history cursor expired; restart query\n")
+        except (ValueError, UnicodeError):
+            return connection.respond(HTTPStatus.BAD_REQUEST, "invalid query\n")
         except OSError:
             storage_failure("read_failed")
             return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "storage unavailable\n")
         response = connection.respond(HTTPStatus.OK, json.dumps({
             "retention": "persistent-seven-days", "device_id": device_id,
-            "limit": 200, "logs": entries,
+            "limit": limit, **page,
             **({"vehicle_id": vehicle_id} if vehicle_id is not None else {})}))
         response.headers["Content-Type"] = "application/json"
         response.headers["Cache-Control"] = "no-store"
@@ -210,7 +306,8 @@ async def process_request(connection, request):
 async def handler(ws):
     device_id = None
     await ws.send(json.dumps({"type": "hello", "mode": "transport-test",
-                              "capabilities": ["device_status_v1", "logs_v1", "vehicle_scope_v1"],
+                              "capabilities": ["device_status_v1", "logs_v1", "logs_v2", "vehicle_scope_v1",
+                                               "log_queue_status_v1", "log_timestamps_v1"],
                               "ping_interval_seconds": 20, "ping_timeout_seconds": 10}))
     try:
         async for message in ws:
@@ -253,14 +350,17 @@ async def handler(ws):
                     last_seen_ms=int(time.time() * 1000), report_count=0)
                 await ws.send('{"type":"register_ack"}')
             elif kind == "status":
-                if (not device_id or not set(payload) <= {"type", "heartbeat_count", "latency_ms", "vehicle_id"}
+                if (not device_id or not set(payload) <= {"type", "heartbeat_count", "latency_ms", "vehicle_id", "app_log_queue"}
                     or not {"type", "heartbeat_count", "latency_ms"} <= set(payload)
                     or ("vehicle_id" in payload and not valid_vehicle_id(payload["vehicle_id"]))
+                    or ("app_log_queue" in payload and not valid_log_queue(payload["app_log_queue"]))
                     or not integer(payload.get("heartbeat_count"), 2147483647)
                     or not integer(payload.get("latency_ms"), 86400000)):
                     await ws.close(1008, "invalid status")
                     return
                 record = devices[device_id]
+                if "app_log_queue" in payload:
+                    record["app_log_queue"] = payload["app_log_queue"]
                 if "vehicle_id" in payload:
                     record["vehicle_id"] = payload["vehicle_id"]
                 else:
@@ -271,28 +371,44 @@ async def handler(ws):
                     report_count=record["report_count"] + 1, connection_state="healthy")
                 await ws.send(json.dumps({"type": "status_ack", "report_count": record["report_count"]}))
             elif kind == "logs":
+                schema = payload.get("schema_version", 1)
                 lines = payload.get("lines")
+                line_times_ms = payload.get("line_times_ms")
                 source = payload.get("source")
                 batch_id = payload.get("batch_id")
                 try:
                     valid_id = str(uuid.UUID(batch_id)) == batch_id
                 except (ValueError, TypeError, AttributeError):
                     valid_id = False
-                if (not device_id or not set(payload) <= {"type", "source", "batch_id", "user_confirmed", "lines", "vehicle_id"}
+                if (not device_id or not set(payload) <= {"type", "source", "batch_id", "user_confirmed", "lines", "vehicle_id", "schema_version", "line_times_ms"}
                     or not {"type", "source", "batch_id", "user_confirmed", "lines"} <= set(payload)
                     or ("vehicle_id" in payload and not valid_vehicle_id(payload["vehicle_id"]))
                     or not valid_id or source not in ("app", "system")
                     or type(payload.get("user_confirmed")) is not bool
                     or payload["user_confirmed"] != (source == "system")
                     or not isinstance(lines, list) or not 1 <= len(lines) <= 8
-                    or any(not isinstance(line, str) or not 1 <= len(line) <= 256 for line in lines)):
+                    or ("line_times_ms" in payload and (not isinstance(line_times_ms, list)
+                        or len(line_times_ms) != len(lines) or any(not integer(n, MAX_TIMESTAMP_MS) for n in line_times_ms)))
+                    or type(schema) is not int or schema not in (1, 2)
+                    or len(message.encode("utf-8")) > 16384
+                    or any(not isinstance(line, str) or not line or
+                        len(line.encode("utf-8")) > (12288 if schema == 2 else 1024) or
+                        (schema == 1 and len(line) > 256) for line in lines)):
                     await ws.close(1008, "invalid log batch")
                     return
                 recent = accepted_batches.setdefault(device_id, deque(maxlen=64))
-                if batch_id not in recent:
+                # V2 receipts are validated by the persistent archive even after a reconnect/restart.
+                if schema == 2 or batch_id not in recent:
                     try:
-                        entries = await storage_call("append", device_id, source, [redact(line) for line in lines],
-                            batch_id, payload.get("vehicle_id"))
+                        safe_lines = [redact(line) for line in lines]
+                        if schema == 2:
+                            digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False,
+                                sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                            entries = await storage_call("append_v2", device_id, source, safe_lines,
+                                batch_id, payload.get("vehicle_id"), digest, line_times_ms)
+                        else:
+                            entries = await storage_call("append", device_id, source, safe_lines,
+                                batch_id, payload.get("vehicle_id"), line_times_ms)
                     except (OSError, ValueError, UnicodeError):
                         storage_failure("write_failed")
                         await ws.close(1011, "persistent storage unavailable")
@@ -306,7 +422,8 @@ async def handler(ws):
                     if "vehicle_id" in payload:
                         record["vehicle_id"] = payload["vehicle_id"]
                 await ws.send(json.dumps({"type": "logs_ack", "source": source,
-                    "batch_id": batch_id, "accepted_lines": len(lines)}))
+                    "batch_id": batch_id, "accepted_lines": len(lines),
+                    **({"schema_version": 2} if schema == 2 else {})}))
             else:
                 await ws.send('{"type":"error","code":"unsupported_test_message"}')
     except ConnectionClosed:

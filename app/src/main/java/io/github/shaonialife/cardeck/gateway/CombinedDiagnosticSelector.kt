@@ -17,12 +17,12 @@ internal object CombinedDiagnosticSelector {
         // Both collectors already redact their own output. Do not re-process
         // it here or risk losing meaningful clock timestamps.
         val critical = crashEvidence.asSequence()
-            .filter { it.isNotBlank() }.map { it.take(256) }.take(MAX_LINES).toList()
+            .filter { it.isNotBlank() }.take(MAX_LINES).toList()
         if (!shizukuReady) return critical
 
         val warnings = currentWarnings.asSequence()
             .filter { it.isNotBlank() }
-            .map { ("[当前系统] " + it).take(256) }
+            .map { ("[当前系统] " + it) }
             .toList()
         if (warnings.isEmpty()) return critical
 

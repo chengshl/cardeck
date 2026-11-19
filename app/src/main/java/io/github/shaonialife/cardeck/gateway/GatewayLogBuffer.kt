@@ -8,7 +8,7 @@ class GatewayLogBuffer(
     private val capacity: Int = 200,
     private val vehicleProvider: () -> String? = { null },
 ) {
-    data class TaggedLine(val text: String, val vehicleId: String?)
+    data class TaggedLine(val text: String, val vehicleId: String?, val batchId: String? = null)
 
     private val lines = ArrayDeque<TaggedLine>()
     @Volatile var dropped: Long = 0
@@ -18,12 +18,9 @@ class GatewayLogBuffer(
     @Synchronized
     fun offer(raw: String) {
         val associatedVehicle = vehicleProvider()
-        val safeLines = if (raw.length > 8192) listOf("[超长日志已省略]") else {
-            val split = raw.lineSequence().take(33).toList()
-            val bounded = if (split.size > 32) split.take(31) + "[多行日志超限，已省略余下内容]" else split
-            bounded.map(redactor::line)
-        }
-        for (line in safeLines.filter { it.isNotBlank() }) {
+        for (line in raw.lineSequence().map(redactor::line).filter { it.isNotBlank() }) {
+            // An unsendable row is counted explicitly; never upload a truncated substitute.
+            if (!GatewayLogProtocol.fitsHttp(listOf(line), "app")) { dropped++; continue }
             if (lines.size >= capacity) { lines.removeFirst(); dropped++ }
             lines.addLast(TaggedLine(line, associatedVehicle))
         }
@@ -33,7 +30,11 @@ class GatewayLogBuffer(
     @Synchronized
     fun takeTagged(): List<TaggedLine> = buildList {
         val first = lines.peekFirst()?.vehicleId
-        while (size < 8 && lines.isNotEmpty() && lines.peekFirst().vehicleId == first) {
+        val pendingBatch = lines.peekFirst()?.batchId
+        while (size < 8 && lines.isNotEmpty() && lines.peekFirst().vehicleId == first &&
+            lines.peekFirst().batchId == pendingBatch) {
+            val candidate = map { it.text } + lines.peekFirst().text
+            if (!GatewayLogProtocol.fitsHttp(candidate, "app")) break
             add(lines.removeFirst())
         }
     }
