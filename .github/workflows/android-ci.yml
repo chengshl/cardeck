@@ -60,6 +60,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 本轮只允许从指定上游快照衍生的源码生成实验包。
+          UPSTREAM_SHA=3599f3d6e0c60d9335df6e9a56cba70e784e78b1
+          git cat-file -e "$UPSTREAM_SHA^{commit}"
+          git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD || {
+            echo "::error::当前实验分支不是预期上游 Rust 快照的后代"
+            exit 1
+          }
           chmod +x gradlew
           ./gradlew :app:assembleStandardRelease "-Pcardeck.buildNumber=$GITHUB_RUN_NUMBER" --stacktrace
       - name: 验证唯一产物、安装身份及正式签名
