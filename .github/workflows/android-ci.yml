@@ -28,6 +28,9 @@ jobs:
     steps:
       - name: 检出新分支
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 固定上游 SHA 溯源校验需要提交历史
+          persist-credentials: false
       - name: 配置 JDK 17
         uses: actions/setup-java@v4
         with:
