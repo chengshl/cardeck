@@ -13,6 +13,8 @@ import io.github.shaonialife.cardeck.airplay.PairVerifyClient
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioProfileMemory
 import io.github.shaonialife.cardeck.audio.AudioSender
+import io.github.shaonialife.cardeck.audio.AudioCodec
+import io.github.shaonialife.cardeck.audio.BuickAudioT74LinkGuard
 import io.github.shaonialife.cardeck.audio.AudioTuning
 import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.B233PairingMonitor
@@ -649,6 +651,53 @@ object SessionController {
             onConfirmed = {
                 if (currentClient === client && audioSender === owningSender) {
                     owningSender.activateSyncAfterRecord()
+                    // T74 experimental branch only. Observe Android Wi-Fi rather
+                    // than pretending that the iPhone's MAC ACK counters are exposed
+                    // here. A timed downgrade is restricted to B233 AAC.
+                    val t74Profile = activeAudioProfile
+                    if (client.currentEndpoint.isBuickB233 && t74Profile?.codec == AudioCodec.AAC_LC) {
+                        BuickAudioT74LinkGuard.observe(
+                            context = context.applicationContext,
+                            vehicleNetwork = wifiConnector?.currentNetwork,
+                            stillCurrent = {
+                                currentClient === client &&
+                                    audioSender === owningSender &&
+                                    owningSender.isRunning &&
+                                    !connectCancelled
+                            },
+                            tryDowngrade = {
+                                synchronized(this) {
+                                    if (currentClient !== client || audioSender !== owningSender) {
+                                        false
+                                    } else {
+                                        // T63/T64 proved RTP.stop() alone can
+                                        // leave B233 audio resources claimed.
+                                        // Never silently stop on failed TEARDOWN.
+                                        val removed = client.teardownAudioStream(t74Profile.streamType)
+                                        if (!removed || currentClient !== client || audioSender !== owningSender) {
+                                            appendLog("AUDIO T74: 音频流 TEARDOWN 未确认；不盲停 RTP，保留当前会话")
+                                            false
+                                        } else {
+                                            audioSender = null
+                                            activeAudioProfile = null
+                                            activeAudioStartedAt = 0L
+                                            audioEnabledForSession = false
+                                            audioAutoDowngradedForSession = true
+                                            owningSender.stop()
+                                            val videoOnlyClaimed = client.assertModes(claimAudioResource = false)
+                                            appendLog(
+                                                "AUDIO T74: 18秒试验：已撤销音频并请求仅视频，" +
+                                                    "modesChangedSuccess=$videoOnlyClaimed；继续观察视频是否存活",
+                                            )
+                                            true
+                                        }
+                                    }
+                                }
+                            },
+                            log = ::appendLog,
+                            enableTimedDowngrade = true,
+                        )
+                    }
                 } else {
                     appendLog("AUDIO T70: RECORD 返回时会话已退役，忽略旧音频同步激活")
                 }
